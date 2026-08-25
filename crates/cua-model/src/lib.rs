@@ -13,6 +13,16 @@ pub struct EvalCandidate {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CandidateCheck {
+    pub provider: String,
+    pub model: String,
+    pub available: bool,
+    pub input_modalities: Vec<String>,
+    pub output_modalities: Vec<String>,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvalCase {
     pub id: String,
     pub prompt: String,
@@ -51,6 +61,7 @@ pub struct EvalModelSummary {
 pub struct EvalReport {
     pub live: bool,
     pub max_calls: usize,
+    pub candidate_checks: Vec<CandidateCheck>,
     pub results: Vec<EvalResult>,
     pub summaries: Vec<EvalModelSummary>,
     pub winner: Option<String>,
@@ -164,16 +175,134 @@ pub async fn run_eval_report(
 ) -> EvalReport {
     let max_calls = config.max_calls;
     let live = config.live;
-    let results = run_eval(config, frame, api_key).await;
+    let candidate_checks = if live {
+        validate_candidates(&config.candidates).await
+    } else {
+        config
+            .candidates
+            .iter()
+            .map(|candidate| CandidateCheck {
+                provider: candidate.provider.clone(),
+                model: candidate.model.clone(),
+                available: true,
+                input_modalities: Vec::new(),
+                output_modalities: Vec::new(),
+                reason: Some("catalog validation skipped for dry-run eval".to_string()),
+            })
+            .collect()
+    };
+    let mut runnable_config = config;
+    if live {
+        runnable_config.candidates.retain(|candidate| {
+            candidate_checks
+                .iter()
+                .any(|check| check.model == candidate.model && check.available)
+        });
+    }
+    let results = run_eval(runnable_config, frame, api_key).await;
     let summaries = summarize_results(&results);
     let winner = summaries.first().map(|summary| summary.model.clone());
     EvalReport {
         live,
         max_calls,
+        candidate_checks,
         results,
         summaries,
         winner,
     }
+}
+
+pub async fn validate_candidates(candidates: &[EvalCandidate]) -> Vec<CandidateCheck> {
+    let catalog = fetch_openrouter_catalog().await;
+    candidates
+        .iter()
+        .map(|candidate| {
+            if candidate.provider != "openrouter" {
+                return CandidateCheck {
+                    provider: candidate.provider.clone(),
+                    model: candidate.model.clone(),
+                    available: false,
+                    input_modalities: Vec::new(),
+                    output_modalities: Vec::new(),
+                    reason: Some(format!("unsupported provider {}", candidate.provider)),
+                };
+            }
+            match &catalog {
+                Ok(models) => models
+                    .iter()
+                    .find(|model| model.id == candidate.model)
+                    .map(|model| CandidateCheck {
+                        provider: candidate.provider.clone(),
+                        model: candidate.model.clone(),
+                        available: model.input_modalities().iter().any(|m| m == "image")
+                            && model.output_modalities().iter().any(|m| m == "text"),
+                        input_modalities: model.input_modalities().to_vec(),
+                        output_modalities: model.output_modalities().to_vec(),
+                        reason: None,
+                    })
+                    .unwrap_or(CandidateCheck {
+                        provider: candidate.provider.clone(),
+                        model: candidate.model.clone(),
+                        available: false,
+                        input_modalities: Vec::new(),
+                        output_modalities: Vec::new(),
+                        reason: Some("model not found in OpenRouter catalog".to_string()),
+                    }),
+                Err(error) => CandidateCheck {
+                    provider: candidate.provider.clone(),
+                    model: candidate.model.clone(),
+                    available: false,
+                    input_modalities: Vec::new(),
+                    output_modalities: Vec::new(),
+                    reason: Some(format!("catalog lookup failed: {error}")),
+                },
+            }
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct OpenRouterCatalog {
+    data: Vec<OpenRouterModel>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct OpenRouterModel {
+    id: String,
+    #[serde(default)]
+    architecture: OpenRouterArchitecture,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct OpenRouterArchitecture {
+    #[serde(default)]
+    input_modalities: Vec<String>,
+    #[serde(default)]
+    output_modalities: Vec<String>,
+}
+
+impl OpenRouterModel {
+    fn input_modalities(&self) -> &[String] {
+        &self.architecture.input_modalities
+    }
+
+    fn output_modalities(&self) -> &[String] {
+        &self.architecture.output_modalities
+    }
+}
+
+async fn fetch_openrouter_catalog() -> anyhow::Result<Vec<OpenRouterModel>> {
+    let response = reqwest::Client::new()
+        .get("https://openrouter.ai/api/v1/models?input_modalities=text,image&output_modalities=text")
+        .send()
+        .await
+        .context("fetch OpenRouter model catalog")?;
+    let status = response.status();
+    let catalog: OpenRouterCatalog = response.json().await.context("decode OpenRouter catalog")?;
+    if !status.is_success() {
+        bail!("OpenRouter catalog returned {status}");
+    }
+    Ok(catalog.data)
 }
 
 pub fn summarize_results(results: &[EvalResult]) -> Vec<EvalModelSummary> {

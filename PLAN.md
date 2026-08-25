@@ -28,9 +28,7 @@
 ## Model Eval
 
 1. Expand eval cases from contract probes to desktop-action tasks with screenshot fixtures and external oracles.
-2. Validate candidate availability against OpenRouter model metadata before live runs.
-3. Add configurable spend limits, token accounting, retry policy, and per-model failure classification.
-4. Rerun bounded live evals after scorer changes and record the selected default model.
+2. Add configurable spend limits, token accounting, retry policy, and per-model failure classification.
 
 ## Performance
 
