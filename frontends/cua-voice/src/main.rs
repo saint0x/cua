@@ -1,6 +1,6 @@
 use clap::Parser;
 use cua_voice::activation::ControlDoubleTap;
-use cua_voice::hud::{HudDisplay, HudRow, PANEL_RADIUS, TOP_MARGIN, WINDOW_HEIGHT, WINDOW_WIDTH};
+use cua_voice::hud::{HudDisplay, HudMetrics, TOP_MARGIN, WINDOW_HEIGHT, WINDOW_WIDTH};
 use cua_voice::orb::paint_orb;
 use cua_voice::ui_state::{HudSnapshot, VoiceUiEvent};
 use cua_voice::{run_voice_turn, VoiceConfig};
@@ -38,6 +38,8 @@ struct VoiceHud {
     busy: bool,
     execute_turns: bool,
     started: Instant,
+    last_frame: Instant,
+    response_progress: f32,
 }
 
 impl VoiceHud {
@@ -57,6 +59,8 @@ impl VoiceHud {
             busy: false,
             execute_turns,
             started: Instant::now(),
+            last_frame: Instant::now(),
+            response_progress: 0.0,
         }
     }
 
@@ -91,6 +95,18 @@ impl VoiceHud {
         .size(px(13.0))
     }
 
+    fn large_orb(&self) -> impl IntoElement {
+        let phase = self.snapshot.phase.clone();
+        let elapsed = self.started.elapsed().as_secs_f32();
+        canvas(
+            move |_, _, _| (phase, elapsed),
+            move |bounds, (phase, elapsed), window, _| {
+                paint_orb(window, bounds, &phase, elapsed);
+            },
+        )
+        .size(px(18.0))
+    }
+
     fn chip(label: impl Into<String>) -> impl IntoElement {
         div()
             .px_1()
@@ -102,31 +118,137 @@ impl VoiceHud {
             .child(label.into())
     }
 
-    fn row(dot: gpui::Hsla, row: &HudRow) -> impl IntoElement {
+    fn divider() -> impl IntoElement {
+        div().w(px(1.0)).h(px(14.0)).bg(hsla(0.0, 0.0, 1.0, 0.16))
+    }
+
+    fn activity_dots() -> impl IntoElement {
         div()
-            .h(px(23.0))
             .flex()
             .items_center()
-            .gap_2()
-            .child(div().w(px(6.0)).h(px(6.0)).rounded_full().bg(dot))
+            .gap_1()
+            .child(dot(1.0))
+            .child(dot(0.88))
+            .child(dot(0.76))
+            .child(dot(0.64))
+            .child(dot(0.52))
+            .child(dot(0.40))
+    }
+
+    fn tick_animation(&mut self) {
+        let now = Instant::now();
+        let dt = now.duration_since(self.last_frame).as_secs_f32().min(0.05);
+        self.last_frame = now;
+        let target = if self.snapshot.is_expanded() {
+            1.0
+        } else {
+            0.0
+        };
+        let step = (dt * 10.5).clamp(0.0, 1.0);
+        self.response_progress += (target - self.response_progress) * step;
+        if (self.response_progress - target).abs() < 0.01 {
+            self.response_progress = target;
+        }
+    }
+
+    fn compact_bar(&self, display: &HudDisplay, metrics: HudMetrics) -> impl IntoElement {
+        div()
+            .w(px(metrics.width))
+            .h(px(metrics.height))
+            .rounded(px(metrics.radius))
+            .overflow_hidden()
+            .opacity(metrics.bar_opacity)
+            .bg(hsla(0.0, 0.0, 0.0, 0.92))
+            .border_1()
+            .border_color(hsla(0.0, 0.0, 1.0, 0.15))
+            .shadow(vec![BoxShadow {
+                color: hsla(0.0, 0.0, 0.0, 0.58),
+                blur_radius: px(18.0),
+                spread_radius: px(0.0),
+                offset: point(px(0.0), px(6.0)),
+            }])
+            .px_3()
+            .flex()
+            .items_center()
+            .gap_3()
+            .child(self.orb())
             .child(
                 div()
-                    .flex_1()
-                    .text_color(rgb(0xc6c6c9))
+                    .w(px(138.0))
+                    .truncate()
+                    .text_color(rgb(0xf2f2f6))
                     .text_sm()
-                    .child(row.label),
+                    .child(display.title.clone()),
             )
-            .child(Self::chip(row.tool))
-            .child(Self::chip(row.app))
+            .child(Self::divider())
             .child(
                 div()
-                    .w(px(35.0))
-                    .overflow_hidden()
-                    .text_color(rgb(0x67676d))
+                    .w(px(172.0))
+                    .truncate()
+                    .text_color(rgb(0xb9b9c0))
                     .text_xs()
-                    .child(row.age),
+                    .child(format!(
+                        "Step {}/{}   {}",
+                        self.snapshot.step.index,
+                        self.snapshot.step.total,
+                        self.snapshot.step.label
+                    )),
+            )
+            .child(Self::divider())
+            .child(Self::chip(display.tool.clone()))
+            .child(div().flex_1())
+            .child(Self::activity_dots())
+    }
+
+    fn response_card(&self, display: &HudDisplay, metrics: HudMetrics) -> impl IntoElement {
+        div()
+            .w(px(metrics.width))
+            .h(px(metrics.height))
+            .rounded(px(metrics.radius))
+            .overflow_hidden()
+            .opacity(metrics.response_opacity)
+            .bg(hsla(0.0, 0.0, 0.0, 0.94))
+            .border_1()
+            .border_color(hsla(0.0, 0.0, 1.0, 0.14))
+            .shadow(vec![BoxShadow {
+                color: hsla(0.0, 0.0, 0.0, 0.62),
+                blur_radius: px(22.0),
+                spread_radius: px(0.0),
+                offset: point(px(0.0), px(10.0)),
+            }])
+            .p_5()
+            .flex()
+            .flex_col()
+            .justify_between()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(self.large_orb())
+                    .child(
+                        div()
+                            .text_color(rgb(0xaaa1ff))
+                            .text_xs()
+                            .child("Auto returning..."),
+                    ),
+            )
+            .child(
+                div()
+                    .text_color(rgb(0xf4f4f7))
+                    .text_sm()
+                    .line_height(px(21.0))
+                    .child(display.result.clone()),
             )
     }
+}
+
+fn dot(alpha: f32) -> impl IntoElement {
+    div()
+        .w(px(4.0))
+        .h(px(4.0))
+        .rounded_full()
+        .bg(hsla(244.0 / 360.0, 0.92, 0.70, alpha))
 }
 
 impl Render for VoiceHud {
@@ -135,129 +257,22 @@ impl Render for VoiceHud {
         if self.snapshot.expanded_until.is_some() && !self.snapshot.is_expanded() {
             self.snapshot.apply(VoiceUiEvent::Idle);
         }
+        self.tick_animation();
         window.request_animation_frame();
         let display = HudDisplay::from_snapshot(&self.snapshot);
+        let metrics = HudMetrics::interpolate(self.response_progress);
+        let show_response = self.response_progress > 0.45;
         div()
             .size_full()
             .bg(hsla(0.0, 0.0, 0.0, 0.0))
             .flex()
             .items_start()
             .justify_center()
-            .child(
-                div()
-                    .w(px(WINDOW_WIDTH))
-                    .h(px(WINDOW_HEIGHT))
-                    .rounded(px(PANEL_RADIUS))
-                    .overflow_hidden()
-                    .bg(hsla(0.0, 0.0, 0.0, 0.95))
-                    .shadow(vec![BoxShadow {
-                        color: hsla(0.0, 0.0, 0.0, 0.60),
-                        blur_radius: px(14.0),
-                        spread_radius: px(0.0),
-                        offset: point(px(0.0), px(6.0)),
-                    }])
-                    .px_3()
-                    .py_2()
-                    .flex()
-                    .flex_col()
-                    .child(
-                        div()
-                            .h(px(22.0))
-                            .flex()
-                            .items_center()
-                            .child(
-                                div()
-                                    .w(px(94.0))
-                                    .text_color(rgb(0xf3f0f3))
-                                    .text_sm()
-                                    .child("Help"),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap_2()
-                                    .child(
-                                        div()
-                                            .text_color(hsla(32.0 / 360.0, 0.95, 0.65, 1.0))
-                                            .text_xs()
-                                            .child("✦"),
-                                    )
-                                    .child(div().text_color(rgb(0xd8d8dc)).text_xs().child("5h"))
-                                    .child(
-                                        div()
-                                            .text_color(hsla(140.0 / 360.0, 0.86, 0.52, 1.0))
-                                            .text_xs()
-                                            .child("11%"),
-                                    )
-                                    .child(div().text_color(rgb(0x56565d)).text_xs().child("4h1m"))
-                                    .child(div().text_color(rgb(0x56565d)).text_xs().child("|"))
-                                    .child(div().text_color(rgb(0xd8d8dc)).text_xs().child("7d"))
-                                    .child(
-                                        div()
-                                            .text_color(hsla(140.0 / 360.0, 0.86, 0.52, 1.0))
-                                            .text_xs()
-                                            .child("2%"),
-                                    )
-                                    .child(div().text_color(rgb(0x56565d)).text_xs().child("6h1m")),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .h(px(58.0))
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .rounded(px(5.0))
-                            .bg(hsla(0.0, 0.0, 1.0, 0.055))
-                            .px_2()
-                            .gap_2()
-                            .child(div().w(px(14.0)).child(self.orb()))
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap_1()
-                                    .w_full()
-                                    .child(
-                                        div()
-                                            .text_color(rgb(0xf6f7fb))
-                                            .text_sm()
-                                            .child(display.title),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_color(rgb(0x828288))
-                                            .text_sm()
-                                            .child(format!("You: {}", display.prompt)),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_color(hsla(140.0 / 360.0, 0.90, 0.55, 1.0))
-                                            .text_sm()
-                                            .child(display.result),
-                                    ),
-                            )
-                            .child(Self::chip(display.phase))
-                            .child(Self::chip(display.tool))
-                            .child(
-                                div()
-                                    .w(px(28.0))
-                                    .overflow_hidden()
-                                    .text_color(rgb(0x67676d))
-                                    .text_xs()
-                                    .child("now"),
-                            ),
-                    )
-                    .child(Self::row(
-                        hsla(216.0 / 360.0, 0.96, 0.58, 1.0),
-                        &display.rows[0],
-                    ))
-                    .child(Self::row(
-                        hsla(142.0 / 360.0, 0.78, 0.50, 1.0),
-                        &display.rows[1],
-                    )),
-            )
+            .child(if show_response {
+                self.response_card(&display, metrics).into_any_element()
+            } else {
+                self.compact_bar(&display, metrics).into_any_element()
+            })
     }
 }
 
@@ -273,9 +288,10 @@ fn main() -> anyhow::Result<()> {
     };
     let runtime = Arc::new(tokio::runtime::Runtime::new()?);
     let (tx, rx) = channel::<VoiceUiEvent>();
-    start_double_control_listener(tx.clone());
     if demo {
         start_demo_cycle(tx.clone());
+    } else {
+        start_double_control_listener(tx.clone());
     }
     Application::new().run(move |cx: &mut App| {
         let bounds = top_centered_bounds(cx);
@@ -320,7 +336,8 @@ fn top_centered_bounds(cx: &App) -> Bounds<gpui::Pixels> {
 }
 
 fn start_demo_cycle(tx: Sender<VoiceUiEvent>) {
-    std::thread::spawn(move || {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_millis(900));
         let sequence = [
             VoiceUiEvent::Armed,
             VoiceUiEvent::Listening { ms: 1200 },
@@ -334,6 +351,8 @@ fn start_demo_cycle(tx: Sender<VoiceUiEvent>) {
             tx.send(event).ok();
             std::thread::sleep(Duration::from_millis(650));
         }
+        std::thread::sleep(Duration::from_millis(5_500));
+        tx.send(VoiceUiEvent::Idle).ok();
     });
 }
 

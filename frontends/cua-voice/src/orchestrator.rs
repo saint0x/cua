@@ -45,13 +45,20 @@ async fn run_voice_turn_inner(config: VoiceConfig, tx: Sender<VoiceUiEvent>) -> 
             .await
             .context("join audio recorder")??;
     tx.send(VoiceUiEvent::Transcribing).ok();
+    let local_task = tokio::spawn({
+        let profile = config.profile.clone();
+        async move {
+            let local = CuaClient::new(profile).await?;
+            let frame = local.screenshot(true).await.ok();
+            Ok::<_, anyhow::Error>((local, frame))
+        }
+    });
     let transcript = SttClient::new(&config.stt_model)
         .transcribe_wav(&api_key, &audio.wav_bytes)
         .await?;
     tx.send(VoiceUiEvent::Transcript(transcript.clone())).ok();
     tx.send(VoiceUiEvent::Planning).ok();
-    let local = CuaClient::new(config.profile).await?;
-    let frame = local.screenshot(true).await.ok();
+    let (local, frame) = local_task.await.context("join local desktop snapshot")??;
     let plan = Planner::new(&config.planner_model)
         .plan(&api_key, &transcript, frame.as_ref())
         .await?;
