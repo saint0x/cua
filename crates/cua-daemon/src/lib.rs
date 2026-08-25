@@ -871,6 +871,10 @@ async fn handle_unix_request(state: &DaemonState, request: UnixRequest) -> serde
                 }
             }
         }
+        "status" => Ok(serde_json::to_value(state.health().await)),
+        "manifest" => Ok(serde_json::to_value(manifest_payload())),
+        "metrics" => Ok(serde_json::to_value(metrics_snapshot(state))),
+        "events.snapshot" => Ok(serde_json::to_value(state.events.snapshot().await)),
         "observe.desktop" => desktop_state(state).await.map(serde_json::to_value),
         "context.snapshot" => {
             let params = request.params.unwrap_or_else(|| serde_json::json!({}));
@@ -888,6 +892,27 @@ async fn handle_unix_request(state: &DaemonState, request: UnixRequest) -> serde
                 }
             }
         }
+        "profile.status" => Ok(serde_json::to_value(state.control.read().await.clone())),
+        "profile.create" => {
+            let params = request.params.unwrap_or_else(|| serde_json::json!({}));
+            match serde_json::from_value::<ProfileCreateRequest>(params) {
+                Ok(request) => Ok(serde_json::to_value(
+                    profile_create_state(state, request).await,
+                )),
+                Err(error) => {
+                    return unix_error(
+                        id,
+                        "bad_request",
+                        error.to_string(),
+                        Some(StatusCode::BAD_REQUEST),
+                    )
+                }
+            }
+        }
+        "profile.activate" => Ok(serde_json::to_value(profile_activate_state(state).await)),
+        "control.pause" => Ok(serde_json::to_value(control_pause_state(state).await)),
+        "control.resume" => Ok(serde_json::to_value(control_resume_state(state).await)),
+        "control.kill_switch" => Ok(serde_json::to_value(control_kill_switch_state(state).await)),
         "input.dispatch" => {
             let params = request.params.unwrap_or_else(|| serde_json::json!({}));
             match serde_json::from_value::<InputAction>(params) {
@@ -1001,7 +1026,11 @@ async fn root() -> Json<serde_json::Value> {
 }
 
 async fn manifest() -> Json<Manifest> {
-    Json(Manifest {
+    Json(manifest_payload())
+}
+
+fn manifest_payload() -> Manifest {
+    Manifest {
         schema_version: SCHEMA_VERSION.to_string(),
         name: "cua".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -1053,7 +1082,7 @@ async fn manifest() -> Json<Manifest> {
             "cua kill-switch --json".to_string(),
             "cua model eval".to_string(),
         ],
-    })
+    }
 }
 
 fn default_control_state(profile_name: &str) -> RuntimeControlState {
@@ -1088,11 +1117,13 @@ async fn status(State(state): State<DaemonState>) -> Json<HealthReport> {
 }
 
 async fn metrics(State(state): State<DaemonState>) -> Json<MetricsSnapshot> {
-    Json(
-        state
-            .metrics
-            .snapshot(state.active_streams.load(Ordering::Relaxed)),
-    )
+    Json(metrics_snapshot(&state))
+}
+
+fn metrics_snapshot(state: &DaemonState) -> MetricsSnapshot {
+    state
+        .metrics
+        .snapshot(state.active_streams.load(Ordering::Relaxed))
 }
 
 async fn healthz(State(state): State<DaemonState>) -> impl IntoResponse {
@@ -1378,6 +1409,13 @@ async fn profile_create(
     State(state): State<DaemonState>,
     Json(request): Json<ProfileCreateRequest>,
 ) -> Json<RuntimeControlState> {
+    Json(profile_create_state(&state, request).await)
+}
+
+async fn profile_create_state(
+    state: &DaemonState,
+    request: ProfileCreateRequest,
+) -> RuntimeControlState {
     let mut control = state.control.write().await;
     let now = now_wall_ms();
     control.active_profile = ProfilePolicy {
@@ -1399,10 +1437,14 @@ async fn profile_create(
             "generation": result.generation
         }),
     );
-    Json(result)
+    result
 }
 
 async fn profile_activate(State(state): State<DaemonState>) -> Json<RuntimeControlState> {
+    Json(profile_activate_state(&state).await)
+}
+
+async fn profile_activate_state(state: &DaemonState) -> RuntimeControlState {
     let mut control = state.control.write().await;
     if control.safety_state != SafetyState::Killed {
         control.active_profile.active = true;
@@ -1419,7 +1461,7 @@ async fn profile_activate(State(state): State<DaemonState>) -> Json<RuntimeContr
             "safety_state": result.safety_state
         }),
     );
-    Json(result)
+    result
 }
 
 async fn profile_status(State(state): State<DaemonState>) -> Json<RuntimeControlState> {
@@ -1427,6 +1469,10 @@ async fn profile_status(State(state): State<DaemonState>) -> Json<RuntimeControl
 }
 
 async fn control_pause(State(state): State<DaemonState>) -> Json<RuntimeControlState> {
+    Json(control_pause_state(&state).await)
+}
+
+async fn control_pause_state(state: &DaemonState) -> RuntimeControlState {
     let mut control = state.control.write().await;
     if control.safety_state != SafetyState::Killed {
         control.safety_state = SafetyState::Paused;
@@ -1438,10 +1484,14 @@ async fn control_pause(State(state): State<DaemonState>) -> Json<RuntimeControlS
         "control_paused",
         serde_json::json!({ "generation": result.generation }),
     );
-    Json(result)
+    result
 }
 
 async fn control_resume(State(state): State<DaemonState>) -> Json<RuntimeControlState> {
+    Json(control_resume_state(&state).await)
+}
+
+async fn control_resume_state(state: &DaemonState) -> RuntimeControlState {
     let mut control = state.control.write().await;
     if control.safety_state != SafetyState::Killed {
         control.safety_state = SafetyState::Running;
@@ -1453,10 +1503,14 @@ async fn control_resume(State(state): State<DaemonState>) -> Json<RuntimeControl
         "control_resumed",
         serde_json::json!({ "generation": result.generation }),
     );
-    Json(result)
+    result
 }
 
 async fn control_kill_switch(State(state): State<DaemonState>) -> Json<RuntimeControlState> {
+    Json(control_kill_switch_state(&state).await)
+}
+
+async fn control_kill_switch_state(state: &DaemonState) -> RuntimeControlState {
     let started = Instant::now();
     let mut control = state.control.write().await;
     control.safety_state = SafetyState::Killed;
@@ -1470,7 +1524,7 @@ async fn control_kill_switch(State(state): State<DaemonState>) -> Json<RuntimeCo
         "kill_switch",
         serde_json::json!({ "generation": result.generation }),
     );
-    Json(result)
+    result
 }
 
 #[derive(Debug)]
@@ -2579,6 +2633,70 @@ mod tests {
         assert_eq!(snapshot.frame.envelope.encoding, FrameEncoding::Png);
         assert!(snapshot.frame.envelope.width > 0);
         assert!(!snapshot.desktop.displays.is_empty());
+    }
+
+    #[tokio::test]
+    async fn unix_runtime_methods_share_daemon_state_contracts() {
+        let state = DaemonState::synthetic("unix-methods", "token");
+
+        let status = unix_result(
+            handle_unix_request(&state, unix_request("status", serde_json::json!({}))).await,
+        );
+        assert_eq!(status["active_profile"], "unix-methods");
+
+        let manifest = unix_result(
+            handle_unix_request(&state, unix_request("manifest", serde_json::json!({}))).await,
+        );
+        assert!(manifest["public_surfaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|surface| surface == "local_unix_socket"));
+
+        let pause = unix_result(
+            handle_unix_request(&state, unix_request("control.pause", serde_json::json!({}))).await,
+        );
+        assert_eq!(pause["safety_state"], "paused");
+
+        let profile = unix_result(
+            handle_unix_request(
+                &state,
+                unix_request(
+                    "profile.create",
+                    serde_json::json!({
+                        "name": "voice",
+                        "mode": "supervised",
+                        "duration_ms": 60000
+                    }),
+                ),
+            )
+            .await,
+        );
+        assert_eq!(profile["active_profile"]["name"], "voice");
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let events = unix_result(
+            handle_unix_request(
+                &state,
+                unix_request("events.snapshot", serde_json::json!({})),
+            )
+            .await,
+        );
+        assert!(events.as_array().unwrap().len() >= 3);
+    }
+
+    fn unix_request(method: &str, params: serde_json::Value) -> UnixRequest {
+        UnixRequest {
+            id: Some(serde_json::json!("test")),
+            token: Some("token".to_string()),
+            method: method.to_string(),
+            params: Some(params),
+        }
+    }
+
+    fn unix_result(response: serde_json::Value) -> serde_json::Value {
+        assert_eq!(response["ok"], true, "{response}");
+        response["result"].clone()
     }
 
     #[test]
