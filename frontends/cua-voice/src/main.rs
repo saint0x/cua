@@ -255,18 +255,25 @@ impl Render for VoiceHud {
         let display = HudDisplay::from_snapshot(&self.snapshot);
         let metrics = HudMetrics::interpolate(self.response_progress);
         window.resize(size(px(metrics.width), px(metrics.height)));
-        let show_response = self.response_progress > 0.45;
         div()
             .size_full()
             .bg(hsla(0.0, 0.0, 0.0, 0.0))
-            .flex()
-            .items_start()
-            .justify_center()
-            .child(if show_response {
-                self.response_card(&display, metrics).into_any_element()
-            } else {
-                self.compact_bar(&display, metrics).into_any_element()
-            })
+            .relative()
+            .overflow_hidden()
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .child(self.compact_bar(&display, metrics))
+                    .into_any_element(),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .child(self.response_card(&display, metrics))
+                    .into_any_element(),
+            )
     }
 }
 
