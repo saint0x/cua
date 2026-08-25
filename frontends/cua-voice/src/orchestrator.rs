@@ -7,6 +7,10 @@ use crate::ui_state::VoiceUiEvent;
 use anyhow::Context;
 use cua_core::{DesktopState, FramePayload};
 use std::sync::mpsc::Sender;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::time::{Duration, Instant};
 
 type LocalTask = tokio::task::JoinHandle<anyhow::Result<CuaClient>>;
@@ -85,15 +89,17 @@ pub async fn run_wav_turn_checked(
 
 async fn record_and_run_turn(config: VoiceConfig, tx: Sender<VoiceUiEvent>) -> anyhow::Result<()> {
     tx.send(VoiceUiEvent::Armed).ok();
-    tx.send(VoiceUiEvent::Listening {
-        ms: config.record_ms,
-    })
-    .ok();
+    tx.send(VoiceUiEvent::Listening { ms: 0 }).ok();
     let record_ms = config.record_ms;
     let local_task = spawn_local_preflight(config.profile.clone());
+    let progress_flag = Arc::new(AtomicBool::new(true));
+    let progress_task = spawn_recording_progress(tx.clone(), progress_flag.clone());
     let record_task =
         tokio::task::spawn_blocking(move || record_default_input(Duration::from_millis(record_ms)));
-    let audio = record_task.await.context("join audio recorder")??;
+    let record_result = record_task.await.context("join audio recorder");
+    progress_flag.store(false, Ordering::Release);
+    progress_task.abort();
+    let audio = record_result??;
     transcribe_and_run_turn_after_local(config, audio.wav_bytes, local_task, tx).await
 }
 
@@ -258,6 +264,27 @@ fn abort_context_prefetch(context_task: Option<ContextTask>) {
     }
 }
 
+fn spawn_recording_progress(
+    tx: Sender<VoiceUiEvent>,
+    running: Arc<AtomicBool>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let started = Instant::now();
+        let mut interval = tokio::time::interval(Duration::from_millis(100));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        while running.load(Ordering::Acquire) {
+            interval.tick().await;
+            if !running.load(Ordering::Acquire) {
+                break;
+            }
+            tx.send(VoiceUiEvent::Listening {
+                ms: started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+            })
+            .ok();
+        }
+    })
+}
+
 async fn prefetch_context_for_planning(local: CuaClient) -> PrefetchedContext {
     let started = Instant::now();
     let (session, frame, desktop) = prefetch_context(local).await;
@@ -294,4 +321,33 @@ fn send_metric(tx: &Sender<VoiceUiEvent>, name: &'static str, elapsed: Duration)
         ms: elapsed.as_millis().min(u128::from(u64::MAX)) as u64,
     })
     .ok();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc::channel;
+
+    #[tokio::test]
+    async fn recording_progress_emits_elapsed_listening_updates() {
+        let (tx, rx) = channel();
+        let running = Arc::new(AtomicBool::new(true));
+        let task = spawn_recording_progress(tx, running.clone());
+
+        tokio::time::sleep(Duration::from_millis(260)).await;
+        running.store(false, Ordering::Release);
+        task.abort();
+
+        let updates = rx
+            .try_iter()
+            .filter_map(|event| match event {
+                VoiceUiEvent::Listening { ms } => Some(ms),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert!(updates.len() >= 2, "{updates:?}");
+        assert!(updates.windows(2).all(|pair| pair[1] >= pair[0]));
+        assert!(updates.iter().any(|ms| *ms > 0));
+    }
 }
