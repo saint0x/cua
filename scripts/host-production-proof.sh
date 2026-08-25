@@ -53,7 +53,8 @@ jq -n \
       planner_elapsed_ms: $voice[0].planner.elapsed_ms,
       compact_ok: $voice[0].ui.compact_ok,
       reply_ok: $voice[0].ui.reply_ok,
-      collapsed_ok: $voice[0].ui.collapsed_ok
+      collapsed_ok: $voice[0].ui.collapsed_ok,
+      island: $voice[0].ui.island
     },
     control_surfaces: {
       dir: $control_dir,

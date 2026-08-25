@@ -87,7 +87,12 @@ jq -n \
       screen: $ui[0].screen,
       compact_ok: $ui[0].compact.ok,
       reply_ok: $ui[0].reply.ok,
-      collapsed_ok: $ui[0].collapsed.ok
+      collapsed_ok: $ui[0].collapsed.ok,
+      island: {
+        compact: $ui[0].compact.island,
+        reply: $ui[0].reply.island,
+        collapsed: $ui[0].collapsed.island
+      }
     }
   }' > "$MANIFEST"
 
