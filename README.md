@@ -27,6 +27,7 @@ Public control surfaces are intentionally limited to:
 cargo run -p cua -- serve --addr 127.0.0.1:8765
 cargo run -p cua -- status --json
 cargo run -p cua -- perf bench screenshot --iterations 5 --json
+cargo run -p cua -- context --json --force-fresh
 cargo run -p cua -- screenshot --out artifacts/cua/smoke/screen.png --json
 cargo run -p cua -- profile create smoke --mode supervised --duration-ms 60000 --clipboard --json
 cargo run -p cua -- profile activate --json
@@ -38,7 +39,7 @@ cargo run -p cua -- kill-switch --json
 cargo run -p cua-voice
 ```
 
-`cua serve` refuses non-loopback binds unless `--allow-lan` is explicit. The daemon also opens a profile-local socket at `~/.cua/profiles/<profile>/daemon.sock`; `cua-voice` uses that socket for screenshot, observe, and input dispatch. The local APIs use a per-profile bearer token stored at `~/.cua/profiles/<profile>/http.token`; CLI and voice client commands load it automatically.
+`cua serve` refuses non-loopback binds unless `--allow-lan` is explicit. The daemon also opens a profile-local socket at `~/.cua/profiles/<profile>/daemon.sock`; `cua-voice` uses that socket for context snapshots and input dispatch. The local APIs use a per-profile bearer token stored at `~/.cua/profiles/<profile>/http.token`; CLI and voice client commands load it automatically.
 
 ## Package
 

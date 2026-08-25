@@ -15,11 +15,11 @@ use chrono::Utc;
 use cua_capture::{CaptureRequest, CapturedFrame, FrameBus, FrameLookup};
 use cua_core::{
     now_wall_ms, schema_bundle, ApiErrorBody, CapabilityManifest, CapabilityState,
-    ClipboardReadRequest, ClipboardResult, ClipboardWriteRequest, DeliveryMode, DesktopState,
-    Effect, Evidence, EvidenceKind, FrameEncoding, FramePayload, HealthReport, InputAction,
-    InputRequest, InputResult, InputRoute, Manifest, MetricBucket, MetricHistogram,
-    MetricsSnapshot, PermissionReport, ProfilePolicy, RuntimeControlState, RuntimeMode,
-    SafetyState, SCHEMA_VERSION,
+    ClipboardReadRequest, ClipboardResult, ClipboardWriteRequest, DeliveryMode,
+    DesktopContextSnapshot, DesktopState, Effect, Evidence, EvidenceKind, FrameEncoding,
+    FramePayload, HealthReport, InputAction, InputRequest, InputResult, InputRoute, Manifest,
+    MetricBucket, MetricHistogram, MetricsSnapshot, PermissionReport, ProfilePolicy,
+    RuntimeControlState, RuntimeMode, SafetyState, SCHEMA_VERSION,
 };
 use cua_input::InputBackend;
 use cua_model::{run_eval_report, EvalConfig, EvalReport};
@@ -699,6 +699,7 @@ pub fn router(state: DaemonState) -> Router {
         .route("/metrics", get(metrics))
         .route("/healthz", get(healthz))
         .route("/capture/screenshot", post(screenshot))
+        .route("/context/snapshot", post(context_snapshot))
         .route("/capture/stream.mjpeg", get(stream_mjpeg))
         .route("/capture/stream.ws", get(stream_ws))
         .route("/observe/desktop", get(observe_desktop))
@@ -871,6 +872,22 @@ async fn handle_unix_request(state: &DaemonState, request: UnixRequest) -> serde
             }
         }
         "observe.desktop" => desktop_state(state).await.map(serde_json::to_value),
+        "context.snapshot" => {
+            let params = request.params.unwrap_or_else(|| serde_json::json!({}));
+            match serde_json::from_value::<ContextSnapshotRequest>(params) {
+                Ok(request) => context_snapshot_payload(state, request)
+                    .await
+                    .map(serde_json::to_value),
+                Err(error) => {
+                    return unix_error(
+                        id,
+                        "bad_request",
+                        error.to_string(),
+                        Some(StatusCode::BAD_REQUEST),
+                    )
+                }
+            }
+        }
         "input.dispatch" => {
             let params = request.params.unwrap_or_else(|| serde_json::json!({}));
             match serde_json::from_value::<InputAction>(params) {
@@ -999,6 +1016,7 @@ async fn manifest() -> Json<Manifest> {
             "GET /status".to_string(),
             "GET /metrics".to_string(),
             "POST /capture/screenshot".to_string(),
+            "POST /context/snapshot".to_string(),
             "GET /capture/stream.mjpeg".to_string(),
             "GET /capture/stream.ws".to_string(),
             "GET /observe/desktop".to_string(),
@@ -1022,6 +1040,7 @@ async fn manifest() -> Json<Manifest> {
             "cua status --json".to_string(),
             "cua perf live --json".to_string(),
             "cua screenshot --out <path>".to_string(),
+            "cua context --json".to_string(),
             "cua observe --json".to_string(),
             "cua profile status --json".to_string(),
             "cua clipboard read --allow-sensitive --json".to_string(),
@@ -1091,6 +1110,42 @@ async fn screenshot(
     Json(request): Json<ScreenshotRequest>,
 ) -> Result<Json<FramePayload>, ApiError> {
     Ok(Json(screenshot_payload(&state, request).await?))
+}
+
+#[derive(Debug, Deserialize)]
+struct ContextSnapshotRequest {
+    max_width: Option<u32>,
+    include_bytes: Option<bool>,
+    force_fresh: Option<bool>,
+    encoding: Option<FrameEncoding>,
+}
+
+async fn context_snapshot(
+    State(state): State<DaemonState>,
+    Json(request): Json<ContextSnapshotRequest>,
+) -> Result<Json<DesktopContextSnapshot>, ApiError> {
+    Ok(Json(context_snapshot_payload(&state, request).await?))
+}
+
+async fn context_snapshot_payload(
+    state: &DaemonState,
+    request: ContextSnapshotRequest,
+) -> Result<DesktopContextSnapshot, ApiError> {
+    let screenshot_request = ScreenshotRequest {
+        max_width: request.max_width,
+        include_bytes: request.include_bytes,
+        force_fresh: request.force_fresh,
+        encoding: request.encoding,
+    };
+    let (frame, desktop) = tokio::join!(
+        screenshot_payload(state, screenshot_request),
+        desktop_state(state)
+    );
+    Ok(DesktopContextSnapshot {
+        schema_version: SCHEMA_VERSION.to_string(),
+        frame: frame?,
+        desktop: desktop?,
+    })
 }
 
 async fn screenshot_payload(
@@ -2499,6 +2554,28 @@ mod tests {
             .histograms
             .iter()
             .any(|histogram| histogram.name == "encode.dispatch" && histogram.count == 1));
+    }
+
+    #[tokio::test]
+    async fn context_snapshot_returns_frame_and_desktop_state() {
+        let state = DaemonState::synthetic("test", "token");
+
+        let snapshot = context_snapshot_payload(
+            &state,
+            ContextSnapshotRequest {
+                max_width: Some(640),
+                include_bytes: Some(false),
+                force_fresh: Some(true),
+                encoding: Some(FrameEncoding::Png),
+            },
+        )
+        .await
+        .expect("context snapshot should succeed");
+
+        assert_eq!(snapshot.schema_version, SCHEMA_VERSION);
+        assert_eq!(snapshot.frame.envelope.encoding, FrameEncoding::Png);
+        assert!(snapshot.frame.envelope.width > 0);
+        assert!(!snapshot.desktop.displays.is_empty());
     }
 
     #[test]

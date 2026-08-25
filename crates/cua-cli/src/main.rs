@@ -3,8 +3,9 @@ use base64::Engine;
 use clap::{Args, Parser, Subcommand};
 use cua_capture::{CaptureRequest, FrameBus, SyntheticCaptureBackend};
 use cua_core::{
-    schema_bundle, CapabilityManifest, ClipboardReadRequest, ClipboardWriteRequest, FrameEncoding,
-    FramePayload, InputAction, MouseButton, RuntimeMode, SCHEMA_VERSION,
+    schema_bundle, CapabilityManifest, ClipboardReadRequest, ClipboardWriteRequest,
+    DesktopContextSnapshot, FrameEncoding, FramePayload, InputAction, MouseButton, RuntimeMode,
+    SCHEMA_VERSION,
 };
 use cua_model::{run_eval_report, EvalConfig};
 use cua_trace::{ActionTurnRecord, TraceRecord, TraceWriter};
@@ -37,6 +38,7 @@ enum Command {
         #[command(subcommand)]
         command: PerfCommand,
     },
+    Context(ContextArgs),
     Screenshot(ScreenshotArgs),
     Observe(JsonFlag),
     Mouse {
@@ -110,6 +112,18 @@ struct PerfBenchArgs {
     budget_ms: Option<u128>,
     #[arg(long)]
     json: bool,
+}
+
+#[derive(Debug, Args)]
+struct ContextArgs {
+    #[arg(long)]
+    json: bool,
+    #[arg(long)]
+    include_bytes: bool,
+    #[arg(long)]
+    force_fresh: bool,
+    #[arg(long, default_value_t = 640)]
+    max_width: u32,
 }
 
 #[derive(Debug, Clone, clap::ValueEnum)]
@@ -274,6 +288,7 @@ async fn main() -> anyhow::Result<()> {
         Some(Command::Doctor(flag)) => doctor(flag.json).await,
         Some(Command::Permissions { command }) => permissions(command).await,
         Some(Command::Perf { command }) => perf(cli.server_addr, &cli.profile, command).await,
+        Some(Command::Context(args)) => context(cli.server_addr, &cli.profile, args).await,
         Some(Command::Screenshot(args)) => screenshot(cli.server_addr, &cli.profile, args).await,
         Some(Command::Observe(flag)) => {
             get_json(cli.server_addr, &cli.profile, "/observe/desktop", flag.json).await
@@ -341,6 +356,7 @@ async fn print_usage_and_status(server_addr: SocketAddr) -> anyhow::Result<()> {
     println!("usage: cua serve --addr {server_addr}");
     println!("       cua status --json");
     println!("       cua perf live --json");
+    println!("       cua context --json");
     println!("       cua screenshot --out /tmp/screen.png");
     println!("       cua clipboard read --allow-sensitive --json");
     Ok(())
@@ -556,6 +572,36 @@ async fn perf_bench(addr: SocketAddr, profile: &str, args: PerfBenchArgs) -> any
             args.target,
             p95_ms,
             budget_ms
+        );
+    }
+    Ok(())
+}
+
+async fn context(addr: SocketAddr, profile: &str, args: ContextArgs) -> anyhow::Result<()> {
+    let value = request_json(
+        addr,
+        profile,
+        reqwest::Method::POST,
+        "/context/snapshot",
+        Some(serde_json::json!({
+            "max_width": args.max_width,
+            "encoding": FrameEncoding::Png,
+            "force_fresh": args.force_fresh,
+            "include_bytes": args.include_bytes
+        })),
+    )
+    .await?;
+    let snapshot: DesktopContextSnapshot = serde_json::from_value(value.clone())?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&value)?);
+    } else {
+        println!(
+            "frame_id={} {}x{} displays={} windows={}",
+            snapshot.frame.envelope.frame_id,
+            snapshot.frame.envelope.width,
+            snapshot.frame.envelope.height,
+            snapshot.desktop.displays.len(),
+            snapshot.desktop.windows.len()
         );
     }
     Ok(())

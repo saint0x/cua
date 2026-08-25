@@ -131,6 +131,13 @@ pub struct DesktopState {
     pub latest_frame: Option<FrameEnvelope>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct DesktopContextSnapshot {
+    pub schema_version: String,
+    pub frame: FramePayload,
+    pub desktop: DesktopState,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeMode {
@@ -404,6 +411,10 @@ pub fn schema_bundle() -> SchemaBundle {
     schemas.insert(
         "DesktopState".to_string(),
         serde_json::json!(schema_for!(DesktopState)),
+    );
+    schemas.insert(
+        "DesktopContextSnapshot".to_string(),
+        serde_json::json!(schema_for!(DesktopContextSnapshot)),
     );
     schemas.insert(
         "FrameEnvelope".to_string(),

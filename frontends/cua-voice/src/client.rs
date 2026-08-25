@@ -1,5 +1,5 @@
 use anyhow::{bail, Context};
-use cua_core::{DesktopState, FrameEncoding, FramePayload, InputAction};
+use cua_core::{DesktopContextSnapshot, DesktopState, FrameEncoding, FramePayload, InputAction};
 use serde::Deserialize;
 use serde_json::Value;
 use std::path::PathBuf;
@@ -40,6 +40,19 @@ impl CuaClient {
 
     pub async fn observe(&self) -> anyhow::Result<DesktopState> {
         self.request("observe.desktop", None).await
+    }
+
+    pub async fn context(&self, include_bytes: bool) -> anyhow::Result<DesktopContextSnapshot> {
+        self.request(
+            "context.snapshot",
+            Some(serde_json::json!({
+                "max_width": 1280,
+                "encoding": FrameEncoding::Png,
+                "force_fresh": true,
+                "include_bytes": include_bytes
+            })),
+        )
+        .await
     }
 
     pub async fn preflight(&self) -> anyhow::Result<()> {

@@ -207,6 +207,361 @@
       "title": "ClipboardWriteRequest",
       "type": "object"
     },
+    "DesktopContextSnapshot": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "CursorState": {
+          "properties": {
+            "included_in_frame": {
+              "type": "boolean"
+            },
+            "visible": {
+              "type": "boolean"
+            },
+            "x": {
+              "format": "double",
+              "type": "number"
+            },
+            "y": {
+              "format": "double",
+              "type": "number"
+            }
+          },
+          "required": [
+            "included_in_frame",
+            "visible",
+            "x",
+            "y"
+          ],
+          "type": "object"
+        },
+        "DesktopState": {
+          "properties": {
+            "cursor": {
+              "$ref": "#/definitions/CursorState"
+            },
+            "displays": {
+              "items": {
+                "$ref": "#/definitions/DisplayInfo"
+              },
+              "type": "array"
+            },
+            "latest_frame": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/FrameEnvelope"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "permissions": {
+              "$ref": "#/definitions/PermissionReport"
+            },
+            "schema_version": {
+              "type": "string"
+            },
+            "windows": {
+              "items": {
+                "$ref": "#/definitions/WindowInfo"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "cursor",
+            "displays",
+            "permissions",
+            "schema_version",
+            "windows"
+          ],
+          "type": "object"
+        },
+        "DisplayInfo": {
+          "properties": {
+            "active": {
+              "type": "boolean"
+            },
+            "height": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "scale_factor": {
+              "format": "double",
+              "type": "number"
+            },
+            "width": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "x": {
+              "format": "int32",
+              "type": "integer"
+            },
+            "y": {
+              "format": "int32",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "active",
+            "height",
+            "id",
+            "name",
+            "scale_factor",
+            "width",
+            "x",
+            "y"
+          ],
+          "type": "object"
+        },
+        "FrameEncoding": {
+          "enum": [
+            "png",
+            "jpeg",
+            "raw_bgra"
+          ],
+          "type": "string"
+        },
+        "FrameEnvelope": {
+          "properties": {
+            "byte_len": {
+              "format": "uint",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "cursor": {
+              "$ref": "#/definitions/CursorState"
+            },
+            "damage_rects": {
+              "items": {
+                "$ref": "#/definitions/Rect"
+              },
+              "type": "array"
+            },
+            "display_id": {
+              "type": "string"
+            },
+            "encoding": {
+              "$ref": "#/definitions/FrameEncoding"
+            },
+            "frame_id": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "height": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "pixel_format": {
+              "type": "string"
+            },
+            "scale_factor": {
+              "format": "double",
+              "type": "number"
+            },
+            "schema_version": {
+              "type": "string"
+            },
+            "sha256": {
+              "type": "string"
+            },
+            "timestamp_mono_ns": {
+              "format": "uint128",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "timestamp_wall_ms": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "width": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "byte_len",
+            "cursor",
+            "damage_rects",
+            "display_id",
+            "encoding",
+            "frame_id",
+            "height",
+            "pixel_format",
+            "scale_factor",
+            "schema_version",
+            "sha256",
+            "timestamp_mono_ns",
+            "timestamp_wall_ms",
+            "width"
+          ],
+          "type": "object"
+        },
+        "FramePayload": {
+          "properties": {
+            "bytes_base64": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "envelope": {
+              "$ref": "#/definitions/FrameEnvelope"
+            }
+          },
+          "required": [
+            "envelope"
+          ],
+          "type": "object"
+        },
+        "PermissionReport": {
+          "properties": {
+            "accessibility_input": {
+              "$ref": "#/definitions/PermissionState"
+            },
+            "automation": {
+              "$ref": "#/definitions/PermissionState"
+            },
+            "clipboard": {
+              "$ref": "#/definitions/PermissionState"
+            },
+            "portal": {
+              "$ref": "#/definitions/PermissionState"
+            },
+            "screen_recording": {
+              "$ref": "#/definitions/PermissionState"
+            }
+          },
+          "required": [
+            "accessibility_input",
+            "automation",
+            "clipboard",
+            "portal",
+            "screen_recording"
+          ],
+          "type": "object"
+        },
+        "PermissionState": {
+          "enum": [
+            "granted",
+            "missing",
+            "denied",
+            "not_applicable",
+            "unknown"
+          ],
+          "type": "string"
+        },
+        "Rect": {
+          "properties": {
+            "height": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "width": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "x": {
+              "format": "int32",
+              "type": "integer"
+            },
+            "y": {
+              "format": "int32",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "height",
+            "width",
+            "x",
+            "y"
+          ],
+          "type": "object"
+        },
+        "WindowInfo": {
+          "properties": {
+            "app_name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "focused": {
+              "type": "boolean"
+            },
+            "height": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "id": {
+              "type": "string"
+            },
+            "title": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "width": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "x": {
+              "format": "int32",
+              "type": "integer"
+            },
+            "y": {
+              "format": "int32",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "focused",
+            "height",
+            "id",
+            "width",
+            "x",
+            "y"
+          ],
+          "type": "object"
+        }
+      },
+      "properties": {
+        "desktop": {
+          "$ref": "#/definitions/DesktopState"
+        },
+        "frame": {
+          "$ref": "#/definitions/FramePayload"
+        },
+        "schema_version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "desktop",
+        "frame",
+        "schema_version"
+      ],
+      "title": "DesktopContextSnapshot",
+      "type": "object"
+    },
     "DesktopState": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "definitions": {

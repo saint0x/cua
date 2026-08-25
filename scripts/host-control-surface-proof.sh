@@ -15,9 +15,11 @@ OUT_DIR="${CUA_CONTROL_SURFACE_PROOF_OUT_DIR:-artifacts/cua/control-surface-proo
 TRACE_DIR="$OUT_DIR/trace"
 HTTP_STATUS="$OUT_DIR/http-status.json"
 HTTP_OBSERVE="$OUT_DIR/http-observe.json"
+HTTP_CONTEXT="$OUT_DIR/http-context.json"
 HTTP_SCREENSHOT="$OUT_DIR/http-screenshot.json"
 CLI_STATUS="$OUT_DIR/cli-status.json"
 CLI_OBSERVE="$OUT_DIR/cli-observe.json"
+CLI_CONTEXT="$OUT_DIR/cli-context.json"
 CLI_PROFILE="$OUT_DIR/cli-profile.json"
 CLI_PAUSE="$OUT_DIR/cli-pause.json"
 CLI_RESUME="$OUT_DIR/cli-resume.json"
@@ -67,10 +69,16 @@ curl -fsS \
   -H "authorization: Bearer $TOKEN" \
   -H "content-type: application/json" \
   -d '{"max_width":640,"encoding":"png","force_fresh":true,"include_bytes":false}' \
+  "http://$ADDR/context/snapshot" > "$HTTP_CONTEXT"
+curl -fsS \
+  -H "authorization: Bearer $TOKEN" \
+  -H "content-type: application/json" \
+  -d '{"max_width":640,"encoding":"png","force_fresh":true,"include_bytes":false}' \
   "http://$ADDR/capture/screenshot" > "$HTTP_SCREENSHOT"
 
 CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFILE" status --json > "$CLI_STATUS"
 CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFILE" observe --json > "$CLI_OBSERVE"
+CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFILE" context --json --max-width 640 --force-fresh > "$CLI_CONTEXT"
 CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFILE" profile status --json > "$CLI_PROFILE"
 CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFILE" pause --json > "$CLI_PAUSE"
 CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFILE" resume --json > "$CLI_RESUME"
@@ -84,12 +92,16 @@ jq -e '.schema_version == "cua.v1" and .active_profile == $profile' \
   --arg profile "$PROFILE" "$HTTP_STATUS" >/dev/null
 jq -e '(.displays | length) >= 1 and (.windows | type) == "array" and (.cursor.visible | type) == "boolean"' \
   "$HTTP_OBSERVE" >/dev/null
+jq -e '.frame.envelope.encoding == "png" and .frame.envelope.width > 0 and (.desktop.displays | length) >= 1 and (.desktop.windows | type) == "array"' \
+  "$HTTP_CONTEXT" >/dev/null
 jq -e '.envelope.encoding == "png" and .envelope.width > 0 and .envelope.height > 0 and (.envelope.sha256 | length) > 0' \
   "$HTTP_SCREENSHOT" >/dev/null
 jq -e '.schema_version == "cua.v1" and .active_profile == $profile' \
   --arg profile "$PROFILE" "$CLI_STATUS" >/dev/null
 jq -e '(.displays | length) >= 1 and (.windows | type) == "array" and (.cursor.visible | type) == "boolean"' \
   "$CLI_OBSERVE" >/dev/null
+jq -e '.frame.envelope.encoding == "png" and .frame.envelope.width > 0 and (.desktop.displays | length) >= 1 and (.desktop.windows | type) == "array"' \
+  "$CLI_CONTEXT" >/dev/null
 jq -e '.active_profile.name == $profile' --arg profile "$PROFILE" "$CLI_PROFILE" >/dev/null
 jq -e '.safety_state == "paused"' "$CLI_PAUSE" >/dev/null
 jq -e '.safety_state == "running"' "$CLI_RESUME" >/dev/null
@@ -103,9 +115,11 @@ jq -n \
   --arg cli_screenshot "$CLI_SCREENSHOT_PNG" \
   --slurpfile http_status "$HTTP_STATUS" \
   --slurpfile http_observe "$HTTP_OBSERVE" \
+  --slurpfile http_context "$HTTP_CONTEXT" \
   --slurpfile http_screenshot "$HTTP_SCREENSHOT" \
   --slurpfile cli_status "$CLI_STATUS" \
   --slurpfile cli_observe "$CLI_OBSERVE" \
+  --slurpfile cli_context "$CLI_CONTEXT" \
   --slurpfile cli_profile "$CLI_PROFILE" \
   --slurpfile cli_pause "$CLI_PAUSE" \
   --slurpfile cli_resume "$CLI_RESUME" \
@@ -119,6 +133,11 @@ jq -n \
       active_profile: $http_status[0].active_profile,
       display_count: ($http_observe[0].displays | length),
       window_count: ($http_observe[0].windows | length),
+      context: {
+        width: $http_context[0].frame.envelope.width,
+        height: $http_context[0].frame.envelope.height,
+        window_count: ($http_context[0].desktop.windows | length)
+      },
       screenshot: {
         width: $http_screenshot[0].envelope.width,
         height: $http_screenshot[0].envelope.height,
@@ -130,6 +149,11 @@ jq -n \
       profile_status: $cli_profile[0].active_profile.name,
       display_count: ($cli_observe[0].displays | length),
       window_count: ($cli_observe[0].windows | length),
+      context: {
+        width: $cli_context[0].frame.envelope.width,
+        height: $cli_context[0].frame.envelope.height,
+        window_count: ($cli_context[0].desktop.windows | length)
+      },
       pause_state: $cli_pause[0].safety_state,
       resume_state: $cli_resume[0].safety_state,
       screenshot_path: $cli_screenshot,

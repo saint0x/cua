@@ -5,12 +5,11 @@ use crate::planner::{parse_fast_command, PlannedTurn, Planner};
 use crate::stt::SttClient;
 use crate::ui_state::VoiceUiEvent;
 use anyhow::Context;
-use cua_core::{DesktopState, FramePayload};
+use cua_core::{DesktopContextSnapshot, DesktopState, FramePayload};
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 
-type ScreenshotTask = tokio::task::JoinHandle<anyhow::Result<FramePayload>>;
-type ObservationTask = tokio::task::JoinHandle<anyhow::Result<DesktopState>>;
+type ContextTask = tokio::task::JoinHandle<anyhow::Result<DesktopContextSnapshot>>;
 type LocalTask = tokio::task::JoinHandle<anyhow::Result<CuaClient>>;
 
 #[derive(Debug, Clone)]
@@ -113,15 +112,13 @@ async fn transcribe_and_run_turn_after_local(
     let local = local.context("join local daemon preflight")??;
     let transcript = transcript.context("join speech to text")??;
     tx.send(VoiceUiEvent::Transcript(transcript.clone())).ok();
-    let screenshot_task = spawn_screenshot_prefetch(local.clone());
-    let observation_task = spawn_observation_prefetch(local.clone());
+    let context_task = spawn_context_prefetch(local.clone());
     plan_and_dispatch(
         config,
         transcript,
         Some(api_key),
         local,
-        Some(screenshot_task),
-        Some(observation_task),
+        Some(context_task),
         tx.clone(),
     )
     .await?;
@@ -138,7 +135,7 @@ async fn run_transcript_turn(
     tx.send(VoiceUiEvent::Armed).ok();
     let local = preflight_local_client(&config.profile).await?;
     tx.send(VoiceUiEvent::Transcript(transcript.clone())).ok();
-    plan_and_dispatch(config, transcript, None, local, None, None, tx.clone()).await?;
+    plan_and_dispatch(config, transcript, None, local, None, tx.clone()).await?;
     send_metric(&tx, "turn_total_ms", turn_started.elapsed());
     Ok(())
 }
@@ -148,16 +145,12 @@ async fn plan_and_dispatch(
     transcript: String,
     api_key: Option<String>,
     local: CuaClient,
-    screenshot_task: Option<ScreenshotTask>,
-    observation_task: Option<ObservationTask>,
+    context_task: Option<ContextTask>,
     tx: Sender<VoiceUiEvent>,
 ) -> anyhow::Result<()> {
     let plan_started = Instant::now();
     let plan = if let Some(plan) = parse_fast_command(&transcript) {
-        if let Some(task) = screenshot_task {
-            task.abort();
-        }
-        if let Some(task) = observation_task {
+        if let Some(task) = context_task {
             task.abort();
         }
         tx.send(VoiceUiEvent::Planning {
@@ -170,8 +163,7 @@ async fn plan_and_dispatch(
             tool: "OpenRouter Vision".to_string(),
         })
         .ok();
-        let (frame, desktop) =
-            prefetch_context(local.clone(), screenshot_task, observation_task).await;
+        let (frame, desktop) = prefetch_context(local.clone(), context_task).await;
         let api_key = api_key
             .or_else(|| std::env::var("OPENROUTER_API_KEY").ok())
             .context("OPENROUTER_API_KEY is required for non-fast voice commands")?;
@@ -185,22 +177,16 @@ async fn plan_and_dispatch(
 
 async fn prefetch_context(
     local: CuaClient,
-    screenshot_task: Option<ScreenshotTask>,
-    observation_task: Option<ObservationTask>,
+    context_task: Option<ContextTask>,
 ) -> (Option<FramePayload>, Option<DesktopState>) {
-    let screenshot = async {
-        match screenshot_task {
-            Some(task) => task.await.ok().and_then(Result::ok),
-            None => local.screenshot(true).await.ok(),
-        }
+    let snapshot = match context_task {
+        Some(task) => task.await.ok().and_then(Result::ok),
+        None => local.context(true).await.ok(),
     };
-    let observation = async {
-        match observation_task {
-            Some(task) => task.await.ok().and_then(Result::ok),
-            None => local.observe().await.ok(),
-        }
-    };
-    tokio::join!(screenshot, observation)
+    match snapshot {
+        Some(snapshot) => (Some(snapshot.frame), Some(snapshot.desktop)),
+        None => (None, None),
+    }
 }
 
 async fn dispatch_plan(
@@ -241,12 +227,8 @@ async fn preflight_local_client(profile: &str) -> anyhow::Result<CuaClient> {
     Ok(local)
 }
 
-fn spawn_screenshot_prefetch(local: CuaClient) -> ScreenshotTask {
-    tokio::spawn(async move { local.screenshot(true).await })
-}
-
-fn spawn_observation_prefetch(local: CuaClient) -> ObservationTask {
-    tokio::spawn(async move { local.observe().await })
+fn spawn_context_prefetch(local: CuaClient) -> ContextTask {
+    tokio::spawn(async move { local.context(true).await })
 }
 
 fn spawn_local_preflight(profile: String) -> LocalTask {
