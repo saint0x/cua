@@ -33,7 +33,7 @@ use std::sync::{
     Arc,
 };
 use std::time::{Duration, Instant};
-use tokio::sync::RwLock;
+use tokio::sync::{mpsc, oneshot, RwLock};
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
 
@@ -43,6 +43,7 @@ pub struct DaemonState {
     pub started_at: chrono::DateTime<Utc>,
     pub frame_bus: Arc<FrameBus>,
     pub input: Arc<dyn InputBackend>,
+    input_lane: InputLane,
     pub active_streams: Arc<AtomicU32>,
     pub bearer_token: Arc<String>,
     pub control: Arc<RwLock<RuntimeControlState>>,
@@ -54,13 +55,15 @@ pub struct DaemonState {
 impl DaemonState {
     pub fn synthetic(profile: impl Into<String>, bearer_token: impl Into<String>) -> Self {
         let profile = profile.into();
+        let input = cua_platform_macos::input_backend_or_refusing();
         Self {
             profile: profile.clone(),
             started_at: Utc::now(),
             frame_bus: Arc::new(FrameBus::new(
                 cua_platform_macos::capture_backend_or_synthetic(),
             )),
-            input: cua_platform_macos::input_backend_or_refusing(),
+            input_lane: InputLane::spawn(input.clone(), input_lane_capacity()),
+            input,
             active_streams: Arc::new(AtomicU32::new(0)),
             bearer_token: Arc::new(bearer_token.into()),
             control: Arc::new(RwLock::new(default_control_state(&profile))),
@@ -89,6 +92,96 @@ impl DaemonState {
             last_error: None,
         }
     }
+}
+
+#[derive(Clone)]
+struct InputLane {
+    sender: mpsc::Sender<InputJob>,
+    backend_name: &'static str,
+}
+
+struct InputJob {
+    enqueued_at: Instant,
+    request: InputRequest,
+    reply: oneshot::Sender<(Duration, InputResult)>,
+}
+
+impl InputLane {
+    fn spawn(backend: Arc<dyn InputBackend>, capacity: usize) -> Self {
+        let backend_name = backend.name();
+        let (sender, mut receiver) = mpsc::channel::<InputJob>(capacity);
+        tokio::spawn(async move {
+            while let Some(job) = receiver.recv().await {
+                let queue_wait = job.enqueued_at.elapsed();
+                let result = backend.execute(job.request).await;
+                let _ = job.reply.send((queue_wait, result));
+            }
+        });
+        Self {
+            sender,
+            backend_name,
+        }
+    }
+
+    async fn execute(&self, request: InputRequest) -> (Duration, InputResult) {
+        let idempotency_key = request.idempotency_key;
+        let (reply, wait) = oneshot::channel();
+        let job = InputJob {
+            enqueued_at: Instant::now(),
+            request,
+            reply,
+        };
+        match self.sender.try_send(job) {
+            Ok(()) => match wait.await {
+                Ok(result) => result,
+                Err(_) => (
+                    Duration::ZERO,
+                    input_result_with_id(
+                        idempotency_key,
+                        Effect::Refused,
+                        InputRoute::Unavailable,
+                        DeliveryMode::NotApplicable,
+                        EvidenceKind::Refusal,
+                        "input lane worker stopped",
+                    ),
+                ),
+            },
+            Err(mpsc::error::TrySendError::Full(job)) => (
+                job.enqueued_at.elapsed(),
+                input_result_with_id(
+                    idempotency_key,
+                    Effect::Refused,
+                    InputRoute::Unavailable,
+                    DeliveryMode::NotApplicable,
+                    EvidenceKind::Refusal,
+                    "input lane queue is full",
+                ),
+            ),
+            Err(mpsc::error::TrySendError::Closed(job)) => (
+                job.enqueued_at.elapsed(),
+                input_result_with_id(
+                    idempotency_key,
+                    Effect::Refused,
+                    InputRoute::Unavailable,
+                    DeliveryMode::NotApplicable,
+                    EvidenceKind::Refusal,
+                    "input lane is closed",
+                ),
+            ),
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        self.backend_name
+    }
+}
+
+fn input_lane_capacity() -> usize {
+    std::env::var("CUA_INPUT_QUEUE_CAPACITY")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(64)
 }
 
 pub fn router(state: DaemonState) -> Router {
@@ -686,7 +779,7 @@ async fn append_action_turn(
             "profile": state.profile,
             "trace_dir": writer.dir().display().to_string(),
             "capture_backend": state.frame_bus.backend_name(),
-            "input_backend": state.input.name()
+            "input_backend": state.input_lane.name()
         }),
     });
     let trace_started = Instant::now();
@@ -727,8 +820,9 @@ async fn input_action(
         .await;
         return Json(result);
     }
-    let result = state
-        .input
+    let dispatch_started = Instant::now();
+    let (queue_wait, result) = state
+        .input_lane
         .execute(InputRequest {
             schema_version: SCHEMA_VERSION.to_string(),
             idempotency_key: Uuid::new_v4(),
@@ -736,12 +830,15 @@ async fn input_action(
             action,
         })
         .await;
+    state
+        .metrics
+        .observe(MetricKind::InputQueueWait, queue_wait);
     if result.effect == Effect::Refused {
         state.metrics.increment(CounterKind::InputRefusals);
     }
     state
         .metrics
-        .observe(MetricKind::InputDispatch, started.elapsed());
+        .observe(MetricKind::InputDispatch, dispatch_started.elapsed());
     let after = trace_snapshot(&state, &turn_id, "after").await;
     append_action_turn(
         &state,
@@ -933,10 +1030,28 @@ fn input_result(
     evidence_kind: EvidenceKind,
     evidence_message: impl Into<String>,
 ) -> InputResult {
+    input_result_with_id(
+        Uuid::new_v4(),
+        effect,
+        route,
+        delivery_mode,
+        evidence_kind,
+        evidence_message,
+    )
+}
+
+fn input_result_with_id(
+    idempotency_key: Uuid,
+    effect: Effect,
+    route: InputRoute,
+    delivery_mode: DeliveryMode,
+    evidence_kind: EvidenceKind,
+    evidence_message: impl Into<String>,
+) -> InputResult {
     let started_mono_ns = std::time::Instant::now().elapsed().as_nanos();
     InputResult {
         schema_version: SCHEMA_VERSION.to_string(),
-        idempotency_key: Uuid::new_v4(),
+        idempotency_key,
         effect,
         route,
         delivery_mode,
@@ -959,6 +1074,7 @@ enum MetricKind {
     CaptureEncode,
     StreamMjpegTick,
     StreamWsTick,
+    InputQueueWait,
     InputDispatch,
     ClipboardRead,
     ClipboardWrite,
@@ -972,12 +1088,13 @@ enum MetricKind {
 }
 
 impl MetricKind {
-    const ALL: [Self; 15] = [
+    const ALL: [Self; 16] = [
         Self::CaptureScreenshot,
         Self::CaptureQueueWait,
         Self::CaptureEncode,
         Self::StreamMjpegTick,
         Self::StreamWsTick,
+        Self::InputQueueWait,
         Self::InputDispatch,
         Self::ClipboardRead,
         Self::ClipboardWrite,
@@ -997,16 +1114,17 @@ impl MetricKind {
             Self::CaptureEncode => 2,
             Self::StreamMjpegTick => 3,
             Self::StreamWsTick => 4,
-            Self::InputDispatch => 5,
-            Self::ClipboardRead => 6,
-            Self::ClipboardWrite => 7,
-            Self::ModelSend => 8,
-            Self::ModelResponse => 9,
-            Self::ModelParse => 10,
-            Self::PolicyCheck => 11,
-            Self::Verification => 12,
-            Self::TraceWrite => 13,
-            Self::KillSwitchPropagation => 14,
+            Self::InputQueueWait => 5,
+            Self::InputDispatch => 6,
+            Self::ClipboardRead => 7,
+            Self::ClipboardWrite => 8,
+            Self::ModelSend => 9,
+            Self::ModelResponse => 10,
+            Self::ModelParse => 11,
+            Self::PolicyCheck => 12,
+            Self::Verification => 13,
+            Self::TraceWrite => 14,
+            Self::KillSwitchPropagation => 15,
         }
     }
 
@@ -1017,6 +1135,7 @@ impl MetricKind {
             Self::CaptureEncode => "capture.encode",
             Self::StreamMjpegTick => "stream.mjpeg.tick",
             Self::StreamWsTick => "stream.ws.tick",
+            Self::InputQueueWait => "input.queue_wait",
             Self::InputDispatch => "input.dispatch",
             Self::ClipboardRead => "clipboard.read",
             Self::ClipboardWrite => "clipboard.write",
@@ -1320,6 +1439,28 @@ mod tests {
         assert_eq!(read_result.text.as_deref(), Some("hello from test"));
     }
 
+    #[tokio::test]
+    async fn input_lane_refuses_when_queue_is_full() {
+        let (sender, _receiver) = mpsc::channel(1);
+        let (reply, _wait) = oneshot::channel();
+        sender
+            .try_send(InputJob {
+                enqueued_at: Instant::now(),
+                request: sample_mouse_request(),
+                reply,
+            })
+            .unwrap();
+        let lane = InputLane {
+            sender,
+            backend_name: "blocked-test",
+        };
+
+        let (_, result) = lane.execute(sample_mouse_request()).await;
+
+        assert_eq!(result.effect, Effect::Refused);
+        assert_eq!(result.evidence[0].message, "input lane queue is full");
+    }
+
     async fn clipboard_enabled_state() -> DaemonState {
         let state = DaemonState::synthetic("test", "token");
         let Json(_) = profile_create(
@@ -1337,5 +1478,19 @@ mod tests {
         .await;
         let Json(_) = profile_activate(State(state.clone())).await;
         state
+    }
+
+    fn sample_mouse_request() -> InputRequest {
+        InputRequest {
+            schema_version: SCHEMA_VERSION.to_string(),
+            idempotency_key: Uuid::new_v4(),
+            deadline_mono_ns: None,
+            action: InputAction::MouseClick {
+                x: 10,
+                y: 10,
+                button: cua_core::MouseButton::Left,
+                count: 1,
+            },
+        }
     }
 }
