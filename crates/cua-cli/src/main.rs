@@ -1,11 +1,11 @@
 use anyhow::Context;
+use base64::Engine;
 use clap::{Args, Parser, Subcommand};
 use cua_capture::{CaptureRequest, FrameBus, SyntheticCaptureBackend};
 use cua_core::{
     schema_bundle, CapabilityManifest, ClipboardReadRequest, ClipboardWriteRequest, FrameEncoding,
-    InputAction, MouseButton, RuntimeMode, SCHEMA_VERSION,
+    FramePayload, InputAction, MouseButton, RuntimeMode, SCHEMA_VERSION,
 };
-use cua_input::InputBackend;
 use cua_model::{run_eval_report, EvalConfig};
 use cua_trace::{TraceRecord, TraceWriter};
 use std::net::SocketAddr;
@@ -243,12 +243,28 @@ async fn main() -> anyhow::Result<()> {
         Some(Command::Doctor(flag)) => doctor(flag.json).await,
         Some(Command::Permissions { command }) => permissions(command).await,
         Some(Command::Perf { command }) => perf(cli.server_addr, &cli.profile, command).await,
-        Some(Command::Screenshot(args)) => screenshot(args).await,
+        Some(Command::Screenshot(args)) => screenshot(cli.server_addr, &cli.profile, args).await,
         Some(Command::Observe(flag)) => {
             get_json(cli.server_addr, &cli.profile, "/observe/desktop", flag.json).await
         }
-        Some(Command::Mouse { command }) => local_input(mouse_action(command)).await,
-        Some(Command::Key { command }) => local_input(key_action(command)).await,
+        Some(Command::Mouse { command }) => {
+            daemon_input(
+                cli.server_addr,
+                &cli.profile,
+                "/input/mouse",
+                mouse_action(command),
+            )
+            .await
+        }
+        Some(Command::Key { command }) => {
+            daemon_input(
+                cli.server_addr,
+                &cli.profile,
+                "/input/keyboard",
+                key_action(command),
+            )
+            .await
+        }
         Some(Command::Clipboard { command }) => {
             clipboard(cli.server_addr, &cli.profile, command).await
         }
@@ -390,21 +406,35 @@ async fn perf(addr: SocketAddr, profile: &str, command: PerfCommand) -> anyhow::
     }
 }
 
-async fn screenshot(args: ScreenshotArgs) -> anyhow::Result<()> {
-    let bus = FrameBus::new(Arc::new(SyntheticCaptureBackend::default()));
-    let frame = bus
-        .latest_or_capture(CaptureRequest {
-            max_width: Some(args.max_width),
-            encoding: FrameEncoding::Png,
-            force_fresh: args.force_fresh,
-        })
+async fn screenshot(addr: SocketAddr, profile: &str, args: ScreenshotArgs) -> anyhow::Result<()> {
+    let url = format!("http://{addr}/capture/screenshot");
+    let token = cua_daemon::load_or_create_profile_token(profile).await?;
+    let frame: FramePayload = reqwest::Client::new()
+        .post(url)
+        .bearer_auth(token)
+        .json(&serde_json::json!({
+            "max_width": args.max_width,
+            "encoding": FrameEncoding::Png,
+            "force_fresh": args.force_fresh,
+            "include_bytes": true
+        }))
+        .send()
+        .await?
+        .json()
         .await?;
+    let bytes_base64 = frame
+        .bytes_base64
+        .as_deref()
+        .context("screenshot response did not include bytes")?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(bytes_base64)
+        .context("decode screenshot bytes")?;
     if let Some(parent) = args.out.parent() {
         tokio::fs::create_dir_all(parent)
             .await
             .with_context(|| format!("create screenshot directory {}", parent.display()))?;
     }
-    tokio::fs::write(&args.out, &*frame.bytes)
+    tokio::fs::write(&args.out, bytes)
         .await
         .with_context(|| format!("write screenshot {}", args.out.display()))?;
     if args.json {
@@ -448,17 +478,13 @@ fn key_action(command: KeyCommand) -> InputAction {
     }
 }
 
-async fn local_input(action: InputAction) -> anyhow::Result<()> {
-    let result = cua_input::RefusingInputBackend
-        .execute(cua_core::InputRequest {
-            schema_version: SCHEMA_VERSION.to_string(),
-            idempotency_key: uuid::Uuid::new_v4(),
-            deadline_mono_ns: None,
-            action,
-        })
-        .await;
-    println!("{}", serde_json::to_string_pretty(&result)?);
-    Ok(())
+async fn daemon_input(
+    addr: SocketAddr,
+    profile: &str,
+    path: &str,
+    action: InputAction,
+) -> anyhow::Result<()> {
+    post_json(addr, profile, path, serde_json::to_value(action)?, true).await
 }
 
 async fn clipboard(
