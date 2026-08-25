@@ -112,11 +112,18 @@ async fn plan_and_dispatch(
     local_task: tokio::task::JoinHandle<Result<CuaClient, anyhow::Error>>,
     tx: Sender<VoiceUiEvent>,
 ) -> anyhow::Result<()> {
-    tx.send(VoiceUiEvent::Planning).ok();
     let (local, plan) = if let Some(plan) = parse_fast_command(&transcript) {
+        tx.send(VoiceUiEvent::Planning {
+            tool: "Command parser".to_string(),
+        })
+        .ok();
         let local = local_task.await.context("join local client")??;
         (local, plan)
     } else {
+        tx.send(VoiceUiEvent::Planning {
+            tool: "OpenRouter Vision".to_string(),
+        })
+        .ok();
         let local = local_task.await.context("join local client")??;
         let frame = local.screenshot(true).await.ok();
         let api_key = api_key

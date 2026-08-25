@@ -86,10 +86,10 @@ impl HudSnapshot {
             VoiceUiEvent::Transcript(text) => {
                 self.transcript = Some(text);
             }
-            VoiceUiEvent::Planning => {
+            VoiceUiEvent::Planning { tool } => {
                 self.phase = HudPhase::Planning;
                 self.step = HudStep::new(3, 4, "Choosing action");
-                self.tool = "OpenRouter Vision".to_string();
+                self.tool = tool;
             }
             VoiceUiEvent::Dispatching(action) => {
                 self.phase = HudPhase::Dispatching;
@@ -137,7 +137,7 @@ pub enum VoiceUiEvent {
     Listening { ms: u64 },
     Transcribing,
     Transcript(String),
-    Planning,
+    Planning { tool: String },
     Dispatching(String),
     Reply(String),
     Error(String),
@@ -154,5 +154,16 @@ mod tests {
         state.apply(VoiceUiEvent::Reply("ready".to_string()));
         assert!(state.is_expanded());
         assert_eq!(state.phase, HudPhase::Reply);
+    }
+
+    #[test]
+    fn planning_event_sets_actual_tool_label() {
+        let mut state = HudSnapshot::default();
+        state.apply(VoiceUiEvent::Planning {
+            tool: "Command parser".to_string(),
+        });
+
+        assert_eq!(state.phase, HudPhase::Planning);
+        assert_eq!(state.tool, "Command parser");
     }
 }

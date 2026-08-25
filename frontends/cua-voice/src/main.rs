@@ -341,7 +341,9 @@ fn print_headless_events(rx: Receiver<VoiceUiEvent>) {
             VoiceUiEvent::Transcript(text) => {
                 serde_json::json!({"event": "transcript", "text": text})
             }
-            VoiceUiEvent::Planning => serde_json::json!({"event": "planning"}),
+            VoiceUiEvent::Planning { tool } => {
+                serde_json::json!({"event": "planning", "tool": tool})
+            }
             VoiceUiEvent::Dispatching(action) => {
                 serde_json::json!({"event": "dispatching", "action": action})
             }
@@ -376,7 +378,9 @@ fn start_demo_cycle(tx: Sender<VoiceUiEvent>) {
             VoiceUiEvent::Listening { ms: 1200 },
             VoiceUiEvent::Transcribing,
             VoiceUiEvent::Transcript("Click 640 360".to_string()),
-            VoiceUiEvent::Planning,
+            VoiceUiEvent::Planning {
+                tool: "Command parser".to_string(),
+            },
             VoiceUiEvent::Dispatching("click 640 360".to_string()),
             VoiceUiEvent::Reply("Clicked the center target.".to_string()),
         ];
