@@ -24,3 +24,5 @@ Results from `artifacts/cua/smoke/model-eval-live-catalog.json`:
 Current winner: `openai/gpt-5.4-mini`.
 
 Reason: it satisfied both action-contract probes exactly and had the lowest average latency among exact-contract models after catalog validation confirmed the candidate supports image input and text output.
+
+Usage smoke: `artifacts/cua/smoke/model-eval-live-usage.json` confirmed provider token usage and finish reasons are captured with `--max-calls 2 --max-output-tokens 128`.

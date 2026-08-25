@@ -113,8 +113,10 @@ enum ModelCommand {
     Eval {
         #[arg(long)]
         live: bool,
-        #[arg(long, default_value_t = 8)]
-        max_calls: usize,
+        #[arg(long)]
+        max_calls: Option<usize>,
+        #[arg(long)]
+        max_output_tokens: Option<u32>,
         #[arg(long)]
         json: bool,
     },
@@ -303,6 +305,7 @@ async fn model(command: ModelCommand) -> anyhow::Result<()> {
     let ModelCommand::Eval {
         live,
         max_calls,
+        max_output_tokens,
         json,
     } = command;
     let bus = FrameBus::new(Arc::new(SyntheticCaptureBackend::default()));
@@ -316,7 +319,23 @@ async fn model(command: ModelCommand) -> anyhow::Result<()> {
         .as_payload(true);
     let mut config = EvalConfig::default();
     config.live = live || std::env::var("CUA_MODEL_EVAL_LIVE").ok().as_deref() == Some("1");
-    config.max_calls = max_calls;
+    config.max_calls = max_calls
+        .or_else(|| {
+            std::env::var("CUA_MODEL_EVAL_MAX_CALLS")
+                .ok()
+                .and_then(|value| value.parse().ok())
+        })
+        .unwrap_or(config.max_calls);
+    let max_output_tokens = max_output_tokens
+        .or_else(|| {
+            std::env::var("CUA_MODEL_EVAL_MAX_TOKENS")
+                .ok()
+                .and_then(|value| value.parse().ok())
+        })
+        .unwrap_or(256);
+    for candidate in &mut config.candidates {
+        candidate.max_output_tokens = max_output_tokens;
+    }
     let key = std::env::var("OPENROUTER_API_KEY").ok();
     let report = run_eval_report(config, Some(frame), key).await;
     let value = serde_json::to_value(report)?;

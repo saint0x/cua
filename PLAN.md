@@ -28,7 +28,6 @@
 ## Model Eval
 
 1. Expand eval cases from contract probes to desktop-action tasks with screenshot fixtures and external oracles.
-2. Add configurable spend limits, token accounting, retry policy, and per-model failure classification.
 
 ## Performance
 

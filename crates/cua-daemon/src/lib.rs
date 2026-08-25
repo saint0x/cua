@@ -297,6 +297,7 @@ async fn input_action(
 struct ModelEvalRequest {
     live: Option<bool>,
     max_calls: Option<usize>,
+    max_output_tokens: Option<u32>,
 }
 
 async fn model_eval(
@@ -316,6 +317,11 @@ async fn model_eval(
     let mut config = EvalConfig::default();
     config.live = request.live.unwrap_or(false);
     config.max_calls = request.max_calls.unwrap_or(config.max_calls);
+    if let Some(max_output_tokens) = request.max_output_tokens {
+        for candidate in &mut config.candidates {
+            candidate.max_output_tokens = max_output_tokens;
+        }
+    }
     let key = std::env::var("OPENROUTER_API_KEY").ok();
     Ok(Json(run_eval_report(config, Some(frame), key).await))
 }

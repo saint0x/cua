@@ -44,7 +44,12 @@ pub struct EvalResult {
     pub live: bool,
     pub latency_ms: u128,
     pub score: f64,
+    pub prompt_tokens: Option<u64>,
+    pub completion_tokens: Option<u64>,
+    pub total_tokens: Option<u64>,
+    pub finish_reason: Option<String>,
     pub response_excerpt: String,
+    pub failure_classification: Option<String>,
     pub error: Option<String>,
 }
 
@@ -131,9 +136,14 @@ pub async fn run_eval(
                     live: false,
                     latency_ms: started.elapsed().as_millis(),
                     score: 0.5,
+                    prompt_tokens: None,
+                    completion_tokens: None,
+                    total_tokens: None,
+                    finish_reason: None,
                     response_excerpt:
                         "dry-run: live provider calls disabled; candidate queued for bounded eval"
                             .to_string(),
+                    failure_classification: None,
                     error: None,
                 });
                 continue;
@@ -141,27 +151,40 @@ pub async fn run_eval(
             let outcome =
                 call_openrouter(&candidate, case, frame.as_ref(), api_key.as_deref()).await;
             match outcome {
-                Ok(text) => {
-                    let score = score_response(&text, &case.expected_action_kind);
+                Ok(output) => {
+                    let score = score_response(&output.text, &case.expected_action_kind);
                     results.push(EvalResult {
                         model: candidate.model.clone(),
                         case_id: case.id.clone(),
                         live: true,
                         latency_ms: started.elapsed().as_millis(),
                         score,
-                        response_excerpt: text.chars().take(240).collect(),
+                        prompt_tokens: output.usage.prompt_tokens,
+                        completion_tokens: output.usage.completion_tokens,
+                        total_tokens: output.usage.total_tokens,
+                        finish_reason: output.finish_reason,
+                        response_excerpt: output.text.chars().take(240).collect(),
+                        failure_classification: None,
                         error: None,
                     });
                 }
-                Err(err) => results.push(EvalResult {
-                    model: candidate.model.clone(),
-                    case_id: case.id.clone(),
-                    live: true,
-                    latency_ms: started.elapsed().as_millis(),
-                    score: 0.0,
-                    response_excerpt: String::new(),
-                    error: Some(err.to_string()),
-                }),
+                Err(err) => {
+                    let error = err.to_string();
+                    results.push(EvalResult {
+                        model: candidate.model.clone(),
+                        case_id: case.id.clone(),
+                        live: true,
+                        latency_ms: started.elapsed().as_millis(),
+                        score: 0.0,
+                        prompt_tokens: None,
+                        completion_tokens: None,
+                        total_tokens: None,
+                        finish_reason: None,
+                        response_excerpt: String::new(),
+                        failure_classification: Some(classify_failure(&error).to_string()),
+                        error: Some(error),
+                    })
+                }
             }
         }
     }
@@ -347,7 +370,7 @@ async fn call_openrouter(
     case: &EvalCase,
     frame: Option<&FramePayload>,
     api_key: Option<&str>,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<ProviderOutput> {
     if candidate.provider != "openrouter" {
         bail!("unsupported provider {}", candidate.provider);
     }
@@ -366,27 +389,77 @@ async fn call_openrouter(
         "temperature": 0,
     });
     let client = reqwest::Client::new();
-    let response = client
-        .post("https://openrouter.ai/api/v1/chat/completions")
-        .header(AUTHORIZATION, format!("Bearer {api_key}"))
-        .header(CONTENT_TYPE, "application/json")
-        .header(REFERER, "http://localhost/cua")
-        .json(&body)
-        .send()
-        .await
-        .context("send openrouter request")?;
-    let status = response.status();
-    let value: serde_json::Value = response
-        .json()
-        .await
-        .context("decode openrouter response")?;
-    if !status.is_success() {
-        bail!("openrouter {status}: {value}");
+    let mut last_error = None;
+    for attempt in 0..2 {
+        let response = client
+            .post("https://openrouter.ai/api/v1/chat/completions")
+            .header(AUTHORIZATION, format!("Bearer {api_key}"))
+            .header(CONTENT_TYPE, "application/json")
+            .header(REFERER, "http://localhost/cua")
+            .json(&body)
+            .send()
+            .await
+            .context("send openrouter request")?;
+        let status = response.status();
+        let value: serde_json::Value = response
+            .json()
+            .await
+            .context("decode openrouter response")?;
+        if status.is_success() {
+            return Ok(ProviderOutput {
+                text: value["choices"][0]["message"]["content"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+                finish_reason: value["choices"][0]["finish_reason"]
+                    .as_str()
+                    .map(str::to_string),
+                usage: Usage {
+                    prompt_tokens: value["usage"]["prompt_tokens"].as_u64(),
+                    completion_tokens: value["usage"]["completion_tokens"].as_u64(),
+                    total_tokens: value["usage"]["total_tokens"].as_u64(),
+                },
+            });
+        }
+        let retryable = status.as_u16() == 429 || status.is_server_error();
+        last_error = Some(format!("openrouter {status}: {value}"));
+        if !retryable || attempt == 1 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     }
-    Ok(value["choices"][0]["message"]["content"]
-        .as_str()
-        .unwrap_or_default()
-        .to_string())
+    bail!(last_error.unwrap_or_else(|| "openrouter request failed".to_string()))
+}
+
+#[derive(Debug, Clone)]
+struct ProviderOutput {
+    text: String,
+    finish_reason: Option<String>,
+    usage: Usage,
+}
+
+#[derive(Debug, Clone, Default)]
+struct Usage {
+    prompt_tokens: Option<u64>,
+    completion_tokens: Option<u64>,
+    total_tokens: Option<u64>,
+}
+
+fn classify_failure(error: &str) -> &'static str {
+    let lower = error.to_ascii_lowercase();
+    if lower.contains("401") || lower.contains("403") {
+        "auth"
+    } else if lower.contains("429") {
+        "rate_limit"
+    } else if lower.contains("timeout") || lower.contains("timed out") {
+        "timeout"
+    } else if lower.contains("not found") || lower.contains("404") {
+        "model_unavailable"
+    } else if lower.contains("500") || lower.contains("502") || lower.contains("503") {
+        "provider_transient"
+    } else {
+        "unknown"
+    }
 }
 
 fn score_response(text: &str, expected_action: &str) -> f64 {
@@ -450,7 +523,12 @@ mod tests {
                 live: true,
                 latency_ms: 1000,
                 score: 1.0,
+                prompt_tokens: Some(10),
+                completion_tokens: Some(5),
+                total_tokens: Some(15),
+                finish_reason: Some("stop".to_string()),
                 response_excerpt: String::new(),
+                failure_classification: None,
                 error: None,
             },
             EvalResult {
@@ -459,7 +537,12 @@ mod tests {
                 live: true,
                 latency_ms: 100,
                 score: 1.0,
+                prompt_tokens: Some(10),
+                completion_tokens: Some(5),
+                total_tokens: Some(15),
+                finish_reason: Some("stop".to_string()),
                 response_excerpt: String::new(),
+                failure_classification: None,
                 error: None,
             },
         ];
