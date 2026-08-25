@@ -86,6 +86,8 @@ impl CuaClient {
         source: Option<String>,
         task: Option<String>,
         tool: Option<String>,
+        step_index: Option<u16>,
+        step_total: Option<u16>,
         ttl_ms: Option<u64>,
     ) -> anyhow::Result<Value> {
         self.request(
@@ -96,6 +98,8 @@ impl CuaClient {
                 source,
                 task,
                 tool,
+                step_index,
+                step_total,
                 ttl_ms,
             })?),
         )
@@ -178,6 +182,8 @@ impl CuaSession {
         source: Option<String>,
         task: Option<String>,
         tool: Option<String>,
+        step_index: Option<u16>,
+        step_total: Option<u16>,
         ttl_ms: Option<u64>,
     ) -> anyhow::Result<Value> {
         self.request(
@@ -188,6 +194,8 @@ impl CuaSession {
                 source,
                 task,
                 tool,
+                step_index,
+                step_total,
                 ttl_ms,
             })?),
         )

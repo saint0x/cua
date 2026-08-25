@@ -1477,6 +1477,10 @@ fn ui_step_state(state: &DaemonState, request: UiStepRequest) -> Result<UiStepRe
     let source = normalize_optional_step_field(request.source, 48);
     let task = normalize_optional_step_field(request.task, 80);
     let tool = normalize_optional_step_field(request.tool, 48);
+    let step_total = request.step_total.map(|value| value.clamp(1, 99));
+    let step_index = request
+        .step_index
+        .map(|value| value.clamp(0, step_total.unwrap_or(99)));
     let ttl_ms = request.ttl_ms.map(|value| value.clamp(250, 60_000));
     let result = UiStepResult {
         schema_version: SCHEMA_VERSION.to_string(),
@@ -1485,6 +1489,8 @@ fn ui_step_state(state: &DaemonState, request: UiStepRequest) -> Result<UiStepRe
         source,
         task,
         tool,
+        step_index,
+        step_total,
         ttl_ms,
     };
     state.publish_event(
@@ -1494,6 +1500,8 @@ fn ui_step_state(state: &DaemonState, request: UiStepRequest) -> Result<UiStepRe
             "source": result.source,
             "task": result.task,
             "tool": result.tool,
+            "step_index": result.step_index,
+            "step_total": result.step_total,
             "ttl_ms": result.ttl_ms,
         }),
     );
@@ -2813,6 +2821,8 @@ mod tests {
                         "schema_version": SCHEMA_VERSION,
                         "label": "checking target state",
                         "source": "planner",
+                        "step_index": 1,
+                        "step_total": 3,
                         "ttl_ms": 1500
                     }),
                 ),
@@ -2821,6 +2831,8 @@ mod tests {
         );
         assert_eq!(step["accepted"], true);
         assert_eq!(step["label"], "checking target state");
+        assert_eq!(step["step_index"], 1);
+        assert_eq!(step["step_total"], 3);
 
         let profile = unix_result(
             handle_unix_request(
@@ -3006,6 +3018,8 @@ mod tests {
                 source: Some("agent planner".to_string()),
                 task: Some("  debug   auth flow  ".to_string()),
                 tool: Some("  browser   probe ".to_string()),
+                step_index: Some(7),
+                step_total: Some(3),
                 ttl_ms: Some(125),
             }),
         )
@@ -3016,6 +3030,8 @@ mod tests {
         assert_eq!(result.label, "inspect cursor target");
         assert_eq!(result.task.as_deref(), Some("debug auth flow"));
         assert_eq!(result.tool.as_deref(), Some("browser probe"));
+        assert_eq!(result.step_index, Some(3));
+        assert_eq!(result.step_total, Some(3));
         assert_eq!(result.ttl_ms, Some(250));
 
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -3028,6 +3044,8 @@ mod tests {
         assert_eq!(step["data"]["source"], "agent planner");
         assert_eq!(step["data"]["task"], "debug auth flow");
         assert_eq!(step["data"]["tool"], "browser probe");
+        assert_eq!(step["data"]["step_index"], 3);
+        assert_eq!(step["data"]["step_total"], 3);
     }
 
     #[tokio::test]
@@ -3048,6 +3066,8 @@ mod tests {
                 source: None,
                 task: None,
                 tool: None,
+                step_index: None,
+                step_total: None,
                 ttl_ms: None,
             }),
         )

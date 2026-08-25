@@ -295,6 +295,8 @@ impl VoiceStepPublisher {
                                 Some(VOICE_STEP_SOURCE.to_string()),
                                 Some("Voice control".to_string()),
                                 None,
+                                None,
+                                None,
                                 Some(VOICE_STEP_TTL_MS),
                             )
                             .await
@@ -304,6 +306,8 @@ impl VoiceStepPublisher {
                                 label,
                                 Some(VOICE_STEP_SOURCE.to_string()),
                                 Some("Voice control".to_string()),
+                                None,
+                                None,
                                 None,
                                 Some(VOICE_STEP_TTL_MS),
                             )

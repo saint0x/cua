@@ -102,9 +102,15 @@ impl HudSnapshot {
                 source,
                 task,
                 tool,
+                step_index,
+                step_total,
             } => {
                 self.phase = HudPhase::Planning;
-                self.step = HudStep::new(3, 4, label);
+                self.step = HudStep::new(
+                    step_index.unwrap_or(3).into(),
+                    step_total.unwrap_or(4).into(),
+                    label,
+                );
                 if let Some(task) = task {
                     self.task = task;
                 }
@@ -163,6 +169,8 @@ pub enum VoiceUiEvent {
         source: Option<String>,
         task: Option<String>,
         tool: Option<String>,
+        step_index: Option<u16>,
+        step_total: Option<u16>,
     },
     Reply(String),
     Error(String),
@@ -220,11 +228,15 @@ mod tests {
             source: Some("planner".to_string()),
             task: Some("Click target".to_string()),
             tool: Some("vision".to_string()),
+            step_index: Some(2),
+            step_total: Some(5),
         });
 
         assert_eq!(state.phase, HudPhase::Planning);
         assert_eq!(state.task, "Click target");
         assert_eq!(state.step.label, "checking target position");
+        assert_eq!(state.step.index, 2);
+        assert_eq!(state.step.total, 5);
         assert_eq!(state.tool, "vision");
         assert_eq!(state.transcript.as_deref(), Some("find the red button"));
     }

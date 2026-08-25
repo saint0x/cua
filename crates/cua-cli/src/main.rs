@@ -212,6 +212,10 @@ enum UiCommand {
         #[arg(long)]
         tool: Option<String>,
         #[arg(long)]
+        step_index: Option<u16>,
+        #[arg(long)]
+        step_total: Option<u16>,
+        #[arg(long)]
         ttl_ms: Option<u64>,
         #[arg(long)]
         json: bool,
@@ -404,7 +408,7 @@ async fn print_usage_and_status(server_addr: SocketAddr) -> anyhow::Result<()> {
     println!("       cua manifest --json");
     println!("       cua metrics --json");
     println!("       cua events --json [--after <sequence>]");
-    println!("       cua ui step <label> --json");
+    println!("       cua ui step <label> --step-index 2 --step-total 5 --json");
     println!("       cua perf live --json");
     println!("       cua context --json");
     println!("       cua screenshot --out /tmp/screen.png");
@@ -419,6 +423,8 @@ async fn ui(addr: SocketAddr, profile: &str, command: UiCommand) -> anyhow::Resu
             source,
             task,
             tool,
+            step_index,
+            step_total,
             ttl_ms,
             json,
         } => {
@@ -432,6 +438,8 @@ async fn ui(addr: SocketAddr, profile: &str, command: UiCommand) -> anyhow::Resu
                     source,
                     task,
                     tool,
+                    step_index,
+                    step_total,
                     ttl_ms,
                 })?,
                 json,

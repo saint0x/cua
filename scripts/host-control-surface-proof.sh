@@ -122,7 +122,7 @@ curl -fsS -H "authorization: Bearer $TOKEN" "http://$ADDR/metrics" > "$HTTP_METR
 curl -fsS \
   -H "authorization: Bearer $TOKEN" \
   -H "content-type: application/json" \
-  -d '{"schema_version":"cua.v1","label":"http programmable step","source":"http proof","task":"http task","tool":"http tool","ttl_ms":1500}' \
+  -d '{"schema_version":"cua.v1","label":"http programmable step","source":"http proof","task":"http task","tool":"http tool","step_index":2,"step_total":5,"ttl_ms":1500}' \
   "http://$ADDR/ui/step" > "$HTTP_UI_STEP"
 curl -fsS -H "authorization: Bearer $TOKEN" "http://$ADDR/events" > "$HTTP_EVENTS"
 HTTP_AFTER_SEQUENCE="$(jq -r '.[0].sequence' "$HTTP_EVENTS")"
@@ -146,6 +146,8 @@ CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFIL
   --source "cli proof" \
   --task "cli task" \
   --tool "cli tool" \
+  --step-index 3 \
+  --step-total 5 \
   --ttl-ms 1500 \
   --json > "$CLI_UI_STEP"
 CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFILE" events --json > "$CLI_EVENTS"
@@ -165,7 +167,7 @@ CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFIL
 unix_call "status" '{}' "$UNIX_STATUS"
 unix_call "manifest" '{}' "$UNIX_MANIFEST"
 unix_call "metrics" '{}' "$UNIX_METRICS"
-unix_call "ui.step" '{"schema_version":"cua.v1","label":"unix programmable step","source":"unix proof","task":"unix task","tool":"unix tool","ttl_ms":1500}' "$UNIX_UI_STEP"
+unix_call "ui.step" '{"schema_version":"cua.v1","label":"unix programmable step","source":"unix proof","task":"unix task","tool":"unix tool","step_index":4,"step_total":5,"ttl_ms":1500}' "$UNIX_UI_STEP"
 unix_call "events.snapshot" '{}' "$UNIX_EVENTS"
 UNIX_AFTER_SEQUENCE="$(jq -r '.[0].sequence' "$UNIX_EVENTS")"
 unix_call "events.after" "{\"after_sequence\":$UNIX_AFTER_SEQUENCE}" "$UNIX_EVENTS_AFTER"
@@ -179,11 +181,11 @@ jq -e '(.public_surfaces | index("cli")) and (.public_surfaces | index("local_ht
   "$HTTP_MANIFEST" >/dev/null
 jq -e '.schema_version == "cua.v1" and (.histograms | type) == "array" and (.counters | type) == "object"' \
   "$HTTP_METRICS" >/dev/null
-jq -e '.accepted == true and .label == "http programmable step" and .source == "http proof" and .task == "http task" and .tool == "http tool"' \
+jq -e '.accepted == true and .label == "http programmable step" and .source == "http proof" and .task == "http task" and .tool == "http tool" and .step_index == 2 and .step_total == 5' \
   "$HTTP_UI_STEP" >/dev/null
-jq -e 'type == "array" and length >= 1 and .[0].kind == "daemon_started" and any(.[]; .kind == "ui_step" and .data.label == "http programmable step" and .data.task == "http task" and .data.tool == "http tool")' \
+jq -e 'type == "array" and length >= 1 and .[0].kind == "daemon_started" and any(.[]; .kind == "ui_step" and .data.label == "http programmable step" and .data.task == "http task" and .data.tool == "http tool" and .data.step_index == 2 and .data.step_total == 5)' \
   "$HTTP_EVENTS" >/dev/null
-jq -e 'type == "array" and length >= 1 and all(.[]; .sequence > '"$HTTP_AFTER_SEQUENCE"') and any(.[]; .kind == "ui_step" and .data.label == "http programmable step" and .data.task == "http task" and .data.tool == "http tool")' \
+jq -e 'type == "array" and length >= 1 and all(.[]; .sequence > '"$HTTP_AFTER_SEQUENCE"') and any(.[]; .kind == "ui_step" and .data.label == "http programmable step" and .data.task == "http task" and .data.tool == "http tool" and .data.step_index == 2 and .data.step_total == 5)' \
   "$HTTP_EVENTS_AFTER" >/dev/null
 jq -e '(.displays | length) >= 1 and (.windows | type) == "array" and (.cursor.visible | type) == "boolean"' \
   "$HTTP_OBSERVE" >/dev/null
@@ -197,11 +199,11 @@ jq -e '(.public_surfaces | index("cli")) and (.public_surfaces | index("local_ht
   "$CLI_MANIFEST" >/dev/null
 jq -e '.schema_version == "cua.v1" and (.histograms | type) == "array" and (.counters | type) == "object"' \
   "$CLI_METRICS" >/dev/null
-jq -e '.accepted == true and .label == "cli programmable step" and .source == "cli proof" and .task == "cli task" and .tool == "cli tool"' \
+jq -e '.accepted == true and .label == "cli programmable step" and .source == "cli proof" and .task == "cli task" and .tool == "cli tool" and .step_index == 3 and .step_total == 5' \
   "$CLI_UI_STEP" >/dev/null
-jq -e 'type == "array" and length >= 1 and .[0].kind == "daemon_started" and any(.[]; .kind == "ui_step" and .data.label == "cli programmable step" and .data.task == "cli task" and .data.tool == "cli tool")' \
+jq -e 'type == "array" and length >= 1 and .[0].kind == "daemon_started" and any(.[]; .kind == "ui_step" and .data.label == "cli programmable step" and .data.task == "cli task" and .data.tool == "cli tool" and .data.step_index == 3 and .data.step_total == 5)' \
   "$CLI_EVENTS" >/dev/null
-jq -e 'type == "array" and length >= 1 and all(.[]; .sequence > '"$CLI_AFTER_SEQUENCE"') and any(.[]; .kind == "ui_step" and .data.label == "cli programmable step" and .data.task == "cli task" and .data.tool == "cli tool")' \
+jq -e 'type == "array" and length >= 1 and all(.[]; .sequence > '"$CLI_AFTER_SEQUENCE"') and any(.[]; .kind == "ui_step" and .data.label == "cli programmable step" and .data.task == "cli task" and .data.tool == "cli tool" and .data.step_index == 3 and .data.step_total == 5)' \
   "$CLI_EVENTS_AFTER" >/dev/null
 jq -e '(.displays | length) >= 1 and (.windows | type) == "array" and (.cursor.visible | type) == "boolean"' \
   "$CLI_OBSERVE" >/dev/null
@@ -219,11 +221,11 @@ jq -e '(.public_surfaces | index("local_unix_socket")) and (.endpoints | index("
   "$UNIX_MANIFEST" >/dev/null
 jq -e '.schema_version == "cua.v1" and (.histograms | type) == "array" and (.counters | type) == "object"' \
   "$UNIX_METRICS" >/dev/null
-jq -e '.accepted == true and .label == "unix programmable step" and .source == "unix proof" and .task == "unix task" and .tool == "unix tool"' \
+jq -e '.accepted == true and .label == "unix programmable step" and .source == "unix proof" and .task == "unix task" and .tool == "unix tool" and .step_index == 4 and .step_total == 5' \
   "$UNIX_UI_STEP" >/dev/null
-jq -e 'type == "array" and length >= 1 and .[0].kind == "daemon_started" and any(.[]; .kind == "ui_step" and .data.label == "unix programmable step" and .data.task == "unix task" and .data.tool == "unix tool")' \
+jq -e 'type == "array" and length >= 1 and .[0].kind == "daemon_started" and any(.[]; .kind == "ui_step" and .data.label == "unix programmable step" and .data.task == "unix task" and .data.tool == "unix tool" and .data.step_index == 4 and .data.step_total == 5)' \
   "$UNIX_EVENTS" >/dev/null
-jq -e 'type == "array" and length >= 1 and all(.[]; .sequence > '"$UNIX_AFTER_SEQUENCE"') and any(.[]; .kind == "ui_step" and .data.label == "unix programmable step" and .data.task == "unix task" and .data.tool == "unix tool")' \
+jq -e 'type == "array" and length >= 1 and all(.[]; .sequence > '"$UNIX_AFTER_SEQUENCE"') and any(.[]; .kind == "ui_step" and .data.label == "unix programmable step" and .data.task == "unix task" and .data.tool == "unix tool" and .data.step_index == 4 and .data.step_total == 5)' \
   "$UNIX_EVENTS_AFTER" >/dev/null
 jq -e '.frame.envelope.encoding == "png" and .frame.envelope.width > 0 and (.desktop.displays | length) >= 1 and (.desktop.windows | type) == "array"' \
   "$UNIX_CONTEXT" >/dev/null
@@ -278,6 +280,8 @@ jq -n \
       ui_step: $http_ui_step[0].label,
       ui_task: $http_ui_step[0].task,
       ui_tool: $http_ui_step[0].tool,
+      step_index: $http_ui_step[0].step_index,
+      step_total: $http_ui_step[0].step_total,
       display_count: ($http_observe[0].displays | length),
       window_count: ($http_observe[0].windows | length),
       context: {
@@ -300,6 +304,8 @@ jq -n \
       ui_step: $cli_ui_step[0].label,
       ui_task: $cli_ui_step[0].task,
       ui_tool: $cli_ui_step[0].tool,
+      step_index: $cli_ui_step[0].step_index,
+      step_total: $cli_ui_step[0].step_total,
       profile_status: $cli_profile[0].active_profile.name,
       display_count: ($cli_observe[0].displays | length),
       window_count: ($cli_observe[0].windows | length),
@@ -326,6 +332,8 @@ jq -n \
       ui_step: $unix_ui_step[0].label,
       ui_task: $unix_ui_step[0].task,
       ui_tool: $unix_ui_step[0].tool,
+      step_index: $unix_ui_step[0].step_index,
+      step_total: $unix_ui_step[0].step_total,
       context: {
         width: $unix_context[0].frame.envelope.width,
         height: $unix_context[0].frame.envelope.height,

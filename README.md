@@ -29,6 +29,7 @@ cargo run -p cua -- status --json
 cargo run -p cua -- manifest --json
 cargo run -p cua -- metrics --json
 cargo run -p cua -- events --json
+cargo run -p cua -- ui step "checking target" --task "Click target" --tool vision --step-index 2 --step-total 5 --json
 cargo run -p cua -- perf bench screenshot --iterations 5 --json
 cargo run -p cua -- context --json --force-fresh
 cargo run -p cua -- screenshot --out artifacts/cua/smoke/screen.png --json

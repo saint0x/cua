@@ -2465,6 +2465,22 @@
             "null"
           ]
         },
+        "step_index": {
+          "format": "uint16",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "step_total": {
+          "format": "uint16",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "task": {
           "type": [
             "string",
@@ -2508,6 +2524,22 @@
         "source": {
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "step_index": {
+          "format": "uint16",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "step_total": {
+          "format": "uint16",
+          "minimum": 0.0,
+          "type": [
+            "integer",
             "null"
           ]
         },

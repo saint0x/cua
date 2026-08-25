@@ -29,6 +29,7 @@ Initial endpoints:
 - `GET /observe/cursor`
 - `GET /events`: retained events from the bounded daemon event lane
 - `GET /events/live`: retained events from the bounded daemon event lane
+- `POST /ui/step`: publish an agent-programmed visible HUD step with `label`, optional `task`, `tool`, `source`, `step_index`, `step_total`, and `ttl_ms`
 - `POST /profile/create`
 - `POST /profile/activate`
 - `GET /profile/status`

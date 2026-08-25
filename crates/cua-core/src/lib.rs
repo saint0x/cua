@@ -225,6 +225,8 @@ pub struct UiStepRequest {
     pub source: Option<String>,
     pub task: Option<String>,
     pub tool: Option<String>,
+    pub step_index: Option<u16>,
+    pub step_total: Option<u16>,
     pub ttl_ms: Option<u64>,
 }
 
@@ -236,6 +238,8 @@ pub struct UiStepResult {
     pub source: Option<String>,
     pub task: Option<String>,
     pub tool: Option<String>,
+    pub step_index: Option<u16>,
+    pub step_total: Option<u16>,
     pub ttl_ms: Option<u64>,
 }
 
