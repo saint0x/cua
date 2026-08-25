@@ -12,7 +12,7 @@ use axum::{
 };
 use bytes::Bytes;
 use chrono::Utc;
-use cua_capture::{CaptureRequest, FrameBus, SyntheticCaptureBackend};
+use cua_capture::{CaptureRequest, FrameBus};
 use cua_core::{
     now_wall_ms, schema_bundle, ApiErrorBody, CapabilityManifest, CapabilityState,
     ClipboardReadRequest, ClipboardResult, ClipboardWriteRequest, DeliveryMode, DesktopState,
@@ -55,7 +55,9 @@ impl DaemonState {
         Self {
             profile: profile.clone(),
             started_at: Utc::now(),
-            frame_bus: Arc::new(FrameBus::new(Arc::new(SyntheticCaptureBackend::default()))),
+            frame_bus: Arc::new(FrameBus::new(
+                cua_platform_macos::capture_backend_or_synthetic(),
+            )),
             input: Arc::new(RefusingInputBackend),
             active_streams: Arc::new(AtomicU32::new(0)),
             bearer_token: Arc::new(bearer_token.into()),

@@ -462,7 +462,12 @@ dependencies = [
 name = "cua-platform-macos"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "async-trait",
+ "cua-capture",
  "cua-core",
+ "image",
+ "sha2",
 ]
 
 [[package]]

@@ -2,7 +2,7 @@
 
 ## Native Backends
 
-1. Implement macOS ScreenCaptureKit capture behind `CaptureBackend`.
+1. Upgrade macOS capture lane to ScreenCaptureKit streaming capture.
 2. Implement macOS CGEvent mouse and keyboard input behind `InputBackend`.
 3. Package the stable signed macOS host app so TCC grants attach to a bundle identity.
 
