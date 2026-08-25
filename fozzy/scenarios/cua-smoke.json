@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "name": "cua-cli-smoke",
+  "steps": [
+    {
+      "type": "proc_when",
+      "cmd": "target/aarch64-apple-darwin/debug/cua",
+      "args": ["doctor", "--json"],
+      "exit_code": 0,
+      "stdout": "{\"schema_version\":\"cua.v1\"}",
+      "stderr": "",
+      "times": 20
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "target/aarch64-apple-darwin/debug/cua",
+      "args": ["doctor", "--json"],
+      "expect_exit": 0,
+      "expect_stdout": "\"schema_version\""
+    },
+    {
+      "type": "proc_when",
+      "cmd": "target/aarch64-apple-darwin/debug/cua",
+      "args": ["model", "eval", "--max-calls", "1", "--json"],
+      "exit_code": 0,
+      "stdout": "{\"live\": false, \"winner\": \"google/gemini-3.5-flash-lite\"}",
+      "stderr": "",
+      "times": 20
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "target/aarch64-apple-darwin/debug/cua",
+      "args": ["model", "eval", "--max-calls", "1", "--json"],
+      "expect_exit": 0,
+      "expect_stdout": "\"winner\""
+    }
+  ]
+}

@@ -1,0 +1,47 @@
+# CUA Remaining Production Plan
+
+## Native Backends
+
+1. Implement macOS ScreenCaptureKit capture behind `CaptureBackend`.
+2. Implement macOS CGEvent mouse and keyboard input behind `InputBackend`.
+3. Add macOS permission probes for Screen Recording, Accessibility/input, Automation, and clipboard.
+4. Package the stable signed macOS host app so TCC grants attach to a bundle identity.
+5. Implement Windows Graphics Capture and `SendInput` backends with exact integrity-level refusals.
+6. Implement Linux X11 capture/input and Wayland portal-mediated capture/input with exact compositor refusals.
+
+## Runtime
+
+1. Replace synthetic one-shot stream routes with continuous bounded fanout for MJPEG and WebSocket frame streams.
+2. Add daemon-owned capture, encode, model, input, trace, permission, and event lanes with bounded queues.
+3. Add bearer-token auth for local HTTP profiles and refuse non-loopback binds unless explicitly allowed.
+4. Add profile creation, activation, expiry, capability manifests, pause/resume, and kill-switch propagation.
+5. Add clipboard read/write with explicit grants.
+6. Add display, cursor, and window observation from real platform backends.
+
+## Tracing
+
+1. Record action turns with before/after state, before/after images, action JSON, evidence JSON, and session metadata.
+2. Add trace replay that re-snapshots and remaps desktop coordinates where needed.
+3. Validate trace artifacts with strict schema and evidence checks.
+4. Store host-backed evidence under `artifacts/cua/<platform>/`.
+
+## Model Eval
+
+1. Expand eval cases from contract probes to desktop-action tasks with screenshot fixtures and external oracles.
+2. Validate candidate availability against OpenRouter model metadata before live runs.
+3. Add configurable spend limits, token accounting, retry policy, and per-model failure classification.
+4. Rerun bounded live evals after scorer changes and record the selected default model.
+
+## Performance
+
+1. Add `/metrics` histograms for capture, encode, queue wait, stream send, model send, model response, parse, policy, input dispatch, verification, trace write, and kill-switch propagation.
+2. Implement `cua perf live` and `cua perf bench screenshot|stream|input|model-prep`.
+3. Enforce latency budgets in local and CI gates.
+4. Add memory-growth checks for long-running streams.
+
+## Verification
+
+1. Add schema compatibility fixtures and breaking-change tests.
+2. Add host-backed GUI tests for each supported platform/backend/action cell.
+3. Add refusal tests that prove no forbidden side effects occurred.
+4. Keep `docs/action-support.md` current with proven support, exact refusals, and unproven cells.

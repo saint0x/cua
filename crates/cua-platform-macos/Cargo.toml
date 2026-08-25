@@ -1,0 +1,10 @@
+[package]
+name = "cua-platform-macos"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[dependencies]
+cua-core = { path = "../cua-core" }
+

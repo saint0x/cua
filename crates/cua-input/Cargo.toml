@@ -1,0 +1,14 @@
+[package]
+name = "cua-input"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+cua-core = { path = "../cua-core" }
+uuid.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

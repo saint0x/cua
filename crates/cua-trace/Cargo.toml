@@ -1,0 +1,15 @@
+[package]
+name = "cua-trace"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+cua-core = { path = "../cua-core" }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
