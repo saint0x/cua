@@ -110,37 +110,34 @@ pub fn parse_fast_command(transcript: &str) -> Option<PlannedTurn> {
     if words[0].as_str() == "resume" {
         return Some(turn("Resumed.", Some(InputAction::Resume)));
     }
-    if words[0].as_str() == "click" && words.len() >= 3 {
-        if let (Ok(x), Ok(y)) = (words[1].parse::<i32>(), words[2].parse::<i32>()) {
-            return Some(turn(
-                format!("Clicking {x}, {y}."),
-                Some(InputAction::MouseClick {
-                    x,
-                    y,
-                    button: MouseButton::Left,
-                    count: 1,
-                }),
-            ));
-        }
+    if words[0].as_str() == "click" && words.len() >= 2 {
+        let (x, y) = parse_coordinate_pair(&words[1..])?;
+        return Some(turn(
+            format!("Clicking {x}, {y}."),
+            Some(InputAction::MouseClick {
+                x,
+                y,
+                button: MouseButton::Left,
+                count: 1,
+            }),
+        ));
     }
-    if words[0].as_str() == "move" && words.len() >= 3 {
-        if let (Ok(x), Ok(y)) = (words[1].parse::<i32>(), words[2].parse::<i32>()) {
-            return Some(turn(
-                format!("Moving to {x}, {y}."),
-                Some(InputAction::MouseMove {
-                    x,
-                    y,
-                    duration_ms: 80,
-                }),
-            ));
-        }
+    if words[0].as_str() == "move" && words.len() >= 2 {
+        let (x, y) = parse_coordinate_pair(&words[1..])?;
+        return Some(turn(
+            format!("Moving to {x}, {y}."),
+            Some(InputAction::MouseMove {
+                x,
+                y,
+                duration_ms: 80,
+            }),
+        ));
     }
-    if let Some(text) = lower.strip_prefix("type ") {
+    if matches!(words[0].as_str(), "type" | "typed") && words.len() >= 2 {
+        let text = words[1..].join(" ");
         return Some(turn(
             "Typing.".to_string(),
-            Some(InputAction::KeyType {
-                text: text.to_string(),
-            }),
+            Some(InputAction::KeyType { text }),
         ));
     }
     None
@@ -150,6 +147,22 @@ fn normalize_command_token(token: &str) -> String {
     token
         .trim_matches(|character: char| !character.is_ascii_alphanumeric() && character != '-')
         .to_string()
+}
+
+fn parse_coordinate_pair(tokens: &[String]) -> Option<(i32, i32)> {
+    let numbers = tokens
+        .iter()
+        .flat_map(|token| {
+            token
+                .split('-')
+                .filter(|part| !part.is_empty())
+                .filter_map(|part| part.parse::<i32>().ok())
+        })
+        .collect::<Vec<_>>();
+    match numbers.as_slice() {
+        [x, y, ..] => Some((*x, *y)),
+        _ => None,
+    }
 }
 
 fn turn(response: impl Into<String>, action: Option<InputAction>) -> PlannedTurn {
@@ -182,6 +195,23 @@ mod tests {
             click.action,
             Some(InputAction::MouseClick { x: 640, y: 360, .. })
         ));
+    }
+
+    #[test]
+    fn parses_fast_commands_from_stt_separators_and_verbs() {
+        let plan = parse_fast_command("Move 10-20.").unwrap();
+        assert!(matches!(
+            plan.action,
+            Some(InputAction::MouseMove { x: 10, y: 20, .. })
+        ));
+
+        let plan = parse_fast_command("Typed hello.").unwrap();
+        assert!(matches!(plan.action, Some(InputAction::KeyType { ref text }) if text == "hello"));
+    }
+
+    #[test]
+    fn leaves_ambiguous_collapsed_coordinates_for_planner() {
+        assert!(parse_fast_command("CLICK 64360").is_none());
     }
 
     #[test]
