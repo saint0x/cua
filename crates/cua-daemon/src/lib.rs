@@ -24,7 +24,7 @@ use cua_input::InputBackend;
 use cua_model::{run_eval_report, EvalConfig, EvalReport};
 use cua_trace::{ActionTurnRecord, TraceRecord, TraceWriter};
 use serde::Deserialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -49,6 +49,7 @@ pub struct DaemonState {
     pub control: Arc<RwLock<RuntimeControlState>>,
     pub clipboard: Arc<RwLock<Option<String>>>,
     metrics: Arc<RuntimeMetrics>,
+    events: EventLane,
     trace: Option<TraceWriter>,
 }
 
@@ -56,7 +57,8 @@ impl DaemonState {
     pub fn synthetic(profile: impl Into<String>, bearer_token: impl Into<String>) -> Self {
         let profile = profile.into();
         let input = cua_platform_macos::input_backend_or_refusing();
-        Self {
+        let events = EventLane::spawn(event_lane_capacity(), event_lane_retention());
+        let state = Self {
             profile: profile.clone(),
             started_at: Utc::now(),
             frame_bus: Arc::new(FrameBus::new(
@@ -69,10 +71,13 @@ impl DaemonState {
             control: Arc::new(RwLock::new(default_control_state(&profile))),
             clipboard: Arc::new(RwLock::new(None)),
             metrics: Arc::new(RuntimeMetrics::default()),
+            events,
             trace: std::env::var("CUA_TRACE_DIR")
                 .ok()
                 .and_then(|dir| TraceWriter::from_dir(dir).ok()),
-        }
+        };
+        state.publish_event("daemon_started", serde_json::json!({}));
+        state
     }
 
     pub async fn health(&self) -> HealthReport {
@@ -90,6 +95,14 @@ impl DaemonState {
             active_streams: self.active_streams.load(Ordering::Relaxed),
             model_sessions: 0,
             last_error: None,
+        }
+    }
+}
+
+impl DaemonState {
+    fn publish_event(&self, kind: &'static str, data: serde_json::Value) {
+        if !self.events.publish(kind, data) {
+            self.metrics.increment(CounterKind::EventDrops);
         }
     }
 }
@@ -182,6 +195,74 @@ fn input_lane_capacity() -> usize {
         .and_then(|value| value.parse().ok())
         .filter(|value| *value > 0)
         .unwrap_or(64)
+}
+
+#[derive(Clone)]
+struct EventLane {
+    sender: mpsc::Sender<EventJob>,
+    recent: Arc<RwLock<VecDeque<serde_json::Value>>>,
+}
+
+#[derive(Debug)]
+struct EventJob {
+    event: serde_json::Value,
+}
+
+impl EventLane {
+    fn spawn(capacity: usize, retention: usize) -> Self {
+        let (sender, mut receiver) = mpsc::channel::<EventJob>(capacity);
+        let recent = Arc::new(RwLock::new(VecDeque::with_capacity(retention)));
+        let worker_recent = recent.clone();
+        tokio::spawn(async move {
+            while let Some(job) = receiver.recv().await {
+                let mut recent = worker_recent.write().await;
+                if recent.len() >= retention {
+                    recent.pop_front();
+                }
+                recent.push_back(job.event);
+            }
+        });
+        Self { sender, recent }
+    }
+
+    fn publish(&self, kind: &'static str, data: serde_json::Value) -> bool {
+        self.sender
+            .try_send(EventJob {
+                event: serde_json::json!({
+                    "schema_version": SCHEMA_VERSION,
+                    "sequence": monotonic_event_sequence(),
+                    "at_wall_ms": now_wall_ms(),
+                    "kind": kind,
+                    "data": data
+                }),
+            })
+            .is_ok()
+    }
+
+    async fn snapshot(&self) -> Vec<serde_json::Value> {
+        self.recent.read().await.iter().cloned().collect()
+    }
+}
+
+fn event_lane_capacity() -> usize {
+    std::env::var("CUA_EVENT_QUEUE_CAPACITY")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(256)
+}
+
+fn event_lane_retention() -> usize {
+    std::env::var("CUA_EVENT_RETENTION")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(1024)
+}
+
+fn monotonic_event_sequence() -> u64 {
+    static SEQUENCE: AtomicU64 = AtomicU64::new(1);
+    SEQUENCE.fetch_add(1, Ordering::Relaxed)
 }
 
 pub fn router(state: DaemonState) -> Router {
@@ -599,16 +680,12 @@ async fn observe_cursor(State(state): State<DaemonState>) -> Json<cua_core::Curs
     Json(cua_platform_macos::cursor_state())
 }
 
-async fn events() -> Json<Vec<serde_json::Value>> {
-    Json(vec![serde_json::json!({
-        "schema_version": SCHEMA_VERSION,
-        "sequence": 1,
-        "kind": "daemon_started"
-    })])
+async fn events(State(state): State<DaemonState>) -> Json<Vec<serde_json::Value>> {
+    Json(state.events.snapshot().await)
 }
 
-async fn events_live() -> Json<Vec<serde_json::Value>> {
-    events().await
+async fn events_live(State(state): State<DaemonState>) -> Json<Vec<serde_json::Value>> {
+    Json(state.events.snapshot().await)
 }
 
 fn observe_frame_lookup(metrics: &RuntimeMetrics, lookup: &FrameLookup) {
@@ -642,7 +719,16 @@ async fn profile_create(
         active: false,
     };
     control.generation += 1;
-    Json(control.clone())
+    let result = control.clone();
+    drop(control);
+    state.publish_event(
+        "profile_created",
+        serde_json::json!({
+            "profile": result.active_profile.name,
+            "generation": result.generation
+        }),
+    );
+    Json(result)
 }
 
 async fn profile_activate(State(state): State<DaemonState>) -> Json<RuntimeControlState> {
@@ -652,7 +738,17 @@ async fn profile_activate(State(state): State<DaemonState>) -> Json<RuntimeContr
         control.safety_state = SafetyState::Running;
         control.generation += 1;
     }
-    Json(control.clone())
+    let result = control.clone();
+    drop(control);
+    state.publish_event(
+        "profile_activated",
+        serde_json::json!({
+            "profile": result.active_profile.name,
+            "generation": result.generation,
+            "safety_state": result.safety_state
+        }),
+    );
+    Json(result)
 }
 
 async fn profile_status(State(state): State<DaemonState>) -> Json<RuntimeControlState> {
@@ -665,7 +761,13 @@ async fn control_pause(State(state): State<DaemonState>) -> Json<RuntimeControlS
         control.safety_state = SafetyState::Paused;
         control.generation += 1;
     }
-    Json(control.clone())
+    let result = control.clone();
+    drop(control);
+    state.publish_event(
+        "control_paused",
+        serde_json::json!({ "generation": result.generation }),
+    );
+    Json(result)
 }
 
 async fn control_resume(State(state): State<DaemonState>) -> Json<RuntimeControlState> {
@@ -674,7 +776,13 @@ async fn control_resume(State(state): State<DaemonState>) -> Json<RuntimeControl
         control.safety_state = SafetyState::Running;
         control.generation += 1;
     }
-    Json(control.clone())
+    let result = control.clone();
+    drop(control);
+    state.publish_event(
+        "control_resumed",
+        serde_json::json!({ "generation": result.generation }),
+    );
+    Json(result)
 }
 
 async fn control_kill_switch(State(state): State<DaemonState>) -> Json<RuntimeControlState> {
@@ -685,7 +793,13 @@ async fn control_kill_switch(State(state): State<DaemonState>) -> Json<RuntimeCo
     state
         .metrics
         .observe(MetricKind::KillSwitchPropagation, started.elapsed());
-    Json(control.clone())
+    let result = control.clone();
+    drop(control);
+    state.publish_event(
+        "kill_switch",
+        serde_json::json!({ "generation": result.generation }),
+    );
+    Json(result)
 }
 
 #[derive(Debug)]
@@ -801,6 +915,7 @@ async fn input_action(
             after,
         )
         .await;
+        publish_input_event(&state, "input_refused", &result);
         return Json(result);
     }
     let dispatch_started = Instant::now();
@@ -832,6 +947,7 @@ async fn input_action(
         after,
     )
     .await;
+    publish_input_event(&state, "input_completed", &result);
     Json(result)
 }
 
@@ -852,6 +968,7 @@ async fn clipboard_read(
         let result = clipboard_refusal(action, "schema_version must match the daemon schema");
         let after = trace_snapshot(&state, &turn_id, "after").await;
         append_clipboard_turn(&state, turn_id, action_json, &result, before, after).await;
+        publish_clipboard_event(&state, &result);
         return Json(result);
     }
     if !request.allow_sensitive {
@@ -862,6 +979,7 @@ async fn clipboard_read(
         let result = clipboard_refusal(action, "clipboard read requires allow_sensitive=true");
         let after = trace_snapshot(&state, &turn_id, "after").await;
         append_clipboard_turn(&state, turn_id, action_json, &result, before, after).await;
+        publish_clipboard_event(&state, &result);
         return Json(result);
     }
     if let Some(message) = clipboard_refusal_reason(&state).await {
@@ -872,6 +990,7 @@ async fn clipboard_read(
         let result = clipboard_refusal(action, message);
         let after = trace_snapshot(&state, &turn_id, "after").await;
         append_clipboard_turn(&state, turn_id, action_json, &result, before, after).await;
+        publish_clipboard_event(&state, &result);
         return Json(result);
     }
     let text = state.clipboard.read().await.clone();
@@ -892,6 +1011,7 @@ async fn clipboard_read(
     };
     let after = trace_snapshot(&state, &turn_id, "after").await;
     append_clipboard_turn(&state, turn_id, action_json, &result, before, after).await;
+    publish_clipboard_event(&state, &result);
     Json(result)
 }
 
@@ -912,6 +1032,7 @@ async fn clipboard_write(
         let result = clipboard_refusal(action, "schema_version must match the daemon schema");
         let after = trace_snapshot(&state, &turn_id, "after").await;
         append_clipboard_turn(&state, turn_id, action_json, &result, before, after).await;
+        publish_clipboard_event(&state, &result);
         return Json(result);
     }
     if let Some(message) = clipboard_refusal_reason(&state).await {
@@ -922,6 +1043,7 @@ async fn clipboard_write(
         let result = clipboard_refusal(action, message);
         let after = trace_snapshot(&state, &turn_id, "after").await;
         append_clipboard_turn(&state, turn_id, action_json, &result, before, after).await;
+        publish_clipboard_event(&state, &result);
         return Json(result);
     }
     *state.clipboard.write().await = Some(request.text);
@@ -942,7 +1064,31 @@ async fn clipboard_write(
     };
     let after = trace_snapshot(&state, &turn_id, "after").await;
     append_clipboard_turn(&state, turn_id, action_json, &result, before, after).await;
+    publish_clipboard_event(&state, &result);
     Json(result)
+}
+
+fn publish_input_event(state: &DaemonState, kind: &'static str, result: &InputResult) {
+    state.publish_event(
+        kind,
+        serde_json::json!({
+            "effect": result.effect,
+            "route": result.route,
+            "evidence_kind": result.evidence.first().map(|evidence| &evidence.kind),
+        }),
+    );
+}
+
+fn publish_clipboard_event(state: &DaemonState, result: &ClipboardResult) {
+    state.publish_event(
+        "clipboard_action",
+        serde_json::json!({
+            "action": result.action,
+            "effect": result.result.effect,
+            "route": result.result.route,
+            "returned_text": result.text.is_some()
+        }),
+    );
 }
 
 async fn append_clipboard_turn(
@@ -1139,14 +1285,16 @@ enum CounterKind {
     WsFrames,
     InputRefusals,
     ClipboardRefusals,
+    EventDrops,
 }
 
 impl CounterKind {
-    const ALL: [Self; 4] = [
+    const ALL: [Self; 5] = [
         Self::MjpegFrames,
         Self::WsFrames,
         Self::InputRefusals,
         Self::ClipboardRefusals,
+        Self::EventDrops,
     ];
 
     fn index(self) -> usize {
@@ -1155,6 +1303,7 @@ impl CounterKind {
             Self::WsFrames => 1,
             Self::InputRefusals => 2,
             Self::ClipboardRefusals => 3,
+            Self::EventDrops => 4,
         }
     }
 
@@ -1164,6 +1313,7 @@ impl CounterKind {
             Self::WsFrames => "stream.ws.frames",
             Self::InputRefusals => "input.refusals",
             Self::ClipboardRefusals => "clipboard.refusals",
+            Self::EventDrops => "events.dropped",
         }
     }
 }
@@ -1475,6 +1625,58 @@ mod tests {
 
         assert_eq!(result.effect, Effect::Refused);
         assert_eq!(result.evidence[0].message, "input lane queue is full");
+    }
+
+    #[test]
+    fn event_lane_refuses_when_queue_is_full() {
+        let (sender, _receiver) = mpsc::channel(1);
+        sender
+            .try_send(EventJob {
+                event: serde_json::json!({ "kind": "held" }),
+            })
+            .unwrap();
+        let lane = EventLane {
+            sender,
+            recent: Arc::new(RwLock::new(VecDeque::new())),
+        };
+
+        assert!(!lane.publish("overflow", serde_json::json!({})));
+    }
+
+    #[tokio::test]
+    async fn profile_and_control_changes_emit_events() {
+        let state = DaemonState::synthetic("test", "token");
+        let Json(_) = profile_create(
+            State(state.clone()),
+            Json(ProfileCreateRequest {
+                name: "events".to_string(),
+                mode: RuntimeMode::Supervised,
+                capabilities: None,
+                duration_ms: Some(60_000),
+            }),
+        )
+        .await;
+        let Json(_) = profile_activate(State(state.clone())).await;
+        let Json(_) = control_pause(State(state.clone())).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        let kinds: Vec<String> = state
+            .events
+            .snapshot()
+            .await
+            .into_iter()
+            .filter_map(|event| {
+                event
+                    .get("kind")
+                    .and_then(|kind| kind.as_str())
+                    .map(str::to_string)
+            })
+            .collect();
+
+        assert!(kinds.iter().any(|kind| kind == "daemon_started"));
+        assert!(kinds.iter().any(|kind| kind == "profile_created"));
+        assert!(kinds.iter().any(|kind| kind == "profile_activated"));
+        assert!(kinds.iter().any(|kind| kind == "control_paused"));
     }
 
     async fn clipboard_enabled_state() -> DaemonState {
