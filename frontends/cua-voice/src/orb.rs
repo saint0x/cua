@@ -4,33 +4,56 @@ use std::f32::consts::TAU;
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct OrbPalette {
+    pub base: gpui::Hsla,
     pub glow: gpui::Hsla,
     pub core: gpui::Hsla,
     pub accent: gpui::Hsla,
     pub rim: gpui::Hsla,
-    pub shell: gpui::Hsla,
+    pub shell_mid: gpui::Hsla,
+    pub shell_edge: gpui::Hsla,
     pub spec: gpui::Hsla,
 }
 
 impl OrbPalette {
     pub fn for_phase(phase: &HudPhase) -> Self {
+        let mut palette = Self::voice_wave();
         match phase {
-            HudPhase::Listening => Self::new(196.0, 306.0, 348.0, 252.0),
-            HudPhase::Transcribing | HudPhase::Planning => Self::new(286.0, 318.0, 196.0, 252.0),
-            HudPhase::Dispatching => Self::new(158.0, 202.0, 252.0, 68.0),
-            HudPhase::Error => Self::new(352.0, 18.0, 312.0, 44.0),
-            _ => Self::new(252.0, 306.0, 348.0, 196.0),
+            HudPhase::Listening => {
+                palette.glow.a = 0.30;
+                palette.core.a = 0.70;
+                palette.accent.a = 0.58;
+            }
+            HudPhase::Transcribing | HudPhase::Planning => {
+                palette.glow.h = 286.0 / 360.0;
+                palette.shell_mid.a = 0.30;
+                palette.spec.a = 0.72;
+            }
+            HudPhase::Dispatching => {
+                palette.accent.h = 202.0 / 360.0;
+                palette.rim.h = 158.0 / 360.0;
+                palette.shell_edge.h = 68.0 / 360.0;
+            }
+            HudPhase::Error => {
+                palette.core.h = 18.0 / 360.0;
+                palette.accent.h = 352.0 / 360.0;
+                palette.rim.h = 312.0 / 360.0;
+                palette.shell_edge.h = 44.0 / 360.0;
+            }
+            _ => {}
         }
+        palette
     }
 
-    fn new(glow: f32, core: f32, accent: f32, rim: f32) -> Self {
+    fn voice_wave() -> Self {
         Self {
-            glow: hsla(glow / 360.0, 0.95, 0.60, 0.24),
-            core: hsla(core / 360.0, 0.94, 0.60, 0.58),
-            accent: hsla(accent / 360.0, 0.94, 0.62, 0.50),
-            rim: hsla(rim / 360.0, 0.94, 0.70, 0.46),
-            shell: hsla(rim / 360.0, 0.78, 0.78, 0.28),
-            spec: hsla(0.0, 0.0, 1.0, 0.62),
+            base: hsla(272.0 / 360.0, 0.65, 0.03, 0.24),
+            glow: hsla(301.0 / 360.0, 0.63, 0.49, 0.26),
+            core: hsla(301.0 / 360.0, 0.63, 0.49, 0.64),
+            accent: hsla(352.0 / 360.0, 1.00, 0.68, 0.56),
+            rim: hsla(254.0 / 360.0, 1.00, 0.66, 0.52),
+            shell_mid: hsla(286.0 / 360.0, 1.00, 0.77, 0.26),
+            shell_edge: hsla(350.0 / 360.0, 1.00, 0.74, 0.24),
+            spec: hsla(327.0 / 360.0, 1.00, 0.93, 0.66),
         }
     }
 }
@@ -105,29 +128,59 @@ pub fn paint_orb(window: &mut Window, bounds: Bounds<Pixels>, phase: &HudPhase, 
         window.paint_path(path, layer_color(palette, index, layer.alpha_scale));
     }
 
-    for (index, offset) in [-0.11, 0.0, 0.12].iter().enumerate() {
-        let path = membrane_path(center, radius, elapsed, *offset, 32);
-        let alpha = [0.22, 0.34, 0.20][index] * (0.85 + energy * 0.35);
-        let mut color = if index == 1 {
-            palette.accent
-        } else {
-            palette.core
+    let base = OrbLayer {
+        radius: 0.62,
+        amplitude: 0.018 + energy * 0.012,
+        phase_offset: 0.0,
+        alpha_scale: 0.42,
+    };
+    window.paint_path(
+        blob_path(center, radius, base, elapsed * 0.40),
+        Background::from(palette.base),
+    );
+
+    let separation = 0.18 + energy * 0.08;
+    for (index, offset) in [-1.0, -0.34, 0.34, 1.0].iter().enumerate() {
+        let path = voice_wave_ribbon_path(center, radius, elapsed, *offset * separation, 44);
+        let mut color = match index {
+            0 => palette.core,
+            1 => palette.rim,
+            2 => palette.accent,
+            _ => palette.core,
         };
-        color.a = alpha;
+        color.a *= 0.58 + energy * 0.40;
         window.paint_path(path, Background::from(color));
     }
+    let mut hot_line = palette.spec;
+    hot_line.a *= 0.36 + energy * 0.28;
+    window.paint_path(
+        voice_wave_ribbon_path(center, radius, elapsed, 0.0, 48),
+        Background::from(hot_line),
+    );
 
     let shell = OrbLayer {
         radius: 0.72,
-        amplitude: 0.030 + energy * 0.020,
+        amplitude: 0.020 + energy * 0.024,
         phase_offset: 2.6,
         alpha_scale: 0.36,
     };
-    let mut shell_color = palette.shell;
-    shell_color.a *= 0.8 + energy * 0.25;
+    let mut shell_color = palette.shell_mid;
+    shell_color.a *= 0.80 + energy * 0.28;
     window.paint_path(
         blob_path(center, radius, shell, elapsed * 0.62),
         Background::from(shell_color),
+    );
+    let rim = OrbLayer {
+        radius: 0.78,
+        amplitude: 0.012 + energy * 0.012,
+        phase_offset: 3.5,
+        alpha_scale: 0.28,
+    };
+    let mut rim_color = palette.shell_edge;
+    rim_color.a *= 0.75 + energy * 0.30;
+    window.paint_path(
+        blob_path(center, radius, rim, elapsed * 0.50),
+        Background::from(rim_color),
     );
 
     let shine = Bounds {
@@ -157,33 +210,35 @@ pub fn blob_points(
         .collect()
 }
 
-pub fn membrane_points(
+pub fn voice_wave_ribbon_points(
     center_x: f32,
     center_y: f32,
     radius: f32,
     elapsed: f32,
-    y_offset: f32,
+    separation: f32,
     samples: usize,
 ) -> Vec<(f32, f32)> {
-    let width = 0.060 + y_offset.abs() * 0.08;
     let mut top = Vec::with_capacity(samples);
     let mut bottom = Vec::with_capacity(samples);
     for i in 0..samples {
         let t = i as f32 / (samples - 1).max(1) as f32;
-        let x = -0.88 + t * 1.76;
-        let rim = (1.0 - x * x).max(0.0).powf(0.72);
-        let drift = elapsed * 0.82;
-        let wave =
-            rim * (0.20 * (x * 1.48 + drift).sin() + 0.055 * (x * 3.2 - drift * 0.43 + 1.1).sin());
-        let y = y_offset + wave;
-        let local_width = width * (0.38 + rim * 0.62);
+        let x = -0.84 + t * 1.68;
+        let edge_falloff = (1.0 - (x * 0.94).powi(2)).max(0.0);
+        let envelope = edge_falloff * edge_falloff;
+        let drift = elapsed * 2.28;
+        let low = 0.5 + 0.5 * (elapsed * 0.37).cos();
+        let mid = 0.5 + 0.5 * (elapsed * 0.51 + 1.2).sin();
+        let high = 0.5 + 0.5 * (elapsed * 0.73 + 2.1).cos();
+        let amplitude = 0.23 + low * 0.018 + mid * 0.025 + high * 0.018;
+        let y = envelope * amplitude * (x * 1.10 + drift + separation * 7.0).sin();
+        let width = (0.030 + mid * 0.006) * (0.35 + envelope * 0.65);
         top.push((
             center_x + x * radius * 0.76,
-            center_y + (y - local_width) * radius,
+            center_y + (y + separation - width) * radius,
         ));
         bottom.push((
             center_x + x * radius * 0.76,
-            center_y + (y + local_width) * radius,
+            center_y + (y + separation + width) * radius,
         ));
     }
     bottom.reverse();
@@ -191,19 +246,19 @@ pub fn membrane_points(
     top
 }
 
-fn membrane_path(
+fn voice_wave_ribbon_path(
     center: gpui::Point<Pixels>,
     radius: f32,
     elapsed: f32,
-    y_offset: f32,
+    separation: f32,
     samples: usize,
 ) -> Path<Pixels> {
-    let points = membrane_points(
+    let points = voice_wave_ribbon_points(
         center.x.to_f64() as f32,
         center.y.to_f64() as f32,
         radius,
         elapsed,
-        y_offset,
+        separation,
         samples,
     );
     let mut builder = PathBuilder::fill();
@@ -212,7 +267,7 @@ fn membrane_path(
         builder.line_to(point(px(*x), px(*y)));
     }
     builder.close();
-    builder.build().expect("orb membrane path must be valid")
+    builder.build().expect("voice wave path must be valid")
 }
 
 fn phase_energy(phase: &HudPhase) -> f32 {
@@ -285,13 +340,23 @@ mod tests {
     }
 
     #[test]
-    fn voice_membrane_stays_inside_glass_shell() {
-        let points = membrane_points(10.0, 10.0, 8.0, 0.7, 0.0, 32);
+    fn voice_wave_ribbon_stays_inside_glass_shell() {
+        let points = voice_wave_ribbon_points(10.0, 10.0, 8.0, 0.7, 0.18, 32);
 
         assert_eq!(points.len(), 64);
         for (x, y) in points {
             let distance = ((x - 10.0).powi(2) + (y - 10.0).powi(2)).sqrt();
-            assert!(distance <= 8.0 * 0.94);
+            assert!(distance <= 8.0 * 0.88);
         }
+    }
+
+    #[test]
+    fn voice_wave_palette_uses_reference_color_family() {
+        let palette = OrbPalette::for_phase(&HudPhase::Listening);
+
+        assert!((palette.core.h - 301.0 / 360.0).abs() < 0.002);
+        assert!((palette.accent.h - 352.0 / 360.0).abs() < 0.002);
+        assert!((palette.rim.h - 254.0 / 360.0).abs() < 0.002);
+        assert!(palette.spec.l > 0.90);
     }
 }
