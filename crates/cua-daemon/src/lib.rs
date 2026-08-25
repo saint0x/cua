@@ -1587,7 +1587,10 @@ async fn dispatch_input_action(state: &DaemonState, action: InputAction) -> cua_
 fn captures_trace_snapshots(action: &InputAction) -> bool {
     !matches!(
         action,
-        InputAction::Pause | InputAction::Resume | InputAction::KillSwitch
+        InputAction::MouseMove { .. }
+            | InputAction::Pause
+            | InputAction::Resume
+            | InputAction::KillSwitch
     )
 }
 
@@ -2458,14 +2461,20 @@ mod tests {
     }
 
     #[test]
-    fn safety_controls_skip_trace_screenshots() {
+    fn latency_critical_controls_skip_trace_screenshots() {
         assert!(!captures_trace_snapshots(&InputAction::Pause));
         assert!(!captures_trace_snapshots(&InputAction::Resume));
         assert!(!captures_trace_snapshots(&InputAction::KillSwitch));
-        assert!(captures_trace_snapshots(&InputAction::MouseMove {
+        assert!(!captures_trace_snapshots(&InputAction::MouseMove {
             x: 10,
             y: 20,
             duration_ms: 0,
+        }));
+        assert!(captures_trace_snapshots(&InputAction::MouseClick {
+            x: 10,
+            y: 20,
+            button: cua_core::MouseButton::Left,
+            count: 1,
         }));
     }
 
