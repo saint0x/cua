@@ -119,6 +119,8 @@ jq -s -e '
   (map(select(.event == "dispatching")) | length == 0) and
   any(.event == "reply" and ((.text // "") | length > 0)) and
   any(.event == "metric" and .name == "stt_preflight_overlap_ms") and
+  any(.event == "metric" and .name == "context_prefetch_ms") and
+  any(.event == "metric" and .name == "context_wait_ms") and
   any(.event == "metric" and .name == "plan_ms" and .ms > 0) and
   any(.event == "metric" and .name == "turn_total_ms")
 ' \
