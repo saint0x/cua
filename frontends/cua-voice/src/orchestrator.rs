@@ -1,5 +1,6 @@
 use crate::audio::record_default_input;
 use crate::client::CuaClient;
+use crate::daemon::{spawn_profile_daemon, wait_until_ready};
 use crate::planner::{parse_fast_command, PlannedTurn, Planner};
 use crate::stt::SttClient;
 use crate::ui_state::VoiceUiEvent;
@@ -188,10 +189,16 @@ async fn dispatch_plan(
 
 async fn preflight_local_client(profile: &str) -> anyhow::Result<CuaClient> {
     let local = CuaClient::new(profile.to_string()).await?;
-    local
-        .preflight()
-        .await
-        .context("voice requires a running cua daemon on the profile Unix socket")?;
+    if local.preflight().await.is_ok() {
+        return Ok(local);
+    }
+    spawn_profile_daemon(profile).context("start bundled cua daemon")?;
+    wait_until_ready(Duration::from_secs(2), || {
+        let local = local.clone();
+        async move { local.preflight().await }
+    })
+    .await
+    .context("voice requires a running cua daemon on the profile Unix socket")?;
     Ok(local)
 }
 

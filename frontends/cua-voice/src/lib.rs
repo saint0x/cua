@@ -1,6 +1,7 @@
 pub mod activation;
 pub mod audio;
 pub mod client;
+pub mod daemon;
 pub mod hud;
 pub mod orb;
 pub mod orchestrator;
