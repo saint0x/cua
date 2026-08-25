@@ -12,7 +12,7 @@ use axum::{
 };
 use bytes::Bytes;
 use chrono::Utc;
-use cua_capture::{CaptureRequest, FrameBus};
+use cua_capture::{CaptureRequest, FrameBus, FrameLookup};
 use cua_core::{
     now_wall_ms, schema_bundle, ApiErrorBody, CapabilityManifest, CapabilityState,
     ClipboardReadRequest, ClipboardResult, ClipboardWriteRequest, DeliveryMode, DesktopState,
@@ -178,7 +178,11 @@ fn profile_token_path(profile: &str) -> anyhow::Result<PathBuf> {
 }
 
 async fn require_auth(State(state): State<DaemonState>, request: Request, next: Next) -> Response {
+    let started = Instant::now();
     if is_auth_exempt(request.uri().path()) {
+        state
+            .metrics
+            .observe(MetricKind::PolicyCheck, started.elapsed());
         return next.run(request).await;
     }
     let expected = format!("Bearer {}", state.bearer_token);
@@ -189,8 +193,14 @@ async fn require_auth(State(state): State<DaemonState>, request: Request, next: 
         .map(|value| value == expected)
         .unwrap_or(false);
     if authorized {
+        state
+            .metrics
+            .observe(MetricKind::PolicyCheck, started.elapsed());
         next.run(request).await
     } else {
+        state
+            .metrics
+            .observe(MetricKind::PolicyCheck, started.elapsed());
         (
             StatusCode::UNAUTHORIZED,
             Json(ApiErrorBody {
@@ -320,20 +330,23 @@ async fn screenshot(
     Json(request): Json<ScreenshotRequest>,
 ) -> Result<Json<cua_core::FramePayload>, ApiError> {
     let started = Instant::now();
-    let frame = state
+    let lookup = state
         .frame_bus
-        .latest_or_capture(CaptureRequest {
+        .latest_or_capture_timed(CaptureRequest {
             max_width: request.max_width,
             encoding: request.encoding.unwrap_or(FrameEncoding::Png),
             force_fresh: request.force_fresh.unwrap_or(false),
         })
         .await
         .map_err(ApiError::internal)?;
+    observe_frame_lookup(&state.metrics, &lookup);
     state
         .metrics
         .observe(MetricKind::CaptureScreenshot, started.elapsed());
     Ok(Json(
-        frame.as_payload(request.include_bytes.unwrap_or(true)),
+        lookup
+            .frame
+            .as_payload(request.include_bytes.unwrap_or(true)),
     ))
 }
 
@@ -349,14 +362,16 @@ async fn stream_mjpeg(State(state): State<DaemonState>) -> Result<Response, ApiE
             interval.tick().await;
             let started = Instant::now();
             let chunk = match frame_bus
-                .latest_or_capture(CaptureRequest {
+                .latest_or_capture_timed(CaptureRequest {
                     max_width: Some(1280),
                     encoding: FrameEncoding::Jpeg,
                     force_fresh: false,
                 })
                 .await
             {
-                Ok(frame) => {
+                Ok(lookup) => {
+                    observe_frame_lookup(&metrics, &lookup);
+                    let frame = lookup.frame;
                     let mut body = Vec::new();
                     body.extend_from_slice(b"--cua-frame\r\nContent-Type: image/jpeg\r\n");
                     body.extend_from_slice(
@@ -394,14 +409,16 @@ async fn stream_ws(ws: WebSocketUpgrade, State(state): State<DaemonState>) -> im
             let started = Instant::now();
             match state
                 .frame_bus
-                .latest_or_capture(CaptureRequest {
+                .latest_or_capture_timed(CaptureRequest {
                     max_width: Some(1280),
                     encoding: FrameEncoding::Jpeg,
                     force_fresh: false,
                 })
                 .await
             {
-                Ok(frame) => {
+                Ok(lookup) => {
+                    observe_frame_lookup(&state.metrics, &lookup);
+                    let frame = lookup.frame;
                     let text = match serde_json::to_string(&frame.envelope) {
                         Ok(text) => text,
                         Err(_) => break,
@@ -518,6 +535,13 @@ async fn events_live() -> Json<Vec<serde_json::Value>> {
     events().await
 }
 
+fn observe_frame_lookup(metrics: &RuntimeMetrics, lookup: &FrameLookup) {
+    metrics.observe_ns(MetricKind::CaptureQueueWait, lookup.wait_ns);
+    if !lookup.cache_hit {
+        metrics.observe_ns(MetricKind::CaptureEncode, lookup.frame.timings.encode_ns);
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct ProfileCreateRequest {
     name: String,
@@ -578,9 +602,13 @@ async fn control_resume(State(state): State<DaemonState>) -> Json<RuntimeControl
 }
 
 async fn control_kill_switch(State(state): State<DaemonState>) -> Json<RuntimeControlState> {
+    let started = Instant::now();
     let mut control = state.control.write().await;
     control.safety_state = SafetyState::Killed;
     control.generation += 1;
+    state
+        .metrics
+        .observe(MetricKind::KillSwitchPropagation, started.elapsed());
     Json(control.clone())
 }
 
@@ -592,20 +620,26 @@ struct TraceSnapshot {
 
 async fn trace_snapshot(state: &DaemonState, turn_id: &str, phase: &str) -> Option<TraceSnapshot> {
     let writer = state.trace.as_ref()?;
-    let frame = state
+    let lookup = state
         .frame_bus
-        .latest_or_capture(CaptureRequest {
+        .latest_or_capture_timed(CaptureRequest {
             max_width: Some(1280),
             encoding: FrameEncoding::Png,
             force_fresh: true,
         })
         .await
         .ok()?;
+    observe_frame_lookup(&state.metrics, &lookup);
+    let frame = lookup.frame;
     let relative = format!("frames/{turn_id}_{phase}.png");
+    let trace_started = Instant::now();
     writer
         .write_artifact(&relative, frame.bytes.as_ref().as_slice())
         .await
         .ok()?;
+    state
+        .metrics
+        .observe(MetricKind::TraceWrite, trace_started.elapsed());
     Some(TraceSnapshot {
         envelope: frame.envelope,
         path: relative,
@@ -655,7 +689,11 @@ async fn append_action_turn(
             "input_backend": state.input.name()
         }),
     });
+    let trace_started = Instant::now();
     let _ = writer.append(&record).await;
+    state
+        .metrics
+        .observe(MetricKind::TraceWrite, trace_started.elapsed());
 }
 
 async fn input_action(
@@ -917,42 +955,78 @@ const METRIC_BUCKETS_MS: [u64; 9] = [1, 2, 5, 10, 16, 33, 50, 100, 250];
 #[derive(Debug, Clone, Copy)]
 enum MetricKind {
     CaptureScreenshot,
+    CaptureQueueWait,
+    CaptureEncode,
     StreamMjpegTick,
     StreamWsTick,
     InputDispatch,
     ClipboardRead,
     ClipboardWrite,
+    ModelSend,
+    ModelResponse,
+    ModelParse,
+    PolicyCheck,
+    Verification,
+    TraceWrite,
+    KillSwitchPropagation,
 }
 
 impl MetricKind {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 15] = [
         Self::CaptureScreenshot,
+        Self::CaptureQueueWait,
+        Self::CaptureEncode,
         Self::StreamMjpegTick,
         Self::StreamWsTick,
         Self::InputDispatch,
         Self::ClipboardRead,
         Self::ClipboardWrite,
+        Self::ModelSend,
+        Self::ModelResponse,
+        Self::ModelParse,
+        Self::PolicyCheck,
+        Self::Verification,
+        Self::TraceWrite,
+        Self::KillSwitchPropagation,
     ];
 
     fn index(self) -> usize {
         match self {
             Self::CaptureScreenshot => 0,
-            Self::StreamMjpegTick => 1,
-            Self::StreamWsTick => 2,
-            Self::InputDispatch => 3,
-            Self::ClipboardRead => 4,
-            Self::ClipboardWrite => 5,
+            Self::CaptureQueueWait => 1,
+            Self::CaptureEncode => 2,
+            Self::StreamMjpegTick => 3,
+            Self::StreamWsTick => 4,
+            Self::InputDispatch => 5,
+            Self::ClipboardRead => 6,
+            Self::ClipboardWrite => 7,
+            Self::ModelSend => 8,
+            Self::ModelResponse => 9,
+            Self::ModelParse => 10,
+            Self::PolicyCheck => 11,
+            Self::Verification => 12,
+            Self::TraceWrite => 13,
+            Self::KillSwitchPropagation => 14,
         }
     }
 
     fn name(self) -> &'static str {
         match self {
             Self::CaptureScreenshot => "capture.screenshot",
+            Self::CaptureQueueWait => "capture.queue_wait",
+            Self::CaptureEncode => "capture.encode",
             Self::StreamMjpegTick => "stream.mjpeg.tick",
             Self::StreamWsTick => "stream.ws.tick",
             Self::InputDispatch => "input.dispatch",
             Self::ClipboardRead => "clipboard.read",
             Self::ClipboardWrite => "clipboard.write",
+            Self::ModelSend => "model.send",
+            Self::ModelResponse => "model.response",
+            Self::ModelParse => "model.parse",
+            Self::PolicyCheck => "policy.check",
+            Self::Verification => "verification",
+            Self::TraceWrite => "trace.write",
+            Self::KillSwitchPropagation => "control.kill_switch.propagation",
         }
     }
 }
@@ -1014,6 +1088,10 @@ impl RuntimeMetrics {
         self.histograms[kind.index()].observe(duration);
     }
 
+    fn observe_ns(&self, kind: MetricKind, ns: u64) {
+        self.histograms[kind.index()].observe_ns(ns);
+    }
+
     fn increment(&self, kind: CounterKind) {
         self.counters[kind.index()].fetch_add(1, Ordering::Relaxed);
     }
@@ -1062,12 +1140,15 @@ impl MetricSeries {
     }
 
     fn observe(&self, duration: Duration) {
-        let ns = duration.as_nanos().min(u64::MAX as u128) as u64;
+        self.observe_ns(duration.as_nanos().min(u64::MAX as u128) as u64);
+    }
+
+    fn observe_ns(&self, ns: u64) {
         self.count.fetch_add(1, Ordering::Relaxed);
         self.total_ns.fetch_add(ns, Ordering::Relaxed);
         self.max_ns.fetch_max(ns, Ordering::Relaxed);
 
-        let ms = duration.as_millis().min(u64::MAX as u128) as u64;
+        let ms = ns / 1_000_000;
         for (index, upper_bound) in METRIC_BUCKETS_MS.iter().enumerate() {
             if ms <= *upper_bound {
                 self.buckets[index].fetch_add(1, Ordering::Relaxed);
@@ -1104,16 +1185,18 @@ async fn model_eval(
     State(state): State<DaemonState>,
     Json(request): Json<ModelEvalRequest>,
 ) -> Result<Json<EvalReport>, ApiError> {
-    let frame = state
+    let lookup = state
         .frame_bus
-        .latest_or_capture(CaptureRequest {
+        .latest_or_capture_timed(CaptureRequest {
             max_width: Some(640),
             encoding: FrameEncoding::Png,
             force_fresh: true,
         })
         .await
-        .map_err(ApiError::internal)?
-        .as_payload(true);
+        .map_err(ApiError::internal)?;
+    observe_frame_lookup(&state.metrics, &lookup);
+    let frame = lookup.frame.as_payload(true);
+    let parse_started = Instant::now();
     let mut config = EvalConfig::default();
     config.live = request.live.unwrap_or(false);
     config.max_calls = request.max_calls.unwrap_or(config.max_calls);
@@ -1122,8 +1205,24 @@ async fn model_eval(
             candidate.max_output_tokens = max_output_tokens;
         }
     }
+    state
+        .metrics
+        .observe(MetricKind::ModelParse, parse_started.elapsed());
     let key = std::env::var("OPENROUTER_API_KEY").ok();
-    Ok(Json(run_eval_report(config, Some(frame), key).await))
+    let send_started = Instant::now();
+    let report = run_eval_report(config, Some(frame), key).await;
+    state
+        .metrics
+        .observe(MetricKind::ModelSend, send_started.elapsed());
+    let response_started = Instant::now();
+    let response = Json(report);
+    state
+        .metrics
+        .observe(MetricKind::ModelResponse, response_started.elapsed());
+    state
+        .metrics
+        .observe(MetricKind::Verification, response_started.elapsed());
+    Ok(response)
 }
 
 #[derive(Debug)]

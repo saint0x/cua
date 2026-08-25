@@ -6,7 +6,8 @@
 
 use async_trait::async_trait;
 use cua_capture::{
-    encode_image, CaptureBackend, CaptureRequest, CapturedFrame, SyntheticCaptureBackend,
+    encode_image, CaptureBackend, CaptureRequest, CapturedFrame, CapturedFrameTimings,
+    SyntheticCaptureBackend,
 };
 use cua_core::{
     now_wall_ms, CursorState, DeliveryMode, DisplayInfo, Effect, Evidence, EvidenceKind,
@@ -146,6 +147,7 @@ fn capture_main_display(
     started: Instant,
     request: CaptureRequest,
 ) -> anyhow::Result<CapturedFrame> {
+    let capture_started = Instant::now();
     let display_id = unsafe { CGMainDisplayID() };
     let image = unsafe { CGDisplayCreateImage(display_id) };
     if image.is_null() {
@@ -153,7 +155,7 @@ fn capture_main_display(
             "CGDisplayCreateImage returned null; Screen Recording permission may be missing"
         );
     }
-    let result = unsafe { image_to_frame(started, display_id, image, request) };
+    let result = unsafe { image_to_frame(started, capture_started, display_id, image, request) };
     unsafe { CFRelease(image.cast()) };
     result
 }
@@ -169,6 +171,7 @@ fn capture_main_display(
 #[cfg(target_os = "macos")]
 unsafe fn image_to_frame(
     started: Instant,
+    capture_started: Instant,
     display_id: u32,
     image: *const std::ffi::c_void,
     request: CaptureRequest,
@@ -223,7 +226,9 @@ unsafe fn image_to_frame(
         }
     }
 
+    let encode_started = Instant::now();
     let bytes = encode_image(&buffer, request.encoding.clone())?;
+    let encode_ns = elapsed_ns(encode_started);
     let sha256 = format!("{:x}", Sha256::digest(&bytes));
     let byte_len = bytes.len();
     let frame_id = started.elapsed().as_millis() as u64;
@@ -257,7 +262,15 @@ unsafe fn image_to_frame(
             }],
         },
         bytes: Arc::new(bytes),
+        timings: CapturedFrameTimings {
+            capture_ns: elapsed_ns(capture_started),
+            encode_ns,
+        },
     })
+}
+
+fn elapsed_ns(started: Instant) -> u64 {
+    started.elapsed().as_nanos().min(u64::MAX as u128) as u64
 }
 
 #[cfg(target_os = "macos")]

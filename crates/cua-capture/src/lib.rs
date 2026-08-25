@@ -31,6 +31,20 @@ pub struct CaptureRequest {
 pub struct CapturedFrame {
     pub envelope: FrameEnvelope,
     pub bytes: Arc<Vec<u8>>,
+    pub timings: CapturedFrameTimings,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CapturedFrameTimings {
+    pub capture_ns: u64,
+    pub encode_ns: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct FrameLookup {
+    pub frame: CapturedFrame,
+    pub cache_hit: bool,
+    pub wait_ns: u64,
 }
 
 impl CapturedFrame {
@@ -62,14 +76,30 @@ impl FrameBus {
         &self,
         request: CaptureRequest,
     ) -> anyhow::Result<CapturedFrame> {
+        Ok(self.latest_or_capture_timed(request).await?.frame)
+    }
+
+    pub async fn latest_or_capture_timed(
+        &self,
+        request: CaptureRequest,
+    ) -> anyhow::Result<FrameLookup> {
+        let started = Instant::now();
         if !request.force_fresh {
             if let Some(frame) = self.latest.read().await.clone() {
-                return Ok(frame);
+                return Ok(FrameLookup {
+                    frame,
+                    cache_hit: true,
+                    wait_ns: elapsed_ns(started),
+                });
             }
         }
         let frame = self.backend.capture_latest(request).await?;
         *self.latest.write().await = Some(frame.clone());
-        Ok(frame)
+        Ok(FrameLookup {
+            frame,
+            cache_hit: false,
+            wait_ns: elapsed_ns(started),
+        })
     }
 
     pub fn spawn_capture_lane(
@@ -111,6 +141,10 @@ impl FrameBus {
     }
 }
 
+fn elapsed_ns(started: Instant) -> u64 {
+    started.elapsed().as_nanos().min(u64::MAX as u128) as u64
+}
+
 #[derive(Debug)]
 pub struct SyntheticCaptureBackend {
     started: Instant,
@@ -131,6 +165,7 @@ impl Default for SyntheticCaptureBackend {
 #[async_trait]
 impl CaptureBackend for SyntheticCaptureBackend {
     async fn capture_latest(&self, request: CaptureRequest) -> anyhow::Result<CapturedFrame> {
+        let capture_started = Instant::now();
         let width = request
             .max_width
             .unwrap_or(self.width)
@@ -147,7 +182,9 @@ impl CaptureBackend for SyntheticCaptureBackend {
             *pixel = Rgba([red, green, blue, 255]);
         }
 
+        let encode_started = Instant::now();
         let bytes = encode_image(&image, request.encoding.clone())?;
+        let encode_ns = elapsed_ns(encode_started);
         let sha256 = format!("{:x}", Sha256::digest(&bytes));
         let byte_len = bytes.len();
         let envelope = FrameEnvelope {
@@ -179,6 +216,10 @@ impl CaptureBackend for SyntheticCaptureBackend {
         Ok(CapturedFrame {
             envelope,
             bytes: Arc::new(bytes),
+            timings: CapturedFrameTimings {
+                capture_ns: elapsed_ns(capture_started),
+                encode_ns,
+            },
         })
     }
 

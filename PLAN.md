@@ -19,10 +19,6 @@
 
 1. Expand eval cases from contract probes to desktop-action tasks with screenshot fixtures and external oracles.
 
-## Performance
-
-1. Add histograms for encode, queue wait, model send, model response, parse, policy, verification, trace write, and kill-switch propagation.
-
 ## Verification
 
 1. Add host-backed GUI tests for macOS backend/action cells.
