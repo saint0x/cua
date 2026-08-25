@@ -272,13 +272,19 @@ fn dot(alpha: f32) -> impl IntoElement {
         .bg(hsla(244.0 / 360.0, 0.92, 0.70, alpha))
 }
 
+fn should_reset_after_reply_collapse(reply_window_expired: bool, response_progress: f32) -> bool {
+    reply_window_expired && response_progress == 0.0
+}
+
 impl Render for VoiceHud {
     fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         self.drain_events();
-        if self.snapshot.expanded_until.is_some() && !self.snapshot.is_expanded() {
+        let reply_window_expired =
+            self.snapshot.expanded_until.is_some() && !self.snapshot.is_expanded();
+        self.tick_animation();
+        if should_reset_after_reply_collapse(reply_window_expired, self.response_progress) {
             self.snapshot.apply(VoiceUiEvent::Idle);
         }
-        self.tick_animation();
         window.request_animation_frame();
         let display = HudDisplay::from_snapshot(&self.snapshot);
         let metrics = HudMetrics::interpolate(self.response_progress);
@@ -577,6 +583,13 @@ mod tests {
 
     fn demo_should_run_for_path(requested: bool, path: &Path) -> bool {
         requested && !path_looks_packaged_app(path)
+    }
+
+    #[test]
+    fn reply_snapshot_survives_until_collapse_is_invisible() {
+        assert!(!should_reset_after_reply_collapse(true, 0.42));
+        assert!(should_reset_after_reply_collapse(true, 0.0));
+        assert!(!should_reset_after_reply_collapse(false, 0.0));
     }
 
     #[test]
