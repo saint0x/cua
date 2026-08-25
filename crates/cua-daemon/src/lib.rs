@@ -51,7 +51,7 @@ pub struct DaemonState {
     pub clipboard: Arc<RwLock<Option<String>>>,
     metrics: Arc<RuntimeMetrics>,
     events: EventLane,
-    trace: Option<TraceWriter>,
+    trace_lane: Option<TraceLane>,
 }
 
 impl DaemonState {
@@ -74,9 +74,10 @@ impl DaemonState {
             clipboard: Arc::new(RwLock::new(None)),
             metrics: Arc::new(RuntimeMetrics::default()),
             events,
-            trace: std::env::var("CUA_TRACE_DIR")
+            trace_lane: std::env::var("CUA_TRACE_DIR")
                 .ok()
-                .and_then(|dir| TraceWriter::from_dir(dir).ok()),
+                .and_then(|dir| TraceWriter::from_dir(dir).ok())
+                .map(|writer| TraceLane::spawn(writer, trace_lane_capacity())),
         };
         state.publish_event("daemon_started", serde_json::json!({}));
         state
@@ -351,6 +352,68 @@ fn event_lane_retention() -> usize {
 fn monotonic_event_sequence() -> u64 {
     static SEQUENCE: AtomicU64 = AtomicU64::new(1);
     SEQUENCE.fetch_add(1, Ordering::Relaxed)
+}
+
+#[derive(Clone)]
+struct TraceLane {
+    sender: mpsc::Sender<TraceJob>,
+    dir: PathBuf,
+}
+
+enum TraceJob {
+    Artifact {
+        relative_path: String,
+        bytes: Arc<Vec<u8>>,
+    },
+    Record(TraceRecord),
+}
+
+impl TraceLane {
+    fn spawn(writer: TraceWriter, capacity: usize) -> Self {
+        let dir = writer.dir().to_path_buf();
+        let (sender, mut receiver) = mpsc::channel::<TraceJob>(capacity);
+        tokio::spawn(async move {
+            while let Some(job) = receiver.recv().await {
+                match job {
+                    TraceJob::Artifact {
+                        relative_path,
+                        bytes,
+                    } => {
+                        let _ = writer.write_artifact(relative_path, bytes.as_ref()).await;
+                    }
+                    TraceJob::Record(record) => {
+                        let _ = writer.append(&record).await;
+                    }
+                }
+            }
+        });
+        Self { sender, dir }
+    }
+
+    fn enqueue_artifact(&self, relative_path: String, bytes: Arc<Vec<u8>>) -> bool {
+        self.sender
+            .try_send(TraceJob::Artifact {
+                relative_path,
+                bytes,
+            })
+            .is_ok()
+    }
+
+    fn enqueue_record(&self, record: TraceRecord) -> bool {
+        self.sender.try_send(TraceJob::Record(record)).is_ok()
+    }
+
+    fn dir(&self) -> &std::path::Path {
+        &self.dir
+    }
+}
+
+fn trace_lane_capacity() -> usize {
+    std::env::var("CUA_TRACE_QUEUE_CAPACITY")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(256)
 }
 
 pub fn router(state: DaemonState) -> Router {
@@ -898,7 +961,7 @@ struct TraceSnapshot {
 }
 
 async fn trace_snapshot(state: &DaemonState, turn_id: &str, phase: &str) -> Option<TraceSnapshot> {
-    let writer = state.trace.as_ref()?;
+    let trace_lane = state.trace_lane.as_ref()?;
     let lookup = state
         .frame_bus
         .latest_or_capture_timed(CaptureRequest {
@@ -912,10 +975,10 @@ async fn trace_snapshot(state: &DaemonState, turn_id: &str, phase: &str) -> Opti
     let frame = lookup.frame;
     let relative = format!("frames/{turn_id}_{phase}.png");
     let trace_started = Instant::now();
-    writer
-        .write_artifact(&relative, frame.bytes.as_ref().as_slice())
-        .await
-        .ok()?;
+    if !trace_lane.enqueue_artifact(relative.clone(), frame.bytes.clone()) {
+        state.metrics.increment(CounterKind::TraceDrops);
+        return None;
+    }
     state
         .metrics
         .observe(MetricKind::TraceWrite, trace_started.elapsed());
@@ -933,7 +996,7 @@ async fn append_action_turn(
     before: Option<TraceSnapshot>,
     after: Option<TraceSnapshot>,
 ) {
-    let Some(writer) = state.trace.as_ref() else {
+    let Some(trace_lane) = state.trace_lane.as_ref() else {
         return;
     };
     let evidence = result
@@ -963,13 +1026,16 @@ async fn append_action_turn(
         evidence,
         session: serde_json::json!({
             "profile": state.profile,
-            "trace_dir": writer.dir().display().to_string(),
+            "trace_dir": trace_lane.dir().display().to_string(),
             "capture_backend": state.frame_bus.backend_name(),
             "input_backend": state.input_lane.name()
         }),
     });
     let trace_started = Instant::now();
-    let _ = writer.append(&record).await;
+    if !trace_lane.enqueue_record(record) {
+        state.metrics.increment(CounterKind::TraceDrops);
+        return;
+    }
     state
         .metrics
         .observe(MetricKind::TraceWrite, trace_started.elapsed());
@@ -1384,16 +1450,18 @@ enum CounterKind {
     ClipboardRefusals,
     EventDrops,
     PermissionFallbacks,
+    TraceDrops,
 }
 
 impl CounterKind {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 7] = [
         Self::MjpegFrames,
         Self::WsFrames,
         Self::InputRefusals,
         Self::ClipboardRefusals,
         Self::EventDrops,
         Self::PermissionFallbacks,
+        Self::TraceDrops,
     ];
 
     fn index(self) -> usize {
@@ -1404,6 +1472,7 @@ impl CounterKind {
             Self::ClipboardRefusals => 3,
             Self::EventDrops => 4,
             Self::PermissionFallbacks => 5,
+            Self::TraceDrops => 6,
         }
     }
 
@@ -1415,6 +1484,7 @@ impl CounterKind {
             Self::ClipboardRefusals => "clipboard.refusals",
             Self::EventDrops => "events.dropped",
             Self::PermissionFallbacks => "permission.fallbacks",
+            Self::TraceDrops => "trace.dropped",
         }
     }
 }
@@ -1776,6 +1846,26 @@ mod tests {
         };
 
         assert!(!lane.publish("overflow", serde_json::json!({})));
+    }
+
+    #[test]
+    fn trace_lane_refuses_when_queue_is_full() {
+        let (sender, _receiver) = mpsc::channel(1);
+        sender
+            .try_send(TraceJob::Record(TraceRecord::Marker {
+                name: "held".to_string(),
+                at_wall_ms: now_wall_ms(),
+            }))
+            .unwrap();
+        let lane = TraceLane {
+            sender,
+            dir: PathBuf::from("trace-test"),
+        };
+
+        assert!(!lane.enqueue_record(TraceRecord::Marker {
+            name: "overflow".to_string(),
+            at_wall_ms: now_wall_ms(),
+        }));
     }
 
     #[tokio::test]
