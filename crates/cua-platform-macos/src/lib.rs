@@ -12,11 +12,15 @@ use cua_capture::{
 use cua_core::{
     now_wall_ms, CursorState, DeliveryMode, DisplayInfo, Effect, Evidence, EvidenceKind,
     FrameEnvelope, InputAction, InputRequest, InputResult, InputRoute, MouseButton,
-    PermissionReport, PermissionState, Rect, SCHEMA_VERSION,
+    PermissionReport, PermissionState, Rect, WindowInfo, SCHEMA_VERSION,
 };
 use cua_input::{InputBackend, RefusingInputBackend};
 use image::{imageops::FilterType, ImageBuffer, Rgba};
 use sha2::{Digest, Sha256};
+#[cfg(target_os = "macos")]
+use std::ffi::CStr;
+#[cfg(target_os = "macos")]
+use std::os::raw::c_char;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -142,6 +146,14 @@ pub fn permission_report() -> PermissionReport {
     }
 }
 
+pub fn cursor_state() -> CursorState {
+    native_cursor_state()
+}
+
+pub fn window_list() -> anyhow::Result<Vec<WindowInfo>> {
+    native_window_list()
+}
+
 #[cfg(target_os = "macos")]
 fn capture_main_display(
     started: Instant,
@@ -248,12 +260,7 @@ unsafe fn image_to_frame(
             encoding: request.encoding,
             byte_len,
             sha256,
-            cursor: CursorState {
-                x: (width / 2) as f64,
-                y: (height / 2) as f64,
-                visible: true,
-                included_in_frame: false,
-            },
+            cursor: native_cursor_state(),
             damage_rects: vec![Rect {
                 x: 0,
                 y: 0,
@@ -287,6 +294,149 @@ fn native_displays() -> anyhow::Result<Vec<DisplayInfo>> {
         scale_factor: 1.0,
         active: true,
     }])
+}
+
+#[cfg(target_os = "macos")]
+fn native_cursor_state() -> CursorState {
+    let event = unsafe { CGEventCreate(std::ptr::null()) };
+    if event.is_null() {
+        return CursorState {
+            x: 0.0,
+            y: 0.0,
+            visible: false,
+            included_in_frame: false,
+        };
+    }
+    let point = unsafe { CGEventGetLocation(event) };
+    unsafe { CFRelease(event.cast()) };
+    CursorState {
+        x: point.x,
+        y: point.y,
+        visible: true,
+        included_in_frame: false,
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn native_cursor_state() -> CursorState {
+    CursorState {
+        x: 0.0,
+        y: 0.0,
+        visible: false,
+        included_in_frame: false,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn native_window_list() -> anyhow::Result<Vec<WindowInfo>> {
+    let array = unsafe { CGWindowListCopyWindowInfo(CG_WINDOW_LIST_OPTION_ON_SCREEN_ONLY, 0) };
+    if array.is_null() {
+        return Ok(Vec::new());
+    }
+    let count = unsafe { CFArrayGetCount(array) };
+    let mut windows = Vec::new();
+    let mut focused_assigned = false;
+    for index in 0..count {
+        let dict = unsafe { CFArrayGetValueAtIndex(array, index) };
+        if dict.is_null() {
+            continue;
+        }
+        let layer = cf_i64(dict, unsafe { kCGWindowLayer }.cast()).unwrap_or_default();
+        if layer != 0 {
+            continue;
+        }
+        let Some(bounds_dict) = cf_value(dict, unsafe { kCGWindowBounds }.cast()) else {
+            continue;
+        };
+        let mut rect = CGRect {
+            origin: CGPoint { x: 0.0, y: 0.0 },
+            size: CGSize {
+                width: 0.0,
+                height: 0.0,
+            },
+        };
+        if !unsafe { CGRectMakeWithDictionaryRepresentation(bounds_dict.cast(), &mut rect) } {
+            continue;
+        }
+        if rect.size.width <= 0.0 || rect.size.height <= 0.0 {
+            continue;
+        }
+        let id = cf_i64(dict, unsafe { kCGWindowNumber }.cast())
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| format!("window-{index}"));
+        let focused = !focused_assigned;
+        focused_assigned |= focused;
+        windows.push(WindowInfo {
+            id,
+            app_name: cf_string(dict, unsafe { kCGWindowOwnerName }.cast()),
+            title: cf_string(dict, unsafe { kCGWindowName }.cast()),
+            x: rect.origin.x.round() as i32,
+            y: rect.origin.y.round() as i32,
+            width: rect.size.width.round().max(0.0) as u32,
+            height: rect.size.height.round().max(0.0) as u32,
+            focused,
+        });
+    }
+    unsafe { CFRelease(array.cast()) };
+    Ok(windows)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn native_window_list() -> anyhow::Result<Vec<WindowInfo>> {
+    anyhow::bail!("macOS window backend is only available on macOS")
+}
+
+#[cfg(target_os = "macos")]
+fn cf_value(
+    dict: *const std::ffi::c_void,
+    key: *const std::ffi::c_void,
+) -> Option<*const std::ffi::c_void> {
+    let mut value = std::ptr::null();
+    let found = unsafe { CFDictionaryGetValueIfPresent(dict, key, &mut value) };
+    found.then_some(value).filter(|value| !value.is_null())
+}
+
+#[cfg(target_os = "macos")]
+fn cf_i64(dict: *const std::ffi::c_void, key: *const std::ffi::c_void) -> Option<i64> {
+    let value = cf_value(dict, key)?;
+    let mut out = 0_i64;
+    unsafe {
+        CFNumberGetValue(
+            value,
+            K_CF_NUMBER_SINT64_TYPE,
+            (&mut out as *mut i64).cast(),
+        )
+    }
+    .then_some(out)
+}
+
+#[cfg(target_os = "macos")]
+fn cf_string(dict: *const std::ffi::c_void, key: *const std::ffi::c_void) -> Option<String> {
+    let value = cf_value(dict, key)?;
+    let direct = unsafe { CFStringGetCStringPtr(value, K_CF_STRING_ENCODING_UTF8) };
+    if !direct.is_null() {
+        return Some(
+            unsafe { CStr::from_ptr(direct) }
+                .to_string_lossy()
+                .into_owned(),
+        );
+    }
+    let len = unsafe { CFStringGetLength(value) };
+    let capacity = (len.saturating_mul(4) + 1).max(1) as usize;
+    let mut buffer = vec![0_i8; capacity];
+    let ok = unsafe {
+        CFStringGetCString(
+            value,
+            buffer.as_mut_ptr(),
+            buffer.len() as isize,
+            K_CF_STRING_ENCODING_UTF8,
+        )
+    };
+    ok.then(|| {
+        unsafe { CStr::from_ptr(buffer.as_ptr()) }
+            .to_string_lossy()
+            .into_owned()
+    })
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -575,7 +725,14 @@ unsafe extern "C" {
     fn CGPreflightScreenCaptureAccess() -> bool;
     fn AXIsProcessTrusted() -> bool;
     fn CGMainDisplayID() -> u32;
+    fn CGEventCreate(source: *const std::ffi::c_void) -> *const std::ffi::c_void;
+    fn CGEventGetLocation(event: *const std::ffi::c_void) -> CGPoint;
     fn CGDisplayCreateImage(display: u32) -> *const std::ffi::c_void;
+    fn CGWindowListCopyWindowInfo(option: u32, relative_to_window: u32) -> *const std::ffi::c_void;
+    fn CGRectMakeWithDictionaryRepresentation(
+        dict: *const std::ffi::c_void,
+        rect: *mut CGRect,
+    ) -> bool;
     fn CGImageGetWidth(image: *const std::ffi::c_void) -> usize;
     fn CGImageGetHeight(image: *const std::ffi::c_void) -> usize;
     fn CGImageGetBitsPerPixel(image: *const std::ffi::c_void) -> usize;
@@ -602,10 +759,39 @@ unsafe extern "C" {
     fn CGEventSetFlags(event: *const std::ffi::c_void, flags: u64);
     fn CFDataGetBytePtr(data: *const std::ffi::c_void) -> *const u8;
     fn CFDataGetLength(data: *const std::ffi::c_void) -> usize;
+    fn CFArrayGetCount(array: *const std::ffi::c_void) -> isize;
+    fn CFArrayGetValueAtIndex(
+        array: *const std::ffi::c_void,
+        index: isize,
+    ) -> *const std::ffi::c_void;
+    fn CFDictionaryGetValueIfPresent(
+        dict: *const std::ffi::c_void,
+        key: *const std::ffi::c_void,
+        value: *mut *const std::ffi::c_void,
+    ) -> bool;
+    fn CFNumberGetValue(
+        number: *const std::ffi::c_void,
+        the_type: i32,
+        value: *mut std::ffi::c_void,
+    ) -> bool;
+    fn CFStringGetCStringPtr(string: *const std::ffi::c_void, encoding: u32) -> *const c_char;
+    fn CFStringGetCString(
+        string: *const std::ffi::c_void,
+        buffer: *mut c_char,
+        buffer_size: isize,
+        encoding: u32,
+    ) -> bool;
+    fn CFStringGetLength(string: *const std::ffi::c_void) -> isize;
     fn CGDisplayPixelsWide(display: u32) -> usize;
     fn CGDisplayPixelsHigh(display: u32) -> usize;
     fn CGDisplayBounds(display: u32) -> CGRect;
     fn CFRelease(cf: *const std::ffi::c_void);
+
+    static kCGWindowNumber: *const std::ffi::c_void;
+    static kCGWindowOwnerName: *const std::ffi::c_void;
+    static kCGWindowName: *const std::ffi::c_void;
+    static kCGWindowBounds: *const std::ffi::c_void;
+    static kCGWindowLayer: *const std::ffi::c_void;
 }
 
 #[cfg(target_os = "macos")]
@@ -634,6 +820,12 @@ struct CGRect {
 
 #[cfg(target_os = "macos")]
 const CG_HID_EVENT_TAP: u32 = 0;
+#[cfg(target_os = "macos")]
+const CG_WINDOW_LIST_OPTION_ON_SCREEN_ONLY: u32 = 1;
+#[cfg(target_os = "macos")]
+const K_CF_NUMBER_SINT64_TYPE: i32 = 4;
+#[cfg(target_os = "macos")]
+const K_CF_STRING_ENCODING_UTF8: u32 = 0x0800_0100;
 #[cfg(target_os = "macos")]
 const CG_EVENT_LEFT_MOUSE_DOWN: u32 = 1;
 #[cfg(target_os = "macos")]
@@ -687,5 +879,20 @@ mod tests {
     fn input_backend_selection_is_available() {
         let backend = input_backend_or_refusing();
         assert!(matches!(backend.name(), "macos-cgevent" | "refusing"));
+    }
+
+    #[test]
+    fn native_cursor_observation_is_finite() {
+        let cursor = cursor_state();
+        assert!(cursor.x.is_finite());
+        assert!(cursor.y.is_finite());
+    }
+
+    #[test]
+    fn native_window_observation_has_valid_geometry() {
+        let windows = window_list().unwrap();
+        assert!(windows
+            .iter()
+            .all(|window| window.width > 0 && window.height > 0));
     }
 }

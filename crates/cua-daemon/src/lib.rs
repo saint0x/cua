@@ -570,19 +570,12 @@ async fn observe_desktop(State(state): State<DaemonState>) -> Result<Json<Deskto
         .await
         .map_err(ApiError::internal)?;
     let latest_frame = state.frame_bus.latest_envelope().await;
-    let cursor = latest_frame
-        .as_ref()
-        .map(|f| f.cursor.clone())
-        .unwrap_or(cua_core::CursorState {
-            x: 0.0,
-            y: 0.0,
-            visible: false,
-            included_in_frame: false,
-        });
+    let cursor = cua_platform_macos::cursor_state();
+    let windows = cua_platform_macos::window_list().map_err(ApiError::internal)?;
     Ok(Json(DesktopState {
         schema_version: SCHEMA_VERSION.to_string(),
         displays,
-        windows: Vec::new(),
+        windows,
         cursor,
         permissions: cua_platform_macos::permission_report(),
         latest_frame,
@@ -602,18 +595,8 @@ async fn observe_displays(
 }
 
 async fn observe_cursor(State(state): State<DaemonState>) -> Json<cua_core::CursorState> {
-    let cursor = state
-        .frame_bus
-        .latest_envelope()
-        .await
-        .map(|f| f.cursor)
-        .unwrap_or(cua_core::CursorState {
-            x: 0.0,
-            y: 0.0,
-            visible: false,
-            included_in_frame: false,
-        });
-    Json(cursor)
+    drop(state);
+    Json(cua_platform_macos::cursor_state())
 }
 
 async fn events() -> Json<Vec<serde_json::Value>> {
