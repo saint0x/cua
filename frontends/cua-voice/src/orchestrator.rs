@@ -7,7 +7,7 @@ use crate::ui_state::VoiceUiEvent;
 use anyhow::Context;
 use cua_core::{DesktopState, FramePayload};
 use std::sync::mpsc::Sender;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 type ScreenshotTask = tokio::task::JoinHandle<anyhow::Result<FramePayload>>;
 type ObservationTask = tokio::task::JoinHandle<anyhow::Result<DesktopState>>;
@@ -97,6 +97,7 @@ async fn transcribe_and_run_turn_after_local(
     local_task: LocalTask,
     tx: Sender<VoiceUiEvent>,
 ) -> anyhow::Result<()> {
+    let turn_started = Instant::now();
     let api_key = std::env::var("OPENROUTER_API_KEY").context("OPENROUTER_API_KEY is required")?;
     tx.send(VoiceUiEvent::Transcribing).ok();
     let stt_model = config.stt_model.clone();
@@ -106,7 +107,9 @@ async fn transcribe_and_run_turn_after_local(
             .transcribe_wav(&stt_api_key, &wav_bytes)
             .await
     });
+    let overlap_started = Instant::now();
     let (local, transcript) = tokio::join!(local_task, stt_task);
+    send_metric(&tx, "stt_preflight_overlap_ms", overlap_started.elapsed());
     let local = local.context("join local daemon preflight")??;
     let transcript = transcript.context("join speech to text")??;
     tx.send(VoiceUiEvent::Transcript(transcript.clone())).ok();
@@ -119,9 +122,11 @@ async fn transcribe_and_run_turn_after_local(
         local,
         Some(screenshot_task),
         Some(observation_task),
-        tx,
+        tx.clone(),
     )
-    .await
+    .await?;
+    send_metric(&tx, "turn_total_ms", turn_started.elapsed());
+    Ok(())
 }
 
 async fn run_transcript_turn(
@@ -129,10 +134,13 @@ async fn run_transcript_turn(
     transcript: String,
     tx: Sender<VoiceUiEvent>,
 ) -> anyhow::Result<()> {
+    let turn_started = Instant::now();
     tx.send(VoiceUiEvent::Armed).ok();
     let local = preflight_local_client(&config.profile).await?;
     tx.send(VoiceUiEvent::Transcript(transcript.clone())).ok();
-    plan_and_dispatch(config, transcript, None, local, None, None, tx).await
+    plan_and_dispatch(config, transcript, None, local, None, None, tx.clone()).await?;
+    send_metric(&tx, "turn_total_ms", turn_started.elapsed());
+    Ok(())
 }
 
 async fn plan_and_dispatch(
@@ -144,6 +152,7 @@ async fn plan_and_dispatch(
     observation_task: Option<ObservationTask>,
     tx: Sender<VoiceUiEvent>,
 ) -> anyhow::Result<()> {
+    let plan_started = Instant::now();
     let plan = if let Some(plan) = parse_fast_command(&transcript) {
         if let Some(task) = screenshot_task {
             task.abort();
@@ -170,6 +179,7 @@ async fn plan_and_dispatch(
             .plan(&api_key, &transcript, frame.as_ref(), desktop.as_ref())
             .await?
     };
+    send_metric(&tx, "plan_ms", plan_started.elapsed());
     dispatch_plan(local, plan, tx).await
 }
 
@@ -201,7 +211,9 @@ async fn dispatch_plan(
     if let Some(action) = &plan.action {
         tx.send(VoiceUiEvent::Dispatching(format!("{action:?}")))
             .ok();
+        let dispatch_started = Instant::now();
         let result = local.dispatch(action).await?;
+        send_metric(&tx, "dispatch_ms", dispatch_started.elapsed());
         tx.send(VoiceUiEvent::Reply(format!(
             "{} {}",
             plan.response,
@@ -239,4 +251,12 @@ fn spawn_observation_prefetch(local: CuaClient) -> ObservationTask {
 
 fn spawn_local_preflight(profile: String) -> LocalTask {
     tokio::spawn(async move { preflight_local_client(&profile).await })
+}
+
+fn send_metric(tx: &Sender<VoiceUiEvent>, name: &'static str, elapsed: Duration) {
+    tx.send(VoiceUiEvent::Metric {
+        name: name.to_string(),
+        ms: elapsed.as_millis().min(u128::from(u64::MAX)) as u64,
+    })
+    .ok();
 }

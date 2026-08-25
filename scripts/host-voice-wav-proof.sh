@@ -123,7 +123,11 @@ jq -s -e '
   any(.event == "transcript" and (.text | ascii_downcase | contains($expect_transcript))) and
   any(.event == "planning" and .tool == $expect_tool) and
   any(.event == "dispatching" and (.action | optional_contains($expect_dispatch))) and
-  any(.event == "reply" and (.text | ascii_downcase | optional_contains($expect_reply)) and (.text | ascii_downcase | optional_contains($expect_reply_2)))
+  any(.event == "reply" and (.text | ascii_downcase | optional_contains($expect_reply)) and (.text | ascii_downcase | optional_contains($expect_reply_2))) and
+  any(.event == "metric" and .name == "stt_preflight_overlap_ms") and
+  any(.event == "metric" and .name == "plan_ms") and
+  any(.event == "metric" and .name == "dispatch_ms") and
+  any(.event == "metric" and .name == "turn_total_ms")
 ' \
   --arg expect_transcript "$(printf '%s' "$EXPECT_TRANSCRIPT" | tr '[:upper:]' '[:lower:]')" \
   --arg expect_tool "$EXPECT_TOOL" \
@@ -157,6 +161,7 @@ jq -n \
     budget_ms: $budget_ms,
     within_budget: ($elapsed_ms <= $budget_ms),
     events: ($events | map(.event)),
+    metrics: ($events | map(select(.event == "metric")) | map({(.name): .ms}) | add),
     transcript: (($events | map(select(.event == "transcript")) | first).text),
     dispatch: (($events | map(select(.event == "dispatching")) | first).action),
     reply: (($events | map(select(.event == "reply")) | first).text),

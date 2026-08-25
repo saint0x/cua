@@ -336,6 +336,9 @@ fn print_headless_events(rx: Receiver<VoiceUiEvent>) {
             }
             VoiceUiEvent::Reply(text) => serde_json::json!({"event": "reply", "text": text}),
             VoiceUiEvent::Error(text) => serde_json::json!({"event": "error", "text": text}),
+            VoiceUiEvent::Metric { name, ms } => {
+                serde_json::json!({"event": "metric", "name": name, "ms": ms})
+            }
             VoiceUiEvent::Idle => serde_json::json!({"event": "idle"}),
         };
         println!("{value}");

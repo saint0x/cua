@@ -109,6 +109,7 @@ impl HudSnapshot {
                 self.response = Some(text);
                 self.expanded_until = Some(Instant::now() + Duration::from_secs(5));
             }
+            VoiceUiEvent::Metric { .. } => {}
             VoiceUiEvent::Idle => {
                 *self = Self::default();
             }
@@ -142,6 +143,7 @@ pub enum VoiceUiEvent {
     Dispatching(String),
     Reply(String),
     Error(String),
+    Metric { name: String, ms: u64 },
     Idle,
 }
 
