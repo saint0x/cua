@@ -44,10 +44,10 @@ pub struct HudDisplay {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HudRow {
-    pub label: &'static str,
-    pub tool: &'static str,
-    pub app: &'static str,
-    pub age: &'static str,
+    pub label: String,
+    pub tool: String,
+    pub app: String,
+    pub age: String,
 }
 
 impl HudDisplay {
@@ -63,26 +63,67 @@ impl HudDisplay {
             .unwrap_or_else(|| snapshot.step.label.clone());
 
         Self {
-            title: snapshot.task.clone(),
+            title: snapshot
+                .transcript
+                .as_ref()
+                .map(|transcript| compact_label(transcript, 34))
+                .unwrap_or_else(|| snapshot.task.clone()),
             prompt,
             result,
             phase: snapshot.phase.label(),
             tool: short_tool(&snapshot.tool),
-            rows: [
-                HudRow {
-                    label: "voice listener",
-                    tool: "Rust",
-                    app: "Mic",
-                    age: "live",
-                },
-                HudRow {
-                    label: "local action",
-                    tool: "Socket",
-                    app: "macOS",
-                    age: "fast",
-                },
-            ],
+            rows: action_rows(snapshot),
         }
+    }
+}
+
+fn action_rows(snapshot: &HudSnapshot) -> [HudRow; 2] {
+    let transcript = snapshot
+        .transcript
+        .as_ref()
+        .map(|transcript| compact_label(transcript, 36))
+        .unwrap_or_else(|| "listening for voice".to_string());
+    let action = snapshot
+        .response
+        .as_ref()
+        .map(|response| compact_label(response, 36))
+        .unwrap_or_else(|| compact_label(&snapshot.step.label, 36));
+    [
+        HudRow {
+            label: transcript,
+            tool: match snapshot.phase {
+                crate::ui_state::HudPhase::Listening => "Mic".to_string(),
+                crate::ui_state::HudPhase::Transcribing => "STT".to_string(),
+                _ => short_tool(&snapshot.tool),
+            },
+            app: snapshot.phase.label().to_string(),
+            age: "now".to_string(),
+        },
+        HudRow {
+            label: action,
+            tool: short_tool(&snapshot.tool),
+            app: if snapshot.tool.contains("Unix") || snapshot.tool.contains("socket") {
+                "macOS".to_string()
+            } else {
+                "CUA".to_string()
+            },
+            age: if snapshot.response.is_some() {
+                "done".to_string()
+            } else {
+                "live".to_string()
+            },
+        },
+    ]
+}
+
+pub fn compact_label(value: &str, max_chars: usize) -> String {
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut chars = normalized.chars();
+    let label = chars.by_ref().take(max_chars).collect::<String>();
+    if chars.next().is_some() {
+        format!("{label}...")
+    } else {
+        label
     }
 }
 
@@ -124,6 +165,32 @@ mod tests {
         assert_eq!(display.prompt, "Click 640 360");
         assert_eq!(display.result, "Clicked.");
         assert_eq!(display.phase, "Reply");
+    }
+
+    #[test]
+    fn display_rows_follow_actual_voice_turn_state() {
+        let mut snapshot = HudSnapshot::default();
+        snapshot.apply(VoiceUiEvent::Transcript("Move 10-20.".to_string()));
+        snapshot.apply(VoiceUiEvent::Planning {
+            tool: "Command parser".to_string(),
+        });
+        snapshot.apply(VoiceUiEvent::Dispatching(
+            "MouseMove { x: 10, y: 20 }".to_string(),
+        ));
+
+        let display = HudDisplay::from_snapshot(&snapshot);
+
+        assert_eq!(display.title, "Move 10-20.");
+        assert_eq!(display.rows[0].label, "Move 10-20.");
+        assert_eq!(display.rows[1].tool, "Socket");
+        assert_eq!(display.rows[1].app, "macOS");
+    }
+
+    #[test]
+    fn compact_labels_are_bounded() {
+        let label = compact_label("one two three four five six", 13);
+
+        assert_eq!(label, "one two three...");
     }
 
     #[test]

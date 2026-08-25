@@ -187,7 +187,7 @@ impl VoiceHud {
             .child(self.orb())
             .child(
                 div()
-                    .w(px(138.0))
+                    .w(px(132.0))
                     .truncate()
                     .text_color(rgb(0xf2f2f6))
                     .text_sm()
@@ -196,19 +196,18 @@ impl VoiceHud {
             .child(Self::divider())
             .child(
                 div()
-                    .w(px(172.0))
+                    .w(px(150.0))
                     .truncate()
                     .text_color(rgb(0xb9b9c0))
                     .text_xs()
                     .child(format!(
                         "Step {}/{}   {}",
-                        self.snapshot.step.index,
-                        self.snapshot.step.total,
-                        self.snapshot.step.label
+                        self.snapshot.step.index, self.snapshot.step.total, display.rows[1].label
                     )),
             )
             .child(Self::divider())
             .child(Self::chip(display.tool.clone()))
+            .child(Self::chip(display.rows[1].app.clone()))
             .child(div().flex_1())
             .child(Self::activity_dots())
     }
