@@ -293,6 +293,8 @@ impl VoiceStepPublisher {
                             .ui_step(
                                 label,
                                 Some(VOICE_STEP_SOURCE.to_string()),
+                                Some("Voice control".to_string()),
+                                None,
                                 Some(VOICE_STEP_TTL_MS),
                             )
                             .await
@@ -301,6 +303,8 @@ impl VoiceStepPublisher {
                             .ui_step(
                                 label,
                                 Some(VOICE_STEP_SOURCE.to_string()),
+                                Some("Voice control".to_string()),
+                                None,
                                 Some(VOICE_STEP_TTL_MS),
                             )
                             .await

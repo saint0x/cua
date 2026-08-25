@@ -2465,6 +2465,18 @@
             "null"
           ]
         },
+        "task": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tool": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "ttl_ms": {
           "format": "uint64",
           "minimum": 0.0,
@@ -2494,6 +2506,18 @@
           "type": "string"
         },
         "source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "task": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tool": {
           "type": [
             "string",
             "null"

@@ -97,10 +97,18 @@ impl HudSnapshot {
                 self.step = HudStep::new(4, 4, action);
                 self.tool = "Unix socket".to_string();
             }
-            VoiceUiEvent::AgentStep { label, source } => {
+            VoiceUiEvent::AgentStep {
+                label,
+                source,
+                task,
+                tool,
+            } => {
                 self.phase = HudPhase::Planning;
                 self.step = HudStep::new(3, 4, label);
-                self.tool = source.unwrap_or_else(|| "Agent".to_string());
+                if let Some(task) = task {
+                    self.task = task;
+                }
+                self.tool = tool.or(source).unwrap_or_else(|| "Agent".to_string());
             }
             VoiceUiEvent::Reply(text) => {
                 self.phase = HudPhase::Reply;
@@ -153,6 +161,8 @@ pub enum VoiceUiEvent {
     AgentStep {
         label: String,
         source: Option<String>,
+        task: Option<String>,
+        tool: Option<String>,
     },
     Reply(String),
     Error(String),
@@ -208,11 +218,14 @@ mod tests {
         state.apply(VoiceUiEvent::AgentStep {
             label: "checking target position".to_string(),
             source: Some("planner".to_string()),
+            task: Some("Click target".to_string()),
+            tool: Some("vision".to_string()),
         });
 
         assert_eq!(state.phase, HudPhase::Planning);
+        assert_eq!(state.task, "Click target");
         assert_eq!(state.step.label, "checking target position");
-        assert_eq!(state.tool, "planner");
+        assert_eq!(state.tool, "vision");
         assert_eq!(state.transcript.as_deref(), Some("find the red button"));
     }
 }

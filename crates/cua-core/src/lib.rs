@@ -223,6 +223,8 @@ pub struct UiStepRequest {
     pub schema_version: String,
     pub label: String,
     pub source: Option<String>,
+    pub task: Option<String>,
+    pub tool: Option<String>,
     pub ttl_ms: Option<u64>,
 }
 
@@ -232,6 +234,8 @@ pub struct UiStepResult {
     pub accepted: bool,
     pub label: String,
     pub source: Option<String>,
+    pub task: Option<String>,
+    pub tool: Option<String>,
     pub ttl_ms: Option<u64>,
 }
 

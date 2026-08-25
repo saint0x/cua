@@ -1474,21 +1474,17 @@ fn ui_step_state(state: &DaemonState, request: UiStepRequest) -> Result<UiStepRe
             "label must be 160 characters or fewer",
         ));
     }
-    let source = request.source.map(|value| {
-        value
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-            .chars()
-            .take(48)
-            .collect::<String>()
-    });
+    let source = normalize_optional_step_field(request.source, 48);
+    let task = normalize_optional_step_field(request.task, 80);
+    let tool = normalize_optional_step_field(request.tool, 48);
     let ttl_ms = request.ttl_ms.map(|value| value.clamp(250, 60_000));
     let result = UiStepResult {
         schema_version: SCHEMA_VERSION.to_string(),
         accepted: true,
         label,
         source,
+        task,
+        tool,
         ttl_ms,
     };
     state.publish_event(
@@ -1496,10 +1492,29 @@ fn ui_step_state(state: &DaemonState, request: UiStepRequest) -> Result<UiStepRe
         serde_json::json!({
             "label": result.label,
             "source": result.source,
+            "task": result.task,
+            "tool": result.tool,
             "ttl_ms": result.ttl_ms,
         }),
     );
     Ok(result)
+}
+
+fn normalize_optional_step_field(value: Option<String>, max_chars: usize) -> Option<String> {
+    value.and_then(|value| {
+        let normalized = value
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .take(max_chars)
+            .collect::<String>();
+        if normalized.is_empty() {
+            None
+        } else {
+            Some(normalized)
+        }
+    })
 }
 
 fn observe_frame_lookup(metrics: &RuntimeMetrics, lookup: &FrameLookup) {
@@ -2989,6 +3004,8 @@ mod tests {
                 schema_version: SCHEMA_VERSION.to_string(),
                 label: "  inspect   cursor target  ".to_string(),
                 source: Some("agent planner".to_string()),
+                task: Some("  debug   auth flow  ".to_string()),
+                tool: Some("  browser   probe ".to_string()),
                 ttl_ms: Some(125),
             }),
         )
@@ -2997,6 +3014,8 @@ mod tests {
 
         assert!(result.accepted);
         assert_eq!(result.label, "inspect cursor target");
+        assert_eq!(result.task.as_deref(), Some("debug auth flow"));
+        assert_eq!(result.tool.as_deref(), Some("browser probe"));
         assert_eq!(result.ttl_ms, Some(250));
 
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -3007,6 +3026,8 @@ mod tests {
             .expect("ui_step event");
         assert_eq!(step["data"]["label"], "inspect cursor target");
         assert_eq!(step["data"]["source"], "agent planner");
+        assert_eq!(step["data"]["task"], "debug auth flow");
+        assert_eq!(step["data"]["tool"], "browser probe");
     }
 
     #[tokio::test]
@@ -3025,6 +3046,8 @@ mod tests {
                 schema_version: SCHEMA_VERSION.to_string(),
                 label: "new step only".to_string(),
                 source: None,
+                task: None,
+                tool: None,
                 ttl_ms: None,
             }),
         )

@@ -208,6 +208,10 @@ enum UiCommand {
         #[arg(long)]
         source: Option<String>,
         #[arg(long)]
+        task: Option<String>,
+        #[arg(long)]
+        tool: Option<String>,
+        #[arg(long)]
         ttl_ms: Option<u64>,
         #[arg(long)]
         json: bool,
@@ -413,6 +417,8 @@ async fn ui(addr: SocketAddr, profile: &str, command: UiCommand) -> anyhow::Resu
         UiCommand::Step {
             label,
             source,
+            task,
+            tool,
             ttl_ms,
             json,
         } => {
@@ -424,6 +430,8 @@ async fn ui(addr: SocketAddr, profile: &str, command: UiCommand) -> anyhow::Resu
                     schema_version: SCHEMA_VERSION.to_string(),
                     label,
                     source,
+                    task,
+                    tool,
                     ttl_ms,
                 })?,
                 json,

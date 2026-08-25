@@ -84,6 +84,8 @@ impl CuaClient {
         &self,
         label: impl Into<String>,
         source: Option<String>,
+        task: Option<String>,
+        tool: Option<String>,
         ttl_ms: Option<u64>,
     ) -> anyhow::Result<Value> {
         self.request(
@@ -92,6 +94,8 @@ impl CuaClient {
                 schema_version: SCHEMA_VERSION.to_string(),
                 label: label.into(),
                 source,
+                task,
+                tool,
                 ttl_ms,
             })?),
         )
@@ -172,6 +176,8 @@ impl CuaSession {
         &mut self,
         label: impl Into<String>,
         source: Option<String>,
+        task: Option<String>,
+        tool: Option<String>,
         ttl_ms: Option<u64>,
     ) -> anyhow::Result<Value> {
         self.request(
@@ -180,6 +186,8 @@ impl CuaSession {
                 schema_version: SCHEMA_VERSION.to_string(),
                 label: label.into(),
                 source,
+                task,
+                tool,
                 ttl_ms,
             })?),
         )

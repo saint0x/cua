@@ -337,8 +337,13 @@ fn print_headless_events(rx: Receiver<VoiceUiEvent>) {
             VoiceUiEvent::Dispatching(action) => {
                 serde_json::json!({"event": "dispatching", "action": action})
             }
-            VoiceUiEvent::AgentStep { label, source } => {
-                serde_json::json!({"event": "agent_step", "label": label, "source": source})
+            VoiceUiEvent::AgentStep {
+                label,
+                source,
+                task,
+                tool,
+            } => {
+                serde_json::json!({"event": "agent_step", "label": label, "source": source, "task": task, "tool": tool})
             }
             VoiceUiEvent::Reply(text) => serde_json::json!({"event": "reply", "text": text}),
             VoiceUiEvent::Error(text) => serde_json::json!({"event": "error", "text": text}),
@@ -429,6 +434,14 @@ fn agent_step_from_daemon_event(event: &Value, last_sequence: u64) -> Option<(u6
         .get("source")
         .and_then(|value| value.as_str())
         .map(str::to_string);
+    let task = data
+        .get("task")
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
+    let tool = data
+        .get("tool")
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
     if source.as_deref() == Some("voice") {
         return None;
     }
@@ -437,6 +450,8 @@ fn agent_step_from_daemon_event(event: &Value, last_sequence: u64) -> Option<(u6
         VoiceUiEvent::AgentStep {
             label: label.to_string(),
             source,
+            task,
+            tool,
         },
     ))
 }
@@ -507,6 +522,8 @@ fn start_demo_cycle(tx: Sender<VoiceUiEvent>) {
             VoiceUiEvent::AgentStep {
                 label: "checking target state".to_string(),
                 source: Some("planner".to_string()),
+                task: Some("Click target".to_string()),
+                tool: Some("vision".to_string()),
             },
             VoiceUiEvent::Reply("Clicked the center target.".to_string()),
         ];
@@ -621,12 +638,21 @@ mod tests {
             "kind": "ui_step",
             "data": {
                 "label": "checking current focus",
-                "source": "agent"
+                "source": "agent",
+                "task": "debug auth",
+                "tool": "browser"
             }
         });
 
-        let Some((sequence, VoiceUiEvent::AgentStep { label, source })) =
-            agent_step_from_daemon_event(&event, 41)
+        let Some((
+            sequence,
+            VoiceUiEvent::AgentStep {
+                label,
+                source,
+                task,
+                tool,
+            },
+        )) = agent_step_from_daemon_event(&event, 41)
         else {
             panic!("expected agent step event");
         };
@@ -634,6 +660,8 @@ mod tests {
         assert_eq!(sequence, 42);
         assert_eq!(label, "checking current focus");
         assert_eq!(source.as_deref(), Some("agent"));
+        assert_eq!(task.as_deref(), Some("debug auth"));
+        assert_eq!(tool.as_deref(), Some("browser"));
         assert!(agent_step_from_daemon_event(&event, 42).is_none());
     }
 
