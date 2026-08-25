@@ -1,5 +1,6 @@
 pub const COMPACT_WIDTH: f32 = 500.0;
 pub const COMPACT_HEIGHT: f32 = 42.0;
+pub const COMPACT_RADIUS: f32 = 21.0;
 pub const EXPANDED_WIDTH: f32 = 500.0;
 pub const EXPANDED_HEIGHT: f32 = 162.0;
 pub const WINDOW_WIDTH: f32 = COMPACT_WIDTH;
@@ -25,7 +26,7 @@ impl HudMetrics {
         Self {
             width: lerp(COMPACT_WIDTH, EXPANDED_WIDTH, eased),
             height: lerp(COMPACT_HEIGHT, EXPANDED_HEIGHT, eased),
-            radius: lerp(21.0, PANEL_RADIUS, eased),
+            radius: lerp(COMPACT_RADIUS, PANEL_RADIUS, eased),
             bar_opacity: (1.0 - progress * 1.8).clamp(0.0, 1.0),
             response_opacity: ((progress - 0.20) / 0.80).clamp(0.0, 1.0),
         }

@@ -1,6 +1,8 @@
 use clap::Parser;
 use cua_voice::activation::ControlDoubleTap;
-use cua_voice::hud::{HudDisplay, HudMetrics, TOP_MARGIN, WINDOW_HEIGHT, WINDOW_WIDTH};
+use cua_voice::hud::{
+    HudDisplay, HudMetrics, COMPACT_HEIGHT, COMPACT_RADIUS, TOP_MARGIN, WINDOW_HEIGHT, WINDOW_WIDTH,
+};
 use cua_voice::orb::paint_orb;
 use cua_voice::ui_state::{HudSnapshot, VoiceUiEvent};
 use cua_voice::{
@@ -171,8 +173,8 @@ impl VoiceHud {
     fn compact_bar(&self, display: &HudDisplay, metrics: HudMetrics) -> impl IntoElement {
         div()
             .w(px(metrics.width))
-            .h(px(metrics.height))
-            .rounded(px(metrics.radius))
+            .h(px(compact_bar_height(metrics)))
+            .rounded(px(compact_bar_radius(metrics)))
             .overflow_hidden()
             .opacity(metrics.bar_opacity)
             .bg(hsla(0.0, 0.0, 0.0, 0.92))
@@ -270,6 +272,14 @@ fn dot(alpha: f32) -> impl IntoElement {
         .h(px(4.0))
         .rounded_full()
         .bg(hsla(244.0 / 360.0, 0.92, 0.70, alpha))
+}
+
+fn compact_bar_height(_: HudMetrics) -> f32 {
+    COMPACT_HEIGHT
+}
+
+fn compact_bar_radius(_: HudMetrics) -> f32 {
+    COMPACT_RADIUS
 }
 
 fn should_reset_after_reply_collapse(reply_window_expired: bool, response_progress: f32) -> bool {
@@ -590,6 +600,15 @@ mod tests {
         assert!(!should_reset_after_reply_collapse(true, 0.42));
         assert!(should_reset_after_reply_collapse(true, 0.0));
         assert!(!should_reset_after_reply_collapse(false, 0.0));
+    }
+
+    #[test]
+    fn compact_bar_keeps_island_height_during_response_transition() {
+        let transitioning = HudMetrics::interpolate(0.45);
+
+        assert!(transitioning.height > COMPACT_HEIGHT);
+        assert_eq!(compact_bar_height(transitioning), COMPACT_HEIGHT);
+        assert_eq!(compact_bar_radius(transitioning), COMPACT_RADIUS);
     }
 
     #[test]

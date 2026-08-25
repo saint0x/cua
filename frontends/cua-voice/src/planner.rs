@@ -2,6 +2,9 @@ use anyhow::{bail, Context};
 use cua_core::{FramePayload, InputAction, MouseButton};
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, REFERER};
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
+
+const DEFAULT_PLANNER_TIMEOUT_MS: u64 = 12_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlannedTurn {
@@ -57,6 +60,7 @@ impl Planner {
             .header(CONTENT_TYPE, "application/json")
             .header(REFERER, "http://localhost/cua")
             .json(&body)
+            .timeout(openrouter_planner_timeout())
             .send()
             .await
             .context("send planning request")?;
@@ -70,6 +74,19 @@ impl Planner {
             .unwrap_or_default();
         parse_model_plan(raw)
     }
+}
+
+fn openrouter_planner_timeout() -> Duration {
+    timeout_from_env("CUA_VOICE_PLANNER_TIMEOUT_MS", DEFAULT_PLANNER_TIMEOUT_MS)
+}
+
+fn timeout_from_env(name: &str, default_ms: u64) -> Duration {
+    let ms = std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default_ms);
+    Duration::from_millis(ms)
 }
 
 pub fn parse_model_plan(raw: &str) -> anyhow::Result<PlannedTurn> {
@@ -219,5 +236,13 @@ mod tests {
         let raw = "```json\n{\"response\":\"ok\",\"action\":{\"kind\":\"key_type\",\"text\":\"hello\"}}\n```";
         let plan = parse_model_plan(raw).unwrap();
         assert!(matches!(plan.action, Some(InputAction::KeyType { ref text }) if text == "hello"));
+    }
+
+    #[test]
+    fn timeout_env_ignores_invalid_values() {
+        assert_eq!(
+            timeout_from_env("__CUA_VOICE_TEST_TIMEOUT_MISSING", 456),
+            Duration::from_millis(456)
+        );
     }
 }
