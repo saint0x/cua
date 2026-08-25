@@ -7,7 +7,7 @@
 
 ## Runtime
 
-1. Add daemon-owned encode, model, trace, and permission lanes with bounded queues.
+1. Add daemon-owned encode, model, and trace lanes with bounded queues.
 
 ## Tracing
 

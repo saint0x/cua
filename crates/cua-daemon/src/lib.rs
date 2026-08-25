@@ -18,7 +18,7 @@ use cua_core::{
     ClipboardReadRequest, ClipboardResult, ClipboardWriteRequest, DeliveryMode, DesktopState,
     Effect, Evidence, EvidenceKind, FrameEncoding, HealthReport, InputAction, InputRequest,
     InputResult, InputRoute, Manifest, MetricBucket, MetricHistogram, MetricsSnapshot,
-    ProfilePolicy, RuntimeControlState, RuntimeMode, SafetyState, SCHEMA_VERSION,
+    PermissionReport, ProfilePolicy, RuntimeControlState, RuntimeMode, SafetyState, SCHEMA_VERSION,
 };
 use cua_input::InputBackend;
 use cua_model::{run_eval_report, EvalConfig, EvalReport};
@@ -44,6 +44,7 @@ pub struct DaemonState {
     pub frame_bus: Arc<FrameBus>,
     pub input: Arc<dyn InputBackend>,
     input_lane: InputLane,
+    permission_lane: PermissionLane,
     pub active_streams: Arc<AtomicU32>,
     pub bearer_token: Arc<String>,
     pub control: Arc<RwLock<RuntimeControlState>>,
@@ -65,6 +66,7 @@ impl DaemonState {
                 cua_platform_macos::capture_backend_or_synthetic(),
             )),
             input_lane: InputLane::spawn(input.clone(), input_lane_capacity()),
+            permission_lane: PermissionLane::spawn(permission_lane_capacity()),
             input,
             active_streams: Arc::new(AtomicU32::new(0)),
             bearer_token: Arc::new(bearer_token.into()),
@@ -81,6 +83,7 @@ impl DaemonState {
     }
 
     pub async fn health(&self) -> HealthReport {
+        let permissions = self.permission_report().await;
         let control = self.control.read().await;
         HealthReport {
             schema_version: SCHEMA_VERSION.to_string(),
@@ -88,7 +91,7 @@ impl DaemonState {
             version: env!("CARGO_PKG_VERSION").to_string(),
             profile: self.profile.clone(),
             started_at: self.started_at,
-            permissions: cua_platform_macos::permission_report(),
+            permissions,
             latest_frame: self.frame_bus.latest_envelope().await,
             safety_state: control.safety_state.clone(),
             active_profile: control.active_profile.name.clone(),
@@ -104,6 +107,18 @@ impl DaemonState {
         if !self.events.publish(kind, data) {
             self.metrics.increment(CounterKind::EventDrops);
         }
+    }
+
+    async fn permission_report(&self) -> PermissionReport {
+        let result = self.permission_lane.report().await;
+        self.metrics
+            .observe(MetricKind::PermissionQueueWait, result.queue_wait);
+        self.metrics
+            .observe(MetricKind::PermissionProbe, result.probe_duration);
+        if result.fallback {
+            self.metrics.increment(CounterKind::PermissionFallbacks);
+        }
+        result.report
     }
 }
 
@@ -195,6 +210,79 @@ fn input_lane_capacity() -> usize {
         .and_then(|value| value.parse().ok())
         .filter(|value| *value > 0)
         .unwrap_or(64)
+}
+
+#[derive(Clone)]
+struct PermissionLane {
+    sender: mpsc::Sender<PermissionJob>,
+}
+
+struct PermissionJob {
+    enqueued_at: Instant,
+    reply: oneshot::Sender<PermissionLaneResult>,
+}
+
+struct PermissionLaneResult {
+    queue_wait: Duration,
+    probe_duration: Duration,
+    report: PermissionReport,
+    fallback: bool,
+}
+
+impl PermissionLane {
+    fn spawn(capacity: usize) -> Self {
+        let (sender, mut receiver) = mpsc::channel::<PermissionJob>(capacity);
+        tokio::spawn(async move {
+            while let Some(job) = receiver.recv().await {
+                let queue_wait = job.enqueued_at.elapsed();
+                let probe_started = Instant::now();
+                let report = cua_platform_macos::permission_report();
+                let _ = job.reply.send(PermissionLaneResult {
+                    queue_wait,
+                    probe_duration: probe_started.elapsed(),
+                    report,
+                    fallback: false,
+                });
+            }
+        });
+        Self { sender }
+    }
+
+    async fn report(&self) -> PermissionLaneResult {
+        let (reply, wait) = oneshot::channel();
+        let job = PermissionJob {
+            enqueued_at: Instant::now(),
+            reply,
+        };
+        match self.sender.try_send(job) {
+            Ok(()) => wait
+                .await
+                .unwrap_or_else(|_| permission_fallback(Duration::ZERO)),
+            Err(mpsc::error::TrySendError::Full(job)) => {
+                permission_fallback(job.enqueued_at.elapsed())
+            }
+            Err(mpsc::error::TrySendError::Closed(job)) => {
+                permission_fallback(job.enqueued_at.elapsed())
+            }
+        }
+    }
+}
+
+fn permission_fallback(queue_wait: Duration) -> PermissionLaneResult {
+    PermissionLaneResult {
+        queue_wait,
+        probe_duration: Duration::ZERO,
+        report: PermissionReport::conservative_unknown(),
+        fallback: true,
+    }
+}
+
+fn permission_lane_capacity() -> usize {
+    std::env::var("CUA_PERMISSION_QUEUE_CAPACITY")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(32)
 }
 
 #[derive(Clone)]
@@ -645,6 +733,7 @@ impl Drop for StreamGuard {
 }
 
 async fn observe_desktop(State(state): State<DaemonState>) -> Result<Json<DesktopState>, ApiError> {
+    let permissions = state.permission_report().await;
     let displays = state
         .frame_bus
         .displays()
@@ -658,7 +747,7 @@ async fn observe_desktop(State(state): State<DaemonState>) -> Result<Json<Deskto
         displays,
         windows,
         cursor,
-        permissions: cua_platform_macos::permission_report(),
+        permissions,
         latest_frame,
     }))
 }
@@ -1211,13 +1300,15 @@ enum MetricKind {
     ModelResponse,
     ModelParse,
     PolicyCheck,
+    PermissionQueueWait,
+    PermissionProbe,
     Verification,
     TraceWrite,
     KillSwitchPropagation,
 }
 
 impl MetricKind {
-    const ALL: [Self; 16] = [
+    const ALL: [Self; 18] = [
         Self::CaptureScreenshot,
         Self::CaptureQueueWait,
         Self::CaptureEncode,
@@ -1231,6 +1322,8 @@ impl MetricKind {
         Self::ModelResponse,
         Self::ModelParse,
         Self::PolicyCheck,
+        Self::PermissionQueueWait,
+        Self::PermissionProbe,
         Self::Verification,
         Self::TraceWrite,
         Self::KillSwitchPropagation,
@@ -1251,9 +1344,11 @@ impl MetricKind {
             Self::ModelResponse => 10,
             Self::ModelParse => 11,
             Self::PolicyCheck => 12,
-            Self::Verification => 13,
-            Self::TraceWrite => 14,
-            Self::KillSwitchPropagation => 15,
+            Self::PermissionQueueWait => 13,
+            Self::PermissionProbe => 14,
+            Self::Verification => 15,
+            Self::TraceWrite => 16,
+            Self::KillSwitchPropagation => 17,
         }
     }
 
@@ -1272,6 +1367,8 @@ impl MetricKind {
             Self::ModelResponse => "model.response",
             Self::ModelParse => "model.parse",
             Self::PolicyCheck => "policy.check",
+            Self::PermissionQueueWait => "permission.queue_wait",
+            Self::PermissionProbe => "permission.probe",
             Self::Verification => "verification",
             Self::TraceWrite => "trace.write",
             Self::KillSwitchPropagation => "control.kill_switch.propagation",
@@ -1286,15 +1383,17 @@ enum CounterKind {
     InputRefusals,
     ClipboardRefusals,
     EventDrops,
+    PermissionFallbacks,
 }
 
 impl CounterKind {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::MjpegFrames,
         Self::WsFrames,
         Self::InputRefusals,
         Self::ClipboardRefusals,
         Self::EventDrops,
+        Self::PermissionFallbacks,
     ];
 
     fn index(self) -> usize {
@@ -1304,6 +1403,7 @@ impl CounterKind {
             Self::InputRefusals => 2,
             Self::ClipboardRefusals => 3,
             Self::EventDrops => 4,
+            Self::PermissionFallbacks => 5,
         }
     }
 
@@ -1314,6 +1414,7 @@ impl CounterKind {
             Self::InputRefusals => "input.refusals",
             Self::ClipboardRefusals => "clipboard.refusals",
             Self::EventDrops => "events.dropped",
+            Self::PermissionFallbacks => "permission.fallbacks",
         }
     }
 }
@@ -1625,6 +1726,40 @@ mod tests {
 
         assert_eq!(result.effect, Effect::Refused);
         assert_eq!(result.evidence[0].message, "input lane queue is full");
+    }
+
+    #[tokio::test]
+    async fn permission_lane_falls_back_when_queue_is_full() {
+        let (sender, _receiver) = mpsc::channel(1);
+        let (reply, _wait) = oneshot::channel();
+        sender
+            .try_send(PermissionJob {
+                enqueued_at: Instant::now(),
+                reply,
+            })
+            .unwrap();
+        let lane = PermissionLane { sender };
+
+        let result = lane.report().await;
+
+        assert!(result.fallback);
+        assert_eq!(
+            result.report.portal,
+            cua_core::PermissionState::NotApplicable
+        );
+    }
+
+    #[tokio::test]
+    async fn permission_report_records_metrics() {
+        let state = DaemonState::synthetic("test", "token");
+
+        let _ = state.permission_report().await;
+        let snapshot = state.metrics.snapshot(0);
+
+        assert!(snapshot
+            .histograms
+            .iter()
+            .any(|histogram| histogram.name == "permission.probe" && histogram.count == 1));
     }
 
     #[test]
