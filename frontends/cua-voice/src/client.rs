@@ -1,5 +1,5 @@
 use anyhow::{bail, Context};
-use cua_core::{FrameEncoding, FramePayload, InputAction};
+use cua_core::{DesktopState, FrameEncoding, FramePayload, InputAction};
 use serde::Deserialize;
 use serde_json::Value;
 use std::path::PathBuf;
@@ -38,7 +38,7 @@ impl CuaClient {
         .await
     }
 
-    pub async fn observe(&self) -> anyhow::Result<Value> {
+    pub async fn observe(&self) -> anyhow::Result<DesktopState> {
         self.request("observe.desktop", None).await
     }
 

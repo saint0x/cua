@@ -1,5 +1,5 @@
 use anyhow::{bail, Context};
-use cua_core::{FramePayload, InputAction, MouseButton};
+use cua_core::{DesktopState, FramePayload, InputAction, MouseButton};
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, REFERER};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -31,14 +31,18 @@ impl Planner {
         api_key: &str,
         transcript: &str,
         frame: Option<&FramePayload>,
+        desktop: Option<&DesktopState>,
     ) -> anyhow::Result<PlannedTurn> {
         if let Some(turn) = parse_fast_command(transcript) {
             return Ok(turn);
         }
+        let desktop_context = desktop
+            .map(desktop_context)
+            .unwrap_or_else(|| "Desktop context: unavailable.".to_string());
         let mut content = vec![serde_json::json!({
             "type": "text",
             "text": format!(
-                "You control a macOS desktop through a local Unix socket. Transcript: {transcript}\nReturn strict JSON only: {{\"response\":\"short user-facing status\",\"action\":null}} or {{\"response\":\"short status\",\"action\":{{...InputAction JSON...}}}}. Supported action kinds: mouse_move, mouse_click, mouse_drag, key_press, key_type, key_paste, pause, resume, kill_switch. Use integer coordinates."
+                "You control a macOS desktop through a local Unix socket. Transcript: {transcript}\n{desktop_context}\nReturn strict JSON only: {{\"response\":\"short user-facing status\",\"action\":null}} or {{\"response\":\"short status\",\"action\":{{...InputAction JSON...}}}}. Supported action kinds: mouse_move, mouse_click, mouse_drag, key_press, key_type, key_paste, pause, resume, kill_switch. Use integer screen coordinates. Prefer actions that directly satisfy the transcript; use null only when no safe desktop action is implied."
             )
         })];
         if let Some(bytes) = frame.and_then(|frame| frame.bytes_base64.as_ref()) {
@@ -76,6 +80,59 @@ impl Planner {
     }
 }
 
+fn desktop_context(desktop: &DesktopState) -> String {
+    let displays = desktop
+        .displays
+        .iter()
+        .take(4)
+        .map(|display| {
+            format!(
+                "{}:{}x{}@{},{} scale {:.1}{}",
+                display.name,
+                display.width,
+                display.height,
+                display.x,
+                display.y,
+                display.scale_factor,
+                if display.active { " active" } else { "" }
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    let windows = desktop
+        .windows
+        .iter()
+        .take(8)
+        .map(|window| {
+            let app = window.app_name.as_deref().unwrap_or("unknown");
+            let title = window.title.as_deref().unwrap_or("untitled");
+            format!(
+                "{app} \"{title}\" {}x{}@{},{}{}",
+                window.width,
+                window.height,
+                window.x,
+                window.y,
+                if window.focused { " focused" } else { "" }
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    let frame = desktop
+        .latest_frame
+        .as_ref()
+        .map(|frame| {
+            format!(
+                "latest frame {}x{} display {} sha {}",
+                frame.width, frame.height, frame.display_id, frame.sha256
+            )
+        })
+        .unwrap_or_else(|| "latest frame unavailable".to_string());
+    format!(
+        "Desktop context: cursor at {},{}; displays [{}]; windows [{}]; {frame}.",
+        desktop.cursor.x, desktop.cursor.y, displays, windows
+    )
+}
+
 fn openrouter_planner_timeout() -> Duration {
     timeout_from_env("CUA_VOICE_PLANNER_TIMEOUT_MS", DEFAULT_PLANNER_TIMEOUT_MS)
 }
@@ -106,9 +163,55 @@ pub fn parse_model_plan(raw: &str) -> anyhow::Result<PlannedTurn> {
     let action = if value.get("action").map(|v| v.is_null()).unwrap_or(true) {
         None
     } else {
-        Some(serde_json::from_value(value["action"].clone()).context("parse action")?)
+        Some(parse_action_value(value["action"].clone())?)
     };
     Ok(PlannedTurn { response, action })
+}
+
+fn parse_action_value(mut value: serde_json::Value) -> anyhow::Result<InputAction> {
+    normalize_action_value(&mut value);
+    serde_json::from_value(value).context("parse action")
+}
+
+fn normalize_action_value(value: &mut serde_json::Value) {
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    let Some(kind) = object.get("kind").and_then(|kind| kind.as_str()) else {
+        return;
+    };
+    match kind {
+        "mouse_move" => {
+            object
+                .entry("duration_ms")
+                .or_insert_with(|| serde_json::json!(80));
+        }
+        "mouse_click" => {
+            object
+                .entry("button")
+                .or_insert_with(|| serde_json::json!("left"));
+            object
+                .entry("count")
+                .or_insert_with(|| serde_json::json!(1));
+        }
+        "mouse_drag" => {
+            object
+                .entry("duration_ms")
+                .or_insert_with(|| serde_json::json!(220));
+        }
+        _ => {}
+    }
+    if let Some(button) = object.get_mut("button").and_then(|button| button.as_str()) {
+        let normalized = match button {
+            "Left" => Some("left"),
+            "Right" => Some("right"),
+            "Middle" => Some("middle"),
+            _ => None,
+        };
+        if let Some(normalized) = normalized {
+            object.insert("button".to_string(), serde_json::json!(normalized));
+        }
+    }
 }
 
 pub fn parse_fast_command(transcript: &str) -> Option<PlannedTurn> {
@@ -236,6 +339,84 @@ mod tests {
         let raw = "```json\n{\"response\":\"ok\",\"action\":{\"kind\":\"key_type\",\"text\":\"hello\"}}\n```";
         let plan = parse_model_plan(raw).unwrap();
         assert!(matches!(plan.action, Some(InputAction::KeyType { ref text }) if text == "hello"));
+    }
+
+    #[test]
+    fn parses_model_pointer_actions_with_safe_defaults() {
+        let raw = r#"{"response":"Moving.","action":{"kind":"mouse_move","x":10,"y":20}}"#;
+        let plan = parse_model_plan(raw).unwrap();
+
+        assert!(matches!(
+            plan.action,
+            Some(InputAction::MouseMove {
+                x: 10,
+                y: 20,
+                duration_ms: 80
+            })
+        ));
+    }
+
+    #[test]
+    fn parses_model_click_actions_with_mouse_defaults() {
+        let raw = r#"{"response":"Clicking.","action":{"kind":"mouse_click","x":10,"y":20,"button":"left"}}"#;
+        let plan = parse_model_plan(raw).unwrap();
+
+        assert!(matches!(
+            plan.action,
+            Some(InputAction::MouseClick {
+                x: 10,
+                y: 20,
+                button: MouseButton::Left,
+                count: 1
+            })
+        ));
+    }
+
+    #[test]
+    fn desktop_context_includes_cursor_display_and_windows() {
+        let desktop = DesktopState {
+            schema_version: "test".to_string(),
+            displays: vec![cua_core::DisplayInfo {
+                id: "main".to_string(),
+                name: "Built-in".to_string(),
+                x: 0,
+                y: 0,
+                width: 1512,
+                height: 982,
+                scale_factor: 2.0,
+                active: true,
+            }],
+            windows: vec![cua_core::WindowInfo {
+                id: "1".to_string(),
+                app_name: Some("Terminal".to_string()),
+                title: Some("cua".to_string()),
+                x: 10,
+                y: 20,
+                width: 900,
+                height: 700,
+                focused: true,
+            }],
+            cursor: cua_core::CursorState {
+                x: 42.0,
+                y: 64.0,
+                visible: true,
+                included_in_frame: true,
+            },
+            permissions: cua_core::PermissionReport {
+                screen_recording: cua_core::PermissionState::Granted,
+                accessibility_input: cua_core::PermissionState::Granted,
+                automation: cua_core::PermissionState::Granted,
+                clipboard: cua_core::PermissionState::Granted,
+                portal: cua_core::PermissionState::NotApplicable,
+            },
+            latest_frame: None,
+        };
+
+        let context = desktop_context(&desktop);
+
+        assert!(context.contains("cursor at 42,64"));
+        assert!(context.contains("Built-in:1512x982@0,0"));
+        assert!(context.contains("Terminal \"cua\" 900x700@10,20 focused"));
     }
 
     #[test]

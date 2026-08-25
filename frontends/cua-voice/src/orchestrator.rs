@@ -5,11 +5,12 @@ use crate::planner::{parse_fast_command, PlannedTurn, Planner};
 use crate::stt::SttClient;
 use crate::ui_state::VoiceUiEvent;
 use anyhow::Context;
-use cua_core::FramePayload;
+use cua_core::{DesktopState, FramePayload};
 use std::sync::mpsc::Sender;
 use std::time::Duration;
 
 type ScreenshotTask = tokio::task::JoinHandle<anyhow::Result<FramePayload>>;
+type ObservationTask = tokio::task::JoinHandle<anyhow::Result<DesktopState>>;
 
 #[derive(Debug, Clone)]
 pub struct VoiceConfig {
@@ -106,6 +107,7 @@ async fn transcribe_and_run_turn(
             .await
     });
     let screenshot_task = spawn_screenshot_prefetch(local.clone());
+    let observation_task = spawn_observation_prefetch(local.clone());
     let transcript = stt_task.await.context("join speech to text")??;
     tx.send(VoiceUiEvent::Transcript(transcript.clone())).ok();
     plan_and_dispatch(
@@ -114,6 +116,7 @@ async fn transcribe_and_run_turn(
         Some(api_key),
         local,
         Some(screenshot_task),
+        Some(observation_task),
         tx,
     )
     .await
@@ -127,7 +130,7 @@ async fn run_transcript_turn(
     tx.send(VoiceUiEvent::Armed).ok();
     let local = preflight_local_client(&config.profile).await?;
     tx.send(VoiceUiEvent::Transcript(transcript.clone())).ok();
-    plan_and_dispatch(config, transcript, None, local, None, tx).await
+    plan_and_dispatch(config, transcript, None, local, None, None, tx).await
 }
 
 async fn plan_and_dispatch(
@@ -136,10 +139,14 @@ async fn plan_and_dispatch(
     api_key: Option<String>,
     local: CuaClient,
     screenshot_task: Option<ScreenshotTask>,
+    observation_task: Option<ObservationTask>,
     tx: Sender<VoiceUiEvent>,
 ) -> anyhow::Result<()> {
     let plan = if let Some(plan) = parse_fast_command(&transcript) {
         if let Some(task) = screenshot_task {
+            task.abort();
+        }
+        if let Some(task) = observation_task {
             task.abort();
         }
         tx.send(VoiceUiEvent::Planning {
@@ -152,18 +159,36 @@ async fn plan_and_dispatch(
             tool: "OpenRouter Vision".to_string(),
         })
         .ok();
-        let frame = match screenshot_task {
-            Some(task) => task.await.ok().and_then(Result::ok),
-            None => local.screenshot(true).await.ok(),
-        };
+        let (frame, desktop) =
+            prefetch_context(local.clone(), screenshot_task, observation_task).await;
         let api_key = api_key
             .or_else(|| std::env::var("OPENROUTER_API_KEY").ok())
             .context("OPENROUTER_API_KEY is required for non-fast voice commands")?;
         Planner::new(&config.planner_model)
-            .plan(&api_key, &transcript, frame.as_ref())
+            .plan(&api_key, &transcript, frame.as_ref(), desktop.as_ref())
             .await?
     };
     dispatch_plan(local, plan, tx).await
+}
+
+async fn prefetch_context(
+    local: CuaClient,
+    screenshot_task: Option<ScreenshotTask>,
+    observation_task: Option<ObservationTask>,
+) -> (Option<FramePayload>, Option<DesktopState>) {
+    let screenshot = async {
+        match screenshot_task {
+            Some(task) => task.await.ok().and_then(Result::ok),
+            None => local.screenshot(true).await.ok(),
+        }
+    };
+    let observation = async {
+        match observation_task {
+            Some(task) => task.await.ok().and_then(Result::ok),
+            None => local.observe().await.ok(),
+        }
+    };
+    tokio::join!(screenshot, observation)
 }
 
 async fn dispatch_plan(
@@ -204,4 +229,8 @@ async fn preflight_local_client(profile: &str) -> anyhow::Result<CuaClient> {
 
 fn spawn_screenshot_prefetch(local: CuaClient) -> ScreenshotTask {
     tokio::spawn(async move { local.screenshot(true).await })
+}
+
+fn spawn_observation_prefetch(local: CuaClient) -> ObservationTask {
+    tokio::spawn(async move { local.observe().await })
 }
