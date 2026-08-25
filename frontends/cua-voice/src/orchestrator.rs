@@ -27,7 +27,7 @@ impl Default for VoiceConfig {
 }
 
 pub async fn run_voice_turn(config: VoiceConfig, tx: Sender<VoiceUiEvent>) {
-    if let Err(error) = record_and_run_turn(config, tx.clone()).await {
+    if let Err(error) = run_voice_turn_checked(config, tx.clone()).await {
         eprintln!("cua voice turn failed: {error:#}");
         let _ = tx.send(VoiceUiEvent::Error(error.to_string()));
     }
@@ -53,6 +53,13 @@ pub async fn run_text_turn_checked(
     tx: Sender<VoiceUiEvent>,
 ) -> anyhow::Result<()> {
     run_transcript_turn(config, transcript, tx).await
+}
+
+pub async fn run_voice_turn_checked(
+    config: VoiceConfig,
+    tx: Sender<VoiceUiEvent>,
+) -> anyhow::Result<()> {
+    record_and_run_turn(config, tx).await
 }
 
 pub async fn run_wav_turn_checked(

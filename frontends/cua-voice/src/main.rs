@@ -3,7 +3,10 @@ use cua_voice::activation::ControlDoubleTap;
 use cua_voice::hud::{HudDisplay, HudMetrics, TOP_MARGIN, WINDOW_HEIGHT, WINDOW_WIDTH};
 use cua_voice::orb::paint_orb;
 use cua_voice::ui_state::{HudSnapshot, VoiceUiEvent};
-use cua_voice::{run_text_turn_checked, run_voice_turn, run_wav_turn_checked, VoiceConfig};
+use cua_voice::{
+    run_text_turn_checked, run_voice_turn, run_voice_turn_checked, run_wav_turn_checked,
+    VoiceConfig,
+};
 use gpui::{
     canvas, div, hsla, point, prelude::*, px, rgb, size, App, Application, Bounds, BoxShadow,
     Context, IntoElement, ParentElement, Render, Styled, Window, WindowBackgroundAppearance,
@@ -32,6 +35,8 @@ struct Args {
     once_transcript: Option<String>,
     #[arg(long)]
     once_wav: Option<PathBuf>,
+    #[arg(long)]
+    once_record: bool,
 }
 
 struct VoiceHud {
@@ -283,6 +288,7 @@ fn main() -> anyhow::Result<()> {
     let demo = args.demo;
     let once_transcript = args.once_transcript;
     let once_wav = args.once_wav;
+    let once_record = args.once_record;
     let config = VoiceConfig {
         profile: args.profile,
         record_ms: args.record_ms,
@@ -298,6 +304,10 @@ fn main() -> anyhow::Result<()> {
     } else if let Some(path) = once_wav {
         let wav_bytes = std::fs::read(&path)?;
         let result = runtime.block_on(run_wav_turn_checked(config, wav_bytes, tx));
+        print_headless_events(rx);
+        return result;
+    } else if once_record {
+        let result = runtime.block_on(run_voice_turn_checked(config, tx));
         print_headless_events(rx);
         return result;
     } else if demo {
