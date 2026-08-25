@@ -1521,6 +1521,12 @@ async fn dispatch_input_action(state: &DaemonState, action: InputAction) -> cua_
     };
     if matches!(
         action,
+        InputAction::Pause | InputAction::Resume | InputAction::KillSwitch
+    ) {
+        return dispatch_control_action(state, action, turn_id, action_json, started).await;
+    }
+    if matches!(
+        action,
         InputAction::ClipboardRead { .. } | InputAction::ClipboardWrite { .. }
     ) {
         state.metrics.increment(CounterKind::InputRefusals);
@@ -1578,6 +1584,77 @@ async fn dispatch_input_action(state: &DaemonState, action: InputAction) -> cua_
         serde_json::to_value(&result).unwrap_or_else(|_| serde_json::json!(null)),
         before,
         after,
+    )
+    .await;
+    publish_input_event(state, "input_completed", &result);
+    result
+}
+
+async fn dispatch_control_action(
+    state: &DaemonState,
+    action: InputAction,
+    turn_id: String,
+    action_json: serde_json::Value,
+    started: Instant,
+) -> cua_core::InputResult {
+    let mut event_kind = "input_completed";
+    let mut evidence_message = "safety action accepted by local coordinator";
+    {
+        let mut control = state.control.write().await;
+        match action {
+            InputAction::Pause if control.safety_state != SafetyState::Killed => {
+                control.safety_state = SafetyState::Paused;
+                control.generation += 1;
+                event_kind = "control_paused";
+            }
+            InputAction::Resume if control.safety_state != SafetyState::Killed => {
+                control.safety_state = SafetyState::Running;
+                control.generation += 1;
+                event_kind = "control_resumed";
+            }
+            InputAction::KillSwitch => {
+                control.safety_state = SafetyState::Killed;
+                control.generation += 1;
+                event_kind = "kill_switch";
+            }
+            InputAction::Pause | InputAction::Resume => {
+                evidence_message = "safety action ignored because kill switch is active";
+            }
+            _ => {}
+        }
+        let generation = control.generation;
+        drop(control);
+        state.publish_event(event_kind, serde_json::json!({ "generation": generation }));
+    }
+    if matches!(action, InputAction::KillSwitch) {
+        state
+            .metrics
+            .observe(MetricKind::KillSwitchPropagation, started.elapsed());
+    }
+    state
+        .metrics
+        .observe(MetricKind::InputDispatch, started.elapsed());
+    let result = InputResult {
+        schema_version: SCHEMA_VERSION.to_string(),
+        idempotency_key: Uuid::new_v4(),
+        effect: Effect::Confirmed,
+        route: InputRoute::SystemApi,
+        delivery_mode: DeliveryMode::NotApplicable,
+        started_mono_ns: 0,
+        ended_mono_ns: started.elapsed().as_nanos(),
+        evidence: vec![Evidence {
+            kind: EvidenceKind::ValueReadback,
+            message: evidence_message.to_string(),
+            frame_id: None,
+        }],
+    };
+    append_action_turn(
+        state,
+        turn_id,
+        action_json,
+        serde_json::to_value(&result).unwrap_or_else(|_| serde_json::json!(null)),
+        None,
+        None,
     )
     .await;
     publish_input_event(state, "input_completed", &result);
@@ -2528,6 +2605,29 @@ mod tests {
         assert!(kinds.iter().any(|kind| kind == "profile_created"));
         assert!(kinds.iter().any(|kind| kind == "profile_activated"));
         assert!(kinds.iter().any(|kind| kind == "control_paused"));
+    }
+
+    #[tokio::test]
+    async fn dispatched_control_actions_mutate_runtime_state() {
+        let state = DaemonState::synthetic("test", "token");
+
+        let pause = dispatch_input_action(&state, InputAction::Pause).await;
+        assert_eq!(pause.effect, Effect::Confirmed);
+        assert_eq!(pause.route, InputRoute::SystemApi);
+        assert_eq!(state.control.read().await.safety_state, SafetyState::Paused);
+
+        let resume = dispatch_input_action(&state, InputAction::Resume).await;
+        assert_eq!(resume.effect, Effect::Confirmed);
+        assert_eq!(resume.route, InputRoute::SystemApi);
+        assert_eq!(
+            state.control.read().await.safety_state,
+            SafetyState::Running
+        );
+
+        let kill = dispatch_input_action(&state, InputAction::KillSwitch).await;
+        assert_eq!(kill.effect, Effect::Confirmed);
+        assert_eq!(kill.route, InputRoute::SystemApi);
+        assert_eq!(state.control.read().await.safety_state, SafetyState::Killed);
     }
 
     async fn clipboard_enabled_state() -> DaemonState {
