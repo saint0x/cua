@@ -13,3 +13,5 @@ jobs:
       - run: cargo fmt --check
       - run: cargo test
       - run: cargo check
+      - run: cargo build -p cua
+      - run: bash scripts/ci-perf-gate.sh
