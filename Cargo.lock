@@ -372,6 +372,7 @@ dependencies = [
  "cua-daemon",
  "cua-input",
  "cua-model",
+ "cua-platform-macos",
  "cua-trace",
  "dotenvy",
  "reqwest",
@@ -422,6 +423,7 @@ dependencies = [
  "cua-core",
  "cua-input",
  "cua-model",
+ "cua-platform-macos",
  "futures",
  "http",
  "serde",
@@ -457,21 +459,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "cua-platform-linux"
-version = "0.1.0"
-dependencies = [
- "cua-core",
-]
-
-[[package]]
 name = "cua-platform-macos"
-version = "0.1.0"
-dependencies = [
- "cua-core",
-]
-
-[[package]]
-name = "cua-platform-windows"
 version = "0.1.0"
 dependencies = [
  "cua-core",

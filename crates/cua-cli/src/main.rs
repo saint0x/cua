@@ -355,14 +355,15 @@ async fn permissions(command: PermissionCommand) -> anyhow::Result<()> {
     let json = match command {
         PermissionCommand::Status(flag) | PermissionCommand::Preflight(flag) => flag.json,
     };
+    let permission_report = cua_platform_macos::permission_report();
     let report = serde_json::json!({
         "schema_version": SCHEMA_VERSION,
-        "screen_recording": "unknown",
-        "accessibility_input": "unknown",
-        "automation": "unknown",
-        "clipboard": "unknown",
-        "ready_for_zero_touch_agent": false,
-        "reason": "platform permission probes are not implemented yet"
+        "screen_recording": permission_report.screen_recording,
+        "accessibility_input": permission_report.accessibility_input,
+        "automation": permission_report.automation,
+        "clipboard": permission_report.clipboard,
+        "portal": permission_report.portal,
+        "ready_for_zero_touch_agent": false
     });
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);

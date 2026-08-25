@@ -7,9 +7,7 @@ members = [
   "crates/cua-daemon",
   "crates/cua-input",
   "crates/cua-model",
-  "crates/cua-platform-linux",
   "crates/cua-platform-macos",
-  "crates/cua-platform-windows",
   "crates/cua-trace",
 ]
 

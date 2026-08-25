@@ -14,6 +14,7 @@ cua-core = { path = "../cua-core" }
 cua-daemon = { path = "../cua-daemon" }
 cua-input = { path = "../cua-input" }
 cua-model = { path = "../cua-model" }
+cua-platform-macos = { path = "../cua-platform-macos" }
 cua-trace = { path = "../cua-trace" }
 dotenvy.workspace = true
 reqwest.workspace = true

@@ -4,10 +4,7 @@
 
 1. Implement macOS ScreenCaptureKit capture behind `CaptureBackend`.
 2. Implement macOS CGEvent mouse and keyboard input behind `InputBackend`.
-3. Add macOS permission probes for Screen Recording, Accessibility/input, Automation, and clipboard.
-4. Package the stable signed macOS host app so TCC grants attach to a bundle identity.
-5. Implement Windows Graphics Capture and `SendInput` backends with exact integrity-level refusals.
-6. Implement Linux X11 capture/input and Wayland portal-mediated capture/input with exact compositor refusals.
+3. Package the stable signed macOS host app so TCC grants attach to a bundle identity.
 
 ## Runtime
 
@@ -34,6 +31,6 @@
 
 ## Verification
 
-1. Add host-backed GUI tests for each supported platform/backend/action cell.
+1. Add host-backed GUI tests for macOS backend/action cells.
 2. Add refusal tests that prove no forbidden side effects occurred.
 3. Keep `docs/action-support.md` current with proven support, exact refusals, and unproven cells.

@@ -17,8 +17,8 @@ use cua_core::{
     now_wall_ms, schema_bundle, ApiErrorBody, CapabilityManifest, CapabilityState,
     ClipboardReadRequest, ClipboardResult, ClipboardWriteRequest, DeliveryMode, DesktopState,
     Effect, Evidence, EvidenceKind, FrameEncoding, HealthReport, InputAction, InputRequest,
-    InputResult, InputRoute, Manifest, PermissionReport, ProfilePolicy, RuntimeControlState,
-    RuntimeMode, SafetyState, SCHEMA_VERSION,
+    InputResult, InputRoute, Manifest, ProfilePolicy, RuntimeControlState, RuntimeMode,
+    SafetyState, SCHEMA_VERSION,
 };
 use cua_input::{InputBackend, RefusingInputBackend};
 use cua_model::{run_eval_report, EvalConfig, EvalReport};
@@ -71,7 +71,7 @@ impl DaemonState {
             version: env!("CARGO_PKG_VERSION").to_string(),
             profile: self.profile.clone(),
             started_at: self.started_at,
-            permissions: PermissionReport::conservative_unknown(),
+            permissions: cua_platform_macos::permission_report(),
             latest_frame: self.frame_bus.latest_envelope().await,
             safety_state: control.safety_state.clone(),
             active_profile: control.active_profile.name.clone(),
@@ -432,7 +432,7 @@ async fn observe_desktop(State(state): State<DaemonState>) -> Result<Json<Deskto
         displays,
         windows: Vec::new(),
         cursor,
-        permissions: PermissionReport::conservative_unknown(),
+        permissions: cua_platform_macos::permission_report(),
         latest_frame,
     }))
 }

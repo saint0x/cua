@@ -16,7 +16,7 @@ Public control surfaces are intentionally limited to:
 - `crates/cua-input`: input backend contract and typed action results
 - `crates/cua-model`: OpenRouter eval harness and model selection report
 - `crates/cua-trace`: trace records and validation helpers
-- `crates/cua-platform-*`: platform backend boundaries
+- `crates/cua-platform-macos`: macOS backend and permission boundary
 - `docs/`: API, eval, and support notes
 - `fozzy/`: deterministic scenario verification
 
@@ -84,4 +84,4 @@ fozzy ci artifacts/cua/fozzy/cua-smoke.fozzy --json
 
 ## Status
 
-The current runtime has production-shaped contracts, daemon/CLI plumbing, profile policy state, pause/resume/kill-switch controls, profile-gated daemon clipboard, synthetic capture, continuous MJPEG/WebSocket streams, refusal-only native input, schema export, trace inspection, and bounded model evals. Real platform capture/input backends and signed host installation are still in progress.
+The current runtime has production-shaped contracts, daemon/CLI plumbing, macOS permission probes, profile policy state, pause/resume/kill-switch controls, profile-gated daemon clipboard, synthetic capture, continuous MJPEG/WebSocket streams, refusal-only native input, schema export, trace inspection, and bounded model evals. Real macOS capture/input backends and signed host installation are still in progress.
