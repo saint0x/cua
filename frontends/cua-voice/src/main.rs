@@ -112,6 +112,18 @@ impl VoiceHud {
         .size(px(13.0))
     }
 
+    fn large_orb(&self) -> impl IntoElement {
+        let phase = self.snapshot.phase.clone();
+        let elapsed = self.started.elapsed().as_secs_f32();
+        canvas(
+            move |_, _, _| (phase, elapsed),
+            move |bounds, (phase, elapsed), window, _| {
+                paint_orb(window, bounds, &phase, elapsed);
+            },
+        )
+        .size(px(18.0))
+    }
+
     fn chip(label: impl Into<String>) -> impl IntoElement {
         div()
             .px_1()
@@ -203,6 +215,53 @@ impl VoiceHud {
             .child(div().flex_1())
             .child(Self::activity_dots())
     }
+
+    fn response_panel(&self, display: &HudDisplay, metrics: HudMetrics) -> impl IntoElement {
+        div()
+            .w(px(metrics.width))
+            .h(px(metrics.height))
+            .rounded(px(metrics.radius))
+            .overflow_hidden()
+            .opacity(metrics.response_opacity)
+            .bg(hsla(0.0, 0.0, 0.0, 0.94))
+            .border_1()
+            .border_color(hsla(0.0, 0.0, 1.0, 0.14))
+            .shadow(vec![BoxShadow {
+                color: hsla(0.0, 0.0, 0.0, 0.62),
+                blur_radius: px(22.0),
+                spread_radius: px(0.0),
+                offset: point(px(0.0), px(10.0)),
+            }])
+            .p_4()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(self.large_orb())
+                    .child(
+                        div()
+                            .truncate()
+                            .text_color(rgb(0xf2f2f6))
+                            .text_sm()
+                            .child(display.phase.to_string()),
+                    )
+                    .child(div().flex_1())
+                    .child(Self::chip(display.tool.clone())),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .overflow_hidden()
+                    .text_color(rgb(0xf4f4f7))
+                    .text_sm()
+                    .line_height(px(20.0))
+                    .child(display.result.clone()),
+            )
+    }
 }
 
 fn dot(alpha: f32) -> impl IntoElement {
@@ -224,13 +283,23 @@ impl Render for VoiceHud {
         let display = HudDisplay::from_snapshot(&self.snapshot);
         let metrics = HudMetrics::interpolate(self.response_progress);
         window.resize(size(px(metrics.width), px(metrics.height)));
-        div().size_full().relative().child(
-            div()
-                .absolute()
-                .inset_0()
-                .child(self.compact_bar(&display, metrics))
-                .into_any_element(),
-        )
+        div()
+            .size_full()
+            .relative()
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .child(self.compact_bar(&display, metrics))
+                    .into_any_element(),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .child(self.response_panel(&display, metrics))
+                    .into_any_element(),
+            )
     }
 }
 

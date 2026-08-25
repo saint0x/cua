@@ -1,7 +1,7 @@
 pub const COMPACT_WIDTH: f32 = 500.0;
 pub const COMPACT_HEIGHT: f32 = 42.0;
 pub const EXPANDED_WIDTH: f32 = 500.0;
-pub const EXPANDED_HEIGHT: f32 = COMPACT_HEIGHT;
+pub const EXPANDED_HEIGHT: f32 = 162.0;
 pub const WINDOW_WIDTH: f32 = COMPACT_WIDTH;
 pub const WINDOW_HEIGHT: f32 = COMPACT_HEIGHT;
 pub const PANEL_RADIUS: f32 = 11.0;
@@ -26,8 +26,8 @@ impl HudMetrics {
             width: lerp(COMPACT_WIDTH, EXPANDED_WIDTH, eased),
             height: lerp(COMPACT_HEIGHT, EXPANDED_HEIGHT, eased),
             radius: lerp(21.0, PANEL_RADIUS, eased),
-            bar_opacity: 1.0,
-            response_opacity: 0.0,
+            bar_opacity: (1.0 - progress * 1.8).clamp(0.0, 1.0),
+            response_opacity: ((progress - 0.20) / 0.80).clamp(0.0, 1.0),
         }
     }
 }
@@ -201,17 +201,16 @@ mod tests {
     }
 
     #[test]
-    fn metrics_stay_pinned_to_the_compact_island() {
+    fn metrics_expand_only_when_reply_progress_is_active() {
         let compact = HudMetrics::interpolate(0.0);
         let expanded = HudMetrics::interpolate(1.0);
 
         assert_eq!(compact.width, COMPACT_WIDTH);
         assert_eq!(compact.height, COMPACT_HEIGHT);
         assert_eq!(expanded.width, COMPACT_WIDTH);
-        assert_eq!(expanded.height, COMPACT_HEIGHT);
-        assert_eq!(compact.bar_opacity, 1.0);
-        assert_eq!(expanded.bar_opacity, 1.0);
+        assert_eq!(expanded.height, EXPANDED_HEIGHT);
+        assert!(compact.bar_opacity > expanded.bar_opacity);
         assert_eq!(compact.response_opacity, 0.0);
-        assert_eq!(expanded.response_opacity, 0.0);
+        assert_eq!(expanded.response_opacity, 1.0);
     }
 }
