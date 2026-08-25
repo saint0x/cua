@@ -7,7 +7,7 @@ use cua_core::{
     FramePayload, InputAction, MouseButton, RuntimeMode, SCHEMA_VERSION,
 };
 use cua_model::{run_eval_report, EvalConfig};
-use cua_trace::{TraceRecord, TraceWriter};
+use cua_trace::{ActionTurnRecord, TraceRecord, TraceWriter};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -209,6 +209,13 @@ enum TraceCommand {
         #[arg(long)]
         json: bool,
     },
+    Replay {
+        dir: PathBuf,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -294,7 +301,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Command::Model { command }) => model(command).await,
         Some(Command::Schema { command }) => schema(command).await,
-        Some(Command::Trace { command }) => trace(command).await,
+        Some(Command::Trace { command }) => trace(cli.server_addr, &cli.profile, command).await,
         Some(Command::Profile { command }) => profile(cli.server_addr, &cli.profile, command).await,
         Some(Command::Pause(flag)) => {
             post_json(
@@ -340,15 +347,7 @@ async fn print_usage_and_status(server_addr: SocketAddr) -> anyhow::Result<()> {
 }
 
 async fn get_json(addr: SocketAddr, profile: &str, path: &str, json: bool) -> anyhow::Result<()> {
-    let url = format!("http://{addr}{path}");
-    let token = cua_daemon::load_or_create_profile_token(profile).await?;
-    let value: serde_json::Value = reqwest::Client::new()
-        .get(url)
-        .bearer_auth(token)
-        .send()
-        .await?
-        .json()
-        .await?;
+    let value = request_json(addr, profile, reqwest::Method::GET, path, None).await?;
     if json {
         println!("{}", serde_json::to_string_pretty(&value)?);
     } else {
@@ -364,22 +363,36 @@ async fn post_json(
     body: serde_json::Value,
     json: bool,
 ) -> anyhow::Result<()> {
-    let url = format!("http://{addr}{path}");
-    let token = cua_daemon::load_or_create_profile_token(profile).await?;
-    let value: serde_json::Value = reqwest::Client::new()
-        .post(url)
-        .bearer_auth(token)
-        .json(&body)
-        .send()
-        .await?
-        .json()
-        .await?;
+    let value = request_json(addr, profile, reqwest::Method::POST, path, Some(body)).await?;
     if json {
         println!("{}", serde_json::to_string_pretty(&value)?);
     } else {
         println!("{value}");
     }
     Ok(())
+}
+
+async fn request_json(
+    addr: SocketAddr,
+    profile: &str,
+    method: reqwest::Method,
+    path: &str,
+    body: Option<serde_json::Value>,
+) -> anyhow::Result<serde_json::Value> {
+    let url = format!("http://{addr}{path}");
+    let token = cua_daemon::load_or_create_profile_token(profile).await?;
+    let client = reqwest::Client::new();
+    let mut request = client.request(method, url).bearer_auth(token);
+    if let Some(body) = body {
+        request = request.json(&body);
+    }
+    let response = request.send().await?;
+    let status = response.status();
+    let value = response.json().await?;
+    if !status.is_success() {
+        anyhow::bail!("daemon request {path} failed with {status}: {value}");
+    }
+    Ok(value)
 }
 
 async fn doctor(json: bool) -> anyhow::Result<()> {
@@ -727,7 +740,7 @@ async fn schema(command: SchemaCommand) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn trace(command: TraceCommand) -> anyhow::Result<()> {
+async fn trace(addr: SocketAddr, profile: &str, command: TraceCommand) -> anyhow::Result<()> {
     match command {
         TraceCommand::Start { dir } => {
             let writer = TraceWriter::create(&dir).await?;
@@ -742,6 +755,164 @@ async fn trace(command: TraceCommand) -> anyhow::Result<()> {
         }
         TraceCommand::Inspect { dir, json } => inspect_trace(dir, json, false).await,
         TraceCommand::Verify { dir, json } => inspect_trace(dir, json, true).await,
+        TraceCommand::Replay { dir, dry_run, json } => {
+            replay_trace(addr, profile, dir, dry_run, json).await
+        }
+    }
+}
+
+async fn replay_trace(
+    addr: SocketAddr,
+    profile: &str,
+    dir: PathBuf,
+    dry_run: bool,
+    json: bool,
+) -> anyhow::Result<()> {
+    let turns = read_action_turns(&dir).await?;
+    let mut replayed = 0usize;
+    let mut skipped = Vec::new();
+    let mut resnapshots = 0usize;
+    for turn in turns {
+        let before = fresh_frame(addr, profile).await?;
+        resnapshots += 1;
+        let mut action = turn.action.clone();
+        remap_action_coordinates(&mut action, turn.before.as_ref(), before.get("envelope"));
+        if !dry_run {
+            if let Some((path, body)) = replay_request(&turn, action)? {
+                request_json(addr, profile, reqwest::Method::POST, path, Some(body)).await?;
+                replayed += 1;
+            } else {
+                skipped.push(turn.turn_id.clone());
+            }
+        } else if replay_request(&turn, action)?.is_some() {
+            replayed += 1;
+        } else {
+            skipped.push(turn.turn_id.clone());
+        }
+        let _after = fresh_frame(addr, profile).await?;
+        resnapshots += 1;
+    }
+    let report = serde_json::json!({
+        "schema_version": SCHEMA_VERSION,
+        "path": dir,
+        "dry_run": dry_run,
+        "action_turns": replayed + skipped.len(),
+        "replayed": replayed,
+        "skipped": skipped,
+        "resnapshots": resnapshots,
+        "ok": skipped.is_empty()
+    });
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!("{report}");
+    }
+    if !report["ok"].as_bool().unwrap_or(false) {
+        anyhow::bail!("trace replay skipped unsupported action turns");
+    }
+    Ok(())
+}
+
+async fn read_action_turns(dir: &PathBuf) -> anyhow::Result<Vec<ActionTurnRecord>> {
+    let path = dir.join("trajectory.jsonl");
+    let content = tokio::fs::read_to_string(&path)
+        .await
+        .with_context(|| format!("read trace {}", path.display()))?;
+    let mut turns = Vec::new();
+    for (index, line) in content.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let record = serde_json::from_str::<TraceRecord>(line)
+            .with_context(|| format!("parse trace record {} in {}", index + 1, path.display()))?;
+        if let TraceRecord::ActionTurn(turn) = record {
+            turns.push(turn);
+        }
+    }
+    Ok(turns)
+}
+
+async fn fresh_frame(addr: SocketAddr, profile: &str) -> anyhow::Result<serde_json::Value> {
+    request_json(
+        addr,
+        profile,
+        reqwest::Method::POST,
+        "/capture/screenshot",
+        Some(serde_json::json!({
+            "max_width": 1280,
+            "include_bytes": false,
+            "force_fresh": true,
+            "encoding": "png"
+        })),
+    )
+    .await
+}
+
+fn replay_request(
+    turn: &ActionTurnRecord,
+    action: serde_json::Value,
+) -> anyhow::Result<Option<(&'static str, serde_json::Value)>> {
+    if action.get("kind").and_then(|kind| kind.as_str()).is_some() {
+        let input = serde_json::from_value::<InputAction>(action)?;
+        let path = match input {
+            InputAction::MouseMove { .. }
+            | InputAction::MouseClick { .. }
+            | InputAction::MouseDrag { .. } => "/input/mouse",
+            InputAction::KeyPress { .. }
+            | InputAction::KeyType { .. }
+            | InputAction::KeyPaste { .. } => "/input/keyboard",
+            InputAction::ClipboardRead { .. } | InputAction::ClipboardWrite { .. } => {
+                return Ok(None);
+            }
+            InputAction::Pause | InputAction::Resume | InputAction::KillSwitch => "/input/keyboard",
+        };
+        return Ok(Some((path, serde_json::to_value(input)?)));
+    }
+    match turn.result.get("action").and_then(|action| action.as_str()) {
+        Some("clipboard_read") => Ok(Some(("/clipboard/read", action))),
+        Some("clipboard_write") => Ok(Some(("/clipboard/write", action))),
+        _ => Ok(None),
+    }
+}
+
+fn remap_action_coordinates(
+    action: &mut serde_json::Value,
+    recorded_frame: Option<&serde_json::Value>,
+    current_frame: Option<&serde_json::Value>,
+) {
+    let Some((scale_x, scale_y)) = coordinate_scale(recorded_frame, current_frame) else {
+        return;
+    };
+    for key in ["x", "from_x", "to_x"] {
+        remap_i32(action, key, scale_x);
+    }
+    for key in ["y", "from_y", "to_y"] {
+        remap_i32(action, key, scale_y);
+    }
+}
+
+fn coordinate_scale(
+    recorded_frame: Option<&serde_json::Value>,
+    current_frame: Option<&serde_json::Value>,
+) -> Option<(f64, f64)> {
+    let recorded_width = recorded_frame?.get("width")?.as_f64()?;
+    let recorded_height = recorded_frame?.get("height")?.as_f64()?;
+    let current_width = current_frame?.get("width")?.as_f64()?;
+    let current_height = current_frame?.get("height")?.as_f64()?;
+    if recorded_width <= 0.0 || recorded_height <= 0.0 {
+        return None;
+    }
+    Some((
+        current_width / recorded_width,
+        current_height / recorded_height,
+    ))
+}
+
+fn remap_i32(action: &mut serde_json::Value, key: &str, scale: f64) {
+    if let Some(value) = action.get_mut(key) {
+        if let Some(number) = value.as_i64() {
+            *value = serde_json::json!(((number as f64) * scale).round() as i32);
+        }
     }
 }
 
@@ -843,4 +1014,30 @@ async fn inspect_trace(dir: PathBuf, json: bool, verify: bool) -> anyhow::Result
         anyhow::bail!("trace verification failed");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remaps_mouse_coordinates_between_frame_sizes() {
+        let mut action = serde_json::json!({
+            "kind": "mouse_drag",
+            "from_x": 100,
+            "from_y": 50,
+            "to_x": 200,
+            "to_y": 100,
+            "duration_ms": 10
+        });
+        let recorded = serde_json::json!({ "width": 400, "height": 200 });
+        let current = serde_json::json!({ "width": 800, "height": 100 });
+
+        remap_action_coordinates(&mut action, Some(&recorded), Some(&current));
+
+        assert_eq!(action["from_x"], 200);
+        assert_eq!(action["from_y"], 25);
+        assert_eq!(action["to_x"], 400);
+        assert_eq!(action["to_y"], 50);
+    }
 }

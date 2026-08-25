@@ -11,8 +11,7 @@
 
 ## Tracing
 
-1. Add trace replay that re-snapshots and remaps desktop coordinates where needed.
-2. Store host-backed evidence under `artifacts/cua/<platform>/`.
+1. Store host-backed evidence under `artifacts/cua/<platform>/`.
 
 ## Model Eval
 
