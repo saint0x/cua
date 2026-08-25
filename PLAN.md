@@ -38,7 +38,6 @@
 
 ## Verification
 
-1. Add schema compatibility fixtures and breaking-change tests.
-2. Add host-backed GUI tests for each supported platform/backend/action cell.
-3. Add refusal tests that prove no forbidden side effects occurred.
-4. Keep `docs/action-support.md` current with proven support, exact refusals, and unproven cells.
+1. Add host-backed GUI tests for each supported platform/backend/action cell.
+2. Add refusal tests that prove no forbidden side effects occurred.
+3. Keep `docs/action-support.md` current with proven support, exact refusals, and unproven cells.
