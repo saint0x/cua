@@ -50,7 +50,8 @@ jq -n \
     control_surfaces: {
       dir: $control_dir,
       http: $control[0].http,
-      cli: $control[0].cli
+      cli: $control[0].cli,
+      unix: $control[0].unix
     }
   }' > "$MANIFEST"
 

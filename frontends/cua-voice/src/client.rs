@@ -4,7 +4,10 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::path::PathBuf;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::UnixStream;
+use tokio::net::{
+    unix::{OwnedReadHalf, OwnedWriteHalf},
+    UnixStream,
+};
 
 #[derive(Debug, Clone)]
 pub struct CuaClient {
@@ -63,20 +66,13 @@ impl CuaClient {
     }
 
     pub async fn dispatch(&self, action: &InputAction) -> anyhow::Result<Value> {
-        match action {
-            InputAction::MouseMove { .. }
-            | InputAction::MouseClick { .. }
-            | InputAction::MouseDrag { .. } => {}
-            InputAction::KeyPress { .. }
-            | InputAction::KeyType { .. }
-            | InputAction::KeyPaste { .. } => {}
-            InputAction::Pause | InputAction::Resume | InputAction::KillSwitch => {}
-            InputAction::ClipboardRead { .. } | InputAction::ClipboardWrite { .. } => {
-                bail!("clipboard actions require explicit clipboard endpoints")
-            }
-        };
+        ensure_dispatchable(action)?;
         self.request("input.dispatch", Some(serde_json::to_value(action)?))
             .await
+    }
+
+    pub async fn session(&self) -> anyhow::Result<CuaSession> {
+        CuaSession::connect(self).await
     }
 
     async fn request<T: serde::de::DeserializeOwned>(
@@ -84,25 +80,75 @@ impl CuaClient {
         method: &str,
         body: Option<Value>,
     ) -> anyhow::Result<T> {
-        let mut stream = UnixStream::connect(&self.socket_path)
+        let mut session = self.session().await?;
+        session.request(method, body).await
+    }
+
+    pub fn profile(&self) -> &str {
+        &self.profile
+    }
+}
+
+pub struct CuaSession {
+    token: String,
+    read: BufReader<OwnedReadHalf>,
+    write: OwnedWriteHalf,
+}
+
+impl CuaSession {
+    async fn connect(client: &CuaClient) -> anyhow::Result<Self> {
+        let stream = UnixStream::connect(&client.socket_path)
             .await
-            .with_context(|| format!("connect {}", self.socket_path.display()))?;
+            .with_context(|| format!("connect {}", client.socket_path.display()))?;
+        let (read, write) = stream.into_split();
+        Ok(Self {
+            token: client.token.clone(),
+            read: BufReader::new(read),
+            write,
+        })
+    }
+
+    pub async fn context(&mut self, include_bytes: bool) -> anyhow::Result<DesktopContextSnapshot> {
+        self.request(
+            "context.snapshot",
+            Some(serde_json::json!({
+                "max_width": 1280,
+                "encoding": FrameEncoding::Png,
+                "force_fresh": true,
+                "include_bytes": include_bytes
+            })),
+        )
+        .await
+    }
+
+    pub async fn dispatch(&mut self, action: &InputAction) -> anyhow::Result<Value> {
+        ensure_dispatchable(action)?;
+        self.request("input.dispatch", Some(serde_json::to_value(action)?))
+            .await
+    }
+
+    async fn request<T: serde::de::DeserializeOwned>(
+        &mut self,
+        method: &str,
+        body: Option<Value>,
+    ) -> anyhow::Result<T> {
         let request = serde_json::json!({
             "id": uuid::Uuid::new_v4().to_string(),
             "token": self.token,
             "method": method,
             "params": body.unwrap_or_else(|| serde_json::json!({}))
         });
-        stream
+        self.write
             .write_all(request.to_string().as_bytes())
             .await
             .context("write unix request")?;
-        stream
+        self.write
             .write_all(b"\n")
             .await
             .context("flush unix request")?;
+        self.write.flush().await.context("flush unix stream")?;
         let mut line = String::new();
-        BufReader::new(stream)
+        self.read
             .read_line(&mut line)
             .await
             .context("read unix response")?;
@@ -119,10 +165,22 @@ impl CuaClient {
             response.result.unwrap_or(Value::Null),
         )?)
     }
+}
 
-    pub fn profile(&self) -> &str {
-        &self.profile
+fn ensure_dispatchable(action: &InputAction) -> anyhow::Result<()> {
+    match action {
+        InputAction::MouseMove { .. }
+        | InputAction::MouseClick { .. }
+        | InputAction::MouseDrag { .. } => {}
+        InputAction::KeyPress { .. }
+        | InputAction::KeyType { .. }
+        | InputAction::KeyPaste { .. } => {}
+        InputAction::Pause | InputAction::Resume | InputAction::KillSwitch => {}
+        InputAction::ClipboardRead { .. } | InputAction::ClipboardWrite { .. } => {
+            bail!("clipboard actions require explicit clipboard endpoints")
+        }
     }
+    Ok(())
 }
 
 #[derive(Debug, Deserialize)]
