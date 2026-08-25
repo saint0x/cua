@@ -69,6 +69,14 @@ impl CuaClient {
         self.request("events.snapshot", None).await
     }
 
+    pub async fn events_after(&self, sequence: u64) -> anyhow::Result<Vec<Value>> {
+        self.request(
+            "events.after",
+            Some(serde_json::json!({ "after_sequence": sequence })),
+        )
+        .await
+    }
+
     pub async fn dispatch(&self, action: &InputAction) -> anyhow::Result<Value> {
         ensure_dispatchable(action)?;
         self.request("input.dispatch", Some(serde_json::to_value(action)?))
@@ -129,6 +137,14 @@ impl CuaSession {
         ensure_dispatchable(action)?;
         self.request("input.dispatch", Some(serde_json::to_value(action)?))
             .await
+    }
+
+    pub async fn events_after(&mut self, sequence: u64) -> anyhow::Result<Vec<Value>> {
+        self.request(
+            "events.after",
+            Some(serde_json::json!({ "after_sequence": sequence })),
+        )
+        .await
     }
 
     async fn request<T: serde::de::DeserializeOwned>(

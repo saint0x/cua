@@ -2,7 +2,7 @@ use axum::{
     body::Body,
     extract::{
         ws::{Message, WebSocketUpgrade},
-        Request, State,
+        Query, Request, State,
     },
     http::{header, HeaderMap, HeaderValue, StatusCode},
     middleware::{self, Next},
@@ -582,6 +582,22 @@ impl EventLane {
     async fn snapshot(&self) -> Vec<serde_json::Value> {
         self.recent.read().await.iter().cloned().collect()
     }
+
+    async fn after(&self, sequence: u64) -> Vec<serde_json::Value> {
+        self.recent
+            .read()
+            .await
+            .iter()
+            .filter(|event| {
+                event
+                    .get("sequence")
+                    .and_then(|value| value.as_u64())
+                    .map(|value| value > sequence)
+                    .unwrap_or(false)
+            })
+            .cloned()
+            .collect()
+    }
 }
 
 fn event_lane_capacity() -> usize {
@@ -876,6 +892,16 @@ async fn handle_unix_request(state: &DaemonState, request: UnixRequest) -> serde
         "manifest" => Ok(serde_json::to_value(manifest_payload())),
         "metrics" => Ok(serde_json::to_value(metrics_snapshot(state))),
         "events.snapshot" => Ok(serde_json::to_value(state.events.snapshot().await)),
+        "events.after" => {
+            let params = request.params.unwrap_or_else(|| serde_json::json!({}));
+            let after_sequence = params
+                .get("after_sequence")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0);
+            Ok(serde_json::to_value(
+                state.events.after(after_sequence).await,
+            ))
+        }
         "ui.step" => {
             let params = request.params.unwrap_or_else(|| serde_json::json!({}));
             match serde_json::from_value::<UiStepRequest>(params) {
@@ -1065,6 +1091,7 @@ fn manifest_payload() -> Manifest {
             "GET /capture/stream.ws".to_string(),
             "GET /observe/desktop".to_string(),
             "GET /events".to_string(),
+            "GET /events?after=<sequence>".to_string(),
             "GET /events/live".to_string(),
             "POST /ui/step".to_string(),
             "POST /profile/create".to_string(),
@@ -1085,7 +1112,7 @@ fn manifest_payload() -> Manifest {
             "cua status --json".to_string(),
             "cua manifest --json".to_string(),
             "cua metrics --json".to_string(),
-            "cua events --json".to_string(),
+            "cua events --json [--after <sequence>]".to_string(),
             "cua ui step <label> --json".to_string(),
             "cua perf live --json".to_string(),
             "cua screenshot --out <path>".to_string(),
@@ -1394,12 +1421,29 @@ async fn observe_cursor(State(state): State<DaemonState>) -> Json<cua_core::Curs
     Json(cua_platform_macos::cursor_state())
 }
 
-async fn events(State(state): State<DaemonState>) -> Json<Vec<serde_json::Value>> {
-    Json(state.events.snapshot().await)
+#[derive(Debug, Deserialize)]
+struct EventsQuery {
+    after: Option<u64>,
 }
 
-async fn events_live(State(state): State<DaemonState>) -> Json<Vec<serde_json::Value>> {
-    Json(state.events.snapshot().await)
+async fn events(
+    State(state): State<DaemonState>,
+    Query(query): Query<EventsQuery>,
+) -> Json<Vec<serde_json::Value>> {
+    match query.after {
+        Some(sequence) => Json(state.events.after(sequence).await),
+        None => Json(state.events.snapshot().await),
+    }
+}
+
+async fn events_live(
+    State(state): State<DaemonState>,
+    Query(query): Query<EventsQuery>,
+) -> Json<Vec<serde_json::Value>> {
+    match query.after {
+        Some(sequence) => Json(state.events.after(sequence).await),
+        None => Json(state.events.snapshot().await),
+    }
 }
 
 async fn ui_step(
@@ -2795,6 +2839,24 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(event_kinds.contains(&"ui_step"));
         assert!(events.as_array().unwrap().len() >= 4);
+
+        let last_sequence = events
+            .as_array()
+            .unwrap()
+            .last()
+            .and_then(|event| event["sequence"].as_u64())
+            .unwrap();
+        let empty_after = unix_result(
+            handle_unix_request(
+                &state,
+                unix_request(
+                    "events.after",
+                    serde_json::json!({ "after_sequence": last_sequence }),
+                ),
+            )
+            .await,
+        );
+        assert_eq!(empty_after.as_array().unwrap().len(), 0);
     }
 
     fn unix_request(method: &str, params: serde_json::Value) -> UnixRequest {
@@ -2945,6 +3007,42 @@ mod tests {
             .expect("ui_step event");
         assert_eq!(step["data"]["label"], "inspect cursor target");
         assert_eq!(step["data"]["source"], "agent planner");
+    }
+
+    #[tokio::test]
+    async fn events_query_returns_only_events_after_sequence() {
+        let state = DaemonState::synthetic("test", "token");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let baseline = state.events.snapshot().await;
+        let last_sequence = baseline
+            .last()
+            .and_then(|event| event["sequence"].as_u64())
+            .unwrap();
+
+        let Json(_) = ui_step(
+            State(state.clone()),
+            Json(UiStepRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                label: "new step only".to_string(),
+                source: None,
+                ttl_ms: None,
+            }),
+        )
+        .await
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        let Json(events) = events(
+            State(state),
+            Query(EventsQuery {
+                after: Some(last_sequence),
+            }),
+        )
+        .await;
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["kind"], "ui_step");
+        assert_eq!(events[0]["data"]["label"], "new step only");
     }
 
     #[tokio::test]

@@ -17,6 +17,7 @@ use gpui::{
     WindowBounds, WindowKind, WindowOptions,
 };
 use rdev::{listen, EventType, Key};
+use serde_json::Value;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::io::ErrorKind;
@@ -394,41 +395,47 @@ fn start_agent_step_poll(
         let Ok(client) = CuaClient::new(profile).await else {
             return;
         };
+        let Ok(mut session) = client.session().await else {
+            return;
+        };
         let mut last_sequence = 0_u64;
         loop {
-            if let Ok(events) = client.events().await {
+            if let Ok(events) = session.events_after(last_sequence).await {
                 for event in events {
-                    let sequence = event
-                        .get("sequence")
-                        .and_then(|value| value.as_u64())
-                        .unwrap_or(0);
-                    if sequence <= last_sequence {
-                        continue;
+                    if let Some((sequence, event)) =
+                        agent_step_from_daemon_event(&event, last_sequence)
+                    {
+                        last_sequence = last_sequence.max(sequence);
+                        tx.send(event).ok();
                     }
-                    last_sequence = last_sequence.max(sequence);
-                    if event.get("kind").and_then(|value| value.as_str()) != Some("ui_step") {
-                        continue;
-                    }
-                    let Some(data) = event.get("data") else {
-                        continue;
-                    };
-                    let Some(label) = data.get("label").and_then(|value| value.as_str()) else {
-                        continue;
-                    };
-                    let source = data
-                        .get("source")
-                        .and_then(|value| value.as_str())
-                        .map(str::to_string);
-                    tx.send(VoiceUiEvent::AgentStep {
-                        label: label.to_string(),
-                        source,
-                    })
-                    .ok();
                 }
             }
-            tokio::time::sleep(Duration::from_millis(250)).await;
+            tokio::time::sleep(Duration::from_millis(80)).await;
         }
     });
+}
+
+fn agent_step_from_daemon_event(event: &Value, last_sequence: u64) -> Option<(u64, VoiceUiEvent)> {
+    let sequence = event.get("sequence").and_then(|value| value.as_u64())?;
+    if sequence <= last_sequence {
+        return None;
+    }
+    if event.get("kind").and_then(|value| value.as_str()) != Some("ui_step") {
+        return None;
+    }
+    let data = event.get("data")?;
+    let label = data.get("label").and_then(|value| value.as_str())?;
+    let source = data
+        .get("source")
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
+    Some((
+        sequence,
+        VoiceUiEvent::AgentStep {
+            label: label.to_string(),
+            source,
+        },
+    ))
 }
 
 fn single_instance_socket_path(profile: &str) -> PathBuf {
@@ -602,6 +609,29 @@ mod tests {
         assert_eq!(compact_bar_width(transitioning), COMPACT_WIDTH);
         assert_eq!(compact_bar_height(transitioning), COMPACT_HEIGHT);
         assert_eq!(compact_bar_radius(transitioning), COMPACT_RADIUS);
+    }
+
+    #[test]
+    fn daemon_ui_step_event_maps_to_visible_agent_step() {
+        let event = serde_json::json!({
+            "sequence": 42,
+            "kind": "ui_step",
+            "data": {
+                "label": "checking current focus",
+                "source": "agent"
+            }
+        });
+
+        let Some((sequence, VoiceUiEvent::AgentStep { label, source })) =
+            agent_step_from_daemon_event(&event, 41)
+        else {
+            panic!("expected agent step event");
+        };
+
+        assert_eq!(sequence, 42);
+        assert_eq!(label, "checking current focus");
+        assert_eq!(source.as_deref(), Some("agent"));
+        assert!(agent_step_from_daemon_event(&event, 42).is_none());
     }
 
     #[test]

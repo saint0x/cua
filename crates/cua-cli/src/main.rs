@@ -41,7 +41,7 @@ enum Command {
     Context(ContextArgs),
     Manifest(JsonFlag),
     Metrics(JsonFlag),
-    Events(JsonFlag),
+    Events(EventsArgs),
     Ui {
         #[command(subcommand)]
         command: UiCommand,
@@ -93,6 +93,14 @@ struct ServeArgs {
 struct JsonFlag {
     #[arg(long)]
     json: bool,
+}
+
+#[derive(Debug, Args)]
+struct EventsArgs {
+    #[arg(long)]
+    json: bool,
+    #[arg(long)]
+    after: Option<u64>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -315,8 +323,12 @@ async fn main() -> anyhow::Result<()> {
         Some(Command::Metrics(flag)) => {
             get_json(cli.server_addr, &cli.profile, "/metrics", flag.json).await
         }
-        Some(Command::Events(flag)) => {
-            get_json(cli.server_addr, &cli.profile, "/events", flag.json).await
+        Some(Command::Events(args)) => {
+            let path = match args.after {
+                Some(sequence) => format!("/events?after={sequence}"),
+                None => "/events".to_string(),
+            };
+            get_json(cli.server_addr, &cli.profile, &path, args.json).await
         }
         Some(Command::Ui { command }) => ui(cli.server_addr, &cli.profile, command).await,
         Some(Command::Screenshot(args)) => screenshot(cli.server_addr, &cli.profile, args).await,
@@ -387,7 +399,7 @@ async fn print_usage_and_status(server_addr: SocketAddr) -> anyhow::Result<()> {
     println!("       cua status --json");
     println!("       cua manifest --json");
     println!("       cua metrics --json");
-    println!("       cua events --json");
+    println!("       cua events --json [--after <sequence>]");
     println!("       cua ui step <label> --json");
     println!("       cua perf live --json");
     println!("       cua context --json");
