@@ -2449,6 +2449,72 @@
       ],
       "title": "RuntimeControlState",
       "type": "object"
+    },
+    "UiStepRequest": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "schema_version": {
+          "type": "string"
+        },
+        "source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ttl_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "label",
+        "schema_version"
+      ],
+      "title": "UiStepRequest",
+      "type": "object"
+    },
+    "UiStepResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "accepted": {
+          "type": "boolean"
+        },
+        "label": {
+          "type": "string"
+        },
+        "schema_version": {
+          "type": "string"
+        },
+        "source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ttl_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "accepted",
+        "label",
+        "schema_version"
+      ],
+      "title": "UiStepResult",
+      "type": "object"
     }
   }
 }

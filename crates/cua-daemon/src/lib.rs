@@ -19,7 +19,7 @@ use cua_core::{
     DesktopContextSnapshot, DesktopState, Effect, Evidence, EvidenceKind, FrameEncoding,
     FramePayload, HealthReport, InputAction, InputRequest, InputResult, InputRoute, Manifest,
     MetricBucket, MetricHistogram, MetricsSnapshot, PermissionReport, ProfilePolicy,
-    RuntimeControlState, RuntimeMode, SafetyState, SCHEMA_VERSION,
+    RuntimeControlState, RuntimeMode, SafetyState, UiStepRequest, UiStepResult, SCHEMA_VERSION,
 };
 use cua_input::InputBackend;
 use cua_model::{run_eval_report, EvalConfig, EvalReport};
@@ -707,6 +707,7 @@ pub fn router(state: DaemonState) -> Router {
         .route("/observe/cursor", get(observe_cursor))
         .route("/events", get(events))
         .route("/events/live", get(events_live))
+        .route("/ui/step", post(ui_step))
         .route("/profile/create", post(profile_create))
         .route("/profile/activate", post(profile_activate))
         .route("/profile/status", get(profile_status))
@@ -875,6 +876,20 @@ async fn handle_unix_request(state: &DaemonState, request: UnixRequest) -> serde
         "manifest" => Ok(serde_json::to_value(manifest_payload())),
         "metrics" => Ok(serde_json::to_value(metrics_snapshot(state))),
         "events.snapshot" => Ok(serde_json::to_value(state.events.snapshot().await)),
+        "ui.step" => {
+            let params = request.params.unwrap_or_else(|| serde_json::json!({}));
+            match serde_json::from_value::<UiStepRequest>(params) {
+                Ok(request) => ui_step_state(state, request).map(serde_json::to_value),
+                Err(error) => {
+                    return unix_error(
+                        id,
+                        "bad_request",
+                        error.to_string(),
+                        Some(StatusCode::BAD_REQUEST),
+                    )
+                }
+            }
+        }
         "observe.desktop" => desktop_state(state).await.map(serde_json::to_value),
         "context.snapshot" => {
             let params = request.params.unwrap_or_else(|| serde_json::json!({}));
@@ -1051,6 +1066,7 @@ fn manifest_payload() -> Manifest {
             "GET /observe/desktop".to_string(),
             "GET /events".to_string(),
             "GET /events/live".to_string(),
+            "POST /ui/step".to_string(),
             "POST /profile/create".to_string(),
             "POST /profile/activate".to_string(),
             "GET /profile/status".to_string(),
@@ -1070,6 +1086,7 @@ fn manifest_payload() -> Manifest {
             "cua manifest --json".to_string(),
             "cua metrics --json".to_string(),
             "cua events --json".to_string(),
+            "cua ui step <label> --json".to_string(),
             "cua perf live --json".to_string(),
             "cua screenshot --out <path>".to_string(),
             "cua context --json".to_string(),
@@ -1383,6 +1400,62 @@ async fn events(State(state): State<DaemonState>) -> Json<Vec<serde_json::Value>
 
 async fn events_live(State(state): State<DaemonState>) -> Json<Vec<serde_json::Value>> {
     Json(state.events.snapshot().await)
+}
+
+async fn ui_step(
+    State(state): State<DaemonState>,
+    Json(request): Json<UiStepRequest>,
+) -> Result<Json<UiStepResult>, ApiError> {
+    Ok(Json(ui_step_state(&state, request)?))
+}
+
+fn ui_step_state(state: &DaemonState, request: UiStepRequest) -> Result<UiStepResult, ApiError> {
+    if request.schema_version != SCHEMA_VERSION {
+        return Err(ApiError::bad_request(
+            "schema_version",
+            format!("expected {SCHEMA_VERSION}"),
+        ));
+    }
+    let label = request
+        .label
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if label.is_empty() {
+        return Err(ApiError::bad_request("label", "label must not be empty"));
+    }
+    if label.chars().count() > 160 {
+        return Err(ApiError::bad_request(
+            "label",
+            "label must be 160 characters or fewer",
+        ));
+    }
+    let source = request.source.map(|value| {
+        value
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .take(48)
+            .collect::<String>()
+    });
+    let ttl_ms = request.ttl_ms.map(|value| value.clamp(250, 60_000));
+    let result = UiStepResult {
+        schema_version: SCHEMA_VERSION.to_string(),
+        accepted: true,
+        label,
+        source,
+        ttl_ms,
+    };
+    state.publish_event(
+        "ui_step",
+        serde_json::json!({
+            "label": result.label,
+            "source": result.source,
+            "ttl_ms": result.ttl_ms,
+        }),
+    );
+    Ok(result)
 }
 
 fn observe_frame_lookup(metrics: &RuntimeMetrics, lookup: &FrameLookup) {
@@ -2381,6 +2454,20 @@ impl ApiError {
             StatusCode::SERVICE_UNAVAILABLE,
         )
     }
+
+    fn bad_request(field: impl Into<String>, message: impl Into<String>) -> Self {
+        let mut details = BTreeMap::new();
+        details.insert("field".to_string(), field.into());
+        Self(
+            ApiErrorBody {
+                schema_version: SCHEMA_VERSION.to_string(),
+                code: "bad_request".to_string(),
+                message: message.into(),
+                details,
+            },
+            StatusCode::BAD_REQUEST,
+        )
+    }
 }
 
 impl IntoResponse for ApiError {
@@ -2658,6 +2745,24 @@ mod tests {
         );
         assert_eq!(pause["safety_state"], "paused");
 
+        let step = unix_result(
+            handle_unix_request(
+                &state,
+                unix_request(
+                    "ui.step",
+                    serde_json::json!({
+                        "schema_version": SCHEMA_VERSION,
+                        "label": "checking target state",
+                        "source": "planner",
+                        "ttl_ms": 1500
+                    }),
+                ),
+            )
+            .await,
+        );
+        assert_eq!(step["accepted"], true);
+        assert_eq!(step["label"], "checking target state");
+
         let profile = unix_result(
             handle_unix_request(
                 &state,
@@ -2682,7 +2787,14 @@ mod tests {
             )
             .await,
         );
-        assert!(events.as_array().unwrap().len() >= 3);
+        let event_kinds = events
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|event| event["kind"].as_str())
+            .collect::<Vec<_>>();
+        assert!(event_kinds.contains(&"ui_step"));
+        assert!(events.as_array().unwrap().len() >= 4);
     }
 
     fn unix_request(method: &str, params: serde_json::Value) -> UnixRequest {
@@ -2803,6 +2915,36 @@ mod tests {
         assert!(kinds.iter().any(|kind| kind == "profile_created"));
         assert!(kinds.iter().any(|kind| kind == "profile_activated"));
         assert!(kinds.iter().any(|kind| kind == "control_paused"));
+    }
+
+    #[tokio::test]
+    async fn ui_step_normalizes_and_emits_agent_visible_event() {
+        let state = DaemonState::synthetic("test", "token");
+
+        let Json(result) = ui_step(
+            State(state.clone()),
+            Json(UiStepRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                label: "  inspect   cursor target  ".to_string(),
+                source: Some("agent planner".to_string()),
+                ttl_ms: Some(125),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert!(result.accepted);
+        assert_eq!(result.label, "inspect cursor target");
+        assert_eq!(result.ttl_ms, Some(250));
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let events = state.events.snapshot().await;
+        let step = events
+            .iter()
+            .find(|event| event["kind"] == "ui_step")
+            .expect("ui_step event");
+        assert_eq!(step["data"]["label"], "inspect cursor target");
+        assert_eq!(step["data"]["source"], "agent planner");
     }
 
     #[tokio::test]

@@ -219,6 +219,23 @@ pub struct MetricsSnapshot {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct UiStepRequest {
+    pub schema_version: String,
+    pub label: String,
+    pub source: Option<String>,
+    pub ttl_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct UiStepResult {
+    pub schema_version: String,
+    pub accepted: bool,
+    pub label: String,
+    pub source: Option<String>,
+    pub ttl_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Effect {
     Confirmed,
@@ -439,6 +456,14 @@ pub fn schema_bundle() -> SchemaBundle {
     schemas.insert(
         "MetricsSnapshot".to_string(),
         serde_json::json!(schema_for!(MetricsSnapshot)),
+    );
+    schemas.insert(
+        "UiStepRequest".to_string(),
+        serde_json::json!(schema_for!(UiStepRequest)),
+    );
+    schemas.insert(
+        "UiStepResult".to_string(),
+        serde_json::json!(schema_for!(UiStepResult)),
     );
     schemas.insert(
         "InputAction".to_string(),

@@ -65,6 +65,10 @@ impl CuaClient {
         Ok(())
     }
 
+    pub async fn events(&self) -> anyhow::Result<Vec<Value>> {
+        self.request("events.snapshot", None).await
+    }
+
     pub async fn dispatch(&self, action: &InputAction) -> anyhow::Result<Value> {
         ensure_dispatchable(action)?;
         self.request("input.dispatch", Some(serde_json::to_value(action)?))

@@ -17,6 +17,7 @@ HTTP_STATUS="$OUT_DIR/http-status.json"
 HTTP_MANIFEST="$OUT_DIR/http-manifest.json"
 HTTP_METRICS="$OUT_DIR/http-metrics.json"
 HTTP_EVENTS="$OUT_DIR/http-events.json"
+HTTP_UI_STEP="$OUT_DIR/http-ui-step.json"
 HTTP_OBSERVE="$OUT_DIR/http-observe.json"
 HTTP_CONTEXT="$OUT_DIR/http-context.json"
 HTTP_SCREENSHOT="$OUT_DIR/http-screenshot.json"
@@ -24,6 +25,7 @@ CLI_STATUS="$OUT_DIR/cli-status.json"
 CLI_MANIFEST="$OUT_DIR/cli-manifest.json"
 CLI_METRICS="$OUT_DIR/cli-metrics.json"
 CLI_EVENTS="$OUT_DIR/cli-events.json"
+CLI_UI_STEP="$OUT_DIR/cli-ui-step.json"
 CLI_OBSERVE="$OUT_DIR/cli-observe.json"
 CLI_CONTEXT="$OUT_DIR/cli-context.json"
 CLI_PROFILE="$OUT_DIR/cli-profile.json"
@@ -35,6 +37,7 @@ UNIX_STATUS="$OUT_DIR/unix-status.json"
 UNIX_MANIFEST="$OUT_DIR/unix-manifest.json"
 UNIX_METRICS="$OUT_DIR/unix-metrics.json"
 UNIX_EVENTS="$OUT_DIR/unix-events.json"
+UNIX_UI_STEP="$OUT_DIR/unix-ui-step.json"
 UNIX_CONTEXT="$OUT_DIR/unix-context.json"
 UNIX_PAUSE="$OUT_DIR/unix-pause.json"
 UNIX_RESUME="$OUT_DIR/unix-resume.json"
@@ -113,6 +116,11 @@ PY
 curl -fsS -H "authorization: Bearer $TOKEN" "http://$ADDR/status" > "$HTTP_STATUS"
 curl -fsS -H "authorization: Bearer $TOKEN" "http://$ADDR/manifest" > "$HTTP_MANIFEST"
 curl -fsS -H "authorization: Bearer $TOKEN" "http://$ADDR/metrics" > "$HTTP_METRICS"
+curl -fsS \
+  -H "authorization: Bearer $TOKEN" \
+  -H "content-type: application/json" \
+  -d '{"schema_version":"cua.v1","label":"http programmable step","source":"http proof","ttl_ms":1500}' \
+  "http://$ADDR/ui/step" > "$HTTP_UI_STEP"
 curl -fsS -H "authorization: Bearer $TOKEN" "http://$ADDR/events" > "$HTTP_EVENTS"
 curl -fsS -H "authorization: Bearer $TOKEN" "http://$ADDR/observe/desktop" > "$HTTP_OBSERVE"
 curl -fsS \
@@ -129,6 +137,10 @@ curl -fsS \
 CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFILE" status --json > "$CLI_STATUS"
 CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFILE" manifest --json > "$CLI_MANIFEST"
 CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFILE" metrics --json > "$CLI_METRICS"
+CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFILE" ui step "cli programmable step" \
+  --source "cli proof" \
+  --ttl-ms 1500 \
+  --json > "$CLI_UI_STEP"
 CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFILE" events --json > "$CLI_EVENTS"
 CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFILE" observe --json > "$CLI_OBSERVE"
 CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFILE" context --json --max-width 640 --force-fresh > "$CLI_CONTEXT"
@@ -144,6 +156,7 @@ CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFIL
 unix_call "status" '{}' "$UNIX_STATUS"
 unix_call "manifest" '{}' "$UNIX_MANIFEST"
 unix_call "metrics" '{}' "$UNIX_METRICS"
+unix_call "ui.step" '{"schema_version":"cua.v1","label":"unix programmable step","source":"unix proof","ttl_ms":1500}' "$UNIX_UI_STEP"
 unix_call "events.snapshot" '{}' "$UNIX_EVENTS"
 unix_call "context.snapshot" '{"max_width":640,"encoding":"png","force_fresh":true,"include_bytes":false}' "$UNIX_CONTEXT"
 unix_call "control.pause" '{}' "$UNIX_PAUSE"
@@ -155,7 +168,9 @@ jq -e '(.public_surfaces | index("cli")) and (.public_surfaces | index("local_ht
   "$HTTP_MANIFEST" >/dev/null
 jq -e '.schema_version == "cua.v1" and (.histograms | type) == "array" and (.counters | type) == "object"' \
   "$HTTP_METRICS" >/dev/null
-jq -e 'type == "array" and length >= 1 and .[0].kind == "daemon_started"' \
+jq -e '.accepted == true and .label == "http programmable step" and .source == "http proof"' \
+  "$HTTP_UI_STEP" >/dev/null
+jq -e 'type == "array" and length >= 1 and .[0].kind == "daemon_started" and any(.[]; .kind == "ui_step" and .data.label == "http programmable step")' \
   "$HTTP_EVENTS" >/dev/null
 jq -e '(.displays | length) >= 1 and (.windows | type) == "array" and (.cursor.visible | type) == "boolean"' \
   "$HTTP_OBSERVE" >/dev/null
@@ -169,7 +184,9 @@ jq -e '(.public_surfaces | index("cli")) and (.public_surfaces | index("local_ht
   "$CLI_MANIFEST" >/dev/null
 jq -e '.schema_version == "cua.v1" and (.histograms | type) == "array" and (.counters | type) == "object"' \
   "$CLI_METRICS" >/dev/null
-jq -e 'type == "array" and length >= 1 and .[0].kind == "daemon_started"' \
+jq -e '.accepted == true and .label == "cli programmable step" and .source == "cli proof"' \
+  "$CLI_UI_STEP" >/dev/null
+jq -e 'type == "array" and length >= 1 and .[0].kind == "daemon_started" and any(.[]; .kind == "ui_step" and .data.label == "cli programmable step")' \
   "$CLI_EVENTS" >/dev/null
 jq -e '(.displays | length) >= 1 and (.windows | type) == "array" and (.cursor.visible | type) == "boolean"' \
   "$CLI_OBSERVE" >/dev/null
@@ -187,7 +204,9 @@ jq -e '(.public_surfaces | index("local_unix_socket")) and (.endpoints | index("
   "$UNIX_MANIFEST" >/dev/null
 jq -e '.schema_version == "cua.v1" and (.histograms | type) == "array" and (.counters | type) == "object"' \
   "$UNIX_METRICS" >/dev/null
-jq -e 'type == "array" and length >= 1 and .[0].kind == "daemon_started"' \
+jq -e '.accepted == true and .label == "unix programmable step" and .source == "unix proof"' \
+  "$UNIX_UI_STEP" >/dev/null
+jq -e 'type == "array" and length >= 1 and .[0].kind == "daemon_started" and any(.[]; .kind == "ui_step" and .data.label == "unix programmable step")' \
   "$UNIX_EVENTS" >/dev/null
 jq -e '.frame.envelope.encoding == "png" and .frame.envelope.width > 0 and (.desktop.displays | length) >= 1 and (.desktop.windows | type) == "array"' \
   "$UNIX_CONTEXT" >/dev/null
@@ -202,6 +221,7 @@ jq -n \
   --slurpfile http_manifest "$HTTP_MANIFEST" \
   --slurpfile http_metrics "$HTTP_METRICS" \
   --slurpfile http_events "$HTTP_EVENTS" \
+  --slurpfile http_ui_step "$HTTP_UI_STEP" \
   --slurpfile http_observe "$HTTP_OBSERVE" \
   --slurpfile http_context "$HTTP_CONTEXT" \
   --slurpfile http_screenshot "$HTTP_SCREENSHOT" \
@@ -209,6 +229,7 @@ jq -n \
   --slurpfile cli_manifest "$CLI_MANIFEST" \
   --slurpfile cli_metrics "$CLI_METRICS" \
   --slurpfile cli_events "$CLI_EVENTS" \
+  --slurpfile cli_ui_step "$CLI_UI_STEP" \
   --slurpfile cli_observe "$CLI_OBSERVE" \
   --slurpfile cli_context "$CLI_CONTEXT" \
   --slurpfile cli_profile "$CLI_PROFILE" \
@@ -219,6 +240,7 @@ jq -n \
   --slurpfile unix_manifest "$UNIX_MANIFEST" \
   --slurpfile unix_metrics "$UNIX_METRICS" \
   --slurpfile unix_events "$UNIX_EVENTS" \
+  --slurpfile unix_ui_step "$UNIX_UI_STEP" \
   --slurpfile unix_context "$UNIX_CONTEXT" \
   --slurpfile unix_pause "$UNIX_PAUSE" \
   --slurpfile unix_resume "$UNIX_RESUME" \
@@ -232,6 +254,7 @@ jq -n \
       endpoint_count: ($http_manifest[0].endpoints | length),
       histogram_count: ($http_metrics[0].histograms | length),
       event_count: ($http_events[0] | length),
+      ui_step: $http_ui_step[0].label,
       display_count: ($http_observe[0].displays | length),
       window_count: ($http_observe[0].windows | length),
       context: {
@@ -250,6 +273,7 @@ jq -n \
       command_count: ($cli_manifest[0].commands | length),
       histogram_count: ($cli_metrics[0].histograms | length),
       event_count: ($cli_events[0] | length),
+      ui_step: $cli_ui_step[0].label,
       profile_status: $cli_profile[0].active_profile.name,
       display_count: ($cli_observe[0].displays | length),
       window_count: ($cli_observe[0].windows | length),
@@ -272,6 +296,7 @@ jq -n \
       endpoint_count: ($unix_manifest[0].endpoints | length),
       histogram_count: ($unix_metrics[0].histograms | length),
       event_count: ($unix_events[0] | length),
+      ui_step: $unix_ui_step[0].label,
       context: {
         width: $unix_context[0].frame.envelope.width,
         height: $unix_context[0].frame.envelope.height,

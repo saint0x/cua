@@ -1,5 +1,6 @@
 use clap::Parser;
 use cua_voice::activation::ControlDoubleTap;
+use cua_voice::client::CuaClient;
 use cua_voice::hud::{
     HudDisplay, HudMetrics, COMPACT_HEIGHT, COMPACT_RADIUS, COMPACT_WIDTH, TOP_MARGIN,
     WINDOW_HEIGHT, WINDOW_WIDTH,
@@ -184,8 +185,8 @@ impl VoiceHud {
                 div()
                     .w(px(190.0))
                     .truncate()
-                    .text_color(rgb(0xf2f2f6))
-                    .text_sm()
+                    .text_color(rgb(0xb9b9c0))
+                    .text_xs()
                     .child(display.title.clone()),
             )
             .child(Self::divider())
@@ -291,6 +292,7 @@ fn main() -> anyhow::Result<()> {
         start_demo_cycle(tx.clone());
     } else {
         start_double_control_listener(tx.clone());
+        start_agent_step_poll(config.profile.clone(), runtime.clone(), tx.clone());
     }
     Application::new().run(move |cx: &mut App| {
         let bounds = top_centered_bounds(cx);
@@ -333,6 +335,9 @@ fn print_headless_events(rx: Receiver<VoiceUiEvent>) {
             }
             VoiceUiEvent::Dispatching(action) => {
                 serde_json::json!({"event": "dispatching", "action": action})
+            }
+            VoiceUiEvent::AgentStep { label, source } => {
+                serde_json::json!({"event": "agent_step", "label": label, "source": source})
             }
             VoiceUiEvent::Reply(text) => serde_json::json!({"event": "reply", "text": text}),
             VoiceUiEvent::Error(text) => serde_json::json!({"event": "error", "text": text}),
@@ -378,6 +383,52 @@ impl Drop for SingleInstance {
     fn drop(&mut self) {
         std::fs::remove_file(&self.path).ok();
     }
+}
+
+fn start_agent_step_poll(
+    profile: String,
+    runtime: Arc<tokio::runtime::Runtime>,
+    tx: Sender<VoiceUiEvent>,
+) {
+    runtime.spawn(async move {
+        let Ok(client) = CuaClient::new(profile).await else {
+            return;
+        };
+        let mut last_sequence = 0_u64;
+        loop {
+            if let Ok(events) = client.events().await {
+                for event in events {
+                    let sequence = event
+                        .get("sequence")
+                        .and_then(|value| value.as_u64())
+                        .unwrap_or(0);
+                    if sequence <= last_sequence {
+                        continue;
+                    }
+                    last_sequence = last_sequence.max(sequence);
+                    if event.get("kind").and_then(|value| value.as_str()) != Some("ui_step") {
+                        continue;
+                    }
+                    let Some(data) = event.get("data") else {
+                        continue;
+                    };
+                    let Some(label) = data.get("label").and_then(|value| value.as_str()) else {
+                        continue;
+                    };
+                    let source = data
+                        .get("source")
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string);
+                    tx.send(VoiceUiEvent::AgentStep {
+                        label: label.to_string(),
+                        source,
+                    })
+                    .ok();
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    });
 }
 
 fn single_instance_socket_path(profile: &str) -> PathBuf {
@@ -443,6 +494,10 @@ fn start_demo_cycle(tx: Sender<VoiceUiEvent>) {
                 tool: "Command parser".to_string(),
             },
             VoiceUiEvent::Dispatching("click 640 360".to_string()),
+            VoiceUiEvent::AgentStep {
+                label: "checking target state".to_string(),
+                source: Some("planner".to_string()),
+            },
             VoiceUiEvent::Reply("Clicked the center target.".to_string()),
         ];
         for event in sequence {

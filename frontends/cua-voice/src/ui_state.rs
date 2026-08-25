@@ -97,6 +97,11 @@ impl HudSnapshot {
                 self.step = HudStep::new(4, 4, action);
                 self.tool = "Unix socket".to_string();
             }
+            VoiceUiEvent::AgentStep { label, source } => {
+                self.phase = HudPhase::Planning;
+                self.step = HudStep::new(3, 4, label);
+                self.tool = source.unwrap_or_else(|| "Agent".to_string());
+            }
             VoiceUiEvent::Reply(text) => {
                 self.phase = HudPhase::Reply;
                 self.step = HudStep::new(4, 4, "Done");
@@ -136,14 +141,25 @@ impl HudStep {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VoiceUiEvent {
     Armed,
-    Listening { ms: u64 },
+    Listening {
+        ms: u64,
+    },
     Transcribing,
     Transcript(String),
-    Planning { tool: String },
+    Planning {
+        tool: String,
+    },
     Dispatching(String),
+    AgentStep {
+        label: String,
+        source: Option<String>,
+    },
     Reply(String),
     Error(String),
-    Metric { name: String, ms: u64 },
+    Metric {
+        name: String,
+        ms: u64,
+    },
     Idle,
 }
 
@@ -182,5 +198,21 @@ mod tests {
         assert_eq!(state.transcript, None);
         assert_eq!(state.response, None);
         assert_eq!(state.expanded_until, None);
+    }
+
+    #[test]
+    fn agent_step_programs_visible_step_without_overriding_transcript() {
+        let mut state = HudSnapshot::default();
+        state.apply(VoiceUiEvent::Transcript("find the red button".to_string()));
+
+        state.apply(VoiceUiEvent::AgentStep {
+            label: "checking target position".to_string(),
+            source: Some("planner".to_string()),
+        });
+
+        assert_eq!(state.phase, HudPhase::Planning);
+        assert_eq!(state.step.label, "checking target position");
+        assert_eq!(state.tool, "planner");
+        assert_eq!(state.transcript.as_deref(), Some("find the red button"));
     }
 }

@@ -5,7 +5,7 @@ use cua_capture::{CaptureRequest, FrameBus, SyntheticCaptureBackend};
 use cua_core::{
     schema_bundle, CapabilityManifest, ClipboardReadRequest, ClipboardWriteRequest,
     DesktopContextSnapshot, FrameEncoding, FramePayload, InputAction, MouseButton, RuntimeMode,
-    SCHEMA_VERSION,
+    UiStepRequest, SCHEMA_VERSION,
 };
 use cua_model::{run_eval_report, EvalConfig};
 use cua_trace::{ActionTurnRecord, TraceRecord, TraceWriter};
@@ -42,6 +42,10 @@ enum Command {
     Manifest(JsonFlag),
     Metrics(JsonFlag),
     Events(JsonFlag),
+    Ui {
+        #[command(subcommand)]
+        command: UiCommand,
+    },
     Screenshot(ScreenshotArgs),
     Observe(JsonFlag),
     Mouse {
@@ -190,6 +194,19 @@ enum ClipboardCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum UiCommand {
+    Step {
+        label: String,
+        #[arg(long)]
+        source: Option<String>,
+        #[arg(long)]
+        ttl_ms: Option<u64>,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum ModelCommand {
     Eval {
         #[arg(long)]
@@ -301,6 +318,7 @@ async fn main() -> anyhow::Result<()> {
         Some(Command::Events(flag)) => {
             get_json(cli.server_addr, &cli.profile, "/events", flag.json).await
         }
+        Some(Command::Ui { command }) => ui(cli.server_addr, &cli.profile, command).await,
         Some(Command::Screenshot(args)) => screenshot(cli.server_addr, &cli.profile, args).await,
         Some(Command::Observe(flag)) => {
             get_json(cli.server_addr, &cli.profile, "/observe/desktop", flag.json).await
@@ -370,11 +388,37 @@ async fn print_usage_and_status(server_addr: SocketAddr) -> anyhow::Result<()> {
     println!("       cua manifest --json");
     println!("       cua metrics --json");
     println!("       cua events --json");
+    println!("       cua ui step <label> --json");
     println!("       cua perf live --json");
     println!("       cua context --json");
     println!("       cua screenshot --out /tmp/screen.png");
     println!("       cua clipboard read --allow-sensitive --json");
     Ok(())
+}
+
+async fn ui(addr: SocketAddr, profile: &str, command: UiCommand) -> anyhow::Result<()> {
+    match command {
+        UiCommand::Step {
+            label,
+            source,
+            ttl_ms,
+            json,
+        } => {
+            post_json(
+                addr,
+                profile,
+                "/ui/step",
+                serde_json::to_value(UiStepRequest {
+                    schema_version: SCHEMA_VERSION.to_string(),
+                    label,
+                    source,
+                    ttl_ms,
+                })?,
+                json,
+            )
+            .await
+        }
+    }
 }
 
 async fn get_json(addr: SocketAddr, profile: &str, path: &str, json: bool) -> anyhow::Result<()> {
