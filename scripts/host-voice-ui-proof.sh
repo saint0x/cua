@@ -157,6 +157,59 @@ def region_metrics(base, base_channels, target, target_channels, x0, y0, width, 
     }
 
 
+def dark_change_geometry(base, base_channels, target, target_channels, scan_height):
+    changed = 0
+    min_x = min_y = 10**9
+    max_x = max_y = -1
+    height = len(base)
+    width = len(base[0]) // base_channels
+    scan_height = min(scan_height, height)
+    for y in range(scan_height):
+        for x in range(width):
+            br, bg, bb, _ = pixel(base, base_channels, x, y)
+            ar, ag, ab, _ = pixel(target, target_channels, x, y)
+            delta = abs(ar - br) + abs(ag - bg) + abs(ab - bb)
+            before_luma = (br * 299 + bg * 587 + bb * 114) / 1000
+            after_luma = (ar * 299 + ag * 587 + ab * 114) / 1000
+            is_island_pixel = delta >= 18 and (after_luma <= 70 or before_luma - after_luma >= 18)
+            if not is_island_pixel:
+                continue
+            changed += 1
+            min_x = min(min_x, x)
+            min_y = min(min_y, y)
+            max_x = max(max_x, x)
+            max_y = max(max_y, y)
+
+    if changed == 0:
+        return {
+            "changed": 0,
+            "bbox": None,
+            "center_error_px": None,
+            "ok": False,
+        }
+
+    bbox = {
+        "x": min_x,
+        "y": min_y,
+        "width": max_x - min_x + 1,
+        "height": max_y - min_y + 1,
+    }
+    center_error = abs((min_x + max_x + 1) / 2 - width / 2)
+    ok = (
+        changed >= 1200
+        and bbox["y"] <= 80
+        and 1000 <= bbox["width"] <= 2400
+        and bbox["height"] <= scan_height
+        and center_error <= 360
+    )
+    return {
+        "changed": changed,
+        "bbox": bbox,
+        "center_error_px": center_error,
+        "ok": ok,
+    }
+
+
 before_path, compact_path, reply_path, collapsed_path, proof_path = sys.argv[1:6]
 bw, bh, bc, before = read_png(before_path)
 cw, ch, cc, compact = read_png(compact_path)
@@ -172,6 +225,9 @@ top_y = 0
 compact_top = region_metrics(before, bc, compact, cc, top_x, top_y, top_width, top_height)
 reply_top = region_metrics(before, bc, reply, rc, top_x, top_y, top_width, top_height)
 collapsed_top = region_metrics(before, bc, collapsed, lc, top_x, top_y, top_width, top_height)
+compact_island = dark_change_geometry(before, bc, compact, cc, top_height)
+reply_island = dark_change_geometry(before, bc, reply, rc, top_height)
+collapsed_island = dark_change_geometry(before, bc, collapsed, lc, top_height)
 
 compact_ok = (
     compact_top["changed_ratio"] >= 0.0025
@@ -184,18 +240,36 @@ reply_ok = (
     and reply_top["darkened_ratio"] >= 0.001
 )
 collapsed_ok = collapsed_top["darkened_ratio"] <= compact_top["darkened_ratio"] + 0.002
-ok = compact_ok and reply_ok and collapsed_ok
+ok = (
+    compact_ok
+    and reply_ok
+    and collapsed_ok
+    and compact_island["ok"]
+    and reply_island["ok"]
+    and collapsed_island["ok"]
+)
 proof = {
     "schema_version": "cua.voice_ui_proof.v1",
     "screen": {"width": cw, "height": ch},
     "before": before_path,
-    "compact": {"path": compact_path, "top": compact_top, "ok": compact_ok},
+    "compact": {
+        "path": compact_path,
+        "top": compact_top,
+        "island": compact_island,
+        "ok": compact_ok and compact_island["ok"],
+    },
     "reply": {
         "path": reply_path,
         "top": reply_top,
-        "ok": reply_ok,
+        "island": reply_island,
+        "ok": reply_ok and reply_island["ok"],
     },
-    "collapsed": {"path": collapsed_path, "top": collapsed_top, "ok": collapsed_ok},
+    "collapsed": {
+        "path": collapsed_path,
+        "top": collapsed_top,
+        "island": collapsed_island,
+        "ok": collapsed_ok and collapsed_island["ok"],
+    },
     "ok": ok,
 }
 with open(proof_path, "w", encoding="utf-8") as handle:
