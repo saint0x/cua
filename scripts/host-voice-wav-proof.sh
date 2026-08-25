@@ -35,6 +35,9 @@ PROFILE="${CUA_VOICE_WAV_PROOF_PROFILE:-host-voice-wav-proof-$RUN_ID}"
 ADDR="${CUA_VOICE_WAV_PROOF_ADDR:-127.0.0.1:9881}"
 TOKEN="${CUA_HTTP_TOKEN:-host-voice-wav-proof-token-$RUN_ID}"
 OUT_DIR="${CUA_VOICE_WAV_PROOF_OUT_DIR:-artifacts/cua/voice-wav-proof-$RUN_ID}"
+STT_MODEL="${CUA_VOICE_WAV_PROOF_STT_MODEL:-openai/whisper-1}"
+PLANNER_MODEL="${CUA_VOICE_WAV_PROOF_PLANNER_MODEL:-openai/gpt-5.4-mini}"
+BUDGET_MS="${CUA_VOICE_WAV_PROOF_BUDGET_MS:-15000}"
 TRACE_DIR="$OUT_DIR/trace"
 AIFF="$OUT_DIR/pause.aiff"
 WAV="$OUT_DIR/pause.wav"
@@ -96,6 +99,8 @@ curl -fsS "http://$ADDR/healthz" >/dev/null
 START_MS="$(perl -MTime::HiRes=time -e 'printf "%.0f\n", time() * 1000')"
 CUA_HTTP_TOKEN="$TOKEN" OPENROUTER_API_KEY="$OPENROUTER_API_KEY" "$VOICE_BIN_PATH" \
   --profile "$PROFILE" \
+  --stt-model "$STT_MODEL" \
+  --planner-model "$PLANNER_MODEL" \
   --once-wav "$WAV" > "$EVENTS"
 END_MS="$(perl -MTime::HiRes=time -e 'printf "%.0f\n", time() * 1000')"
 VOICE_ELAPSED_MS="$((END_MS - START_MS))"
@@ -119,15 +124,22 @@ jq -e '
 
 jq -n \
   --arg profile "$PROFILE" \
+  --arg stt_model "$STT_MODEL" \
+  --arg planner_model "$PLANNER_MODEL" \
   --arg wav "$WAV" \
   --argjson elapsed_ms "$VOICE_ELAPSED_MS" \
+  --argjson budget_ms "$BUDGET_MS" \
   --slurpfile events "$EVENTS" \
   --slurpfile status "$STATUS" \
   '{
     schema_version: "cua.voice_proof.v1",
     profile: $profile,
+    stt_model: $stt_model,
+    planner_model: $planner_model,
     wav: $wav,
     elapsed_ms: $elapsed_ms,
+    budget_ms: $budget_ms,
+    within_budget: ($elapsed_ms <= $budget_ms),
     events: ($events | map(.event)),
     transcript: (($events | map(select(.event == "transcript")) | first).text),
     dispatch: (($events | map(select(.event == "dispatching")) | first).action),
@@ -135,5 +147,9 @@ jq -n \
     safety_state: $status[0].safety_state,
     active_profile: $status[0].active_profile
   }' > "$PROOF"
+
+jq -e '
+  .within_budget == true
+' "$PROOF" >/dev/null
 
 echo "$OUT_DIR"
