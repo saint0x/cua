@@ -9,8 +9,9 @@ use image::{codecs::jpeg::JpegEncoder, ImageBuffer, ImageEncoder, Rgba};
 use sha2::{Digest, Sha256};
 use std::io::Cursor;
 use std::sync::Arc;
-use std::time::{Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 use tokio::sync::RwLock;
+use tokio::task::JoinHandle;
 
 #[async_trait]
 pub trait CaptureBackend: Send + Sync {
@@ -69,6 +70,24 @@ impl FrameBus {
         let frame = self.backend.capture_latest(request).await?;
         *self.latest.write().await = Some(frame.clone());
         Ok(frame)
+    }
+
+    pub fn spawn_capture_lane(
+        self: Arc<Self>,
+        mut request: CaptureRequest,
+        interval: Duration,
+    ) -> JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            request.force_fresh = true;
+            loop {
+                ticker.tick().await;
+                if let Ok(frame) = self.backend.capture_latest(request.clone()).await {
+                    *self.latest.write().await = Some(frame);
+                }
+            }
+        })
     }
 
     pub async fn latest_envelope(&self) -> Option<FrameEnvelope> {
@@ -237,5 +256,22 @@ mod tests {
         assert_eq!(frame.envelope.width, 320);
         assert!(frame.envelope.byte_len > 1024);
         assert_eq!(frame.bytes.len(), frame.envelope.byte_len);
+    }
+
+    #[tokio::test]
+    async fn capture_lane_populates_latest_slot() {
+        let bus = Arc::new(FrameBus::new(Arc::new(SyntheticCaptureBackend::default())));
+        let _lane = bus.clone().spawn_capture_lane(
+            CaptureRequest {
+                max_width: Some(320),
+                encoding: FrameEncoding::Jpeg,
+                force_fresh: true,
+            },
+            Duration::from_millis(5),
+        );
+
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let envelope = bus.latest_envelope().await;
+        assert!(envelope.is_some());
     }
 }

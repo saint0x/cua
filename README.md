@@ -84,4 +84,4 @@ fozzy ci artifacts/cua/fozzy/cua-smoke.fozzy --json
 
 ## Status
 
-The current runtime has production-shaped contracts, daemon/CLI plumbing, macOS permission probes, profile policy state, pause/resume/kill-switch controls, profile-gated daemon clipboard, synthetic capture, continuous MJPEG/WebSocket streams, refusal-only native input, schema export, trace inspection, and bounded model evals. Real macOS capture/input backends and signed host installation are still in progress.
+The current runtime has production-shaped contracts, daemon/CLI plumbing, macOS permission probes, profile policy state, pause/resume/kill-switch controls, profile-gated daemon clipboard, a daemon-owned capture lane, synthetic capture, continuous MJPEG/WebSocket streams, refusal-only native input, schema export, trace inspection, and bounded model evals. Real macOS capture/input backends and signed host installation are still in progress.

@@ -127,7 +127,16 @@ pub async fn serve(addr: SocketAddr, profile: String, allow_lan: bool) -> anyhow
     }
     let token = load_or_create_profile_token(&profile).await?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, router(DaemonState::synthetic(profile, token))).await?;
+    let state = DaemonState::synthetic(profile, token);
+    state.frame_bus.clone().spawn_capture_lane(
+        CaptureRequest {
+            max_width: Some(1280),
+            encoding: FrameEncoding::Jpeg,
+            force_fresh: true,
+        },
+        Duration::from_millis(200),
+    );
+    axum::serve(listener, router(state)).await?;
     Ok(())
 }
 
@@ -336,7 +345,7 @@ async fn stream_mjpeg(State(state): State<DaemonState>) -> Result<Response, ApiE
                 .latest_or_capture(CaptureRequest {
                     max_width: Some(1280),
                     encoding: FrameEncoding::Jpeg,
-                    force_fresh: true,
+                    force_fresh: false,
                 })
                 .await
             {
@@ -381,7 +390,7 @@ async fn stream_ws(ws: WebSocketUpgrade, State(state): State<DaemonState>) -> im
                 .latest_or_capture(CaptureRequest {
                     max_width: Some(1280),
                     encoding: FrameEncoding::Jpeg,
-                    force_fresh: true,
+                    force_fresh: false,
                 })
                 .await
             {

@@ -8,7 +8,7 @@
 
 ## Runtime
 
-1. Add daemon-owned capture, encode, model, input, trace, permission, and event lanes with bounded queues.
+1. Add daemon-owned encode, model, input, trace, permission, and event lanes with bounded queues.
 2. Add display, cursor, and window observation from real platform backends.
 
 ## Tracing

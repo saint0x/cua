@@ -21,8 +21,8 @@ Initial endpoints:
 - `GET /metrics`
 - `GET /healthz`
 - `POST /capture/screenshot`
-- `GET /capture/stream.mjpeg`: continuous MJPEG stream, newest-frame-per-tick, no backlog
-- `GET /capture/stream.ws`: continuous WebSocket stream with JSON frame envelopes and binary JPEG frames
+- `GET /capture/stream.mjpeg`: continuous MJPEG stream from the daemon capture lane, newest-frame-per-tick, no backlog
+- `GET /capture/stream.ws`: continuous WebSocket stream from the daemon capture lane with JSON frame envelopes and binary JPEG frames
 - `GET /observe/desktop`
 - `GET /observe/displays`
 - `GET /observe/cursor`
