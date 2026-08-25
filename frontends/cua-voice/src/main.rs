@@ -77,7 +77,10 @@ impl VoiceHud {
     fn drain_events(&mut self) {
         while let Ok(event) = self.rx.try_recv() {
             match event {
-                VoiceUiEvent::Armed if self.execute_turns && !self.busy => {
+                VoiceUiEvent::Armed if self.execute_turns => {
+                    if self.busy {
+                        continue;
+                    }
                     self.busy = true;
                     self.snapshot.apply(VoiceUiEvent::Armed);
                     let tx = self.tx.clone();
@@ -437,4 +440,26 @@ fn start_double_control_listener(tx: Sender<VoiceUiEvent>) {
             .ok();
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn busy_voice_turn_ignores_duplicate_arm_event() {
+        let (tx, rx) = channel::<VoiceUiEvent>();
+        let runtime = Arc::new(tokio::runtime::Runtime::new().unwrap());
+        let mut hud = VoiceHud::new(rx, tx.clone(), VoiceConfig::default(), runtime, true);
+        hud.busy = true;
+        hud.snapshot
+            .apply(VoiceUiEvent::Dispatching("mouse_move".to_string()));
+
+        tx.send(VoiceUiEvent::Armed).unwrap();
+        hud.drain_events();
+
+        assert!(hud.busy);
+        assert_eq!(hud.snapshot.step.label, "mouse_move");
+        assert_eq!(hud.snapshot.tool, "Unix socket");
+    }
 }
