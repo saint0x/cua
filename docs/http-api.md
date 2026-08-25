@@ -43,7 +43,7 @@ Initial endpoints:
 
 `GET /status` reports `active_streams`; stream clients increment the count on connect and decrement after disconnect cleanup.
 
-`GET /metrics` returns typed latency histograms and counters for hot runtime paths including screenshot capture, streaming ticks, input dispatch, clipboard operations, emitted stream frames, refusals, and active streams. `cua perf live --json` reads the same endpoint.
+`GET /metrics` returns typed latency histograms and counters for hot runtime paths including screenshot capture, streaming ticks, input dispatch, clipboard operations, emitted stream frames, refusals, and active streams. `cua perf live --json` reads the same endpoint. `cua perf bench screenshot|stream|input|model-prep --json` runs bounded local latency checks against the daemon and fails when p95 exceeds its budget.
 
 Profile and safety:
 

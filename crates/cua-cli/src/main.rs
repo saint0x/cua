@@ -11,6 +11,7 @@ use cua_trace::{TraceRecord, TraceWriter};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Parser)]
 #[command(name = "cua", version, about = "CLI-first local computer-use runtime")]
@@ -94,6 +95,29 @@ enum PermissionCommand {
 #[derive(Debug, Subcommand)]
 enum PerfCommand {
     Live(JsonFlag),
+    Bench(PerfBenchArgs),
+}
+
+#[derive(Debug, Args)]
+struct PerfBenchArgs {
+    #[arg(value_enum)]
+    target: PerfBenchTarget,
+    #[arg(long, default_value_t = 5)]
+    iterations: usize,
+    #[arg(long, default_value_t = 1)]
+    warmup: usize,
+    #[arg(long)]
+    budget_ms: Option<u128>,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Clone, clap::ValueEnum)]
+enum PerfBenchTarget {
+    Screenshot,
+    Stream,
+    Input,
+    ModelPrep,
 }
 
 #[derive(Debug, Args)]
@@ -403,7 +427,125 @@ async fn permissions(command: PermissionCommand) -> anyhow::Result<()> {
 async fn perf(addr: SocketAddr, profile: &str, command: PerfCommand) -> anyhow::Result<()> {
     match command {
         PerfCommand::Live(flag) => get_json(addr, profile, "/metrics", flag.json).await,
+        PerfCommand::Bench(args) => perf_bench(addr, profile, args).await,
     }
+}
+
+async fn perf_bench(addr: SocketAddr, profile: &str, args: PerfBenchArgs) -> anyhow::Result<()> {
+    let iterations = args.iterations.max(1);
+    let warmup = args.warmup;
+    let budget_ms = args.budget_ms.unwrap_or(match args.target {
+        PerfBenchTarget::Screenshot => 5_000,
+        PerfBenchTarget::Stream => 2_000,
+        PerfBenchTarget::Input => 250,
+        PerfBenchTarget::ModelPrep => 5_000,
+    });
+    let token = cua_daemon::load_or_create_profile_token(profile).await?;
+    let client = reqwest::Client::new();
+    let mut samples = Vec::with_capacity(iterations);
+    for index in 0..(iterations + warmup) {
+        let started = Instant::now();
+        match args.target {
+            PerfBenchTarget::Screenshot => {
+                let _: FramePayload = client
+                    .post(format!("http://{addr}/capture/screenshot"))
+                    .bearer_auth(&token)
+                    .json(&serde_json::json!({
+                        "max_width": 1280,
+                        "encoding": FrameEncoding::Png,
+                        "force_fresh": true,
+                        "include_bytes": false
+                    }))
+                    .send()
+                    .await?
+                    .json()
+                    .await?;
+            }
+            PerfBenchTarget::Stream => {
+                let mut response = client
+                    .get(format!("http://{addr}/capture/stream.mjpeg"))
+                    .bearer_auth(&token)
+                    .send()
+                    .await?;
+                let _ = tokio::time::timeout(Duration::from_millis(500), response.chunk()).await;
+            }
+            PerfBenchTarget::Input => {
+                let _: serde_json::Value = client
+                    .post(format!("http://{addr}/input/mouse"))
+                    .bearer_auth(&token)
+                    .json(&InputAction::MouseMove {
+                        x: 5,
+                        y: 5,
+                        duration_ms: 0,
+                    })
+                    .send()
+                    .await?
+                    .json()
+                    .await?;
+            }
+            PerfBenchTarget::ModelPrep => {
+                let _: serde_json::Value = client
+                    .post(format!("http://{addr}/capture/screenshot"))
+                    .bearer_auth(&token)
+                    .json(&serde_json::json!({
+                        "max_width": 640,
+                        "encoding": FrameEncoding::Png,
+                        "force_fresh": true,
+                        "include_bytes": true
+                    }))
+                    .send()
+                    .await?
+                    .json()
+                    .await?;
+                let _payload = serde_json::json!({
+                    "model": "openai/gpt-5-mini",
+                    "messages": [{
+                        "role": "user",
+                        "content": "Return only the next desktop action as JSON."
+                    }],
+                    "max_tokens": 128
+                });
+            }
+        }
+        if index >= warmup {
+            samples.push(started.elapsed().as_millis());
+        }
+    }
+    samples.sort_unstable();
+    let total_ms: u128 = samples.iter().sum();
+    let avg_ms = total_ms as f64 / samples.len() as f64;
+    let p95_index = ((samples.len() as f64 * 0.95).ceil() as usize)
+        .saturating_sub(1)
+        .min(samples.len() - 1);
+    let p95_ms = samples[p95_index];
+    let max_ms = *samples.last().unwrap_or(&0);
+    let passed = p95_ms <= budget_ms;
+    let report = serde_json::json!({
+        "schema_version": SCHEMA_VERSION,
+        "target": format!("{:?}", args.target).to_ascii_lowercase(),
+        "iterations": samples.len(),
+        "warmup": warmup,
+        "budget_ms": budget_ms,
+        "avg_ms": avg_ms,
+        "p95_ms": p95_ms,
+        "max_ms": max_ms,
+        "passed": passed,
+        "samples_ms": samples
+    });
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!("{report}");
+    }
+    if !passed {
+        anyhow::bail!(
+            "perf bench {:?} p95={}ms exceeded budget {}ms",
+            args.target,
+            p95_ms,
+            budget_ms
+        );
+    }
+    Ok(())
 }
 
 async fn screenshot(addr: SocketAddr, profile: &str, args: ScreenshotArgs) -> anyhow::Result<()> {

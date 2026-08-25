@@ -25,6 +25,7 @@ Public control surfaces are intentionally limited to:
 ```sh
 cargo run -p cua -- serve --addr 127.0.0.1:8765
 cargo run -p cua -- status --json
+cargo run -p cua -- perf bench screenshot --iterations 5 --json
 cargo run -p cua -- screenshot --out artifacts/cua/smoke/screen.png --json
 cargo run -p cua -- profile create smoke --mode supervised --duration-ms 60000 --clipboard --json
 cargo run -p cua -- profile activate --json
