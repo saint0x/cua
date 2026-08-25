@@ -1,11 +1,8 @@
 pub const COMPACT_WIDTH: f32 = 815.0;
 pub const COMPACT_HEIGHT: f32 = 42.0;
 pub const COMPACT_RADIUS: f32 = 21.0;
-pub const EXPANDED_WIDTH: f32 = 464.0;
-pub const EXPANDED_HEIGHT: f32 = 180.0;
 pub const WINDOW_WIDTH: f32 = COMPACT_WIDTH;
 pub const WINDOW_HEIGHT: f32 = COMPACT_HEIGHT;
-pub const PANEL_RADIUS: f32 = 16.0;
 pub const TOP_MARGIN: f32 = 0.0;
 
 use crate::ui_state::HudSnapshot;
@@ -22,13 +19,12 @@ pub struct HudMetrics {
 impl HudMetrics {
     pub fn interpolate(progress: f32) -> Self {
         let progress = progress.clamp(0.0, 1.0);
-        let eased = ease_out_cubic(progress);
         Self {
-            width: lerp(COMPACT_WIDTH, EXPANDED_WIDTH, eased),
-            height: lerp(COMPACT_HEIGHT, EXPANDED_HEIGHT, eased),
-            radius: lerp(COMPACT_RADIUS, PANEL_RADIUS, eased),
-            bar_opacity: (1.0 - progress * 1.8).clamp(0.0, 1.0),
-            response_opacity: ((progress - 0.20) / 0.80).clamp(0.0, 1.0),
+            width: COMPACT_WIDTH,
+            height: COMPACT_HEIGHT,
+            radius: COMPACT_RADIUS,
+            bar_opacity: 1.0,
+            response_opacity: progress,
         }
     }
 }
@@ -65,9 +61,10 @@ impl HudDisplay {
 
         Self {
             title: snapshot
-                .transcript
+                .response
                 .as_ref()
-                .map(|transcript| compact_label(transcript, 34))
+                .or(snapshot.transcript.as_ref())
+                .map(|text| compact_label(text, 34))
                 .unwrap_or_else(|| snapshot.task.clone()),
             prompt,
             result,
@@ -202,17 +199,17 @@ mod tests {
     }
 
     #[test]
-    fn metrics_expand_only_when_reply_progress_is_active() {
+    fn metrics_keep_the_island_frame_during_reply_progress() {
         let compact = HudMetrics::interpolate(0.0);
-        let expanded = HudMetrics::interpolate(1.0);
+        let reply = HudMetrics::interpolate(1.0);
 
         assert_eq!(compact.width, COMPACT_WIDTH);
         assert_eq!(compact.height, COMPACT_HEIGHT);
-        assert_eq!(expanded.width, EXPANDED_WIDTH);
-        assert_eq!(expanded.height, EXPANDED_HEIGHT);
-        assert!(expanded.width > expanded.height * 2.0);
-        assert!(compact.bar_opacity > expanded.bar_opacity);
+        assert_eq!(reply.width, COMPACT_WIDTH);
+        assert_eq!(reply.height, COMPACT_HEIGHT);
+        assert_eq!(reply.radius, COMPACT_RADIUS);
+        assert_eq!(compact.bar_opacity, reply.bar_opacity);
         assert_eq!(compact.response_opacity, 0.0);
-        assert_eq!(expanded.response_opacity, 1.0);
+        assert_eq!(reply.response_opacity, 1.0);
     }
 }

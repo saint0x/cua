@@ -11,7 +11,9 @@ RUN_ID="$(date +%s)"
 PROFILE="${CUA_VOICE_UI_PROOF_PROFILE:-host-voice-ui-proof-$RUN_ID}"
 OUT_DIR="${CUA_VOICE_UI_PROOF_OUT_DIR:-artifacts/cua/voice-ui-proof-$RUN_ID}"
 BEFORE="$OUT_DIR/before.png"
-AFTER="$OUT_DIR/after.png"
+COMPACT="$OUT_DIR/compact.png"
+REPLY="$OUT_DIR/reply.png"
+COLLAPSED="$OUT_DIR/collapsed.png"
 PROOF="$OUT_DIR/proof.json"
 
 cargo build -p cua-voice
@@ -43,15 +45,19 @@ cleanup() {
 }
 trap cleanup EXIT
 
-sleep "${CUA_VOICE_UI_PROOF_WAIT_SECS:-2}"
+sleep "${CUA_VOICE_UI_PROOF_COMPACT_WAIT_SECS:-2}"
 if ! kill -0 "$PID" >/dev/null 2>&1; then
   echo "cua-voice exited before visual proof capture" >&2
   exit 1
 fi
 
-screencapture -x "$AFTER"
+screencapture -x "$COMPACT"
+sleep "${CUA_VOICE_UI_PROOF_REPLY_WAIT_SECS:-4}"
+screencapture -x "$REPLY"
+sleep "${CUA_VOICE_UI_PROOF_COLLAPSED_WAIT_SECS:-7}"
+screencapture -x "$COLLAPSED"
 
-python3 - "$BEFORE" "$AFTER" "$PROOF" <<'PY'
+python3 - "$BEFORE" "$COMPACT" "$REPLY" "$COLLAPSED" "$PROOF" <<'PY'
 import json
 import struct
 import sys
@@ -122,47 +128,74 @@ def pixel(rows, channels, x, y):
     return r, g, b, a
 
 
-before_path, after_path, proof_path = sys.argv[1:4]
+def region_metrics(base, base_channels, target, target_channels, x0, y0, width, height):
+    changed = 0
+    dark_target = 0
+    darkened = 0
+    total = width * height
+    for y in range(y0, y0 + height):
+        for x in range(x0, x0 + width):
+            br, bg, bb, _ = pixel(base, base_channels, x, y)
+            ar, ag, ab, _ = pixel(target, target_channels, x, y)
+            delta = abs(ar - br) + abs(ag - bg) + abs(ab - bb)
+            before_luma = (br * 299 + bg * 587 + bb * 114) / 1000
+            after_luma = (ar * 299 + ag * 587 + ab * 114) / 1000
+            if delta >= 18:
+                changed += 1
+            if after_luma <= 42:
+                dark_target += 1
+            if before_luma - after_luma >= 18:
+                darkened += 1
+    return {
+        "x": x0,
+        "y": y0,
+        "width": width,
+        "height": height,
+        "changed_ratio": changed / total,
+        "dark_ratio": dark_target / total,
+        "darkened_ratio": darkened / total,
+    }
+
+
+before_path, compact_path, reply_path, collapsed_path, proof_path = sys.argv[1:6]
 bw, bh, bc, before = read_png(before_path)
-aw, ah, ac, after = read_png(after_path)
-if (bw, bh) != (aw, ah):
-    raise SystemExit("before/after screenshots have different dimensions")
+cw, ch, cc, compact = read_png(compact_path)
+rw, rh, rc, reply = read_png(reply_path)
+lw, lh, lc, collapsed = read_png(collapsed_path)
+if len({(bw, bh), (cw, ch), (rw, rh), (lw, lh)}) != 1:
+    raise SystemExit("visual proof screenshots have different dimensions")
 
-region_width = min(920, aw)
-region_height = min(96, ah)
-x0 = max((aw - region_width) // 2, 0)
-y0 = 0
-changed = 0
-dark_after = 0
-darkened = 0
-total = region_width * region_height
-for y in range(y0, y0 + region_height):
-    for x in range(x0, x0 + region_width):
-        br, bg, bb, _ = pixel(before, bc, x, y)
-        ar, ag, ab, _ = pixel(after, ac, x, y)
-        delta = abs(ar - br) + abs(ag - bg) + abs(ab - bb)
-        before_luma = (br * 299 + bg * 587 + bb * 114) / 1000
-        after_luma = (ar * 299 + ag * 587 + ab * 114) / 1000
-        if delta >= 18:
-            changed += 1
-        if after_luma <= 42:
-            dark_after += 1
-        if before_luma - after_luma >= 18:
-            darkened += 1
+top_width = min(920, cw)
+top_height = min(96, ch)
+top_x = max((cw - top_width) // 2, 0)
+top_y = 0
+compact_top = region_metrics(before, bc, compact, cc, top_x, top_y, top_width, top_height)
+reply_top = region_metrics(before, bc, reply, rc, top_x, top_y, top_width, top_height)
+collapsed_top = region_metrics(before, bc, collapsed, lc, top_x, top_y, top_width, top_height)
 
-changed_ratio = changed / total
-dark_ratio = dark_after / total
-darkened_ratio = darkened / total
-ok = changed_ratio >= 0.0025 and dark_ratio >= 0.05 and darkened_ratio >= 0.001
+compact_ok = (
+    compact_top["changed_ratio"] >= 0.0025
+    and compact_top["dark_ratio"] >= 0.05
+    and compact_top["darkened_ratio"] >= 0.001
+)
+reply_ok = (
+    reply_top["changed_ratio"] >= 0.0025
+    and reply_top["dark_ratio"] >= 0.05
+    and reply_top["darkened_ratio"] >= 0.001
+)
+collapsed_ok = collapsed_top["darkened_ratio"] <= compact_top["darkened_ratio"] + 0.002
+ok = compact_ok and reply_ok and collapsed_ok
 proof = {
     "schema_version": "cua.voice_ui_proof.v1",
-    "screen": {"width": aw, "height": ah},
-    "region": {"x": x0, "y": y0, "width": region_width, "height": region_height},
-    "changed_ratio": changed_ratio,
-    "dark_ratio": dark_ratio,
-    "darkened_ratio": darkened_ratio,
+    "screen": {"width": cw, "height": ch},
     "before": before_path,
-    "after": after_path,
+    "compact": {"path": compact_path, "top": compact_top, "ok": compact_ok},
+    "reply": {
+        "path": reply_path,
+        "top": reply_top,
+        "ok": reply_ok,
+    },
+    "collapsed": {"path": collapsed_path, "top": collapsed_top, "ok": collapsed_ok},
     "ok": ok,
 }
 with open(proof_path, "w", encoding="utf-8") as handle:
