@@ -36,6 +36,8 @@ Initial endpoints:
 - `POST /input/mouse`
 - `POST /input/keyboard`
 - `POST /input/clipboard`
+- `POST /clipboard/read`
+- `POST /clipboard/write`
 - `POST /model/eval`
 
 `GET /status` reports `active_streams`; stream clients increment the count on connect and decrement after disconnect cleanup.
@@ -47,3 +49,9 @@ Profile and safety:
 - `POST /control/pause` pauses automation.
 - `POST /control/resume` resumes automation unless kill-switch is active.
 - `POST /control/kill-switch` is terminal for the current daemon generation.
+
+Clipboard:
+
+- `POST /clipboard/write` accepts `ClipboardWriteRequest` and writes to the daemon-owned clipboard store only when the active profile grants `capabilities.clipboard`.
+- `POST /clipboard/read` accepts `ClipboardReadRequest` and returns clipboard text only when the active profile grants clipboard and `allow_sensitive` is true.
+- Clipboard calls are refused while paused, killed, inactive, or ungranted, with refusal evidence in `ClipboardResult.result`.

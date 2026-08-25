@@ -14,9 +14,11 @@ use bytes::Bytes;
 use chrono::Utc;
 use cua_capture::{CaptureRequest, FrameBus, SyntheticCaptureBackend};
 use cua_core::{
-    now_wall_ms, schema_bundle, ApiErrorBody, CapabilityManifest, CapabilityState, DesktopState,
-    FrameEncoding, HealthReport, InputAction, InputRequest, Manifest, PermissionReport,
-    ProfilePolicy, RuntimeControlState, RuntimeMode, SafetyState, SCHEMA_VERSION,
+    now_wall_ms, schema_bundle, ApiErrorBody, CapabilityManifest, CapabilityState,
+    ClipboardReadRequest, ClipboardResult, ClipboardWriteRequest, DeliveryMode, DesktopState,
+    Effect, Evidence, EvidenceKind, FrameEncoding, HealthReport, InputAction, InputRequest,
+    InputResult, InputRoute, Manifest, PermissionReport, ProfilePolicy, RuntimeControlState,
+    RuntimeMode, SafetyState, SCHEMA_VERSION,
 };
 use cua_input::{InputBackend, RefusingInputBackend};
 use cua_model::{run_eval_report, EvalConfig, EvalReport};
@@ -43,6 +45,7 @@ pub struct DaemonState {
     pub active_streams: Arc<AtomicU32>,
     pub bearer_token: Arc<String>,
     pub control: Arc<RwLock<RuntimeControlState>>,
+    pub clipboard: Arc<RwLock<Option<String>>>,
 }
 
 impl DaemonState {
@@ -56,6 +59,7 @@ impl DaemonState {
             active_streams: Arc::new(AtomicU32::new(0)),
             bearer_token: Arc::new(bearer_token.into()),
             control: Arc::new(RwLock::new(default_control_state(&profile))),
+            clipboard: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -104,6 +108,8 @@ pub fn router(state: DaemonState) -> Router {
         .route("/input/mouse", post(input_action))
         .route("/input/keyboard", post(input_action))
         .route("/input/clipboard", post(input_action))
+        .route("/clipboard/read", post(clipboard_read))
+        .route("/clipboard/write", post(clipboard_write))
         .route("/model/eval", post(model_eval))
         .layer(middleware::from_fn_with_state(auth_state, require_auth))
         .layer(TraceLayer::new_for_http())
@@ -215,6 +221,9 @@ async fn manifest() -> Json<Manifest> {
             "POST /control/kill-switch".to_string(),
             "POST /input/mouse".to_string(),
             "POST /input/keyboard".to_string(),
+            "POST /input/clipboard".to_string(),
+            "POST /clipboard/read".to_string(),
+            "POST /clipboard/write".to_string(),
             "POST /model/eval".to_string(),
         ],
         commands: vec![
@@ -223,6 +232,8 @@ async fn manifest() -> Json<Manifest> {
             "cua screenshot --out <path>".to_string(),
             "cua observe --json".to_string(),
             "cua profile status --json".to_string(),
+            "cua clipboard read --allow-sensitive --json".to_string(),
+            "cua clipboard write <text> --json".to_string(),
             "cua pause --json".to_string(),
             "cua resume --json".to_string(),
             "cua kill-switch --json".to_string(),
@@ -535,6 +546,14 @@ async fn input_action(
     State(state): State<DaemonState>,
     Json(action): Json<InputAction>,
 ) -> Json<cua_core::InputResult> {
+    if matches!(
+        action,
+        InputAction::ClipboardRead { .. } | InputAction::ClipboardWrite { .. }
+    ) {
+        return Json(refused_input_result(
+            "clipboard actions must use /clipboard/read or /clipboard/write for explicit grants",
+        ));
+    }
     Json(
         state
             .input
@@ -546,6 +565,136 @@ async fn input_action(
             })
             .await,
     )
+}
+
+async fn clipboard_read(
+    State(state): State<DaemonState>,
+    Json(request): Json<ClipboardReadRequest>,
+) -> Json<ClipboardResult> {
+    let action = "clipboard_read";
+    if request.schema_version != SCHEMA_VERSION {
+        return Json(clipboard_refusal(
+            action,
+            "schema_version must match the daemon schema",
+        ));
+    }
+    if !request.allow_sensitive {
+        return Json(clipboard_refusal(
+            action,
+            "clipboard read requires allow_sensitive=true",
+        ));
+    }
+    if let Some(message) = clipboard_refusal_reason(&state).await {
+        return Json(clipboard_refusal(action, message));
+    }
+    let text = state.clipboard.read().await.clone();
+    Json(ClipboardResult {
+        schema_version: SCHEMA_VERSION.to_string(),
+        action: action.to_string(),
+        result: input_result(
+            Effect::Confirmed,
+            InputRoute::SystemApi,
+            DeliveryMode::NotApplicable,
+            EvidenceKind::ValueReadback,
+            "clipboard value returned from daemon-owned clipboard store",
+        ),
+        text,
+    })
+}
+
+async fn clipboard_write(
+    State(state): State<DaemonState>,
+    Json(request): Json<ClipboardWriteRequest>,
+) -> Json<ClipboardResult> {
+    let action = "clipboard_write";
+    if request.schema_version != SCHEMA_VERSION {
+        return Json(clipboard_refusal(
+            action,
+            "schema_version must match the daemon schema",
+        ));
+    }
+    if let Some(message) = clipboard_refusal_reason(&state).await {
+        return Json(clipboard_refusal(action, message));
+    }
+    *state.clipboard.write().await = Some(request.text);
+    Json(ClipboardResult {
+        schema_version: SCHEMA_VERSION.to_string(),
+        action: action.to_string(),
+        result: input_result(
+            Effect::Confirmed,
+            InputRoute::SystemApi,
+            DeliveryMode::NotApplicable,
+            EvidenceKind::ValueReadback,
+            "clipboard value written to daemon-owned clipboard store",
+        ),
+        text: None,
+    })
+}
+
+async fn clipboard_refusal_reason(state: &DaemonState) -> Option<&'static str> {
+    let control = state.control.read().await;
+    if control.safety_state == SafetyState::Killed {
+        return Some("kill-switch is active");
+    }
+    if control.safety_state == SafetyState::Paused {
+        return Some("runtime is paused");
+    }
+    if !control.active_profile.active {
+        return Some("profile is not active");
+    }
+    if !control.active_profile.capabilities.clipboard {
+        return Some("active profile does not grant clipboard access");
+    }
+    None
+}
+
+fn clipboard_refusal(action: &str, message: impl Into<String>) -> ClipboardResult {
+    ClipboardResult {
+        schema_version: SCHEMA_VERSION.to_string(),
+        action: action.to_string(),
+        result: input_result(
+            Effect::Refused,
+            InputRoute::Unavailable,
+            DeliveryMode::NotApplicable,
+            EvidenceKind::Refusal,
+            message,
+        ),
+        text: None,
+    }
+}
+
+fn refused_input_result(message: impl Into<String>) -> InputResult {
+    input_result(
+        Effect::Refused,
+        InputRoute::Unavailable,
+        DeliveryMode::NotApplicable,
+        EvidenceKind::Refusal,
+        message,
+    )
+}
+
+fn input_result(
+    effect: Effect,
+    route: InputRoute,
+    delivery_mode: DeliveryMode,
+    evidence_kind: EvidenceKind,
+    evidence_message: impl Into<String>,
+) -> InputResult {
+    let started_mono_ns = std::time::Instant::now().elapsed().as_nanos();
+    InputResult {
+        schema_version: SCHEMA_VERSION.to_string(),
+        idempotency_key: Uuid::new_v4(),
+        effect,
+        route,
+        delivery_mode,
+        started_mono_ns,
+        ended_mono_ns: started_mono_ns,
+        evidence: vec![Evidence {
+            kind: evidence_kind,
+            message: evidence_message.into(),
+            frame_id: None,
+        }],
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -606,5 +755,92 @@ impl IntoResponse for ApiError {
             HeaderValue::from_static("application/json"),
         );
         (self.1, headers, Json(self.0)).into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn clipboard_write_requires_profile_grant() {
+        let state = DaemonState::synthetic("test", "token");
+        let Json(result) = clipboard_write(
+            State(state),
+            Json(ClipboardWriteRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                text: "denied".to_string(),
+            }),
+        )
+        .await;
+
+        assert_eq!(result.result.effect, Effect::Refused);
+        assert_eq!(
+            result.result.evidence[0].message,
+            "active profile does not grant clipboard access"
+        );
+    }
+
+    #[tokio::test]
+    async fn clipboard_read_requires_sensitive_acknowledgment() {
+        let state = clipboard_enabled_state().await;
+        let Json(result) = clipboard_read(
+            State(state),
+            Json(ClipboardReadRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                allow_sensitive: false,
+            }),
+        )
+        .await;
+
+        assert_eq!(result.result.effect, Effect::Refused);
+        assert_eq!(
+            result.result.evidence[0].message,
+            "clipboard read requires allow_sensitive=true"
+        );
+    }
+
+    #[tokio::test]
+    async fn clipboard_write_and_sensitive_read_round_trip() {
+        let state = clipboard_enabled_state().await;
+        let Json(write_result) = clipboard_write(
+            State(state.clone()),
+            Json(ClipboardWriteRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                text: "hello from test".to_string(),
+            }),
+        )
+        .await;
+        let Json(read_result) = clipboard_read(
+            State(state),
+            Json(ClipboardReadRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                allow_sensitive: true,
+            }),
+        )
+        .await;
+
+        assert_eq!(write_result.result.effect, Effect::Confirmed);
+        assert_eq!(read_result.result.effect, Effect::Confirmed);
+        assert_eq!(read_result.text.as_deref(), Some("hello from test"));
+    }
+
+    async fn clipboard_enabled_state() -> DaemonState {
+        let state = DaemonState::synthetic("test", "token");
+        let Json(_) = profile_create(
+            State(state.clone()),
+            Json(ProfileCreateRequest {
+                name: "clip".to_string(),
+                mode: RuntimeMode::Supervised,
+                capabilities: Some(CapabilityManifest {
+                    clipboard: true,
+                    ..CapabilityManifest::default()
+                }),
+                duration_ms: Some(60_000),
+            }),
+        )
+        .await;
+        let Json(_) = profile_activate(State(state.clone())).await;
+        state
     }
 }

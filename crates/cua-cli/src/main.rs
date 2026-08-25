@@ -2,8 +2,8 @@ use anyhow::Context;
 use clap::{Args, Parser, Subcommand};
 use cua_capture::{CaptureRequest, FrameBus, SyntheticCaptureBackend};
 use cua_core::{
-    schema_bundle, CapabilityManifest, FrameEncoding, InputAction, MouseButton, RuntimeMode,
-    SCHEMA_VERSION,
+    schema_bundle, CapabilityManifest, ClipboardReadRequest, ClipboardWriteRequest, FrameEncoding,
+    InputAction, MouseButton, RuntimeMode, SCHEMA_VERSION,
 };
 use cua_input::InputBackend;
 use cua_model::{run_eval_report, EvalConfig};
@@ -41,6 +41,10 @@ enum Command {
     Key {
         #[command(subcommand)]
         command: KeyCommand,
+    },
+    Clipboard {
+        #[command(subcommand)]
+        command: ClipboardCommand,
     },
     Model {
         #[command(subcommand)]
@@ -121,6 +125,21 @@ enum KeyCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum ClipboardCommand {
+    Read {
+        #[arg(long)]
+        allow_sensitive: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    Write {
+        text: String,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum ModelCommand {
     Eval {
         #[arg(long)]
@@ -167,6 +186,8 @@ enum ProfileCommand {
         mode: RuntimeModeArg,
         #[arg(long)]
         duration_ms: Option<i64>,
+        #[arg(long)]
+        clipboard: bool,
         #[arg(long)]
         json: bool,
     },
@@ -218,6 +239,9 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Command::Mouse { command }) => local_input(mouse_action(command)).await,
         Some(Command::Key { command }) => local_input(key_action(command)).await,
+        Some(Command::Clipboard { command }) => {
+            clipboard(cli.server_addr, &cli.profile, command).await
+        }
         Some(Command::Model { command }) => model(command).await,
         Some(Command::Schema { command }) => schema(command).await,
         Some(Command::Trace { command }) => trace(command).await,
@@ -260,6 +284,7 @@ async fn print_usage_and_status(server_addr: SocketAddr) -> anyhow::Result<()> {
     println!("usage: cua serve --addr {server_addr}");
     println!("       cua status --json");
     println!("       cua screenshot --out /tmp/screen.png");
+    println!("       cua clipboard read --allow-sensitive --json");
     Ok(())
 }
 
@@ -418,6 +443,44 @@ async fn local_input(action: InputAction) -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn clipboard(
+    addr: SocketAddr,
+    profile: &str,
+    command: ClipboardCommand,
+) -> anyhow::Result<()> {
+    match command {
+        ClipboardCommand::Read {
+            allow_sensitive,
+            json,
+        } => {
+            post_json(
+                addr,
+                profile,
+                "/clipboard/read",
+                serde_json::to_value(ClipboardReadRequest {
+                    schema_version: SCHEMA_VERSION.to_string(),
+                    allow_sensitive,
+                })?,
+                json,
+            )
+            .await
+        }
+        ClipboardCommand::Write { text, json } => {
+            post_json(
+                addr,
+                profile,
+                "/clipboard/write",
+                serde_json::to_value(ClipboardWriteRequest {
+                    schema_version: SCHEMA_VERSION.to_string(),
+                    text,
+                })?,
+                json,
+            )
+            .await
+        }
+    }
+}
+
 async fn model(command: ModelCommand) -> anyhow::Result<()> {
     let ModelCommand::Eval {
         live,
@@ -506,8 +569,11 @@ async fn profile(
             name,
             mode,
             duration_ms,
+            clipboard,
             json,
         } => {
+            let mut capabilities = CapabilityManifest::default();
+            capabilities.clipboard = clipboard;
             post_json(
                 addr,
                 active_profile,
@@ -516,7 +582,7 @@ async fn profile(
                     "name": name,
                     "mode": RuntimeMode::from(mode),
                     "duration_ms": duration_ms,
-                    "capabilities": CapabilityManifest::default(),
+                    "capabilities": capabilities,
                 }),
                 json,
             )

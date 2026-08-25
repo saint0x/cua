@@ -29,6 +29,184 @@
       "title": "ApiErrorBody",
       "type": "object"
     },
+    "ClipboardReadRequest": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "allow_sensitive": {
+          "type": "boolean"
+        },
+        "schema_version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "allow_sensitive",
+        "schema_version"
+      ],
+      "title": "ClipboardReadRequest",
+      "type": "object"
+    },
+    "ClipboardResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "DeliveryMode": {
+          "enum": [
+            "foreground",
+            "background",
+            "desktop",
+            "not_applicable",
+            "unknown"
+          ],
+          "type": "string"
+        },
+        "Effect": {
+          "enum": [
+            "confirmed",
+            "partial",
+            "unverifiable",
+            "suspected_noop",
+            "refused"
+          ],
+          "type": "string"
+        },
+        "Evidence": {
+          "properties": {
+            "frame_id": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "kind": {
+              "$ref": "#/definitions/EvidenceKind"
+            },
+            "message": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "message"
+          ],
+          "type": "object"
+        },
+        "EvidenceKind": {
+          "enum": [
+            "frame_change",
+            "cursor_readback",
+            "value_readback",
+            "window_change",
+            "fixture_oracle",
+            "model_observation",
+            "refusal"
+          ],
+          "type": "string"
+        },
+        "InputResult": {
+          "properties": {
+            "delivery_mode": {
+              "$ref": "#/definitions/DeliveryMode"
+            },
+            "effect": {
+              "$ref": "#/definitions/Effect"
+            },
+            "ended_mono_ns": {
+              "format": "uint128",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "evidence": {
+              "items": {
+                "$ref": "#/definitions/Evidence"
+              },
+              "type": "array"
+            },
+            "idempotency_key": {
+              "type": "string"
+            },
+            "route": {
+              "$ref": "#/definitions/InputRoute"
+            },
+            "schema_version": {
+              "type": "string"
+            },
+            "started_mono_ns": {
+              "format": "uint128",
+              "minimum": 0.0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "delivery_mode",
+            "effect",
+            "ended_mono_ns",
+            "evidence",
+            "idempotency_key",
+            "route",
+            "schema_version",
+            "started_mono_ns"
+          ],
+          "type": "object"
+        },
+        "InputRoute": {
+          "enum": [
+            "accessibility",
+            "synthetic_events",
+            "global_input",
+            "portal",
+            "trusted_input",
+            "dom",
+            "system_api",
+            "simulated",
+            "unavailable"
+          ],
+          "type": "string"
+        }
+      },
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "result": {
+          "$ref": "#/definitions/InputResult"
+        },
+        "schema_version": {
+          "type": "string"
+        },
+        "text": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "action",
+        "result",
+        "schema_version"
+      ],
+      "title": "ClipboardResult",
+      "type": "object"
+    },
+    "ClipboardWriteRequest": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "schema_version": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version",
+        "text"
+      ],
+      "title": "ClipboardWriteRequest",
+      "type": "object"
+    },
     "DesktopState": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "definitions": {

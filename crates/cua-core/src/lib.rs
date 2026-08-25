@@ -313,6 +313,26 @@ pub struct InputResult {
     pub evidence: Vec<Evidence>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ClipboardReadRequest {
+    pub schema_version: String,
+    pub allow_sensitive: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ClipboardWriteRequest {
+    pub schema_version: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ClipboardResult {
+    pub schema_version: String,
+    pub action: String,
+    pub result: InputResult,
+    pub text: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct HealthReport {
     pub schema_version: String,
@@ -394,6 +414,18 @@ pub fn schema_bundle() -> SchemaBundle {
     schemas.insert(
         "InputResult".to_string(),
         serde_json::json!(schema_for!(InputResult)),
+    );
+    schemas.insert(
+        "ClipboardReadRequest".to_string(),
+        serde_json::json!(schema_for!(ClipboardReadRequest)),
+    );
+    schemas.insert(
+        "ClipboardWriteRequest".to_string(),
+        serde_json::json!(schema_for!(ClipboardWriteRequest)),
+    );
+    schemas.insert(
+        "ClipboardResult".to_string(),
+        serde_json::json!(schema_for!(ClipboardResult)),
     );
     schemas.insert(
         "Manifest".to_string(),

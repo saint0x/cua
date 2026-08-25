@@ -26,8 +26,10 @@ Public control surfaces are intentionally limited to:
 cargo run -p cua -- serve --addr 127.0.0.1:8765
 cargo run -p cua -- status --json
 cargo run -p cua -- screenshot --out artifacts/cua/smoke/screen.png --json
-cargo run -p cua -- profile create smoke --mode supervised --duration-ms 60000 --json
+cargo run -p cua -- profile create smoke --mode supervised --duration-ms 60000 --clipboard --json
 cargo run -p cua -- profile activate --json
+cargo run -p cua -- clipboard write "hello from cua" --json
+cargo run -p cua -- clipboard read --allow-sensitive --json
 cargo run -p cua -- pause --json
 cargo run -p cua -- resume --json
 cargo run -p cua -- kill-switch --json
@@ -82,4 +84,4 @@ fozzy ci artifacts/cua/fozzy/cua-smoke.fozzy --json
 
 ## Status
 
-The current runtime has production-shaped contracts, daemon/CLI plumbing, profile policy state, pause/resume/kill-switch controls, synthetic capture, continuous MJPEG/WebSocket streams, refusal-only input, schema export, trace inspection, and bounded model evals. Real platform capture/input backends and signed host installation are still in progress.
+The current runtime has production-shaped contracts, daemon/CLI plumbing, profile policy state, pause/resume/kill-switch controls, profile-gated daemon clipboard, synthetic capture, continuous MJPEG/WebSocket streams, refusal-only native input, schema export, trace inspection, and bounded model evals. Real platform capture/input backends and signed host installation are still in progress.
