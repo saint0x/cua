@@ -38,6 +38,14 @@ cargo run -p cua -- kill-switch --json
 
 `cua serve` refuses non-loopback binds unless `--allow-lan` is explicit. The local HTTP API uses a per-profile bearer token stored at `~/.cua/profiles/<profile>/http.token`; CLI client commands load it automatically.
 
+## Package
+
+```sh
+CUA_CODESIGN_IDENTITY=- scripts/package-macos-app.sh
+```
+
+The packager builds `cua`, creates `artifacts/cua/macos/CUA.app`, signs it with bundle identifier `com.saint0x.cua`, verifies the signature, and prints the app path. Set `CUA_CODESIGN_IDENTITY` to a local signing identity for a non-ad-hoc signature.
+
 ## Evaluate Models
 
 Create a local `.env`:
@@ -92,4 +100,4 @@ fozzy ci artifacts/cua/fozzy/cua-smoke.fozzy --json
 
 ## Status
 
-The current runtime has production-shaped contracts, daemon/CLI plumbing, macOS permission probes, profile policy state, pause/resume/kill-switch controls, profile-gated daemon clipboard, daemon-owned capture/encode/input/event/permission/trace/model lanes, ScreenCaptureKit-backed macOS capture with CoreGraphics fallback, native macOS display/cursor/window observation, CGEvent mouse/keyboard input with refusing fallback, continuous MJPEG/WebSocket streams, schema export, trace inspection, and bounded model evals. Signed host installation is still in progress.
+The current runtime has production-shaped contracts, daemon/CLI plumbing, macOS permission probes, profile policy state, pause/resume/kill-switch controls, profile-gated daemon clipboard, daemon-owned capture/encode/input/event/permission/trace/model lanes, ScreenCaptureKit-backed macOS capture with CoreGraphics fallback, native macOS display/cursor/window observation, CGEvent mouse/keyboard input with refusing fallback, signed macOS app packaging, continuous MJPEG/WebSocket streams, schema export, trace inspection, and bounded model evals.

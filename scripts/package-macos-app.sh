@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+APP_NAME="${CUA_APP_NAME:-CUA}"
+BUNDLE_ID="${CUA_BUNDLE_ID:-com.saint0x.cua}"
+SIGN_IDENTITY="${CUA_CODESIGN_IDENTITY:--}"
+OUT_DIR="${CUA_APP_OUT_DIR:-$ROOT/artifacts/cua/macos}"
+APP_DIR="$OUT_DIR/$APP_NAME.app"
+CONTENTS_DIR="$APP_DIR/Contents"
+MACOS_DIR="$CONTENTS_DIR/MacOS"
+RESOURCES_DIR="$CONTENTS_DIR/Resources"
+ENTITLEMENTS="$OUT_DIR/$APP_NAME.entitlements.plist"
+
+cargo build -p cua --release
+
+BIN="$ROOT/target/release/cua"
+if [[ ! -x "$BIN" ]]; then
+  CANDIDATES=()
+  while IFS= read -r candidate; do
+    CANDIDATES+=("$candidate")
+  done < <(find "$ROOT/target" -path '*/release/cua' -type f -perm +111 | sort)
+  if [[ "${#CANDIDATES[@]}" -ne 1 ]]; then
+    printf 'expected one release cua binary, found %s\n' "${#CANDIDATES[@]}" >&2
+    exit 1
+  fi
+  BIN="${CANDIDATES[0]}"
+fi
+
+rm -rf "$APP_DIR"
+mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
+install -m 0755 "$BIN" "$MACOS_DIR/cua"
+
+cat > "$CONTENTS_DIR/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleDisplayName</key>
+  <string>$APP_NAME</string>
+  <key>CFBundleExecutable</key>
+  <string>cua</string>
+  <key>CFBundleIdentifier</key>
+  <string>$BUNDLE_ID</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>$APP_NAME</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>0.1.0</string>
+  <key>CFBundleVersion</key>
+  <string>0.1.0</string>
+  <key>LSApplicationCategoryType</key>
+  <string>public.app-category.developer-tools</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>14.0</string>
+  <key>LSUIElement</key>
+  <true/>
+  <key>NSAppleEventsUsageDescription</key>
+  <string>CUA needs local automation permission when a supervised profile grants desktop actions.</string>
+</dict>
+</plist>
+PLIST
+
+cat > "$ENTITLEMENTS" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+</dict>
+</plist>
+PLIST
+
+/usr/bin/codesign \
+  --force \
+  --sign "$SIGN_IDENTITY" \
+  --entitlements "$ENTITLEMENTS" \
+  --options runtime \
+  "$APP_DIR"
+
+/usr/bin/codesign --verify --deep --strict --verbose=2 "$APP_DIR"
+/usr/bin/codesign --display --verbose=2 "$APP_DIR"
+
+echo "$APP_DIR"
