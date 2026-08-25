@@ -96,17 +96,21 @@ pub fn parse_model_plan(raw: &str) -> anyhow::Result<PlannedTurn> {
 
 pub fn parse_fast_command(transcript: &str) -> Option<PlannedTurn> {
     let lower = transcript.trim().to_ascii_lowercase();
-    let words = lower.split_whitespace().collect::<Vec<_>>();
+    let words = lower
+        .split_whitespace()
+        .map(normalize_command_token)
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>();
     if words.is_empty() {
         return None;
     }
-    if words[0] == "pause" {
+    if words[0].as_str() == "pause" {
         return Some(turn("Paused.", Some(InputAction::Pause)));
     }
-    if words[0] == "resume" {
+    if words[0].as_str() == "resume" {
         return Some(turn("Resumed.", Some(InputAction::Resume)));
     }
-    if words[0] == "click" && words.len() >= 3 {
+    if words[0].as_str() == "click" && words.len() >= 3 {
         if let (Ok(x), Ok(y)) = (words[1].parse::<i32>(), words[2].parse::<i32>()) {
             return Some(turn(
                 format!("Clicking {x}, {y}."),
@@ -119,7 +123,7 @@ pub fn parse_fast_command(transcript: &str) -> Option<PlannedTurn> {
             ));
         }
     }
-    if words[0] == "move" && words.len() >= 3 {
+    if words[0].as_str() == "move" && words.len() >= 3 {
         if let (Ok(x), Ok(y)) = (words[1].parse::<i32>(), words[2].parse::<i32>()) {
             return Some(turn(
                 format!("Moving to {x}, {y}."),
@@ -142,6 +146,12 @@ pub fn parse_fast_command(transcript: &str) -> Option<PlannedTurn> {
     None
 }
 
+fn normalize_command_token(token: &str) -> String {
+    token
+        .trim_matches(|character: char| !character.is_ascii_alphanumeric() && character != '-')
+        .to_string()
+}
+
 fn turn(response: impl Into<String>, action: Option<InputAction>) -> PlannedTurn {
     PlannedTurn {
         response: response.into(),
@@ -158,6 +168,18 @@ mod tests {
         let plan = parse_fast_command("click 640 360").unwrap();
         assert!(matches!(
             plan.action,
+            Some(InputAction::MouseClick { x: 640, y: 360, .. })
+        ));
+    }
+
+    #[test]
+    fn parses_fast_commands_from_stt_punctuation() {
+        let pause = parse_fast_command("Pause.").unwrap();
+        assert!(matches!(pause.action, Some(InputAction::Pause)));
+
+        let click = parse_fast_command("Click 640, 360.").unwrap();
+        assert!(matches!(
+            click.action,
             Some(InputAction::MouseClick { x: 640, y: 360, .. })
         ));
     }

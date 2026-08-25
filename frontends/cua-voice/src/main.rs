@@ -3,13 +3,14 @@ use cua_voice::activation::ControlDoubleTap;
 use cua_voice::hud::{HudDisplay, HudMetrics, TOP_MARGIN, WINDOW_HEIGHT, WINDOW_WIDTH};
 use cua_voice::orb::paint_orb;
 use cua_voice::ui_state::{HudSnapshot, VoiceUiEvent};
-use cua_voice::{run_text_turn, run_voice_turn, VoiceConfig};
+use cua_voice::{run_text_turn_checked, run_voice_turn, run_wav_turn_checked, VoiceConfig};
 use gpui::{
     canvas, div, hsla, point, prelude::*, px, rgb, size, App, Application, Bounds, BoxShadow,
     Context, IntoElement, ParentElement, Render, Styled, Window, WindowBackgroundAppearance,
     WindowBounds, WindowKind, WindowOptions,
 };
 use rdev::{listen, EventType, Key};
+use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -29,6 +30,8 @@ struct Args {
     demo: bool,
     #[arg(long)]
     once_transcript: Option<String>,
+    #[arg(long)]
+    once_wav: Option<PathBuf>,
 }
 
 struct VoiceHud {
@@ -284,6 +287,7 @@ fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let demo = args.demo;
     let once_transcript = args.once_transcript;
+    let once_wav = args.once_wav;
     let config = VoiceConfig {
         profile: args.profile,
         record_ms: args.record_ms,
@@ -293,8 +297,14 @@ fn main() -> anyhow::Result<()> {
     let runtime = Arc::new(tokio::runtime::Runtime::new()?);
     let (tx, rx) = channel::<VoiceUiEvent>();
     if let Some(transcript) = once_transcript {
-        runtime.block_on(run_text_turn(config, transcript, tx));
-        return Ok(());
+        let result = runtime.block_on(run_text_turn_checked(config, transcript, tx));
+        print_headless_events(rx);
+        return result;
+    } else if let Some(path) = once_wav {
+        let wav_bytes = std::fs::read(&path)?;
+        let result = runtime.block_on(run_wav_turn_checked(config, wav_bytes, tx));
+        print_headless_events(rx);
+        return result;
     } else if demo {
         start_demo_cycle(tx.clone());
     } else {
@@ -325,6 +335,27 @@ fn main() -> anyhow::Result<()> {
         cx.activate(true);
     });
     Ok(())
+}
+
+fn print_headless_events(rx: Receiver<VoiceUiEvent>) {
+    for event in rx.try_iter() {
+        let value = match event {
+            VoiceUiEvent::Armed => serde_json::json!({"event": "armed"}),
+            VoiceUiEvent::Listening { ms } => serde_json::json!({"event": "listening", "ms": ms}),
+            VoiceUiEvent::Transcribing => serde_json::json!({"event": "transcribing"}),
+            VoiceUiEvent::Transcript(text) => {
+                serde_json::json!({"event": "transcript", "text": text})
+            }
+            VoiceUiEvent::Planning => serde_json::json!({"event": "planning"}),
+            VoiceUiEvent::Dispatching(action) => {
+                serde_json::json!({"event": "dispatching", "action": action})
+            }
+            VoiceUiEvent::Reply(text) => serde_json::json!({"event": "reply", "text": text}),
+            VoiceUiEvent::Error(text) => serde_json::json!({"event": "error", "text": text}),
+            VoiceUiEvent::Idle => serde_json::json!({"event": "idle"}),
+        };
+        println!("{value}");
+    }
 }
 
 fn top_centered_bounds(cx: &App) -> Bounds<gpui::Pixels> {

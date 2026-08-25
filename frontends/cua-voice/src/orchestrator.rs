@@ -34,14 +34,36 @@ pub async fn run_voice_turn(config: VoiceConfig, tx: Sender<VoiceUiEvent>) {
 }
 
 pub async fn run_text_turn(config: VoiceConfig, transcript: String, tx: Sender<VoiceUiEvent>) {
-    if let Err(error) = run_transcript_turn(config, transcript, tx.clone()).await {
+    if let Err(error) = run_text_turn_checked(config, transcript, tx.clone()).await {
         eprintln!("cua voice scripted turn failed: {error:#}");
         let _ = tx.send(VoiceUiEvent::Error(error.to_string()));
     }
 }
 
+pub async fn run_wav_turn(config: VoiceConfig, wav_bytes: Vec<u8>, tx: Sender<VoiceUiEvent>) {
+    if let Err(error) = run_wav_turn_checked(config, wav_bytes, tx.clone()).await {
+        eprintln!("cua voice wav turn failed: {error:#}");
+        let _ = tx.send(VoiceUiEvent::Error(error.to_string()));
+    }
+}
+
+pub async fn run_text_turn_checked(
+    config: VoiceConfig,
+    transcript: String,
+    tx: Sender<VoiceUiEvent>,
+) -> anyhow::Result<()> {
+    run_transcript_turn(config, transcript, tx).await
+}
+
+pub async fn run_wav_turn_checked(
+    config: VoiceConfig,
+    wav_bytes: Vec<u8>,
+    tx: Sender<VoiceUiEvent>,
+) -> anyhow::Result<()> {
+    transcribe_and_run_turn(config, wav_bytes, tx).await
+}
+
 async fn record_and_run_turn(config: VoiceConfig, tx: Sender<VoiceUiEvent>) -> anyhow::Result<()> {
-    let api_key = std::env::var("OPENROUTER_API_KEY").context("OPENROUTER_API_KEY is required")?;
     tx.send(VoiceUiEvent::Armed).ok();
     tx.send(VoiceUiEvent::Listening {
         ms: config.record_ms,
@@ -52,6 +74,15 @@ async fn record_and_run_turn(config: VoiceConfig, tx: Sender<VoiceUiEvent>) -> a
         tokio::task::spawn_blocking(move || record_default_input(Duration::from_millis(record_ms)))
             .await
             .context("join audio recorder")??;
+    transcribe_and_run_turn(config, audio.wav_bytes, tx).await
+}
+
+async fn transcribe_and_run_turn(
+    config: VoiceConfig,
+    wav_bytes: Vec<u8>,
+    tx: Sender<VoiceUiEvent>,
+) -> anyhow::Result<()> {
+    let api_key = std::env::var("OPENROUTER_API_KEY").context("OPENROUTER_API_KEY is required")?;
     tx.send(VoiceUiEvent::Transcribing).ok();
     let local_task = tokio::spawn({
         let profile = config.profile.clone();
@@ -61,7 +92,7 @@ async fn record_and_run_turn(config: VoiceConfig, tx: Sender<VoiceUiEvent>) -> a
         }
     });
     let transcript = SttClient::new(&config.stt_model)
-        .transcribe_wav(&api_key, &audio.wav_bytes)
+        .transcribe_wav(&api_key, &wav_bytes)
         .await?;
     tx.send(VoiceUiEvent::Transcript(transcript.clone())).ok();
     plan_and_dispatch(config, transcript, Some(api_key), local_task, tx).await
