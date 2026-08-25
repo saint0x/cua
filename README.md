@@ -78,6 +78,7 @@ cargo test
 cargo check
 cargo build -p cua
 bash scripts/ci-perf-gate.sh
+scripts/host-gui-smoke.sh
 fozzy doctor --deep --scenario fozzy/scenarios/cua-smoke.json --runs 5 --seed 4242 --json
 fozzy test --det --strict-verify fozzy/scenarios/cua-smoke.json --json
 ```
