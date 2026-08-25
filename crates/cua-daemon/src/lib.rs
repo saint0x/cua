@@ -44,6 +44,7 @@ pub struct DaemonState {
     pub frame_bus: Arc<FrameBus>,
     pub input: Arc<dyn InputBackend>,
     input_lane: InputLane,
+    model_lane: ModelLane,
     permission_lane: PermissionLane,
     pub active_streams: Arc<AtomicU32>,
     pub bearer_token: Arc<String>,
@@ -66,6 +67,7 @@ impl DaemonState {
                 cua_platform_macos::capture_backend_or_synthetic(),
             )),
             input_lane: InputLane::spawn(input.clone(), input_lane_capacity()),
+            model_lane: ModelLane::spawn(model_lane_capacity()),
             permission_lane: PermissionLane::spawn(permission_lane_capacity()),
             input,
             active_streams: Arc::new(AtomicU32::new(0)),
@@ -97,7 +99,7 @@ impl DaemonState {
             safety_state: control.safety_state.clone(),
             active_profile: control.active_profile.name.clone(),
             active_streams: self.active_streams.load(Ordering::Relaxed),
-            model_sessions: 0,
+            model_sessions: self.model_lane.active_count(),
             last_error: None,
         }
     }
@@ -211,6 +213,89 @@ fn input_lane_capacity() -> usize {
         .and_then(|value| value.parse().ok())
         .filter(|value| *value > 0)
         .unwrap_or(64)
+}
+
+#[derive(Clone)]
+struct ModelLane {
+    sender: mpsc::Sender<ModelJob>,
+    active: Arc<AtomicU32>,
+}
+
+struct ModelJob {
+    enqueued_at: Instant,
+    config: EvalConfig,
+    frame: Option<cua_core::FramePayload>,
+    api_key: Option<String>,
+    reply: oneshot::Sender<ModelLaneResult>,
+}
+
+struct ModelLaneResult {
+    queue_wait: Duration,
+    run_duration: Duration,
+    report: EvalReport,
+}
+
+#[derive(Debug)]
+enum ModelLaneError {
+    Full,
+    Closed,
+    WorkerStopped,
+}
+
+impl ModelLane {
+    fn spawn(capacity: usize) -> Self {
+        let (sender, mut receiver) = mpsc::channel::<ModelJob>(capacity);
+        let active = Arc::new(AtomicU32::new(0));
+        let worker_active = active.clone();
+        tokio::spawn(async move {
+            while let Some(job) = receiver.recv().await {
+                let queue_wait = job.enqueued_at.elapsed();
+                worker_active.fetch_add(1, Ordering::Relaxed);
+                let run_started = Instant::now();
+                let report = run_eval_report(job.config, job.frame, job.api_key).await;
+                worker_active.fetch_sub(1, Ordering::Relaxed);
+                let _ = job.reply.send(ModelLaneResult {
+                    queue_wait,
+                    run_duration: run_started.elapsed(),
+                    report,
+                });
+            }
+        });
+        Self { sender, active }
+    }
+
+    async fn evaluate(
+        &self,
+        config: EvalConfig,
+        frame: Option<cua_core::FramePayload>,
+        api_key: Option<String>,
+    ) -> Result<ModelLaneResult, ModelLaneError> {
+        let (reply, wait) = oneshot::channel();
+        let job = ModelJob {
+            enqueued_at: Instant::now(),
+            config,
+            frame,
+            api_key,
+            reply,
+        };
+        match self.sender.try_send(job) {
+            Ok(()) => wait.await.map_err(|_| ModelLaneError::WorkerStopped),
+            Err(mpsc::error::TrySendError::Full(_)) => Err(ModelLaneError::Full),
+            Err(mpsc::error::TrySendError::Closed(_)) => Err(ModelLaneError::Closed),
+        }
+    }
+
+    fn active_count(&self) -> u32 {
+        self.active.load(Ordering::Relaxed)
+    }
+}
+
+fn model_lane_capacity() -> usize {
+    std::env::var("CUA_MODEL_QUEUE_CAPACITY")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(8)
 }
 
 #[derive(Clone)]
@@ -1365,6 +1450,7 @@ enum MetricKind {
     ModelSend,
     ModelResponse,
     ModelParse,
+    ModelQueueWait,
     PolicyCheck,
     PermissionQueueWait,
     PermissionProbe,
@@ -1374,7 +1460,7 @@ enum MetricKind {
 }
 
 impl MetricKind {
-    const ALL: [Self; 18] = [
+    const ALL: [Self; 19] = [
         Self::CaptureScreenshot,
         Self::CaptureQueueWait,
         Self::CaptureEncode,
@@ -1387,6 +1473,7 @@ impl MetricKind {
         Self::ModelSend,
         Self::ModelResponse,
         Self::ModelParse,
+        Self::ModelQueueWait,
         Self::PolicyCheck,
         Self::PermissionQueueWait,
         Self::PermissionProbe,
@@ -1409,12 +1496,13 @@ impl MetricKind {
             Self::ModelSend => 9,
             Self::ModelResponse => 10,
             Self::ModelParse => 11,
-            Self::PolicyCheck => 12,
-            Self::PermissionQueueWait => 13,
-            Self::PermissionProbe => 14,
-            Self::Verification => 15,
-            Self::TraceWrite => 16,
-            Self::KillSwitchPropagation => 17,
+            Self::ModelQueueWait => 12,
+            Self::PolicyCheck => 13,
+            Self::PermissionQueueWait => 14,
+            Self::PermissionProbe => 15,
+            Self::Verification => 16,
+            Self::TraceWrite => 17,
+            Self::KillSwitchPropagation => 18,
         }
     }
 
@@ -1432,6 +1520,7 @@ impl MetricKind {
             Self::ModelSend => "model.send",
             Self::ModelResponse => "model.response",
             Self::ModelParse => "model.parse",
+            Self::ModelQueueWait => "model.queue_wait",
             Self::PolicyCheck => "policy.check",
             Self::PermissionQueueWait => "permission.queue_wait",
             Self::PermissionProbe => "permission.probe",
@@ -1451,10 +1540,11 @@ enum CounterKind {
     EventDrops,
     PermissionFallbacks,
     TraceDrops,
+    ModelDrops,
 }
 
 impl CounterKind {
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 8] = [
         Self::MjpegFrames,
         Self::WsFrames,
         Self::InputRefusals,
@@ -1462,6 +1552,7 @@ impl CounterKind {
         Self::EventDrops,
         Self::PermissionFallbacks,
         Self::TraceDrops,
+        Self::ModelDrops,
     ];
 
     fn index(self) -> usize {
@@ -1473,6 +1564,7 @@ impl CounterKind {
             Self::EventDrops => 4,
             Self::PermissionFallbacks => 5,
             Self::TraceDrops => 6,
+            Self::ModelDrops => 7,
         }
     }
 
@@ -1485,6 +1577,7 @@ impl CounterKind {
             Self::EventDrops => "events.dropped",
             Self::PermissionFallbacks => "permission.fallbacks",
             Self::TraceDrops => "trace.dropped",
+            Self::ModelDrops => "model.dropped",
         }
     }
 }
@@ -1632,13 +1725,22 @@ async fn model_eval(
         .metrics
         .observe(MetricKind::ModelParse, parse_started.elapsed());
     let key = std::env::var("OPENROUTER_API_KEY").ok();
-    let send_started = Instant::now();
-    let report = run_eval_report(config, Some(frame), key).await;
+    let lane_result = state
+        .model_lane
+        .evaluate(config, Some(frame), key)
+        .await
+        .map_err(|error| {
+            state.metrics.increment(CounterKind::ModelDrops);
+            ApiError::busy(format!("model lane unavailable: {error:?}"))
+        })?;
     state
         .metrics
-        .observe(MetricKind::ModelSend, send_started.elapsed());
+        .observe(MetricKind::ModelQueueWait, lane_result.queue_wait);
+    state
+        .metrics
+        .observe(MetricKind::ModelSend, lane_result.run_duration);
     let response_started = Instant::now();
-    let response = Json(report);
+    let response = Json(lane_result.report);
     state
         .metrics
         .observe(MetricKind::ModelResponse, response_started.elapsed());
@@ -1661,6 +1763,18 @@ impl ApiError {
                 details: BTreeMap::new(),
             },
             StatusCode::INTERNAL_SERVER_ERROR,
+        )
+    }
+
+    fn busy(message: impl Into<String>) -> Self {
+        Self(
+            ApiErrorBody {
+                schema_version: SCHEMA_VERSION.to_string(),
+                code: "busy".to_string(),
+                message: message.into(),
+                details: BTreeMap::new(),
+            },
+            StatusCode::SERVICE_UNAVAILABLE,
         )
     }
 }
@@ -1830,6 +1944,29 @@ mod tests {
             .histograms
             .iter()
             .any(|histogram| histogram.name == "permission.probe" && histogram.count == 1));
+    }
+
+    #[tokio::test]
+    async fn model_lane_refuses_when_queue_is_full() {
+        let (sender, _receiver) = mpsc::channel(1);
+        let (reply, _wait) = oneshot::channel();
+        sender
+            .try_send(ModelJob {
+                enqueued_at: Instant::now(),
+                config: EvalConfig::default(),
+                frame: None,
+                api_key: None,
+                reply,
+            })
+            .unwrap();
+        let lane = ModelLane {
+            sender,
+            active: Arc::new(AtomicU32::new(0)),
+        };
+
+        let result = lane.evaluate(EvalConfig::default(), None, None).await;
+
+        assert!(matches!(result, Err(ModelLaneError::Full)));
     }
 
     #[test]
