@@ -3,6 +3,33 @@ use gpui::{hsla, point, px, Background, Bounds, Path, PathBuilder, Pixels, Windo
 use std::f32::consts::TAU;
 
 #[derive(Debug, Copy, Clone, PartialEq)]
+pub struct VoiceWavePreset {
+    pub speed: f32,
+    pub radius: f32,
+    pub contour_deform: f32,
+    pub glass_opacity: f32,
+    pub shell_mid_alpha: f32,
+    pub shell_edge_alpha: f32,
+    pub exposure: f32,
+    pub zoom: f32,
+    pub warp: f32,
+    pub ridge_amount: f32,
+}
+
+pub const VOICE_WAVE_PRESET: VoiceWavePreset = VoiceWavePreset {
+    speed: 0.95,
+    radius: 0.70,
+    contour_deform: 0.10,
+    glass_opacity: 0.48,
+    shell_mid_alpha: 0.18,
+    shell_edge_alpha: 0.20,
+    exposure: 1.35,
+    zoom: 0.36,
+    warp: 2.60,
+    ridge_amount: 0.46,
+};
+
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub struct OrbPalette {
     pub base: gpui::Hsla,
     pub glow: gpui::Hsla,
@@ -102,17 +129,19 @@ pub const ORB_LAYERS: [OrbLayer; 5] = [
 pub fn paint_orb(window: &mut Window, bounds: Bounds<Pixels>, phase: &HudPhase, elapsed: f32) {
     let palette = OrbPalette::for_phase(phase);
     let center = bounds.center();
-    let radius = bounds.size.width.min(bounds.size.height).to_f64() as f32 * 0.5;
+    let radius =
+        bounds.size.width.min(bounds.size.height).to_f64() as f32 * 0.5 * VOICE_WAVE_PRESET.radius;
     let energy = phase_energy(phase);
+    let motion_time = elapsed * VOICE_WAVE_PRESET.speed;
 
     let glow = OrbLayer {
-        radius: 0.98,
-        amplitude: 0.035 + energy * 0.018,
+        radius: 1.14,
+        amplitude: VOICE_WAVE_PRESET.contour_deform * (0.30 + energy * 0.18),
         phase_offset: 0.4,
         alpha_scale: 0.22,
     };
     window.paint_path(
-        blob_path(center, radius, glow, elapsed * 0.72),
+        blob_path(center, radius, glow, motion_time * 0.72),
         Background::from(palette.glow),
     );
 
@@ -123,25 +152,25 @@ pub fn paint_orb(window: &mut Window, bounds: Bounds<Pixels>, phase: &HudPhase, 
             center,
             radius,
             layer,
-            elapsed * (1.0 + energy) + index as f32 * 0.21,
+            motion_time * (1.0 + energy) + index as f32 * 0.21,
         );
         window.paint_path(path, layer_color(palette, index, layer.alpha_scale));
     }
 
     let base = OrbLayer {
-        radius: 0.62,
+        radius: 0.86,
         amplitude: 0.018 + energy * 0.012,
         phase_offset: 0.0,
         alpha_scale: 0.42,
     };
     window.paint_path(
-        blob_path(center, radius, base, elapsed * 0.40),
+        blob_path(center, radius, base, motion_time * 0.40),
         Background::from(palette.base),
     );
 
-    let separation = 0.18 + energy * 0.08;
+    let separation = 0.17 + energy * 0.07;
     for (index, offset) in [-1.0, -0.34, 0.34, 1.0].iter().enumerate() {
-        let path = voice_wave_ribbon_path(center, radius, elapsed, *offset * separation, 44);
+        let path = voice_wave_ribbon_path(center, radius, motion_time, *offset * separation, 44);
         let mut color = match index {
             0 => palette.core,
             1 => palette.rim,
@@ -154,32 +183,32 @@ pub fn paint_orb(window: &mut Window, bounds: Bounds<Pixels>, phase: &HudPhase, 
     let mut hot_line = palette.spec;
     hot_line.a *= 0.36 + energy * 0.28;
     window.paint_path(
-        voice_wave_ribbon_path(center, radius, elapsed, 0.0, 48),
+        voice_wave_ribbon_path(center, radius, motion_time, 0.0, 48),
         Background::from(hot_line),
     );
 
     let shell = OrbLayer {
-        radius: 0.72,
-        amplitude: 0.020 + energy * 0.024,
+        radius: 1.00,
+        amplitude: VOICE_WAVE_PRESET.contour_deform * (0.20 + energy * 0.16),
         phase_offset: 2.6,
-        alpha_scale: 0.36,
+        alpha_scale: VOICE_WAVE_PRESET.shell_mid_alpha,
     };
     let mut shell_color = palette.shell_mid;
-    shell_color.a *= 0.80 + energy * 0.28;
+    shell_color.a *= VOICE_WAVE_PRESET.glass_opacity + energy * 0.18;
     window.paint_path(
-        blob_path(center, radius, shell, elapsed * 0.62),
+        blob_path(center, radius, shell, motion_time * 0.62),
         Background::from(shell_color),
     );
     let rim = OrbLayer {
-        radius: 0.78,
-        amplitude: 0.012 + energy * 0.012,
+        radius: 1.08,
+        amplitude: VOICE_WAVE_PRESET.contour_deform * (0.12 + energy * 0.10),
         phase_offset: 3.5,
-        alpha_scale: 0.28,
+        alpha_scale: VOICE_WAVE_PRESET.shell_edge_alpha,
     };
     let mut rim_color = palette.shell_edge;
-    rim_color.a *= 0.75 + energy * 0.30;
+    rim_color.a *= VOICE_WAVE_PRESET.glass_opacity + energy * 0.22;
     window.paint_path(
-        blob_path(center, radius, rim, elapsed * 0.50),
+        blob_path(center, radius, rim, motion_time * 0.50),
         Background::from(rim_color),
     );
 
@@ -358,5 +387,44 @@ mod tests {
         assert!((palette.accent.h - 352.0 / 360.0).abs() < 0.002);
         assert!((palette.rim.h - 254.0 / 360.0).abs() < 0.002);
         assert!(palette.spec.l > 0.90);
+    }
+
+    #[test]
+    fn voice_wave_preset_tracks_reference_motion_constants() {
+        assert_eq!(VOICE_WAVE_PRESET.speed, 0.95);
+        assert_eq!(VOICE_WAVE_PRESET.radius, 0.70);
+        assert_eq!(VOICE_WAVE_PRESET.contour_deform, 0.10);
+        assert_eq!(VOICE_WAVE_PRESET.glass_opacity, 0.48);
+        assert_eq!(VOICE_WAVE_PRESET.shell_mid_alpha, 0.18);
+        assert_eq!(VOICE_WAVE_PRESET.shell_edge_alpha, 0.20);
+        assert_eq!(VOICE_WAVE_PRESET.exposure, 1.35);
+    }
+
+    #[test]
+    fn voice_wave_ribbon_motion_uses_reference_speed() {
+        let points_at_reference_second =
+            voice_wave_ribbon_points(10.0, 10.0, 8.0, VOICE_WAVE_PRESET.speed, 0.0, 32);
+        let points_at_raw_second = voice_wave_ribbon_points(10.0, 10.0, 8.0, 1.0, 0.0, 32);
+
+        assert_ne!(points_at_reference_second, points_at_raw_second);
+        assert_eq!(points_at_reference_second.len(), 64);
+    }
+
+    #[test]
+    fn shell_layers_cover_reference_orb_limb() {
+        let shell = OrbLayer {
+            radius: 1.00,
+            amplitude: VOICE_WAVE_PRESET.contour_deform * 0.30,
+            phase_offset: 2.6,
+            alpha_scale: VOICE_WAVE_PRESET.shell_mid_alpha,
+        };
+        let points = blob_points(20.0, 20.0, 10.0, shell, 0.42, 64);
+        let max_distance = points
+            .iter()
+            .map(|(x, y)| ((x - 20.0).powi(2) + (y - 20.0).powi(2)).sqrt())
+            .fold(0.0, f32::max);
+
+        assert!(max_distance > 10.0);
+        assert!(max_distance < 10.0 * 1.05);
     }
 }
