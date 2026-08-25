@@ -24,8 +24,8 @@
 
 ## Performance
 
-1. Add `/metrics` histograms for capture, encode, queue wait, stream send, model send, model response, parse, policy, input dispatch, verification, trace write, and kill-switch propagation.
-2. Implement `cua perf live` and `cua perf bench screenshot|stream|input|model-prep`.
+1. Add histograms for encode, queue wait, model send, model response, parse, policy, verification, trace write, and kill-switch propagation.
+2. Implement `cua perf bench screenshot|stream|input|model-prep`.
 3. Enforce latency budgets in local and CI gates.
 4. Add memory-growth checks for long-running streams.
 

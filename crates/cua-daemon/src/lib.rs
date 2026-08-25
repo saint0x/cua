@@ -17,8 +17,8 @@ use cua_core::{
     now_wall_ms, schema_bundle, ApiErrorBody, CapabilityManifest, CapabilityState,
     ClipboardReadRequest, ClipboardResult, ClipboardWriteRequest, DeliveryMode, DesktopState,
     Effect, Evidence, EvidenceKind, FrameEncoding, HealthReport, InputAction, InputRequest,
-    InputResult, InputRoute, Manifest, ProfilePolicy, RuntimeControlState, RuntimeMode,
-    SafetyState, SCHEMA_VERSION,
+    InputResult, InputRoute, Manifest, MetricBucket, MetricHistogram, MetricsSnapshot,
+    ProfilePolicy, RuntimeControlState, RuntimeMode, SafetyState, SCHEMA_VERSION,
 };
 use cua_input::{InputBackend, RefusingInputBackend};
 use cua_model::{run_eval_report, EvalConfig, EvalReport};
@@ -28,10 +28,10 @@ use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{
-    atomic::{AtomicU32, Ordering},
+    atomic::{AtomicU32, AtomicU64, Ordering},
     Arc,
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
@@ -46,6 +46,7 @@ pub struct DaemonState {
     pub bearer_token: Arc<String>,
     pub control: Arc<RwLock<RuntimeControlState>>,
     pub clipboard: Arc<RwLock<Option<String>>>,
+    metrics: Arc<RuntimeMetrics>,
 }
 
 impl DaemonState {
@@ -60,6 +61,7 @@ impl DaemonState {
             bearer_token: Arc::new(bearer_token.into()),
             control: Arc::new(RwLock::new(default_control_state(&profile))),
             clipboard: Arc::new(RwLock::new(None)),
+            metrics: Arc::new(RuntimeMetrics::default()),
         }
     }
 
@@ -90,6 +92,7 @@ pub fn router(state: DaemonState) -> Router {
         .route("/schemas", get(schemas))
         .route("/version", get(version))
         .route("/status", get(status))
+        .route("/metrics", get(metrics))
         .route("/healthz", get(healthz))
         .route("/capture/screenshot", post(screenshot))
         .route("/capture/stream.mjpeg", get(stream_mjpeg))
@@ -207,6 +210,7 @@ async fn manifest() -> Json<Manifest> {
             "GET /manifest".to_string(),
             "GET /schemas".to_string(),
             "GET /status".to_string(),
+            "GET /metrics".to_string(),
             "POST /capture/screenshot".to_string(),
             "GET /capture/stream.mjpeg".to_string(),
             "GET /capture/stream.ws".to_string(),
@@ -229,6 +233,7 @@ async fn manifest() -> Json<Manifest> {
         commands: vec![
             "cua serve".to_string(),
             "cua status --json".to_string(),
+            "cua perf live --json".to_string(),
             "cua screenshot --out <path>".to_string(),
             "cua observe --json".to_string(),
             "cua profile status --json".to_string(),
@@ -273,6 +278,14 @@ async fn status(State(state): State<DaemonState>) -> Json<HealthReport> {
     Json(state.health().await)
 }
 
+async fn metrics(State(state): State<DaemonState>) -> Json<MetricsSnapshot> {
+    Json(
+        state
+            .metrics
+            .snapshot(state.active_streams.load(Ordering::Relaxed)),
+    )
+}
+
 async fn healthz(State(state): State<DaemonState>) -> impl IntoResponse {
     let health = state.health().await;
     (StatusCode::OK, Json(health))
@@ -290,6 +303,7 @@ async fn screenshot(
     State(state): State<DaemonState>,
     Json(request): Json<ScreenshotRequest>,
 ) -> Result<Json<cua_core::FramePayload>, ApiError> {
+    let started = Instant::now();
     let frame = state
         .frame_bus
         .latest_or_capture(CaptureRequest {
@@ -299,6 +313,9 @@ async fn screenshot(
         })
         .await
         .map_err(ApiError::internal)?;
+    state
+        .metrics
+        .observe(MetricKind::CaptureScreenshot, started.elapsed());
     Ok(Json(
         frame.as_payload(request.include_bytes.unwrap_or(true)),
     ))
@@ -309,10 +326,12 @@ async fn stream_mjpeg(State(state): State<DaemonState>) -> Result<Response, ApiE
     let mut interval = tokio::time::interval(Duration::from_millis(200));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let frame_bus = state.frame_bus.clone();
+    let metrics = state.metrics.clone();
     let stream = futures::stream::unfold(
-        (frame_bus, interval, guard),
-        |(frame_bus, mut interval, guard)| async move {
+        (frame_bus, metrics, interval, guard),
+        |(frame_bus, metrics, mut interval, guard)| async move {
             interval.tick().await;
+            let started = Instant::now();
             let chunk = match frame_bus
                 .latest_or_capture(CaptureRequest {
                     max_width: Some(1280),
@@ -329,6 +348,7 @@ async fn stream_mjpeg(State(state): State<DaemonState>) -> Result<Response, ApiE
                     );
                     body.extend_from_slice(&frame.bytes);
                     body.extend_from_slice(b"\r\n");
+                    metrics.increment(CounterKind::MjpegFrames);
                     Ok::<Bytes, Infallible>(Bytes::from(body))
                 }
                 Err(error) => Ok::<Bytes, Infallible>(Bytes::from(format!(
@@ -336,7 +356,8 @@ async fn stream_mjpeg(State(state): State<DaemonState>) -> Result<Response, ApiE
                     error.to_string().replace('"', "'")
                 ))),
             };
-            Some((chunk, (frame_bus, interval, guard)))
+            metrics.observe(MetricKind::StreamMjpegTick, started.elapsed());
+            Some((chunk, (frame_bus, metrics, interval, guard)))
         },
     );
     let mut response = Body::from_stream(stream).into_response();
@@ -354,6 +375,7 @@ async fn stream_ws(ws: WebSocketUpgrade, State(state): State<DaemonState>) -> im
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
+            let started = Instant::now();
             match state
                 .frame_bus
                 .latest_or_capture(CaptureRequest {
@@ -378,6 +400,7 @@ async fn stream_ws(ws: WebSocketUpgrade, State(state): State<DaemonState>) -> im
                     {
                         break;
                     }
+                    state.metrics.increment(CounterKind::WsFrames);
                 }
                 Err(error) => {
                     let text = serde_json::json!({
@@ -390,6 +413,9 @@ async fn stream_ws(ws: WebSocketUpgrade, State(state): State<DaemonState>) -> im
                     }
                 }
             }
+            state
+                .metrics
+                .observe(MetricKind::StreamWsTick, started.elapsed());
         }
     })
 }
@@ -546,48 +572,74 @@ async fn input_action(
     State(state): State<DaemonState>,
     Json(action): Json<InputAction>,
 ) -> Json<cua_core::InputResult> {
+    let started = Instant::now();
     if matches!(
         action,
         InputAction::ClipboardRead { .. } | InputAction::ClipboardWrite { .. }
     ) {
+        state.metrics.increment(CounterKind::InputRefusals);
+        state
+            .metrics
+            .observe(MetricKind::InputDispatch, started.elapsed());
         return Json(refused_input_result(
             "clipboard actions must use /clipboard/read or /clipboard/write for explicit grants",
         ));
     }
-    Json(
-        state
-            .input
-            .execute(InputRequest {
-                schema_version: SCHEMA_VERSION.to_string(),
-                idempotency_key: Uuid::new_v4(),
-                deadline_mono_ns: None,
-                action,
-            })
-            .await,
-    )
+    let result = state
+        .input
+        .execute(InputRequest {
+            schema_version: SCHEMA_VERSION.to_string(),
+            idempotency_key: Uuid::new_v4(),
+            deadline_mono_ns: None,
+            action,
+        })
+        .await;
+    if result.effect == Effect::Refused {
+        state.metrics.increment(CounterKind::InputRefusals);
+    }
+    state
+        .metrics
+        .observe(MetricKind::InputDispatch, started.elapsed());
+    Json(result)
 }
 
 async fn clipboard_read(
     State(state): State<DaemonState>,
     Json(request): Json<ClipboardReadRequest>,
 ) -> Json<ClipboardResult> {
+    let started = Instant::now();
     let action = "clipboard_read";
     if request.schema_version != SCHEMA_VERSION {
+        state.metrics.increment(CounterKind::ClipboardRefusals);
+        state
+            .metrics
+            .observe(MetricKind::ClipboardRead, started.elapsed());
         return Json(clipboard_refusal(
             action,
             "schema_version must match the daemon schema",
         ));
     }
     if !request.allow_sensitive {
+        state.metrics.increment(CounterKind::ClipboardRefusals);
+        state
+            .metrics
+            .observe(MetricKind::ClipboardRead, started.elapsed());
         return Json(clipboard_refusal(
             action,
             "clipboard read requires allow_sensitive=true",
         ));
     }
     if let Some(message) = clipboard_refusal_reason(&state).await {
+        state.metrics.increment(CounterKind::ClipboardRefusals);
+        state
+            .metrics
+            .observe(MetricKind::ClipboardRead, started.elapsed());
         return Json(clipboard_refusal(action, message));
     }
     let text = state.clipboard.read().await.clone();
+    state
+        .metrics
+        .observe(MetricKind::ClipboardRead, started.elapsed());
     Json(ClipboardResult {
         schema_version: SCHEMA_VERSION.to_string(),
         action: action.to_string(),
@@ -606,17 +658,29 @@ async fn clipboard_write(
     State(state): State<DaemonState>,
     Json(request): Json<ClipboardWriteRequest>,
 ) -> Json<ClipboardResult> {
+    let started = Instant::now();
     let action = "clipboard_write";
     if request.schema_version != SCHEMA_VERSION {
+        state.metrics.increment(CounterKind::ClipboardRefusals);
+        state
+            .metrics
+            .observe(MetricKind::ClipboardWrite, started.elapsed());
         return Json(clipboard_refusal(
             action,
             "schema_version must match the daemon schema",
         ));
     }
     if let Some(message) = clipboard_refusal_reason(&state).await {
+        state.metrics.increment(CounterKind::ClipboardRefusals);
+        state
+            .metrics
+            .observe(MetricKind::ClipboardWrite, started.elapsed());
         return Json(clipboard_refusal(action, message));
     }
     *state.clipboard.write().await = Some(request.text);
+    state
+        .metrics
+        .observe(MetricKind::ClipboardWrite, started.elapsed());
     Json(ClipboardResult {
         schema_version: SCHEMA_VERSION.to_string(),
         action: action.to_string(),
@@ -694,6 +758,187 @@ fn input_result(
             message: evidence_message.into(),
             frame_id: None,
         }],
+    }
+}
+
+const METRIC_BUCKETS_MS: [u64; 9] = [1, 2, 5, 10, 16, 33, 50, 100, 250];
+
+#[derive(Debug, Clone, Copy)]
+enum MetricKind {
+    CaptureScreenshot,
+    StreamMjpegTick,
+    StreamWsTick,
+    InputDispatch,
+    ClipboardRead,
+    ClipboardWrite,
+}
+
+impl MetricKind {
+    const ALL: [Self; 6] = [
+        Self::CaptureScreenshot,
+        Self::StreamMjpegTick,
+        Self::StreamWsTick,
+        Self::InputDispatch,
+        Self::ClipboardRead,
+        Self::ClipboardWrite,
+    ];
+
+    fn index(self) -> usize {
+        match self {
+            Self::CaptureScreenshot => 0,
+            Self::StreamMjpegTick => 1,
+            Self::StreamWsTick => 2,
+            Self::InputDispatch => 3,
+            Self::ClipboardRead => 4,
+            Self::ClipboardWrite => 5,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::CaptureScreenshot => "capture.screenshot",
+            Self::StreamMjpegTick => "stream.mjpeg.tick",
+            Self::StreamWsTick => "stream.ws.tick",
+            Self::InputDispatch => "input.dispatch",
+            Self::ClipboardRead => "clipboard.read",
+            Self::ClipboardWrite => "clipboard.write",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum CounterKind {
+    MjpegFrames,
+    WsFrames,
+    InputRefusals,
+    ClipboardRefusals,
+}
+
+impl CounterKind {
+    const ALL: [Self; 4] = [
+        Self::MjpegFrames,
+        Self::WsFrames,
+        Self::InputRefusals,
+        Self::ClipboardRefusals,
+    ];
+
+    fn index(self) -> usize {
+        match self {
+            Self::MjpegFrames => 0,
+            Self::WsFrames => 1,
+            Self::InputRefusals => 2,
+            Self::ClipboardRefusals => 3,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::MjpegFrames => "stream.mjpeg.frames",
+            Self::WsFrames => "stream.ws.frames",
+            Self::InputRefusals => "input.refusals",
+            Self::ClipboardRefusals => "clipboard.refusals",
+        }
+    }
+}
+
+struct RuntimeMetrics {
+    histograms: Vec<MetricSeries>,
+    counters: Vec<AtomicU64>,
+}
+
+impl Default for RuntimeMetrics {
+    fn default() -> Self {
+        Self {
+            histograms: MetricKind::ALL
+                .iter()
+                .map(|kind| MetricSeries::new(kind.name()))
+                .collect(),
+            counters: CounterKind::ALL.iter().map(|_| AtomicU64::new(0)).collect(),
+        }
+    }
+}
+
+impl RuntimeMetrics {
+    fn observe(&self, kind: MetricKind, duration: Duration) {
+        self.histograms[kind.index()].observe(duration);
+    }
+
+    fn increment(&self, kind: CounterKind) {
+        self.counters[kind.index()].fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn snapshot(&self, active_streams: u32) -> MetricsSnapshot {
+        let mut counters = BTreeMap::new();
+        for kind in CounterKind::ALL {
+            counters.insert(
+                kind.name().to_string(),
+                self.counters[kind.index()].load(Ordering::Relaxed),
+            );
+        }
+        counters.insert("streams.active".to_string(), active_streams as u64);
+
+        MetricsSnapshot {
+            schema_version: SCHEMA_VERSION.to_string(),
+            histograms: MetricKind::ALL
+                .iter()
+                .map(|kind| self.histograms[kind.index()].snapshot())
+                .collect(),
+            counters,
+        }
+    }
+}
+
+struct MetricSeries {
+    name: &'static str,
+    count: AtomicU64,
+    total_ns: AtomicU64,
+    max_ns: AtomicU64,
+    buckets: Vec<AtomicU64>,
+}
+
+impl MetricSeries {
+    fn new(name: &'static str) -> Self {
+        Self {
+            name,
+            count: AtomicU64::new(0),
+            total_ns: AtomicU64::new(0),
+            max_ns: AtomicU64::new(0),
+            buckets: METRIC_BUCKETS_MS
+                .iter()
+                .map(|_| AtomicU64::new(0))
+                .collect(),
+        }
+    }
+
+    fn observe(&self, duration: Duration) {
+        let ns = duration.as_nanos().min(u64::MAX as u128) as u64;
+        self.count.fetch_add(1, Ordering::Relaxed);
+        self.total_ns.fetch_add(ns, Ordering::Relaxed);
+        self.max_ns.fetch_max(ns, Ordering::Relaxed);
+
+        let ms = duration.as_millis().min(u64::MAX as u128) as u64;
+        for (index, upper_bound) in METRIC_BUCKETS_MS.iter().enumerate() {
+            if ms <= *upper_bound {
+                self.buckets[index].fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    fn snapshot(&self) -> MetricHistogram {
+        MetricHistogram {
+            name: self.name.to_string(),
+            count: self.count.load(Ordering::Relaxed),
+            total_ns: self.total_ns.load(Ordering::Relaxed),
+            max_ns: self.max_ns.load(Ordering::Relaxed),
+            buckets: METRIC_BUCKETS_MS
+                .iter()
+                .enumerate()
+                .map(|(index, le_ms)| MetricBucket {
+                    le_ms: *le_ms,
+                    count: self.buckets[index].load(Ordering::Relaxed),
+                })
+                .collect(),
+        }
     }
 }
 

@@ -1790,6 +1790,92 @@
       "title": "Manifest",
       "type": "object"
     },
+    "MetricsSnapshot": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "MetricBucket": {
+          "properties": {
+            "count": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "le_ms": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "count",
+            "le_ms"
+          ],
+          "type": "object"
+        },
+        "MetricHistogram": {
+          "properties": {
+            "buckets": {
+              "items": {
+                "$ref": "#/definitions/MetricBucket"
+              },
+              "type": "array"
+            },
+            "count": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "max_ns": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "name": {
+              "type": "string"
+            },
+            "total_ns": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "buckets",
+            "count",
+            "max_ns",
+            "name",
+            "total_ns"
+          ],
+          "type": "object"
+        }
+      },
+      "properties": {
+        "counters": {
+          "additionalProperties": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "type": "object"
+        },
+        "histograms": {
+          "items": {
+            "$ref": "#/definitions/MetricHistogram"
+          },
+          "type": "array"
+        },
+        "schema_version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "counters",
+        "histograms",
+        "schema_version"
+      ],
+      "title": "MetricsSnapshot",
+      "type": "object"
+    },
     "ProfilePolicy": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "definitions": {

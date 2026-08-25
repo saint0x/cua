@@ -18,6 +18,7 @@ Initial endpoints:
 - `GET /schemas`
 - `GET /version`
 - `GET /status`
+- `GET /metrics`
 - `GET /healthz`
 - `POST /capture/screenshot`
 - `GET /capture/stream.mjpeg`: continuous MJPEG stream, newest-frame-per-tick, no backlog
@@ -41,6 +42,8 @@ Initial endpoints:
 - `POST /model/eval`
 
 `GET /status` reports `active_streams`; stream clients increment the count on connect and decrement after disconnect cleanup.
+
+`GET /metrics` returns typed latency histograms and counters for hot runtime paths including screenshot capture, streaming ticks, input dispatch, clipboard operations, emitted stream frames, refusals, and active streams. `cua perf live --json` reads the same endpoint.
 
 Profile and safety:
 

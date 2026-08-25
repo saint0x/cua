@@ -32,6 +32,10 @@ enum Command {
         #[command(subcommand)]
         command: PermissionCommand,
     },
+    Perf {
+        #[command(subcommand)]
+        command: PerfCommand,
+    },
     Screenshot(ScreenshotArgs),
     Observe(JsonFlag),
     Mouse {
@@ -85,6 +89,11 @@ struct JsonFlag {
 enum PermissionCommand {
     Status(JsonFlag),
     Preflight(JsonFlag),
+}
+
+#[derive(Debug, Subcommand)]
+enum PerfCommand {
+    Live(JsonFlag),
 }
 
 #[derive(Debug, Args)]
@@ -233,6 +242,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Some(Command::Doctor(flag)) => doctor(flag.json).await,
         Some(Command::Permissions { command }) => permissions(command).await,
+        Some(Command::Perf { command }) => perf(cli.server_addr, &cli.profile, command).await,
         Some(Command::Screenshot(args)) => screenshot(args).await,
         Some(Command::Observe(flag)) => {
             get_json(cli.server_addr, &cli.profile, "/observe/desktop", flag.json).await
@@ -283,6 +293,7 @@ async fn print_usage_and_status(server_addr: SocketAddr) -> anyhow::Result<()> {
     println!("cua: CLI/local-HTTP computer-use runtime");
     println!("usage: cua serve --addr {server_addr}");
     println!("       cua status --json");
+    println!("       cua perf live --json");
     println!("       cua screenshot --out /tmp/screen.png");
     println!("       cua clipboard read --allow-sensitive --json");
     Ok(())
@@ -371,6 +382,12 @@ async fn permissions(command: PermissionCommand) -> anyhow::Result<()> {
         println!("{report}");
     }
     Ok(())
+}
+
+async fn perf(addr: SocketAddr, profile: &str, command: PerfCommand) -> anyhow::Result<()> {
+    match command {
+        PerfCommand::Live(flag) => get_json(addr, profile, "/metrics", flag.json).await,
+    }
 }
 
 async fn screenshot(args: ScreenshotArgs) -> anyhow::Result<()> {

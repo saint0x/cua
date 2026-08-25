@@ -190,6 +190,28 @@ pub struct RuntimeControlState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct MetricBucket {
+    pub le_ms: u64,
+    pub count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct MetricHistogram {
+    pub name: String,
+    pub count: u64,
+    pub total_ns: u64,
+    pub max_ns: u64,
+    pub buckets: Vec<MetricBucket>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct MetricsSnapshot {
+    pub schema_version: String,
+    pub histograms: Vec<MetricHistogram>,
+    pub counters: BTreeMap<String, u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Effect {
     Confirmed,
@@ -402,6 +424,10 @@ pub fn schema_bundle() -> SchemaBundle {
     schemas.insert(
         "ProfilePolicy".to_string(),
         serde_json::json!(schema_for!(ProfilePolicy)),
+    );
+    schemas.insert(
+        "MetricsSnapshot".to_string(),
+        serde_json::json!(schema_for!(MetricsSnapshot)),
     );
     schemas.insert(
         "InputAction".to_string(),
