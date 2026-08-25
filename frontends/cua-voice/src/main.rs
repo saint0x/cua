@@ -225,19 +225,7 @@ impl VoiceHud {
             .flex()
             .flex_col()
             .justify_between()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(self.large_orb())
-                    .child(
-                        div()
-                            .text_color(rgb(0xaaa1ff))
-                            .text_xs()
-                            .child("Auto returning..."),
-                    ),
-            )
+            .child(div().flex().items_center().gap_2().child(self.large_orb()))
             .child(
                 div()
                     .text_color(rgb(0xf4f4f7))
