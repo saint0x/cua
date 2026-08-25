@@ -22,6 +22,7 @@ use cua_core::{
 };
 use cua_input::InputBackend;
 use cua_model::{run_eval_report, EvalConfig, EvalReport};
+use cua_trace::{ActionTurnRecord, TraceRecord, TraceWriter};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::convert::Infallible;
@@ -47,6 +48,7 @@ pub struct DaemonState {
     pub control: Arc<RwLock<RuntimeControlState>>,
     pub clipboard: Arc<RwLock<Option<String>>>,
     metrics: Arc<RuntimeMetrics>,
+    trace: Option<TraceWriter>,
 }
 
 impl DaemonState {
@@ -64,6 +66,9 @@ impl DaemonState {
             control: Arc::new(RwLock::new(default_control_state(&profile))),
             clipboard: Arc::new(RwLock::new(None)),
             metrics: Arc::new(RuntimeMetrics::default()),
+            trace: std::env::var("CUA_TRACE_DIR")
+                .ok()
+                .and_then(|dir| TraceWriter::from_dir(dir).ok()),
         }
     }
 
@@ -579,11 +584,88 @@ async fn control_kill_switch(State(state): State<DaemonState>) -> Json<RuntimeCo
     Json(control.clone())
 }
 
+#[derive(Debug)]
+struct TraceSnapshot {
+    envelope: cua_core::FrameEnvelope,
+    path: String,
+}
+
+async fn trace_snapshot(state: &DaemonState, turn_id: &str, phase: &str) -> Option<TraceSnapshot> {
+    let writer = state.trace.as_ref()?;
+    let frame = state
+        .frame_bus
+        .latest_or_capture(CaptureRequest {
+            max_width: Some(1280),
+            encoding: FrameEncoding::Png,
+            force_fresh: true,
+        })
+        .await
+        .ok()?;
+    let relative = format!("frames/{turn_id}_{phase}.png");
+    writer
+        .write_artifact(&relative, frame.bytes.as_ref().as_slice())
+        .await
+        .ok()?;
+    Some(TraceSnapshot {
+        envelope: frame.envelope,
+        path: relative,
+    })
+}
+
+async fn append_action_turn(
+    state: &DaemonState,
+    turn_id: String,
+    action: serde_json::Value,
+    result: serde_json::Value,
+    before: Option<TraceSnapshot>,
+    after: Option<TraceSnapshot>,
+) {
+    let Some(writer) = state.trace.as_ref() else {
+        return;
+    };
+    let evidence = result
+        .get("evidence")
+        .cloned()
+        .or_else(|| {
+            result
+                .get("result")
+                .and_then(|inner| inner.get("evidence"))
+                .cloned()
+        })
+        .unwrap_or_else(|| serde_json::json!([]));
+    let record = TraceRecord::ActionTurn(ActionTurnRecord {
+        schema_version: SCHEMA_VERSION.to_string(),
+        turn_id,
+        at_wall_ms: now_wall_ms(),
+        action,
+        result,
+        before: before
+            .as_ref()
+            .and_then(|snapshot| serde_json::to_value(&snapshot.envelope).ok()),
+        after: after
+            .as_ref()
+            .and_then(|snapshot| serde_json::to_value(&snapshot.envelope).ok()),
+        before_image_path: before.map(|snapshot| snapshot.path),
+        after_image_path: after.map(|snapshot| snapshot.path),
+        evidence,
+        session: serde_json::json!({
+            "profile": state.profile,
+            "trace_dir": writer.dir().display().to_string(),
+            "capture_backend": state.frame_bus.backend_name(),
+            "input_backend": state.input.name()
+        }),
+    });
+    let _ = writer.append(&record).await;
+}
+
 async fn input_action(
     State(state): State<DaemonState>,
     Json(action): Json<InputAction>,
 ) -> Json<cua_core::InputResult> {
     let started = Instant::now();
+    let turn_id = Uuid::new_v4().to_string();
+    let action_json = serde_json::to_value(&action).unwrap_or_else(|_| serde_json::json!(null));
+    let before = trace_snapshot(&state, &turn_id, "before").await;
     if matches!(
         action,
         InputAction::ClipboardRead { .. } | InputAction::ClipboardWrite { .. }
@@ -592,9 +674,20 @@ async fn input_action(
         state
             .metrics
             .observe(MetricKind::InputDispatch, started.elapsed());
-        return Json(refused_input_result(
+        let result = refused_input_result(
             "clipboard actions must use /clipboard/read or /clipboard/write for explicit grants",
-        ));
+        );
+        let after = trace_snapshot(&state, &turn_id, "after").await;
+        append_action_turn(
+            &state,
+            turn_id,
+            action_json,
+            serde_json::to_value(&result).unwrap_or_else(|_| serde_json::json!(null)),
+            before,
+            after,
+        )
+        .await;
+        return Json(result);
     }
     let result = state
         .input
@@ -611,6 +704,16 @@ async fn input_action(
     state
         .metrics
         .observe(MetricKind::InputDispatch, started.elapsed());
+    let after = trace_snapshot(&state, &turn_id, "after").await;
+    append_action_turn(
+        &state,
+        turn_id,
+        action_json,
+        serde_json::to_value(&result).unwrap_or_else(|_| serde_json::json!(null)),
+        before,
+        after,
+    )
+    .await;
     Json(result)
 }
 
@@ -620,38 +723,44 @@ async fn clipboard_read(
 ) -> Json<ClipboardResult> {
     let started = Instant::now();
     let action = "clipboard_read";
+    let turn_id = Uuid::new_v4().to_string();
+    let action_json = serde_json::to_value(&request).unwrap_or_else(|_| serde_json::json!(null));
+    let before = trace_snapshot(&state, &turn_id, "before").await;
     if request.schema_version != SCHEMA_VERSION {
         state.metrics.increment(CounterKind::ClipboardRefusals);
         state
             .metrics
             .observe(MetricKind::ClipboardRead, started.elapsed());
-        return Json(clipboard_refusal(
-            action,
-            "schema_version must match the daemon schema",
-        ));
+        let result = clipboard_refusal(action, "schema_version must match the daemon schema");
+        let after = trace_snapshot(&state, &turn_id, "after").await;
+        append_clipboard_turn(&state, turn_id, action_json, &result, before, after).await;
+        return Json(result);
     }
     if !request.allow_sensitive {
         state.metrics.increment(CounterKind::ClipboardRefusals);
         state
             .metrics
             .observe(MetricKind::ClipboardRead, started.elapsed());
-        return Json(clipboard_refusal(
-            action,
-            "clipboard read requires allow_sensitive=true",
-        ));
+        let result = clipboard_refusal(action, "clipboard read requires allow_sensitive=true");
+        let after = trace_snapshot(&state, &turn_id, "after").await;
+        append_clipboard_turn(&state, turn_id, action_json, &result, before, after).await;
+        return Json(result);
     }
     if let Some(message) = clipboard_refusal_reason(&state).await {
         state.metrics.increment(CounterKind::ClipboardRefusals);
         state
             .metrics
             .observe(MetricKind::ClipboardRead, started.elapsed());
-        return Json(clipboard_refusal(action, message));
+        let result = clipboard_refusal(action, message);
+        let after = trace_snapshot(&state, &turn_id, "after").await;
+        append_clipboard_turn(&state, turn_id, action_json, &result, before, after).await;
+        return Json(result);
     }
     let text = state.clipboard.read().await.clone();
     state
         .metrics
         .observe(MetricKind::ClipboardRead, started.elapsed());
-    Json(ClipboardResult {
+    let result = ClipboardResult {
         schema_version: SCHEMA_VERSION.to_string(),
         action: action.to_string(),
         result: input_result(
@@ -662,7 +771,10 @@ async fn clipboard_read(
             "clipboard value returned from daemon-owned clipboard store",
         ),
         text,
-    })
+    };
+    let after = trace_snapshot(&state, &turn_id, "after").await;
+    append_clipboard_turn(&state, turn_id, action_json, &result, before, after).await;
+    Json(result)
 }
 
 async fn clipboard_write(
@@ -671,28 +783,34 @@ async fn clipboard_write(
 ) -> Json<ClipboardResult> {
     let started = Instant::now();
     let action = "clipboard_write";
+    let turn_id = Uuid::new_v4().to_string();
+    let action_json = serde_json::to_value(&request).unwrap_or_else(|_| serde_json::json!(null));
+    let before = trace_snapshot(&state, &turn_id, "before").await;
     if request.schema_version != SCHEMA_VERSION {
         state.metrics.increment(CounterKind::ClipboardRefusals);
         state
             .metrics
             .observe(MetricKind::ClipboardWrite, started.elapsed());
-        return Json(clipboard_refusal(
-            action,
-            "schema_version must match the daemon schema",
-        ));
+        let result = clipboard_refusal(action, "schema_version must match the daemon schema");
+        let after = trace_snapshot(&state, &turn_id, "after").await;
+        append_clipboard_turn(&state, turn_id, action_json, &result, before, after).await;
+        return Json(result);
     }
     if let Some(message) = clipboard_refusal_reason(&state).await {
         state.metrics.increment(CounterKind::ClipboardRefusals);
         state
             .metrics
             .observe(MetricKind::ClipboardWrite, started.elapsed());
-        return Json(clipboard_refusal(action, message));
+        let result = clipboard_refusal(action, message);
+        let after = trace_snapshot(&state, &turn_id, "after").await;
+        append_clipboard_turn(&state, turn_id, action_json, &result, before, after).await;
+        return Json(result);
     }
     *state.clipboard.write().await = Some(request.text);
     state
         .metrics
         .observe(MetricKind::ClipboardWrite, started.elapsed());
-    Json(ClipboardResult {
+    let result = ClipboardResult {
         schema_version: SCHEMA_VERSION.to_string(),
         action: action.to_string(),
         result: input_result(
@@ -703,7 +821,29 @@ async fn clipboard_write(
             "clipboard value written to daemon-owned clipboard store",
         ),
         text: None,
-    })
+    };
+    let after = trace_snapshot(&state, &turn_id, "after").await;
+    append_clipboard_turn(&state, turn_id, action_json, &result, before, after).await;
+    Json(result)
+}
+
+async fn append_clipboard_turn(
+    state: &DaemonState,
+    turn_id: String,
+    action_json: serde_json::Value,
+    result: &ClipboardResult,
+    before: Option<TraceSnapshot>,
+    after: Option<TraceSnapshot>,
+) {
+    append_action_turn(
+        state,
+        turn_id,
+        action_json,
+        serde_json::to_value(result).unwrap_or_else(|_| serde_json::json!(null)),
+        before,
+        after,
+    )
+    .await;
 }
 
 async fn clipboard_refusal_reason(state: &DaemonState) -> Option<&'static str> {

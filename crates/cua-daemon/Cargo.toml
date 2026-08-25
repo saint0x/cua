@@ -16,6 +16,7 @@ cua-core = { path = "../cua-core" }
 cua-input = { path = "../cua-input" }
 cua-model = { path = "../cua-model" }
 cua-platform-macos = { path = "../cua-platform-macos" }
+cua-trace = { path = "../cua-trace" }
 futures.workspace = true
 http.workspace = true
 serde.workspace = true

@@ -796,24 +796,51 @@ async fn inspect_trace(dir: PathBuf, json: bool, verify: bool) -> anyhow::Result
         .await
         .with_context(|| format!("read trace {}", path.display()))?;
     let mut records = 0usize;
+    let mut action_turns = 0usize;
+    let mut missing_artifacts = Vec::new();
     for (index, line) in content.lines().enumerate() {
         if line.trim().is_empty() {
             continue;
         }
-        serde_json::from_str::<TraceRecord>(line)
+        let record = serde_json::from_str::<TraceRecord>(line)
             .with_context(|| format!("parse trace record {} in {}", index + 1, path.display()))?;
+        if let TraceRecord::ActionTurn(turn) = record {
+            action_turns += 1;
+            if verify {
+                for relative in [&turn.before_image_path, &turn.after_image_path]
+                    .into_iter()
+                    .flatten()
+                {
+                    if !dir.join(relative).is_file() {
+                        missing_artifacts.push(relative.clone());
+                    }
+                }
+                if turn.before.is_none() || turn.after.is_none() {
+                    missing_artifacts.push(format!("{}:missing_frame_metadata", turn.turn_id));
+                }
+                if turn.evidence.is_null() {
+                    missing_artifacts.push(format!("{}:missing_evidence", turn.turn_id));
+                }
+            }
+        }
         records += 1;
     }
+    let ok = !verify || (records > 0 && missing_artifacts.is_empty());
     let report = serde_json::json!({
         "schema_version": SCHEMA_VERSION,
         "path": path,
         "records": records,
-        "ok": !verify || records > 0
+        "action_turns": action_turns,
+        "missing_artifacts": missing_artifacts,
+        "ok": ok
     });
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         println!("{report}");
+    }
+    if !ok {
+        anyhow::bail!("trace verification failed");
     }
     Ok(())
 }

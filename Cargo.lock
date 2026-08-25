@@ -424,6 +424,7 @@ dependencies = [
  "cua-input",
  "cua-model",
  "cua-platform-macos",
+ "cua-trace",
  "futures",
  "http",
  "serde",

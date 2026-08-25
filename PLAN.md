@@ -12,10 +12,8 @@
 
 ## Tracing
 
-1. Record action turns with before/after state, before/after images, action JSON, evidence JSON, and session metadata.
-2. Add trace replay that re-snapshots and remaps desktop coordinates where needed.
-3. Validate trace artifacts with strict schema and evidence checks.
-4. Store host-backed evidence under `artifacts/cua/<platform>/`.
+1. Add trace replay that re-snapshots and remaps desktop coordinates where needed.
+2. Store host-backed evidence under `artifacts/cua/<platform>/`.
 
 ## Model Eval
 
