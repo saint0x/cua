@@ -1,8 +1,14 @@
 use anyhow::{bail, Context};
-use cua_core::FramePayload;
+use base64::Engine;
+use cua_core::{
+    now_wall_ms, CursorState, FrameEncoding, FrameEnvelope, FramePayload, Rect, SCHEMA_VERSION,
+};
+use image::{codecs::png::PngEncoder, ImageBuffer, ImageEncoder, Rgba};
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, REFERER};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+use std::io::Cursor;
 use std::time::Instant;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,6 +33,24 @@ pub struct EvalCase {
     pub id: String,
     pub prompt: String,
     pub expected_action_kind: String,
+    pub fixture: Option<EvalFixture>,
+    pub oracle: EvalOracle,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvalFixture {
+    pub kind: String,
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvalOracle {
+    pub action: String,
+    pub x: Option<i32>,
+    pub y: Option<i32>,
+    pub text: Option<String>,
+    pub tolerance_px: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -101,18 +125,141 @@ impl Default for EvalConfig {
             ],
             cases: vec![
                 EvalCase {
-                    id: "click_center_button".to_string(),
-                    prompt: "Given a desktop screenshot with a centered confirmation button, return only JSON: {\"action\":\"mouse_click\",\"x\":640,\"y\":360}. Use integer coordinates.".to_string(),
+                    id: "click_continue_button_fixture".to_string(),
+                    prompt: "Use the screenshot fixture. Click the blue Continue button. Return only JSON shaped like {\"action\":\"mouse_click\",\"x\":640,\"y\":360}. Use integer coordinates.".to_string(),
                     expected_action_kind: "mouse_click".to_string(),
+                    fixture: Some(EvalFixture {
+                        kind: "continue_button".to_string(),
+                        width: 1280,
+                        height: 720,
+                    }),
+                    oracle: EvalOracle {
+                        action: "mouse_click".to_string(),
+                        x: Some(640),
+                        y: Some(360),
+                        text: None,
+                        tolerance_px: Some(90),
+                    },
                 },
                 EvalCase {
-                    id: "type_short_text".to_string(),
-                    prompt: "Given a focused text field, return only JSON for typing hello: {\"action\":\"key_type\",\"text\":\"hello\"}.".to_string(),
+                    id: "type_hello_in_field_fixture".to_string(),
+                    prompt: "Use the screenshot fixture. The text field is already focused. Type hello into it. Return only JSON shaped like {\"action\":\"key_type\",\"text\":\"hello\"}.".to_string(),
                     expected_action_kind: "key_type".to_string(),
+                    fixture: Some(EvalFixture {
+                        kind: "focused_text_field".to_string(),
+                        width: 1280,
+                        height: 720,
+                    }),
+                    oracle: EvalOracle {
+                        action: "key_type".to_string(),
+                        x: None,
+                        y: None,
+                        text: Some("hello".to_string()),
+                        tolerance_px: None,
+                    },
                 },
             ],
         }
     }
+}
+
+impl EvalCase {
+    fn fixture_frame(&self) -> anyhow::Result<Option<FramePayload>> {
+        let Some(fixture) = &self.fixture else {
+            return Ok(None);
+        };
+        let mut image = ImageBuffer::<Rgba<u8>, Vec<u8>>::from_pixel(
+            fixture.width,
+            fixture.height,
+            Rgba([244, 246, 248, 255]),
+        );
+        draw_fixture(&mut image, &fixture.kind);
+        let mut bytes = Vec::new();
+        let encoder = PngEncoder::new(Cursor::new(&mut bytes));
+        encoder
+            .write_image(
+                &image,
+                image.width(),
+                image.height(),
+                image::ExtendedColorType::Rgba8,
+            )
+            .context("encode eval fixture")?;
+        let sha256 = format!("{:x}", Sha256::digest(&bytes));
+        let byte_len = bytes.len();
+        Ok(Some(FramePayload {
+            envelope: FrameEnvelope {
+                schema_version: SCHEMA_VERSION.to_string(),
+                frame_id: 0,
+                timestamp_mono_ns: 0,
+                timestamp_wall_ms: now_wall_ms(),
+                display_id: format!("eval-fixture-{}", fixture.kind),
+                width: fixture.width,
+                height: fixture.height,
+                scale_factor: 1.0,
+                pixel_format: "rgba8".to_string(),
+                encoding: FrameEncoding::Png,
+                byte_len,
+                sha256,
+                cursor: CursorState {
+                    x: 0.0,
+                    y: 0.0,
+                    visible: false,
+                    included_in_frame: false,
+                },
+                damage_rects: vec![Rect {
+                    x: 0,
+                    y: 0,
+                    width: fixture.width,
+                    height: fixture.height,
+                }],
+            },
+            bytes_base64: Some(base64::engine::general_purpose::STANDARD.encode(bytes)),
+        }))
+    }
+}
+
+fn draw_fixture(image: &mut ImageBuffer<Rgba<u8>, Vec<u8>>, kind: &str) {
+    match kind {
+        "continue_button" => {
+            fill_rect(image, 455, 310, 370, 100, Rgba([21, 101, 216, 255]));
+            fill_rect(image, 475, 330, 330, 60, Rgba([39, 126, 241, 255]));
+        }
+        "focused_text_field" => {
+            fill_rect(image, 330, 300, 620, 92, Rgba([255, 255, 255, 255]));
+            stroke_rect(image, 330, 300, 620, 92, Rgba([27, 104, 212, 255]));
+            fill_rect(image, 360, 326, 3, 40, Rgba([12, 18, 28, 255]));
+        }
+        _ => {}
+    }
+}
+
+fn fill_rect(
+    image: &mut ImageBuffer<Rgba<u8>, Vec<u8>>,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    color: Rgba<u8>,
+) {
+    for py in y..(y + height).min(image.height()) {
+        for px in x..(x + width).min(image.width()) {
+            image.put_pixel(px, py, color);
+        }
+    }
+}
+
+fn stroke_rect(
+    image: &mut ImageBuffer<Rgba<u8>, Vec<u8>>,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    color: Rgba<u8>,
+) {
+    fill_rect(image, x, y, width, 3, color);
+    fill_rect(image, x, y + height.saturating_sub(3), width, 3, color);
+    fill_rect(image, x, y, 3, height, color);
+    fill_rect(image, x + width.saturating_sub(3), y, 3, height, color);
 }
 
 pub async fn run_eval(
@@ -148,11 +295,15 @@ pub async fn run_eval(
                 });
                 continue;
             }
+            let case_frame = case
+                .fixture_frame()
+                .unwrap_or_else(|_| None)
+                .or_else(|| frame.clone());
             let outcome =
-                call_openrouter(&candidate, case, frame.as_ref(), api_key.as_deref()).await;
+                call_openrouter(&candidate, case, case_frame.as_ref(), api_key.as_deref()).await;
             match outcome {
                 Ok(output) => {
-                    let score = score_response(&output.text, &case.expected_action_kind);
+                    let score = score_response(&output.text, &case.oracle);
                     results.push(EvalResult {
                         model: candidate.model.clone(),
                         case_id: case.id.clone(),
@@ -462,20 +613,46 @@ fn classify_failure(error: &str) -> &'static str {
     }
 }
 
-fn score_response(text: &str, expected_action: &str) -> f64 {
+fn score_response(text: &str, oracle: &EvalOracle) -> f64 {
     let stripped = strip_json_fence(text);
-    let normalized = stripped.to_ascii_lowercase();
-    let mut score = 0.0;
-    if normalized.contains(expected_action) {
-        score += 0.6;
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&stripped) else {
+        return 0.0;
+    };
+    let mut score = 0.3;
+    if action_name(&value).as_deref() == Some(oracle.action.as_str()) {
+        score += 0.35;
     }
-    if serde_json::from_str::<serde_json::Value>(&stripped).is_ok() {
-        score += 0.3;
-    }
-    if normalized.contains("x") || normalized.contains("text") {
-        score += 0.1;
+    if let (Some(expected_x), Some(expected_y)) = (oracle.x, oracle.y) {
+        let tolerance = oracle.tolerance_px.unwrap_or(0) as i64;
+        let x_ok = value
+            .get("x")
+            .and_then(|x| x.as_i64())
+            .map(|x| (x - expected_x as i64).abs() <= tolerance)
+            .unwrap_or(false);
+        let y_ok = value
+            .get("y")
+            .and_then(|y| y.as_i64())
+            .map(|y| (y - expected_y as i64).abs() <= tolerance)
+            .unwrap_or(false);
+        if x_ok && y_ok {
+            score += 0.35;
+        }
+    } else if let Some(expected_text) = &oracle.text {
+        if value.get("text").and_then(|text| text.as_str()) == Some(expected_text.as_str()) {
+            score += 0.35;
+        }
+    } else {
+        score += 0.35;
     }
     score
+}
+
+fn action_name(value: &serde_json::Value) -> Option<String> {
+    value
+        .get("action")
+        .or_else(|| value.get("kind"))
+        .and_then(|action| action.as_str())
+        .map(str::to_string)
 }
 
 fn strip_json_fence(text: &str) -> String {
@@ -497,11 +674,14 @@ fn strip_json_fence(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{score_response, summarize_results, EvalResult};
+    use super::{score_response, summarize_results, EvalCase, EvalOracle, EvalResult};
 
     #[test]
     fn scores_exact_json_contract() {
-        let score = score_response(r#"{"action":"mouse_click","x":640,"y":360}"#, "mouse_click");
+        let score = score_response(
+            r#"{"action":"mouse_click","x":640,"y":360}"#,
+            &click_oracle(),
+        );
         assert!((score - 1.0).abs() < f64::EPSILON);
     }
 
@@ -509,9 +689,27 @@ mod tests {
     fn scores_fenced_json_contract() {
         let score = score_response(
             "```json\n{\"action\":\"key_type\",\"text\":\"hello\"}\n```",
-            "key_type",
+            &type_oracle(),
         );
         assert!((score - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn generated_fixture_has_image_bytes() {
+        let case = EvalCase {
+            id: "fixture".to_string(),
+            prompt: String::new(),
+            expected_action_kind: "mouse_click".to_string(),
+            fixture: Some(super::EvalFixture {
+                kind: "continue_button".to_string(),
+                width: 320,
+                height: 180,
+            }),
+            oracle: click_oracle(),
+        };
+        let frame = case.fixture_frame().unwrap().unwrap();
+        assert_eq!(frame.envelope.width, 320);
+        assert!(frame.bytes_base64.unwrap().len() > 100);
     }
 
     #[test]
@@ -547,5 +745,25 @@ mod tests {
             },
         ];
         assert_eq!(summarize_results(&rows)[0].model, "fast");
+    }
+
+    fn click_oracle() -> EvalOracle {
+        EvalOracle {
+            action: "mouse_click".to_string(),
+            x: Some(640),
+            y: Some(360),
+            text: None,
+            tolerance_px: Some(10),
+        }
+    }
+
+    fn type_oracle() -> EvalOracle {
+        EvalOracle {
+            action: "key_type".to_string(),
+            x: None,
+            y: None,
+            text: Some("hello".to_string()),
+            tolerance_px: None,
+        }
     }
 }

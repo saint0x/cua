@@ -453,9 +453,11 @@ dependencies = [
  "anyhow",
  "base64",
  "cua-core",
+ "image",
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
 ]
 

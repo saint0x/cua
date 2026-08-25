@@ -13,10 +13,6 @@
 
 1. Store host-backed evidence under `artifacts/cua/<platform>/`.
 
-## Model Eval
-
-1. Expand eval cases from contract probes to desktop-action tasks with screenshot fixtures and external oracles.
-
 ## Verification
 
 1. Add host-backed GUI tests for macOS backend/action cells.
