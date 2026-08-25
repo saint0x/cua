@@ -158,6 +158,57 @@ impl Default for EvalConfig {
                         tolerance_px: None,
                     },
                 },
+                EvalCase {
+                    id: "click_top_right_close_fixture".to_string(),
+                    prompt: "Use the screenshot fixture. Click the red close control in the top-right toolbar. Return only JSON shaped like {\"action\":\"mouse_click\",\"x\":1118,\"y\":118}. Use integer coordinates.".to_string(),
+                    expected_action_kind: "mouse_click".to_string(),
+                    fixture: Some(EvalFixture {
+                        kind: "top_right_close".to_string(),
+                        width: 1280,
+                        height: 720,
+                    }),
+                    oracle: EvalOracle {
+                        action: "mouse_click".to_string(),
+                        x: Some(1118),
+                        y: Some(118),
+                        text: None,
+                        tolerance_px: Some(70),
+                    },
+                },
+                EvalCase {
+                    id: "click_sidebar_settings_fixture".to_string(),
+                    prompt: "Use the screenshot fixture. Click the selected Settings row in the left sidebar. Return only JSON shaped like {\"action\":\"mouse_click\",\"x\":188,\"y\":418}. Use integer coordinates.".to_string(),
+                    expected_action_kind: "mouse_click".to_string(),
+                    fixture: Some(EvalFixture {
+                        kind: "sidebar_settings".to_string(),
+                        width: 1280,
+                        height: 720,
+                    }),
+                    oracle: EvalOracle {
+                        action: "mouse_click".to_string(),
+                        x: Some(188),
+                        y: Some(418),
+                        text: None,
+                        tolerance_px: Some(80),
+                    },
+                },
+                EvalCase {
+                    id: "type_search_query_fixture".to_string(),
+                    prompt: "Use the screenshot fixture. The search field is focused. Type open settings into it. Return only JSON shaped like {\"action\":\"key_type\",\"text\":\"open settings\"}.".to_string(),
+                    expected_action_kind: "key_type".to_string(),
+                    fixture: Some(EvalFixture {
+                        kind: "focused_search_field".to_string(),
+                        width: 1280,
+                        height: 720,
+                    }),
+                    oracle: EvalOracle {
+                        action: "key_type".to_string(),
+                        x: None,
+                        y: None,
+                        text: Some("open settings".to_string()),
+                        tolerance_px: None,
+                    },
+                },
             ],
         }
     }
@@ -228,6 +279,23 @@ fn draw_fixture(image: &mut ImageBuffer<Rgba<u8>, Vec<u8>>, kind: &str) {
             fill_rect(image, 330, 300, 620, 92, Rgba([255, 255, 255, 255]));
             stroke_rect(image, 330, 300, 620, 92, Rgba([27, 104, 212, 255]));
             fill_rect(image, 360, 326, 3, 40, Rgba([12, 18, 28, 255]));
+        }
+        "top_right_close" => {
+            fill_rect(image, 94, 86, 1092, 72, Rgba([255, 255, 255, 255]));
+            stroke_rect(image, 94, 86, 1092, 72, Rgba([182, 190, 202, 255]));
+            fill_rect(image, 1086, 92, 64, 52, Rgba([222, 52, 72, 255]));
+            fill_rect(image, 1104, 110, 28, 16, Rgba([255, 234, 238, 255]));
+        }
+        "sidebar_settings" => {
+            fill_rect(image, 80, 70, 250, 580, Rgba([232, 236, 242, 255]));
+            fill_rect(image, 110, 382, 168, 72, Rgba([36, 104, 212, 255]));
+            fill_rect(image, 136, 408, 34, 20, Rgba([255, 255, 255, 255]));
+            fill_rect(image, 190, 408, 58, 18, Rgba([255, 255, 255, 255]));
+        }
+        "focused_search_field" => {
+            fill_rect(image, 260, 118, 760, 76, Rgba([255, 255, 255, 255]));
+            stroke_rect(image, 260, 118, 760, 76, Rgba([27, 104, 212, 255]));
+            fill_rect(image, 296, 144, 3, 32, Rgba([12, 18, 28, 255]));
         }
         _ => {}
     }

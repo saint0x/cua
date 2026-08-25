@@ -34,6 +34,7 @@ cargo run -p cua -- clipboard read --allow-sensitive --json
 cargo run -p cua -- pause --json
 cargo run -p cua -- resume --json
 cargo run -p cua -- kill-switch --json
+cargo run -p cua-voice
 ```
 
 `cua serve` refuses non-loopback binds unless `--allow-lan` is explicit. The local HTTP API uses a per-profile bearer token stored at `~/.cua/profiles/<profile>/http.token`; CLI client commands load it automatically.
@@ -77,13 +78,13 @@ cargo fmt --check
 cargo test
 cargo check
 cargo build -p cua
-bash scripts/ci-perf-gate.sh
 scripts/host-gui-smoke.sh
+scripts/host-voice-smoke.sh
 fozzy doctor --deep --scenario fozzy/scenarios/cua-smoke.json --runs 5 --seed 4242 --json
 fozzy test --det --strict-verify fozzy/scenarios/cua-smoke.json --json
 ```
 
-`scripts/ci-perf-gate.sh` runs local daemon latency benches and a bounded MJPEG stream memory soak. Budgets can be tuned with `CUA_BUDGET_*`, `CUA_STREAM_SOAK_SECONDS`, and `CUA_STREAM_RSS_BUDGET_KB`.
+Use `cua perf bench screenshot|stream|input|model-prep --json` for local daemon latency checks. Budgets can be tuned with `CUA_BUDGET_*`, `CUA_STREAM_SOAK_SECONDS`, and `CUA_STREAM_RSS_BUDGET_KB`.
 
 For trace verification:
 
@@ -96,7 +97,6 @@ mkdir -p artifacts/cua/macos/fozzy
 fozzy run fozzy/scenarios/cua-smoke.json --det --record artifacts/cua/macos/fozzy/cua-smoke.fozzy --json
 fozzy trace verify artifacts/cua/macos/fozzy/cua-smoke.fozzy --strict --json
 fozzy replay artifacts/cua/macos/fozzy/cua-smoke.fozzy --json
-fozzy ci artifacts/cua/macos/fozzy/cua-smoke.fozzy --json
 ```
 
 ## Status

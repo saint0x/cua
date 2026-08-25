@@ -1,0 +1,11 @@
+pub mod activation;
+pub mod audio;
+pub mod client;
+pub mod orchestrator;
+pub mod planner;
+pub mod stt;
+pub mod ui_state;
+
+pub use activation::ControlDoubleTap;
+pub use orchestrator::{run_voice_turn, VoiceConfig};
+pub use ui_state::{HudPhase, HudSnapshot, HudStep, VoiceUiEvent};
