@@ -23,7 +23,7 @@ if [[ -n "${CUA_VOICE_BIN:-}" ]]; then
 elif [[ -x target/debug/cua-voice ]]; then
   BIN="target/debug/cua-voice"
 else
-  BIN="$(find target -path '*/debug/cua-voice' -type f | head -n 1)"
+  BIN="$(find target -path '*/debug/cua-voice' -type f 2>/dev/null | head -n 1)"
 fi
 
 if [[ -z "$BIN" || ! -x "$BIN" ]]; then

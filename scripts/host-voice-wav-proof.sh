@@ -59,7 +59,7 @@ if [[ -n "${CUA_BIN:-}" ]]; then
 elif [[ -x target/debug/cua ]]; then
   CUA_BIN_PATH="target/debug/cua"
 else
-  CUA_BIN_PATH="$(find target -path '*/debug/cua' -type f | head -n 1)"
+  CUA_BIN_PATH="$(find target -path '*/debug/cua' -type f 2>/dev/null | head -n 1)"
 fi
 
 if [[ -n "${CUA_VOICE_BIN:-}" ]]; then
@@ -67,7 +67,7 @@ if [[ -n "${CUA_VOICE_BIN:-}" ]]; then
 elif [[ -x target/debug/cua-voice ]]; then
   VOICE_BIN_PATH="target/debug/cua-voice"
 else
-  VOICE_BIN_PATH="$(find target -path '*/debug/cua-voice' -type f | head -n 1)"
+  VOICE_BIN_PATH="$(find target -path '*/debug/cua-voice' -type f 2>/dev/null | head -n 1)"
 fi
 
 if [[ -z "$CUA_BIN_PATH" || ! -x "$CUA_BIN_PATH" ]]; then

@@ -11,6 +11,7 @@ use std::time::Duration;
 
 type ScreenshotTask = tokio::task::JoinHandle<anyhow::Result<FramePayload>>;
 type ObservationTask = tokio::task::JoinHandle<anyhow::Result<DesktopState>>;
+type LocalTask = tokio::task::JoinHandle<anyhow::Result<CuaClient>>;
 
 #[derive(Debug, Clone)]
 pub struct VoiceConfig {
@@ -72,8 +73,8 @@ pub async fn run_wav_turn_checked(
     wav_bytes: Vec<u8>,
     tx: Sender<VoiceUiEvent>,
 ) -> anyhow::Result<()> {
-    let local = preflight_local_client(&config.profile).await?;
-    transcribe_and_run_turn(config, wav_bytes, local, tx).await
+    let local_task = spawn_local_preflight(config.profile.clone());
+    transcribe_and_run_turn_after_local(config, wav_bytes, local_task, tx).await
 }
 
 async fn record_and_run_turn(config: VoiceConfig, tx: Sender<VoiceUiEvent>) -> anyhow::Result<()> {
@@ -83,20 +84,17 @@ async fn record_and_run_turn(config: VoiceConfig, tx: Sender<VoiceUiEvent>) -> a
     })
     .ok();
     let record_ms = config.record_ms;
-    let profile = config.profile.clone();
-    let local_task = tokio::spawn(async move { preflight_local_client(&profile).await });
+    let local_task = spawn_local_preflight(config.profile.clone());
     let record_task =
         tokio::task::spawn_blocking(move || record_default_input(Duration::from_millis(record_ms)));
-    let (local, audio) = tokio::join!(local_task, record_task);
-    let local = local.context("join local daemon preflight")??;
-    let audio = audio.context("join audio recorder")??;
-    transcribe_and_run_turn(config, audio.wav_bytes, local, tx).await
+    let audio = record_task.await.context("join audio recorder")??;
+    transcribe_and_run_turn_after_local(config, audio.wav_bytes, local_task, tx).await
 }
 
-async fn transcribe_and_run_turn(
+async fn transcribe_and_run_turn_after_local(
     config: VoiceConfig,
     wav_bytes: Vec<u8>,
-    local: CuaClient,
+    local_task: LocalTask,
     tx: Sender<VoiceUiEvent>,
 ) -> anyhow::Result<()> {
     let api_key = std::env::var("OPENROUTER_API_KEY").context("OPENROUTER_API_KEY is required")?;
@@ -108,10 +106,12 @@ async fn transcribe_and_run_turn(
             .transcribe_wav(&stt_api_key, &wav_bytes)
             .await
     });
+    let (local, transcript) = tokio::join!(local_task, stt_task);
+    let local = local.context("join local daemon preflight")??;
+    let transcript = transcript.context("join speech to text")??;
+    tx.send(VoiceUiEvent::Transcript(transcript.clone())).ok();
     let screenshot_task = spawn_screenshot_prefetch(local.clone());
     let observation_task = spawn_observation_prefetch(local.clone());
-    let transcript = stt_task.await.context("join speech to text")??;
-    tx.send(VoiceUiEvent::Transcript(transcript.clone())).ok();
     plan_and_dispatch(
         config,
         transcript,
@@ -235,4 +235,8 @@ fn spawn_screenshot_prefetch(local: CuaClient) -> ScreenshotTask {
 
 fn spawn_observation_prefetch(local: CuaClient) -> ObservationTask {
     tokio::spawn(async move { local.observe().await })
+}
+
+fn spawn_local_preflight(profile: String) -> LocalTask {
+    tokio::spawn(async move { preflight_local_client(&profile).await })
 }
