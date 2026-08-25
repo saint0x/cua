@@ -79,8 +79,7 @@ impl DaemonState {
             clipboard: Arc::new(RwLock::new(None)),
             metrics: Arc::new(RuntimeMetrics::default()),
             events,
-            trace_lane: std::env::var("CUA_TRACE_DIR")
-                .ok()
+            trace_lane: trace_dir_from_env()
                 .and_then(|dir| TraceWriter::from_dir(dir).ok())
                 .map(|writer| TraceLane::spawn(writer, trace_lane_capacity())),
         };
@@ -664,6 +663,27 @@ fn trace_lane_capacity() -> usize {
         .and_then(|value| value.parse().ok())
         .filter(|value| *value > 0)
         .unwrap_or(256)
+}
+
+fn trace_dir_from_env() -> Option<PathBuf> {
+    std::env::var_os("CUA_TRACE_DIR").map(platform_artifact_path)
+}
+
+fn platform_artifact_path(path: impl Into<PathBuf>) -> PathBuf {
+    let path = path.into();
+    let artifact_root = PathBuf::from("artifacts").join("cua");
+    let platform_root = artifact_root.join(host_platform_name());
+    if path.starts_with(&platform_root) {
+        return path;
+    }
+    if path.starts_with(&artifact_root) {
+        return platform_root.join(path.strip_prefix(&artifact_root).unwrap_or(&path));
+    }
+    path
+}
+
+fn host_platform_name() -> &'static str {
+    "macos"
 }
 
 pub fn router(state: DaemonState) -> Router {
@@ -2234,6 +2254,22 @@ mod tests {
             name: "overflow".to_string(),
             at_wall_ms: now_wall_ms(),
         }));
+    }
+
+    #[test]
+    fn platform_artifact_path_roots_cua_artifacts_under_macos() {
+        assert_eq!(
+            platform_artifact_path("artifacts/cua/trace-smoke"),
+            PathBuf::from("artifacts/cua/macos/trace-smoke")
+        );
+        assert_eq!(
+            platform_artifact_path("artifacts/cua/macos/trace-smoke"),
+            PathBuf::from("artifacts/cua/macos/trace-smoke")
+        );
+        assert_eq!(
+            platform_artifact_path("/tmp/cua-trace"),
+            PathBuf::from("/tmp/cua-trace")
+        );
     }
 
     #[tokio::test]

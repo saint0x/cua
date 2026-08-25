@@ -1,9 +1,5 @@
 # CUA Remaining Production Plan
 
-## Tracing
-
-1. Store host-backed evidence under `artifacts/cua/<platform>/`.
-
 ## Verification
 
 1. Add host-backed GUI tests for macOS backend/action cells.

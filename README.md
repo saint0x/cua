@@ -87,15 +87,15 @@ fozzy test --det --strict-verify fozzy/scenarios/cua-smoke.json --json
 For trace verification:
 
 ```sh
-CUA_TRACE_DIR=artifacts/cua/trace-smoke cargo run -p cua -- serve --addr 127.0.0.1:8765 &
+CUA_TRACE_DIR=artifacts/cua/macos/trace-smoke cargo run -p cua -- serve --addr 127.0.0.1:8765 &
 cargo run -p cua -- --server-addr 127.0.0.1:8765 mouse move 8 8
-cargo run -p cua -- trace verify artifacts/cua/trace-smoke --json
-cargo run -p cua -- --server-addr 127.0.0.1:8765 trace replay artifacts/cua/trace-smoke --json
-mkdir -p artifacts/cua/fozzy
-fozzy run fozzy/scenarios/cua-smoke.json --det --record artifacts/cua/fozzy/cua-smoke.fozzy --json
-fozzy trace verify artifacts/cua/fozzy/cua-smoke.fozzy --strict --json
-fozzy replay artifacts/cua/fozzy/cua-smoke.fozzy --json
-fozzy ci artifacts/cua/fozzy/cua-smoke.fozzy --json
+cargo run -p cua -- trace verify artifacts/cua/macos/trace-smoke --json
+cargo run -p cua -- --server-addr 127.0.0.1:8765 trace replay artifacts/cua/macos/trace-smoke --json
+mkdir -p artifacts/cua/macos/fozzy
+fozzy run fozzy/scenarios/cua-smoke.json --det --record artifacts/cua/macos/fozzy/cua-smoke.fozzy --json
+fozzy trace verify artifacts/cua/macos/fozzy/cua-smoke.fozzy --strict --json
+fozzy replay artifacts/cua/macos/fozzy/cua-smoke.fozzy --json
+fozzy ci artifacts/cua/macos/fozzy/cua-smoke.fozzy --json
 ```
 
 ## Status
