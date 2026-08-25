@@ -12,10 +12,9 @@
 ## Runtime
 
 1. Add daemon-owned capture, encode, model, input, trace, permission, and event lanes with bounded queues.
-2. Add bearer-token auth for local HTTP profiles and refuse non-loopback binds unless explicitly allowed.
-3. Add profile creation, activation, expiry, capability manifests, pause/resume, and kill-switch propagation.
-4. Add clipboard read/write with explicit grants.
-5. Add display, cursor, and window observation from real platform backends.
+2. Add profile creation, activation, expiry, capability manifests, pause/resume, and kill-switch propagation.
+3. Add clipboard read/write with explicit grants.
+4. Add display, cursor, and window observation from real platform backends.
 
 ## Tracing
 

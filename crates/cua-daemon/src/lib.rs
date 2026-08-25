@@ -2,9 +2,10 @@ use axum::{
     body::Body,
     extract::{
         ws::{Message, WebSocketUpgrade},
-        State,
+        Request, State,
     },
     http::{header, HeaderMap, HeaderValue, StatusCode},
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -22,6 +23,7 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicU32, Ordering},
     Arc,
@@ -37,16 +39,18 @@ pub struct DaemonState {
     pub frame_bus: Arc<FrameBus>,
     pub input: Arc<dyn InputBackend>,
     pub active_streams: Arc<AtomicU32>,
+    pub bearer_token: Arc<String>,
 }
 
 impl DaemonState {
-    pub fn synthetic(profile: impl Into<String>) -> Self {
+    pub fn synthetic(profile: impl Into<String>, bearer_token: impl Into<String>) -> Self {
         Self {
             profile: profile.into(),
             started_at: Utc::now(),
             frame_bus: Arc::new(FrameBus::new(Arc::new(SyntheticCaptureBackend::default()))),
             input: Arc::new(RefusingInputBackend),
             active_streams: Arc::new(AtomicU32::new(0)),
+            bearer_token: Arc::new(bearer_token.into()),
         }
     }
 
@@ -67,6 +71,7 @@ impl DaemonState {
 }
 
 pub fn router(state: DaemonState) -> Router {
+    let auth_state = state.clone();
     Router::new()
         .route("/", get(root))
         .route("/manifest", get(manifest))
@@ -86,14 +91,82 @@ pub fn router(state: DaemonState) -> Router {
         .route("/input/keyboard", post(input_action))
         .route("/input/clipboard", post(input_action))
         .route("/model/eval", post(model_eval))
+        .layer(middleware::from_fn_with_state(auth_state, require_auth))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
 
-pub async fn serve(addr: SocketAddr, profile: String) -> anyhow::Result<()> {
+pub async fn serve(addr: SocketAddr, profile: String, allow_lan: bool) -> anyhow::Result<()> {
+    if !allow_lan && !addr.ip().is_loopback() {
+        anyhow::bail!(
+            "refusing non-loopback bind {addr}; pass --allow-lan to expose the local HTTP API"
+        );
+    }
+    let token = load_or_create_profile_token(&profile).await?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, router(DaemonState::synthetic(profile))).await?;
+    axum::serve(listener, router(DaemonState::synthetic(profile, token))).await?;
     Ok(())
+}
+
+pub async fn load_or_create_profile_token(profile: &str) -> anyhow::Result<String> {
+    if let Ok(token) = std::env::var("CUA_HTTP_TOKEN") {
+        if !token.trim().is_empty() {
+            return Ok(token);
+        }
+    }
+    let path = profile_token_path(profile)?;
+    if let Ok(token) = tokio::fs::read_to_string(&path).await {
+        let token = token.trim().to_string();
+        if !token.is_empty() {
+            return Ok(token);
+        }
+    }
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let token = format!("cua-{}", Uuid::new_v4());
+    tokio::fs::write(&path, format!("{token}\n")).await?;
+    Ok(token)
+}
+
+fn profile_token_path(profile: &str) -> anyhow::Result<PathBuf> {
+    let home = std::env::var("HOME")?;
+    Ok(PathBuf::from(home)
+        .join(".cua")
+        .join("profiles")
+        .join(profile)
+        .join("http.token"))
+}
+
+async fn require_auth(State(state): State<DaemonState>, request: Request, next: Next) -> Response {
+    if is_auth_exempt(request.uri().path()) {
+        return next.run(request).await;
+    }
+    let expected = format!("Bearer {}", state.bearer_token);
+    let authorized = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value == expected)
+        .unwrap_or(false);
+    if authorized {
+        next.run(request).await
+    } else {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(ApiErrorBody {
+                schema_version: SCHEMA_VERSION.to_string(),
+                code: "unauthorized".to_string(),
+                message: "missing or invalid bearer token".to_string(),
+                details: BTreeMap::new(),
+            }),
+        )
+            .into_response()
+    }
+}
+
+fn is_auth_exempt(path: &str) -> bool {
+    matches!(path, "/" | "/healthz" | "/version")
 }
 
 async fn root() -> Json<serde_json::Value> {

@@ -28,12 +28,15 @@ cargo run -p cua -- status --json
 cargo run -p cua -- screenshot --out artifacts/cua/smoke/screen.png --json
 ```
 
+`cua serve` refuses non-loopback binds unless `--allow-lan` is explicit. The local HTTP API uses a per-profile bearer token stored at `~/.cua/profiles/<profile>/http.token`; CLI client commands load it automatically.
+
 ## Evaluate Models
 
 Create a local `.env`:
 
 ```sh
 OPENROUTER_API_KEY=...
+CUA_HTTP_TOKEN=...
 CUA_MODEL_EVAL_LIVE=0
 CUA_MODEL_EVAL_MAX_TOKENS=256
 CUA_MODEL_EVAL_MAX_CALLS=8

@@ -57,6 +57,8 @@ enum Command {
 struct ServeArgs {
     #[arg(long, default_value = "127.0.0.1:8765")]
     addr: SocketAddr,
+    #[arg(long)]
+    allow_lan: bool,
 }
 
 #[derive(Debug, Args)]
@@ -154,13 +156,17 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
         None => print_usage_and_status(cli.server_addr).await,
-        Some(Command::Serve(args)) => cua_daemon::serve(args.addr, cli.profile).await,
-        Some(Command::Status(flag)) => get_json(cli.server_addr, "/status", flag.json).await,
+        Some(Command::Serve(args)) => {
+            cua_daemon::serve(args.addr, cli.profile, args.allow_lan).await
+        }
+        Some(Command::Status(flag)) => {
+            get_json(cli.server_addr, &cli.profile, "/status", flag.json).await
+        }
         Some(Command::Doctor(flag)) => doctor(flag.json).await,
         Some(Command::Permissions { command }) => permissions(command).await,
         Some(Command::Screenshot(args)) => screenshot(args).await,
         Some(Command::Observe(flag)) => {
-            get_json(cli.server_addr, "/observe/desktop", flag.json).await
+            get_json(cli.server_addr, &cli.profile, "/observe/desktop", flag.json).await
         }
         Some(Command::Mouse { command }) => local_input(mouse_action(command)).await,
         Some(Command::Key { command }) => local_input(key_action(command)).await,
@@ -178,9 +184,16 @@ async fn print_usage_and_status(server_addr: SocketAddr) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn get_json(addr: SocketAddr, path: &str, json: bool) -> anyhow::Result<()> {
+async fn get_json(addr: SocketAddr, profile: &str, path: &str, json: bool) -> anyhow::Result<()> {
     let url = format!("http://{addr}{path}");
-    let value: serde_json::Value = reqwest::get(url).await?.json().await?;
+    let token = cua_daemon::load_or_create_profile_token(profile).await?;
+    let value: serde_json::Value = reqwest::Client::new()
+        .get(url)
+        .bearer_auth(token)
+        .send()
+        .await?
+        .json()
+        .await?;
     if json {
         println!("{}", serde_json::to_string_pretty(&value)?);
     } else {
