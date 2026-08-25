@@ -1396,6 +1396,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn refused_clipboard_write_does_not_mutate_clipboard() {
+        let state = DaemonState::synthetic("test", "token");
+        *state.clipboard.write().await = Some("original".to_string());
+        let Json(result) = clipboard_write(
+            State(state.clone()),
+            Json(ClipboardWriteRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                text: "overwrite".to_string(),
+            }),
+        )
+        .await;
+
+        assert_eq!(result.result.effect, Effect::Refused);
+        assert_eq!(state.clipboard.read().await.as_deref(), Some("original"));
+    }
+
+    #[tokio::test]
+    async fn refused_input_clipboard_action_does_not_mutate_clipboard() {
+        let state = DaemonState::synthetic("test", "token");
+        *state.clipboard.write().await = Some("original".to_string());
+        let Json(result) = input_action(
+            State(state.clone()),
+            Json(InputAction::ClipboardWrite {
+                text: "overwrite".to_string(),
+            }),
+        )
+        .await;
+
+        assert_eq!(result.effect, Effect::Refused);
+        assert_eq!(state.clipboard.read().await.as_deref(), Some("original"));
+    }
+
+    #[tokio::test]
     async fn clipboard_read_requires_sensitive_acknowledgment() {
         let state = clipboard_enabled_state().await;
         let Json(result) = clipboard_read(

@@ -22,5 +22,4 @@
 ## Verification
 
 1. Add host-backed GUI tests for macOS backend/action cells.
-2. Add refusal tests that prove no forbidden side effects occurred.
-3. Keep `docs/action-support.md` current with proven support, exact refusals, and unproven cells.
+2. Keep `docs/action-support.md` current with proven support, exact refusals, and unproven cells.
