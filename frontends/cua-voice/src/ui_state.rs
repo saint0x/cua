@@ -70,6 +70,7 @@ impl HudSnapshot {
                 self.phase = HudPhase::Armed;
                 self.step = HudStep::new(1, 4, "Starting recorder");
                 self.tool = "Keyboard".to_string();
+                self.transcript = None;
                 self.response = None;
                 self.expanded_until = None;
             }
@@ -165,5 +166,19 @@ mod tests {
 
         assert_eq!(state.phase, HudPhase::Planning);
         assert_eq!(state.tool, "Command parser");
+    }
+
+    #[test]
+    fn armed_starts_a_fresh_visible_turn() {
+        let mut state = HudSnapshot::default();
+        state.apply(VoiceUiEvent::Transcript("old command".to_string()));
+        state.apply(VoiceUiEvent::Reply("old reply".to_string()));
+
+        state.apply(VoiceUiEvent::Armed);
+
+        assert_eq!(state.phase, HudPhase::Armed);
+        assert_eq!(state.transcript, None);
+        assert_eq!(state.response, None);
+        assert_eq!(state.expanded_until, None);
     }
 }

@@ -78,16 +78,18 @@ pub async fn run_wav_turn_checked(
 
 async fn record_and_run_turn(config: VoiceConfig, tx: Sender<VoiceUiEvent>) -> anyhow::Result<()> {
     tx.send(VoiceUiEvent::Armed).ok();
-    let local = preflight_local_client(&config.profile).await?;
     tx.send(VoiceUiEvent::Listening {
         ms: config.record_ms,
     })
     .ok();
     let record_ms = config.record_ms;
-    let audio =
-        tokio::task::spawn_blocking(move || record_default_input(Duration::from_millis(record_ms)))
-            .await
-            .context("join audio recorder")??;
+    let profile = config.profile.clone();
+    let local_task = tokio::spawn(async move { preflight_local_client(&profile).await });
+    let record_task =
+        tokio::task::spawn_blocking(move || record_default_input(Duration::from_millis(record_ms)));
+    let (local, audio) = tokio::join!(local_task, record_task);
+    let local = local.context("join local daemon preflight")??;
+    let audio = audio.context("join audio recorder")??;
     transcribe_and_run_turn(config, audio.wav_bytes, local, tx).await
 }
 
