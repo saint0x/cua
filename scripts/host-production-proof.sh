@@ -13,6 +13,7 @@ mkdir -p "$OUT_DIR"
 
 VOICE_DIR="$OUT_DIR/voice"
 CONTROL_DIR="$OUT_DIR/control"
+PACKAGE_DIR="$OUT_DIR/package"
 
 VOICE_RESULT="$(
   CUA_VOICE_PROOF_SUITE_OUT_DIR="$VOICE_DIR" \
@@ -22,23 +23,30 @@ CONTROL_RESULT="$(
   CUA_CONTROL_SURFACE_PROOF_OUT_DIR="$CONTROL_DIR" \
   scripts/host-control-surface-proof.sh | tail -n 1
 )"
+PACKAGE_RESULT="$(
+  CUA_PACKAGE_PROOF_OUT_DIR="$PACKAGE_DIR" \
+  scripts/host-package-proof.sh | tail -n 1
+)"
 
-if [[ "$VOICE_RESULT" != "$VOICE_DIR" || "$CONTROL_RESULT" != "$CONTROL_DIR" ]]; then
+if [[ "$VOICE_RESULT" != "$VOICE_DIR" || "$CONTROL_RESULT" != "$CONTROL_DIR" || "$PACKAGE_RESULT" != "$PACKAGE_DIR" ]]; then
   echo "production proof child output mismatch" >&2
   exit 1
 fi
 
 jq -e '.ok == true' "$VOICE_DIR/proof.json" >/dev/null
 jq -e '.ok == true' "$CONTROL_DIR/proof.json" >/dev/null
+jq -e '.ok == true' "$PACKAGE_DIR/proof.json" >/dev/null
 
 jq -n \
   --arg voice_dir "$VOICE_DIR" \
   --arg control_dir "$CONTROL_DIR" \
+  --arg package_dir "$PACKAGE_DIR" \
   --slurpfile voice "$VOICE_DIR/proof.json" \
   --slurpfile control "$CONTROL_DIR/proof.json" \
+  --slurpfile package "$PACKAGE_DIR/proof.json" \
   '{
     schema_version: "cua.production_proof.v1",
-    ok: ($voice[0].ok == true and $control[0].ok == true),
+    ok: ($voice[0].ok == true and $control[0].ok == true and $package[0].ok == true),
     voice: {
       dir: $voice_dir,
       action_elapsed_ms: $voice[0].action.elapsed_ms,
@@ -52,6 +60,15 @@ jq -n \
       http: $control[0].http,
       cli: $control[0].cli,
       unix: $control[0].unix
+    },
+    package: {
+      dir: $package_dir,
+      app_path: $package[0].app_path,
+      bundle_id: $package[0].bundle_id,
+      executable: $package[0].executable,
+      lsui_element: $package[0].lsui_element,
+      usage_descriptions: $package[0].usage_descriptions,
+      binaries: $package[0].binaries
     }
   }' > "$MANIFEST"
 
