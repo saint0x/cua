@@ -42,6 +42,13 @@ impl CuaClient {
         self.request("observe.desktop", None).await
     }
 
+    pub async fn preflight(&self) -> anyhow::Result<()> {
+        let _stream = UnixStream::connect(&self.socket_path)
+            .await
+            .with_context(|| format!("connect {}", self.socket_path.display()))?;
+        Ok(())
+    }
+
     pub async fn dispatch(&self, action: &InputAction) -> anyhow::Result<Value> {
         match action {
             InputAction::MouseMove { .. }
@@ -147,4 +154,19 @@ fn profile_socket_path(profile: &str) -> anyhow::Result<PathBuf> {
         .join("profiles")
         .join(profile)
         .join("daemon.sock"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn preflight_fails_when_profile_socket_is_absent() {
+        let profile = format!("missing-socket-{}", uuid::Uuid::new_v4());
+        let client = CuaClient::new(profile).await.unwrap();
+
+        let error = client.preflight().await.unwrap_err().to_string();
+
+        assert!(error.contains("daemon.sock"));
+    }
 }
