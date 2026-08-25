@@ -1513,7 +1513,12 @@ async fn dispatch_input_action(state: &DaemonState, action: InputAction) -> cua_
     let started = Instant::now();
     let turn_id = Uuid::new_v4().to_string();
     let action_json = serde_json::to_value(&action).unwrap_or_else(|_| serde_json::json!(null));
-    let before = trace_snapshot(state, &turn_id, "before").await;
+    let capture_trace_snapshots = captures_trace_snapshots(&action);
+    let before = if capture_trace_snapshots {
+        trace_snapshot(state, &turn_id, "before").await
+    } else {
+        None
+    };
     if matches!(
         action,
         InputAction::ClipboardRead { .. } | InputAction::ClipboardWrite { .. }
@@ -1525,7 +1530,11 @@ async fn dispatch_input_action(state: &DaemonState, action: InputAction) -> cua_
         let result = refused_input_result(
             "clipboard actions must use /clipboard/read or /clipboard/write for explicit grants",
         );
-        let after = trace_snapshot(state, &turn_id, "after").await;
+        let after = if capture_trace_snapshots {
+            trace_snapshot(state, &turn_id, "after").await
+        } else {
+            None
+        };
         append_action_turn(
             state,
             turn_id,
@@ -1557,7 +1566,11 @@ async fn dispatch_input_action(state: &DaemonState, action: InputAction) -> cua_
     state
         .metrics
         .observe(MetricKind::InputDispatch, dispatch_started.elapsed());
-    let after = trace_snapshot(state, &turn_id, "after").await;
+    let after = if capture_trace_snapshots {
+        trace_snapshot(state, &turn_id, "after").await
+    } else {
+        None
+    };
     append_action_turn(
         state,
         turn_id,
@@ -1569,6 +1582,13 @@ async fn dispatch_input_action(state: &DaemonState, action: InputAction) -> cua_
     .await;
     publish_input_event(state, "input_completed", &result);
     result
+}
+
+fn captures_trace_snapshots(action: &InputAction) -> bool {
+    !matches!(
+        action,
+        InputAction::Pause | InputAction::Resume | InputAction::KillSwitch
+    )
 }
 
 async fn clipboard_read(
@@ -2434,6 +2454,18 @@ mod tests {
         assert!(!lane.enqueue_record(TraceRecord::Marker {
             name: "overflow".to_string(),
             at_wall_ms: now_wall_ms(),
+        }));
+    }
+
+    #[test]
+    fn safety_controls_skip_trace_screenshots() {
+        assert!(!captures_trace_snapshots(&InputAction::Pause));
+        assert!(!captures_trace_snapshots(&InputAction::Resume));
+        assert!(!captures_trace_snapshots(&InputAction::KillSwitch));
+        assert!(captures_trace_snapshots(&InputAction::MouseMove {
+            x: 10,
+            y: 20,
+            duration_ms: 0,
         }));
     }
 

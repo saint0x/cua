@@ -3,7 +3,7 @@ use cua_voice::activation::ControlDoubleTap;
 use cua_voice::hud::{HudDisplay, HudMetrics, TOP_MARGIN, WINDOW_HEIGHT, WINDOW_WIDTH};
 use cua_voice::orb::paint_orb;
 use cua_voice::ui_state::{HudSnapshot, VoiceUiEvent};
-use cua_voice::{run_voice_turn, VoiceConfig};
+use cua_voice::{run_text_turn, run_voice_turn, VoiceConfig};
 use gpui::{
     canvas, div, hsla, point, prelude::*, px, rgb, size, App, Application, Bounds, BoxShadow,
     Context, IntoElement, ParentElement, Render, Styled, Window, WindowBackgroundAppearance,
@@ -27,6 +27,8 @@ struct Args {
     planner_model: String,
     #[arg(long)]
     demo: bool,
+    #[arg(long)]
+    once_transcript: Option<String>,
 }
 
 struct VoiceHud {
@@ -261,6 +263,7 @@ impl Render for VoiceHud {
         window.request_animation_frame();
         let display = HudDisplay::from_snapshot(&self.snapshot);
         let metrics = HudMetrics::interpolate(self.response_progress);
+        window.resize(size(px(metrics.width), px(metrics.height)));
         let show_response = self.response_progress > 0.45;
         div()
             .size_full()
@@ -280,6 +283,7 @@ fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     let args = Args::parse();
     let demo = args.demo;
+    let once_transcript = args.once_transcript;
     let config = VoiceConfig {
         profile: args.profile,
         record_ms: args.record_ms,
@@ -288,7 +292,10 @@ fn main() -> anyhow::Result<()> {
     };
     let runtime = Arc::new(tokio::runtime::Runtime::new()?);
     let (tx, rx) = channel::<VoiceUiEvent>();
-    if demo {
+    if let Some(transcript) = once_transcript {
+        runtime.block_on(run_text_turn(config, transcript, tx));
+        return Ok(());
+    } else if demo {
         start_demo_cycle(tx.clone());
     } else {
         start_double_control_listener(tx.clone());

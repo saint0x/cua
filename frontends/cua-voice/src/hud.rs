@@ -1,9 +1,9 @@
-pub const WINDOW_WIDTH: f32 = 540.0;
-pub const WINDOW_HEIGHT: f32 = 206.0;
 pub const COMPACT_WIDTH: f32 = 500.0;
 pub const COMPACT_HEIGHT: f32 = 42.0;
-pub const EXPANDED_WIDTH: f32 = 420.0;
+pub const EXPANDED_WIDTH: f32 = 500.0;
 pub const EXPANDED_HEIGHT: f32 = 176.0;
+pub const WINDOW_WIDTH: f32 = COMPACT_WIDTH;
+pub const WINDOW_HEIGHT: f32 = COMPACT_HEIGHT;
 pub const PANEL_RADIUS: f32 = 11.0;
 pub const TOP_MARGIN: f32 = 0.0;
 
@@ -140,7 +140,7 @@ mod tests {
 
         assert_eq!(compact.width, COMPACT_WIDTH);
         assert_eq!(compact.height, COMPACT_HEIGHT);
-        assert_eq!(expanded.width, EXPANDED_WIDTH);
+        assert_eq!(expanded.width, COMPACT_WIDTH);
         assert_eq!(expanded.height, EXPANDED_HEIGHT);
         assert!(compact.bar_opacity > expanded.bar_opacity);
         assert!(expanded.response_opacity > compact.response_opacity);

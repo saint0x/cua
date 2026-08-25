@@ -9,5 +9,5 @@ pub mod stt;
 pub mod ui_state;
 
 pub use activation::ControlDoubleTap;
-pub use orchestrator::{run_voice_turn, VoiceConfig};
+pub use orchestrator::{run_text_turn, run_voice_turn, VoiceConfig};
 pub use ui_state::{HudPhase, HudSnapshot, HudStep, VoiceUiEvent};
