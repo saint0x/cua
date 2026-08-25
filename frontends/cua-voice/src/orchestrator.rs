@@ -60,7 +60,8 @@ pub async fn run_wav_turn_checked(
     wav_bytes: Vec<u8>,
     tx: Sender<VoiceUiEvent>,
 ) -> anyhow::Result<()> {
-    transcribe_and_run_turn(config, wav_bytes, tx).await
+    let local_task = spawn_local_client(config.profile.clone());
+    transcribe_and_run_turn(config, wav_bytes, local_task, tx).await
 }
 
 async fn record_and_run_turn(config: VoiceConfig, tx: Sender<VoiceUiEvent>) -> anyhow::Result<()> {
@@ -69,28 +70,23 @@ async fn record_and_run_turn(config: VoiceConfig, tx: Sender<VoiceUiEvent>) -> a
         ms: config.record_ms,
     })
     .ok();
+    let local_task = spawn_local_client(config.profile.clone());
     let record_ms = config.record_ms;
     let audio =
         tokio::task::spawn_blocking(move || record_default_input(Duration::from_millis(record_ms)))
             .await
             .context("join audio recorder")??;
-    transcribe_and_run_turn(config, audio.wav_bytes, tx).await
+    transcribe_and_run_turn(config, audio.wav_bytes, local_task, tx).await
 }
 
 async fn transcribe_and_run_turn(
     config: VoiceConfig,
     wav_bytes: Vec<u8>,
+    local_task: tokio::task::JoinHandle<Result<CuaClient, anyhow::Error>>,
     tx: Sender<VoiceUiEvent>,
 ) -> anyhow::Result<()> {
     let api_key = std::env::var("OPENROUTER_API_KEY").context("OPENROUTER_API_KEY is required")?;
     tx.send(VoiceUiEvent::Transcribing).ok();
-    let local_task = tokio::spawn({
-        let profile = config.profile.clone();
-        async move {
-            let local = CuaClient::new(profile).await?;
-            Ok::<_, anyhow::Error>(local)
-        }
-    });
     let transcript = SttClient::new(&config.stt_model)
         .transcribe_wav(&api_key, &wav_bytes)
         .await?;
@@ -105,13 +101,7 @@ async fn run_transcript_turn(
 ) -> anyhow::Result<()> {
     tx.send(VoiceUiEvent::Armed).ok();
     tx.send(VoiceUiEvent::Transcript(transcript.clone())).ok();
-    let local_task = tokio::spawn({
-        let profile = config.profile.clone();
-        async move {
-            let local = CuaClient::new(profile).await?;
-            Ok::<_, anyhow::Error>(local)
-        }
-    });
+    let local_task = spawn_local_client(config.profile.clone());
     plan_and_dispatch(config, transcript, None, local_task, tx).await
 }
 
@@ -159,4 +149,13 @@ async fn dispatch_plan(
         tx.send(VoiceUiEvent::Reply(plan.response)).ok();
     }
     Ok(())
+}
+
+fn spawn_local_client(
+    profile: String,
+) -> tokio::task::JoinHandle<Result<CuaClient, anyhow::Error>> {
+    tokio::spawn(async move {
+        let local = CuaClient::new(profile).await?;
+        Ok::<_, anyhow::Error>(local)
+    })
 }
