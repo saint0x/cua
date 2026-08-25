@@ -1,8 +1,6 @@
 //! macOS backend crate.
 //!
-//! This crate owns the macOS capture/input/permission boundary. Until
-//! ScreenCaptureKit, CGEvent, and signing are wired through the shared traits,
-//! callers must use the synthetic capture backend and refusal-only input backend.
+//! This crate owns the macOS capture/input/permission boundary.
 
 use async_trait::async_trait;
 use cua_capture::{
@@ -22,12 +20,14 @@ use std::ffi::CStr;
 #[cfg(target_os = "macos")]
 use std::os::raw::c_char;
 use std::sync::Arc;
-use std::time::Instant;
+#[cfg(target_os = "macos")]
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 pub const BACKEND_NAME: &str = "macos";
 
 pub fn support_status() -> &'static str {
-    "unsupported_until_native_backend_is_enabled"
+    "macos_native_capture_and_input_enabled"
 }
 
 pub fn capture_backend_or_synthetic() -> Arc<dyn CaptureBackend> {
@@ -156,6 +156,70 @@ pub fn window_list() -> anyhow::Result<Vec<WindowInfo>> {
 
 #[cfg(target_os = "macos")]
 fn capture_main_display(
+    started: Instant,
+    request: CaptureRequest,
+) -> anyhow::Result<CapturedFrame> {
+    if let Ok(frame) = capture_main_display_sck(started, request.clone()) {
+        return Ok(frame);
+    }
+    capture_main_display_core_graphics(started, request)
+}
+
+#[cfg(target_os = "macos")]
+fn capture_main_display_sck(
+    started: Instant,
+    request: CaptureRequest,
+) -> anyhow::Result<CapturedFrame> {
+    let capture_started = Instant::now();
+    let display_id = unsafe { CGMainDisplayID() };
+    let bounds = unsafe { CGDisplayBounds(display_id) };
+    let rect = objc2_core_foundation::CGRect::new(
+        objc2_core_foundation::CGPoint::new(bounds.origin.x, bounds.origin.y),
+        objc2_core_foundation::CGSize::new(bounds.size.width, bounds.size.height),
+    );
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let sender = Arc::new(Mutex::new(Some(sender)));
+    let callback_sender = sender.clone();
+    let callback_request = request.clone();
+    let block = block2::RcBlock::new(
+        move |image: *mut objc2_core_graphics::CGImage, error: *mut objc2_foundation::NSError| {
+            let result = if !error.is_null() {
+                Err(anyhow::anyhow!("ScreenCaptureKit returned an error"))
+            } else if image.is_null() {
+                Err(anyhow::anyhow!("ScreenCaptureKit returned null image"))
+            } else {
+                unsafe {
+                    image_to_frame(
+                        started,
+                        capture_started,
+                        display_id,
+                        image.cast(),
+                        callback_request.clone(),
+                    )
+                }
+            };
+            if let Some(sender) = callback_sender
+                .lock()
+                .ok()
+                .and_then(|mut sender| sender.take())
+            {
+                let _ = sender.send(result);
+            }
+        },
+    );
+    unsafe {
+        objc2_screen_capture_kit::SCScreenshotManager::captureImageInRect_completionHandler(
+            rect,
+            Some(&block),
+        );
+    }
+    receiver
+        .recv_timeout(Duration::from_secs(2))
+        .map_err(|_| anyhow::anyhow!("ScreenCaptureKit capture timed out"))?
+}
+
+#[cfg(target_os = "macos")]
+fn capture_main_display_core_graphics(
     started: Instant,
     request: CaptureRequest,
 ) -> anyhow::Result<CapturedFrame> {

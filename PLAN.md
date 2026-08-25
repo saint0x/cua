@@ -2,8 +2,7 @@
 
 ## Native Backends
 
-1. Upgrade macOS capture lane to ScreenCaptureKit streaming capture.
-2. Package the stable signed macOS host app so TCC grants attach to a bundle identity.
+1. Package the stable signed macOS host app so TCC grants attach to a bundle identity.
 
 ## Tracing
 

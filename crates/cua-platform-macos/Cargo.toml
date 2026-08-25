@@ -12,6 +12,11 @@ cua-capture = { path = "../cua-capture" }
 cua-core = { path = "../cua-core" }
 cua-input = { path = "../cua-input" }
 image.workspace = true
+block2 = "0.6.2"
+objc2-core-foundation = "0.3.2"
+objc2-core-graphics = "0.3.2"
+objc2-foundation = "0.3.2"
+objc2-screen-capture-kit = "0.3.2"
 sha2.workspace = true
 tokio.workspace = true
 uuid.workspace = true
