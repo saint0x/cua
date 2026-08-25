@@ -12,13 +12,14 @@ use axum::{
 };
 use bytes::Bytes;
 use chrono::Utc;
-use cua_capture::{CaptureRequest, FrameBus, FrameLookup};
+use cua_capture::{CaptureRequest, CapturedFrame, FrameBus, FrameLookup};
 use cua_core::{
     now_wall_ms, schema_bundle, ApiErrorBody, CapabilityManifest, CapabilityState,
     ClipboardReadRequest, ClipboardResult, ClipboardWriteRequest, DeliveryMode, DesktopState,
-    Effect, Evidence, EvidenceKind, FrameEncoding, HealthReport, InputAction, InputRequest,
-    InputResult, InputRoute, Manifest, MetricBucket, MetricHistogram, MetricsSnapshot,
-    PermissionReport, ProfilePolicy, RuntimeControlState, RuntimeMode, SafetyState, SCHEMA_VERSION,
+    Effect, Evidence, EvidenceKind, FrameEncoding, FramePayload, HealthReport, InputAction,
+    InputRequest, InputResult, InputRoute, Manifest, MetricBucket, MetricHistogram,
+    MetricsSnapshot, PermissionReport, ProfilePolicy, RuntimeControlState, RuntimeMode,
+    SafetyState, SCHEMA_VERSION,
 };
 use cua_input::InputBackend;
 use cua_model::{run_eval_report, EvalConfig, EvalReport};
@@ -43,6 +44,7 @@ pub struct DaemonState {
     pub started_at: chrono::DateTime<Utc>,
     pub frame_bus: Arc<FrameBus>,
     pub input: Arc<dyn InputBackend>,
+    encode_lane: EncodeLane,
     input_lane: InputLane,
     model_lane: ModelLane,
     permission_lane: PermissionLane,
@@ -66,6 +68,7 @@ impl DaemonState {
             frame_bus: Arc::new(FrameBus::new(
                 cua_platform_macos::capture_backend_or_synthetic(),
             )),
+            encode_lane: EncodeLane::spawn(encode_lane_capacity()),
             input_lane: InputLane::spawn(input.clone(), input_lane_capacity()),
             model_lane: ModelLane::spawn(model_lane_capacity()),
             permission_lane: PermissionLane::spawn(permission_lane_capacity()),
@@ -209,6 +212,168 @@ impl InputLane {
 
 fn input_lane_capacity() -> usize {
     std::env::var("CUA_INPUT_QUEUE_CAPACITY")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(64)
+}
+
+#[derive(Clone)]
+struct EncodeLane {
+    sender: mpsc::Sender<EncodeJob>,
+}
+
+enum EncodeJob {
+    Payload {
+        enqueued_at: Instant,
+        frame: CapturedFrame,
+        include_bytes: bool,
+        reply: oneshot::Sender<EncodeLaneResult<FramePayload>>,
+    },
+    MjpegChunk {
+        enqueued_at: Instant,
+        frame: CapturedFrame,
+        reply: oneshot::Sender<EncodeLaneResult<Bytes>>,
+    },
+    WsFrame {
+        enqueued_at: Instant,
+        frame: CapturedFrame,
+        reply: oneshot::Sender<EncodeLaneResult<(String, Vec<u8>)>>,
+    },
+}
+
+struct EncodeLaneResult<T> {
+    queue_wait: Duration,
+    encode_duration: Duration,
+    value: T,
+}
+
+#[derive(Debug)]
+enum EncodeLaneError {
+    Full,
+    Closed,
+    WorkerStopped,
+}
+
+impl EncodeLane {
+    fn spawn(capacity: usize) -> Self {
+        let (sender, mut receiver) = mpsc::channel::<EncodeJob>(capacity);
+        tokio::spawn(async move {
+            while let Some(job) = receiver.recv().await {
+                match job {
+                    EncodeJob::Payload {
+                        enqueued_at,
+                        frame,
+                        include_bytes,
+                        reply,
+                    } => {
+                        let queue_wait = enqueued_at.elapsed();
+                        let started = Instant::now();
+                        let value = frame.as_payload(include_bytes);
+                        let _ = reply.send(EncodeLaneResult {
+                            queue_wait,
+                            encode_duration: started.elapsed(),
+                            value,
+                        });
+                    }
+                    EncodeJob::MjpegChunk {
+                        enqueued_at,
+                        frame,
+                        reply,
+                    } => {
+                        let queue_wait = enqueued_at.elapsed();
+                        let started = Instant::now();
+                        let mut body = Vec::new();
+                        body.extend_from_slice(b"--cua-frame\r\nContent-Type: image/jpeg\r\n");
+                        body.extend_from_slice(
+                            format!("X-CUA-Frame-Id: {}\r\n\r\n", frame.envelope.frame_id)
+                                .as_bytes(),
+                        );
+                        body.extend_from_slice(&frame.bytes);
+                        body.extend_from_slice(b"\r\n");
+                        let _ = reply.send(EncodeLaneResult {
+                            queue_wait,
+                            encode_duration: started.elapsed(),
+                            value: Bytes::from(body),
+                        });
+                    }
+                    EncodeJob::WsFrame {
+                        enqueued_at,
+                        frame,
+                        reply,
+                    } => {
+                        let queue_wait = enqueued_at.elapsed();
+                        let started = Instant::now();
+                        if let Ok(text) = serde_json::to_string(&frame.envelope) {
+                            let _ = reply.send(EncodeLaneResult {
+                                queue_wait,
+                                encode_duration: started.elapsed(),
+                                value: (text, (*frame.bytes).clone()),
+                            });
+                        }
+                    }
+                }
+            }
+        });
+        Self { sender }
+    }
+
+    async fn payload(
+        &self,
+        frame: CapturedFrame,
+        include_bytes: bool,
+    ) -> Result<EncodeLaneResult<FramePayload>, EncodeLaneError> {
+        let (reply, wait) = oneshot::channel();
+        let job = EncodeJob::Payload {
+            enqueued_at: Instant::now(),
+            frame,
+            include_bytes,
+            reply,
+        };
+        self.send(job, wait).await
+    }
+
+    async fn mjpeg_chunk(
+        &self,
+        frame: CapturedFrame,
+    ) -> Result<EncodeLaneResult<Bytes>, EncodeLaneError> {
+        let (reply, wait) = oneshot::channel();
+        let job = EncodeJob::MjpegChunk {
+            enqueued_at: Instant::now(),
+            frame,
+            reply,
+        };
+        self.send(job, wait).await
+    }
+
+    async fn ws_frame(
+        &self,
+        frame: CapturedFrame,
+    ) -> Result<EncodeLaneResult<(String, Vec<u8>)>, EncodeLaneError> {
+        let (reply, wait) = oneshot::channel();
+        let job = EncodeJob::WsFrame {
+            enqueued_at: Instant::now(),
+            frame,
+            reply,
+        };
+        self.send(job, wait).await
+    }
+
+    async fn send<T>(
+        &self,
+        job: EncodeJob,
+        wait: oneshot::Receiver<EncodeLaneResult<T>>,
+    ) -> Result<EncodeLaneResult<T>, EncodeLaneError> {
+        match self.sender.try_send(job) {
+            Ok(()) => wait.await.map_err(|_| EncodeLaneError::WorkerStopped),
+            Err(mpsc::error::TrySendError::Full(_)) => Err(EncodeLaneError::Full),
+            Err(mpsc::error::TrySendError::Closed(_)) => Err(EncodeLaneError::Closed),
+        }
+    }
+}
+
+fn encode_lane_capacity() -> usize {
+    std::env::var("CUA_ENCODE_QUEUE_CAPACITY")
         .ok()
         .and_then(|value| value.parse().ok())
         .filter(|value| *value > 0)
@@ -738,7 +903,7 @@ struct ScreenshotRequest {
 async fn screenshot(
     State(state): State<DaemonState>,
     Json(request): Json<ScreenshotRequest>,
-) -> Result<Json<cua_core::FramePayload>, ApiError> {
+) -> Result<Json<FramePayload>, ApiError> {
     let started = Instant::now();
     let lookup = state
         .frame_bus
@@ -753,11 +918,16 @@ async fn screenshot(
     state
         .metrics
         .observe(MetricKind::CaptureScreenshot, started.elapsed());
-    Ok(Json(
-        lookup
-            .frame
-            .as_payload(request.include_bytes.unwrap_or(true)),
-    ))
+    let encoded = state
+        .encode_lane
+        .payload(lookup.frame, request.include_bytes.unwrap_or(true))
+        .await
+        .map_err(|error| {
+            state.metrics.increment(CounterKind::EncodeDrops);
+            ApiError::busy(format!("encode lane unavailable: {error:?}"))
+        })?;
+    observe_encode_result(&state.metrics, &encoded);
+    Ok(Json(encoded.value))
 }
 
 async fn stream_mjpeg(State(state): State<DaemonState>) -> Result<Response, ApiError> {
@@ -766,9 +936,10 @@ async fn stream_mjpeg(State(state): State<DaemonState>) -> Result<Response, ApiE
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let frame_bus = state.frame_bus.clone();
     let metrics = state.metrics.clone();
+    let encode_lane = state.encode_lane.clone();
     let stream = futures::stream::unfold(
-        (frame_bus, metrics, interval, guard),
-        |(frame_bus, metrics, mut interval, guard)| async move {
+        (frame_bus, metrics, encode_lane, interval, guard),
+        |(frame_bus, metrics, encode_lane, mut interval, guard)| async move {
             interval.tick().await;
             let started = Instant::now();
             let chunk = match frame_bus
@@ -781,16 +952,19 @@ async fn stream_mjpeg(State(state): State<DaemonState>) -> Result<Response, ApiE
             {
                 Ok(lookup) => {
                     observe_frame_lookup(&metrics, &lookup);
-                    let frame = lookup.frame;
-                    let mut body = Vec::new();
-                    body.extend_from_slice(b"--cua-frame\r\nContent-Type: image/jpeg\r\n");
-                    body.extend_from_slice(
-                        format!("X-CUA-Frame-Id: {}\r\n\r\n", frame.envelope.frame_id).as_bytes(),
-                    );
-                    body.extend_from_slice(&frame.bytes);
-                    body.extend_from_slice(b"\r\n");
-                    metrics.increment(CounterKind::MjpegFrames);
-                    Ok::<Bytes, Infallible>(Bytes::from(body))
+                    match encode_lane.mjpeg_chunk(lookup.frame).await {
+                        Ok(encoded) => {
+                            observe_encode_result(&metrics, &encoded);
+                            metrics.increment(CounterKind::MjpegFrames);
+                            Ok::<Bytes, Infallible>(encoded.value)
+                        }
+                        Err(error) => {
+                            metrics.increment(CounterKind::EncodeDrops);
+                            Ok::<Bytes, Infallible>(Bytes::from(format!(
+                                "--cua-frame\r\nContent-Type: application/json\r\n\r\n{{\"error\":\"encode lane unavailable: {error:?}\"}}\r\n"
+                            )))
+                        }
+                    }
                 }
                 Err(error) => Ok::<Bytes, Infallible>(Bytes::from(format!(
                     "--cua-frame\r\nContent-Type: application/json\r\n\r\n{{\"error\":\"{}\"}}\r\n",
@@ -798,7 +972,7 @@ async fn stream_mjpeg(State(state): State<DaemonState>) -> Result<Response, ApiE
                 ))),
             };
             metrics.observe(MetricKind::StreamMjpegTick, started.elapsed());
-            Some((chunk, (frame_bus, metrics, interval, guard)))
+            Some((chunk, (frame_bus, metrics, encode_lane, interval, guard)))
         },
     );
     let mut response = Body::from_stream(stream).into_response();
@@ -828,19 +1002,19 @@ async fn stream_ws(ws: WebSocketUpgrade, State(state): State<DaemonState>) -> im
             {
                 Ok(lookup) => {
                     observe_frame_lookup(&state.metrics, &lookup);
-                    let frame = lookup.frame;
-                    let text = match serde_json::to_string(&frame.envelope) {
-                        Ok(text) => text,
-                        Err(_) => break,
+                    let encoded = match state.encode_lane.ws_frame(lookup.frame).await {
+                        Ok(encoded) => encoded,
+                        Err(_) => {
+                            state.metrics.increment(CounterKind::EncodeDrops);
+                            break;
+                        }
                     };
+                    observe_encode_result(&state.metrics, &encoded);
+                    let (text, bytes) = encoded.value;
                     if socket.send(Message::Text(text)).await.is_err() {
                         break;
                     }
-                    if socket
-                        .send(Message::Binary((*frame.bytes).clone()))
-                        .await
-                        .is_err()
-                    {
+                    if socket.send(Message::Binary(bytes)).await.is_err() {
                         break;
                     }
                     state.metrics.increment(CounterKind::WsFrames);
@@ -930,6 +1104,11 @@ fn observe_frame_lookup(metrics: &RuntimeMetrics, lookup: &FrameLookup) {
     if !lookup.cache_hit {
         metrics.observe_ns(MetricKind::CaptureEncode, lookup.frame.timings.encode_ns);
     }
+}
+
+fn observe_encode_result<T>(metrics: &RuntimeMetrics, result: &EncodeLaneResult<T>) {
+    metrics.observe(MetricKind::EncodeQueueWait, result.queue_wait);
+    metrics.observe(MetricKind::EncodeDispatch, result.encode_duration);
 }
 
 #[derive(Debug, Deserialize)]
@@ -1441,6 +1620,8 @@ enum MetricKind {
     CaptureScreenshot,
     CaptureQueueWait,
     CaptureEncode,
+    EncodeQueueWait,
+    EncodeDispatch,
     StreamMjpegTick,
     StreamWsTick,
     InputQueueWait,
@@ -1460,10 +1641,12 @@ enum MetricKind {
 }
 
 impl MetricKind {
-    const ALL: [Self; 19] = [
+    const ALL: [Self; 21] = [
         Self::CaptureScreenshot,
         Self::CaptureQueueWait,
         Self::CaptureEncode,
+        Self::EncodeQueueWait,
+        Self::EncodeDispatch,
         Self::StreamMjpegTick,
         Self::StreamWsTick,
         Self::InputQueueWait,
@@ -1487,22 +1670,24 @@ impl MetricKind {
             Self::CaptureScreenshot => 0,
             Self::CaptureQueueWait => 1,
             Self::CaptureEncode => 2,
-            Self::StreamMjpegTick => 3,
-            Self::StreamWsTick => 4,
-            Self::InputQueueWait => 5,
-            Self::InputDispatch => 6,
-            Self::ClipboardRead => 7,
-            Self::ClipboardWrite => 8,
-            Self::ModelSend => 9,
-            Self::ModelResponse => 10,
-            Self::ModelParse => 11,
-            Self::ModelQueueWait => 12,
-            Self::PolicyCheck => 13,
-            Self::PermissionQueueWait => 14,
-            Self::PermissionProbe => 15,
-            Self::Verification => 16,
-            Self::TraceWrite => 17,
-            Self::KillSwitchPropagation => 18,
+            Self::EncodeQueueWait => 3,
+            Self::EncodeDispatch => 4,
+            Self::StreamMjpegTick => 5,
+            Self::StreamWsTick => 6,
+            Self::InputQueueWait => 7,
+            Self::InputDispatch => 8,
+            Self::ClipboardRead => 9,
+            Self::ClipboardWrite => 10,
+            Self::ModelSend => 11,
+            Self::ModelResponse => 12,
+            Self::ModelParse => 13,
+            Self::ModelQueueWait => 14,
+            Self::PolicyCheck => 15,
+            Self::PermissionQueueWait => 16,
+            Self::PermissionProbe => 17,
+            Self::Verification => 18,
+            Self::TraceWrite => 19,
+            Self::KillSwitchPropagation => 20,
         }
     }
 
@@ -1511,6 +1696,8 @@ impl MetricKind {
             Self::CaptureScreenshot => "capture.screenshot",
             Self::CaptureQueueWait => "capture.queue_wait",
             Self::CaptureEncode => "capture.encode",
+            Self::EncodeQueueWait => "encode.queue_wait",
+            Self::EncodeDispatch => "encode.dispatch",
             Self::StreamMjpegTick => "stream.mjpeg.tick",
             Self::StreamWsTick => "stream.ws.tick",
             Self::InputQueueWait => "input.queue_wait",
@@ -1541,10 +1728,11 @@ enum CounterKind {
     PermissionFallbacks,
     TraceDrops,
     ModelDrops,
+    EncodeDrops,
 }
 
 impl CounterKind {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 9] = [
         Self::MjpegFrames,
         Self::WsFrames,
         Self::InputRefusals,
@@ -1553,6 +1741,7 @@ impl CounterKind {
         Self::PermissionFallbacks,
         Self::TraceDrops,
         Self::ModelDrops,
+        Self::EncodeDrops,
     ];
 
     fn index(self) -> usize {
@@ -1565,6 +1754,7 @@ impl CounterKind {
             Self::PermissionFallbacks => 5,
             Self::TraceDrops => 6,
             Self::ModelDrops => 7,
+            Self::EncodeDrops => 8,
         }
     }
 
@@ -1578,6 +1768,7 @@ impl CounterKind {
             Self::PermissionFallbacks => "permission.fallbacks",
             Self::TraceDrops => "trace.dropped",
             Self::ModelDrops => "model.dropped",
+            Self::EncodeDrops => "encode.dropped",
         }
     }
 }
@@ -1969,6 +2160,46 @@ mod tests {
         assert!(matches!(result, Err(ModelLaneError::Full)));
     }
 
+    #[tokio::test]
+    async fn encode_lane_refuses_when_queue_is_full() {
+        let (sender, _receiver) = mpsc::channel(1);
+        let (reply, _wait) = oneshot::channel();
+        sender
+            .try_send(EncodeJob::Payload {
+                enqueued_at: Instant::now(),
+                frame: sample_frame(),
+                include_bytes: true,
+                reply,
+            })
+            .unwrap();
+        let lane = EncodeLane { sender };
+
+        let result = lane.payload(sample_frame(), true).await;
+
+        assert!(matches!(result, Err(EncodeLaneError::Full)));
+    }
+
+    #[tokio::test]
+    async fn encode_lane_records_metrics_for_screenshot_payload() {
+        let state = DaemonState::synthetic("test", "token");
+        let encoded = state
+            .encode_lane
+            .payload(sample_frame(), true)
+            .await
+            .expect("encode lane should return payload");
+        observe_encode_result(&state.metrics, &encoded);
+        let snapshot = state.metrics.snapshot(0);
+
+        assert!(snapshot
+            .histograms
+            .iter()
+            .any(|histogram| histogram.name == "encode.queue_wait" && histogram.count == 1));
+        assert!(snapshot
+            .histograms
+            .iter()
+            .any(|histogram| histogram.name == "encode.dispatch" && histogram.count == 1));
+    }
+
     #[test]
     fn event_lane_refuses_when_queue_is_full() {
         let (sender, _receiver) = mpsc::channel(1);
@@ -2071,6 +2302,36 @@ mod tests {
                 button: cua_core::MouseButton::Left,
                 count: 1,
             },
+        }
+    }
+
+    fn sample_frame() -> CapturedFrame {
+        let bytes = vec![1, 2, 3, 4];
+        CapturedFrame {
+            envelope: cua_core::FrameEnvelope {
+                schema_version: SCHEMA_VERSION.to_string(),
+                frame_id: 1,
+                timestamp_mono_ns: 0,
+                timestamp_wall_ms: now_wall_ms(),
+                display_id: "test-display".to_string(),
+                width: 1,
+                height: 1,
+                scale_factor: 1.0,
+                pixel_format: "rgba8".to_string(),
+                encoding: FrameEncoding::Png,
+                byte_len: bytes.len(),
+                sha256: "9f64a747e1b97f131fabb6b447296c9b6f0201e79fb3c5356e6c77e89b6a806a"
+                    .to_string(),
+                cursor: cua_core::CursorState {
+                    x: 0.0,
+                    y: 0.0,
+                    visible: true,
+                    included_in_frame: false,
+                },
+                damage_rects: Vec::new(),
+            },
+            bytes: Arc::new(bytes),
+            timings: cua_capture::CapturedFrameTimings::default(),
         }
     }
 }
