@@ -1038,6 +1038,9 @@ async fn manifest() -> Json<Manifest> {
         commands: vec![
             "cua serve".to_string(),
             "cua status --json".to_string(),
+            "cua manifest --json".to_string(),
+            "cua metrics --json".to_string(),
+            "cua events --json".to_string(),
             "cua perf live --json".to_string(),
             "cua screenshot --out <path>".to_string(),
             "cua context --json".to_string(),

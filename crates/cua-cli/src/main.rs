@@ -39,6 +39,9 @@ enum Command {
         command: PerfCommand,
     },
     Context(ContextArgs),
+    Manifest(JsonFlag),
+    Metrics(JsonFlag),
+    Events(JsonFlag),
     Screenshot(ScreenshotArgs),
     Observe(JsonFlag),
     Mouse {
@@ -289,6 +292,15 @@ async fn main() -> anyhow::Result<()> {
         Some(Command::Permissions { command }) => permissions(command).await,
         Some(Command::Perf { command }) => perf(cli.server_addr, &cli.profile, command).await,
         Some(Command::Context(args)) => context(cli.server_addr, &cli.profile, args).await,
+        Some(Command::Manifest(flag)) => {
+            get_json(cli.server_addr, &cli.profile, "/manifest", flag.json).await
+        }
+        Some(Command::Metrics(flag)) => {
+            get_json(cli.server_addr, &cli.profile, "/metrics", flag.json).await
+        }
+        Some(Command::Events(flag)) => {
+            get_json(cli.server_addr, &cli.profile, "/events", flag.json).await
+        }
         Some(Command::Screenshot(args)) => screenshot(cli.server_addr, &cli.profile, args).await,
         Some(Command::Observe(flag)) => {
             get_json(cli.server_addr, &cli.profile, "/observe/desktop", flag.json).await
@@ -355,6 +367,9 @@ async fn print_usage_and_status(server_addr: SocketAddr) -> anyhow::Result<()> {
     println!("cua: CLI/local-HTTP computer-use runtime");
     println!("usage: cua serve --addr {server_addr}");
     println!("       cua status --json");
+    println!("       cua manifest --json");
+    println!("       cua metrics --json");
+    println!("       cua events --json");
     println!("       cua perf live --json");
     println!("       cua context --json");
     println!("       cua screenshot --out /tmp/screen.png");
@@ -420,7 +435,7 @@ async fn doctor(json: bool) -> anyhow::Result<()> {
             "capture_backend": "synthetic_fallback",
             "input_backend": "refusing_until_platform_backend_enabled",
             "openrouter_configured": std::env::var("OPENROUTER_API_KEY").is_ok(),
-            "public_surfaces": ["cli", "local_http"]
+            "public_surfaces": ["cli", "local_http", "local_unix_socket"]
         }
     });
     if json {

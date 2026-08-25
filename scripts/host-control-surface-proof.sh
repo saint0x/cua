@@ -14,10 +14,16 @@ TOKEN="${CUA_HTTP_TOKEN:-host-control-surface-proof-token-$RUN_ID}"
 OUT_DIR="${CUA_CONTROL_SURFACE_PROOF_OUT_DIR:-artifacts/cua/control-surface-proof-$RUN_ID}"
 TRACE_DIR="$OUT_DIR/trace"
 HTTP_STATUS="$OUT_DIR/http-status.json"
+HTTP_MANIFEST="$OUT_DIR/http-manifest.json"
+HTTP_METRICS="$OUT_DIR/http-metrics.json"
+HTTP_EVENTS="$OUT_DIR/http-events.json"
 HTTP_OBSERVE="$OUT_DIR/http-observe.json"
 HTTP_CONTEXT="$OUT_DIR/http-context.json"
 HTTP_SCREENSHOT="$OUT_DIR/http-screenshot.json"
 CLI_STATUS="$OUT_DIR/cli-status.json"
+CLI_MANIFEST="$OUT_DIR/cli-manifest.json"
+CLI_METRICS="$OUT_DIR/cli-metrics.json"
+CLI_EVENTS="$OUT_DIR/cli-events.json"
 CLI_OBSERVE="$OUT_DIR/cli-observe.json"
 CLI_CONTEXT="$OUT_DIR/cli-context.json"
 CLI_PROFILE="$OUT_DIR/cli-profile.json"
@@ -64,6 +70,9 @@ done
 curl -fsS "http://$ADDR/healthz" >/dev/null
 
 curl -fsS -H "authorization: Bearer $TOKEN" "http://$ADDR/status" > "$HTTP_STATUS"
+curl -fsS -H "authorization: Bearer $TOKEN" "http://$ADDR/manifest" > "$HTTP_MANIFEST"
+curl -fsS -H "authorization: Bearer $TOKEN" "http://$ADDR/metrics" > "$HTTP_METRICS"
+curl -fsS -H "authorization: Bearer $TOKEN" "http://$ADDR/events" > "$HTTP_EVENTS"
 curl -fsS -H "authorization: Bearer $TOKEN" "http://$ADDR/observe/desktop" > "$HTTP_OBSERVE"
 curl -fsS \
   -H "authorization: Bearer $TOKEN" \
@@ -77,6 +86,9 @@ curl -fsS \
   "http://$ADDR/capture/screenshot" > "$HTTP_SCREENSHOT"
 
 CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFILE" status --json > "$CLI_STATUS"
+CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFILE" manifest --json > "$CLI_MANIFEST"
+CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFILE" metrics --json > "$CLI_METRICS"
+CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFILE" events --json > "$CLI_EVENTS"
 CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFILE" observe --json > "$CLI_OBSERVE"
 CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFILE" context --json --max-width 640 --force-fresh > "$CLI_CONTEXT"
 CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFILE" profile status --json > "$CLI_PROFILE"
@@ -90,6 +102,12 @@ CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFIL
 
 jq -e '.schema_version == "cua.v1" and .active_profile == $profile' \
   --arg profile "$PROFILE" "$HTTP_STATUS" >/dev/null
+jq -e '(.public_surfaces | index("cli")) and (.public_surfaces | index("local_http")) and (.endpoints | index("POST /context/snapshot"))' \
+  "$HTTP_MANIFEST" >/dev/null
+jq -e '.schema_version == "cua.v1" and (.histograms | type) == "array" and (.counters | type) == "object"' \
+  "$HTTP_METRICS" >/dev/null
+jq -e 'type == "array" and length >= 1 and .[0].kind == "daemon_started"' \
+  "$HTTP_EVENTS" >/dev/null
 jq -e '(.displays | length) >= 1 and (.windows | type) == "array" and (.cursor.visible | type) == "boolean"' \
   "$HTTP_OBSERVE" >/dev/null
 jq -e '.frame.envelope.encoding == "png" and .frame.envelope.width > 0 and (.desktop.displays | length) >= 1 and (.desktop.windows | type) == "array"' \
@@ -98,6 +116,12 @@ jq -e '.envelope.encoding == "png" and .envelope.width > 0 and .envelope.height 
   "$HTTP_SCREENSHOT" >/dev/null
 jq -e '.schema_version == "cua.v1" and .active_profile == $profile' \
   --arg profile "$PROFILE" "$CLI_STATUS" >/dev/null
+jq -e '(.public_surfaces | index("cli")) and (.public_surfaces | index("local_http")) and (.commands | index("cua context --json"))' \
+  "$CLI_MANIFEST" >/dev/null
+jq -e '.schema_version == "cua.v1" and (.histograms | type) == "array" and (.counters | type) == "object"' \
+  "$CLI_METRICS" >/dev/null
+jq -e 'type == "array" and length >= 1 and .[0].kind == "daemon_started"' \
+  "$CLI_EVENTS" >/dev/null
 jq -e '(.displays | length) >= 1 and (.windows | type) == "array" and (.cursor.visible | type) == "boolean"' \
   "$CLI_OBSERVE" >/dev/null
 jq -e '.frame.envelope.encoding == "png" and .frame.envelope.width > 0 and (.desktop.displays | length) >= 1 and (.desktop.windows | type) == "array"' \
@@ -114,10 +138,16 @@ jq -n \
   --arg addr "$ADDR" \
   --arg cli_screenshot "$CLI_SCREENSHOT_PNG" \
   --slurpfile http_status "$HTTP_STATUS" \
+  --slurpfile http_manifest "$HTTP_MANIFEST" \
+  --slurpfile http_metrics "$HTTP_METRICS" \
+  --slurpfile http_events "$HTTP_EVENTS" \
   --slurpfile http_observe "$HTTP_OBSERVE" \
   --slurpfile http_context "$HTTP_CONTEXT" \
   --slurpfile http_screenshot "$HTTP_SCREENSHOT" \
   --slurpfile cli_status "$CLI_STATUS" \
+  --slurpfile cli_manifest "$CLI_MANIFEST" \
+  --slurpfile cli_metrics "$CLI_METRICS" \
+  --slurpfile cli_events "$CLI_EVENTS" \
   --slurpfile cli_observe "$CLI_OBSERVE" \
   --slurpfile cli_context "$CLI_CONTEXT" \
   --slurpfile cli_profile "$CLI_PROFILE" \
@@ -131,6 +161,9 @@ jq -n \
     addr: $addr,
     http: {
       active_profile: $http_status[0].active_profile,
+      endpoint_count: ($http_manifest[0].endpoints | length),
+      histogram_count: ($http_metrics[0].histograms | length),
+      event_count: ($http_events[0] | length),
       display_count: ($http_observe[0].displays | length),
       window_count: ($http_observe[0].windows | length),
       context: {
@@ -146,6 +179,9 @@ jq -n \
     },
     cli: {
       active_profile: $cli_status[0].active_profile,
+      command_count: ($cli_manifest[0].commands | length),
+      histogram_count: ($cli_metrics[0].histograms | length),
+      event_count: ($cli_events[0] | length),
       profile_status: $cli_profile[0].active_profile.name,
       display_count: ($cli_observe[0].displays | length),
       window_count: ($cli_observe[0].windows | length),
