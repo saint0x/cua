@@ -7,6 +7,7 @@ cd "$ROOT"
 command -v afconvert >/dev/null
 command -v curl >/dev/null
 command -v jq >/dev/null
+command -v perl >/dev/null
 command -v say >/dev/null
 
 if [[ -z "${OPENROUTER_API_KEY:-}" && -f .env ]]; then
@@ -39,6 +40,7 @@ AIFF="$OUT_DIR/pause.aiff"
 WAV="$OUT_DIR/pause.wav"
 EVENTS="$OUT_DIR/events.jsonl"
 STATUS="$OUT_DIR/status.json"
+PROOF="$OUT_DIR/proof.json"
 
 cargo build -p cua -p cua-voice
 
@@ -91,9 +93,12 @@ for _ in $(seq 1 80); do
 done
 curl -fsS "http://$ADDR/healthz" >/dev/null
 
+START_MS="$(perl -MTime::HiRes=time -e 'printf "%.0f\n", time() * 1000')"
 CUA_HTTP_TOKEN="$TOKEN" OPENROUTER_API_KEY="$OPENROUTER_API_KEY" "$VOICE_BIN_PATH" \
   --profile "$PROFILE" \
   --once-wav "$WAV" > "$EVENTS"
+END_MS="$(perl -MTime::HiRes=time -e 'printf "%.0f\n", time() * 1000')"
+VOICE_ELAPSED_MS="$((END_MS - START_MS))"
 
 CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" \
   --server-addr "$ADDR" \
@@ -111,5 +116,24 @@ jq -s -e '
 jq -e '
   .safety_state == "paused"
 ' "$STATUS" >/dev/null
+
+jq -n \
+  --arg profile "$PROFILE" \
+  --arg wav "$WAV" \
+  --argjson elapsed_ms "$VOICE_ELAPSED_MS" \
+  --slurpfile events "$EVENTS" \
+  --slurpfile status "$STATUS" \
+  '{
+    schema_version: "cua.voice_proof.v1",
+    profile: $profile,
+    wav: $wav,
+    elapsed_ms: $elapsed_ms,
+    events: ($events | map(.event)),
+    transcript: (($events | map(select(.event == "transcript")) | first).text),
+    dispatch: (($events | map(select(.event == "dispatching")) | first).action),
+    reply: (($events | map(select(.event == "reply")) | first).text),
+    safety_state: $status[0].safety_state,
+    active_profile: $status[0].active_profile
+  }' > "$PROOF"
 
 echo "$OUT_DIR"
