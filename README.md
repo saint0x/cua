@@ -44,6 +44,8 @@ cargo run -p cua-voice
 
 `cua serve` refuses non-loopback binds unless `--allow-lan` is explicit. The daemon also opens a profile-local socket at `~/.cua/profiles/<profile>/daemon.sock`; `cua-voice` uses that socket for context snapshots and input dispatch. The local APIs use a per-profile bearer token stored at `~/.cua/profiles/<profile>/http.token`; CLI and voice client commands load it automatically.
 
+Voice capture can be tuned with `CUA_VOICE_RECORD_MIN_MS`, `CUA_VOICE_RECORD_SILENCE_MS`, `CUA_VOICE_RECORD_THRESHOLD`, `CUA_VOICE_STT_TIMEOUT_MS`, and `CUA_VOICE_PLANNER_TIMEOUT_MS`.
+
 ## Package
 
 ```sh

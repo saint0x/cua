@@ -22,11 +22,33 @@ impl RecordingPolicy {
     fn from_max_duration(max_duration: Duration) -> Self {
         Self {
             max_duration,
-            min_duration: Duration::from_millis(500),
-            silence_duration: Duration::from_millis(650),
-            speech_threshold: 520,
+            min_duration: duration_from_env("CUA_VOICE_RECORD_MIN_MS", 350, 100..=2_000),
+            silence_duration: duration_from_env("CUA_VOICE_RECORD_SILENCE_MS", 420, 120..=2_000),
+            speech_threshold: i16_from_env("CUA_VOICE_RECORD_THRESHOLD", 520, 80..=6_000),
         }
     }
+}
+
+fn duration_from_env(
+    name: &str,
+    default_ms: u64,
+    valid_range: std::ops::RangeInclusive<u64>,
+) -> Duration {
+    Duration::from_millis(
+        std::env::var(name)
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| valid_range.contains(value))
+            .unwrap_or(default_ms),
+    )
+}
+
+fn i16_from_env(name: &str, default_value: i16, valid_range: std::ops::RangeInclusive<i16>) -> i16 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<i16>().ok())
+        .filter(|value| valid_range.contains(value))
+        .unwrap_or(default_value)
 }
 
 #[derive(Debug, Clone)]
@@ -218,5 +240,37 @@ mod tests {
 
         assert!(!state.should_stop(start + Duration::from_millis(1999), policy));
         assert!(state.should_stop(start + Duration::from_secs(2), policy));
+    }
+
+    #[test]
+    fn recording_policy_defaults_are_latency_oriented() {
+        let policy = RecordingPolicy::from_max_duration(Duration::from_secs(5));
+
+        assert_eq!(policy.min_duration, Duration::from_millis(350));
+        assert_eq!(policy.silence_duration, Duration::from_millis(420));
+        assert_eq!(policy.speech_threshold, 520);
+    }
+
+    #[test]
+    fn recording_policy_env_bounds_ignore_invalid_values() {
+        let name = "__CUA_VOICE_TEST_DURATION";
+        std::env::set_var(name, "5");
+        assert_eq!(
+            duration_from_env(name, 250, 100..=1_000),
+            Duration::from_millis(250)
+        );
+        std::env::set_var(name, "900");
+        assert_eq!(
+            duration_from_env(name, 250, 100..=1_000),
+            Duration::from_millis(900)
+        );
+        std::env::remove_var(name);
+
+        let threshold_name = "__CUA_VOICE_TEST_THRESHOLD";
+        std::env::set_var(threshold_name, "10");
+        assert_eq!(i16_from_env(threshold_name, 520, 80..=6_000), 520);
+        std::env::set_var(threshold_name, "850");
+        assert_eq!(i16_from_env(threshold_name, 520, 80..=6_000), 850);
+        std::env::remove_var(threshold_name);
     }
 }
