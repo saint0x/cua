@@ -1,4 +1,5 @@
 use axum::{
+    body::Body,
     extract::{
         ws::{Message, WebSocketUpgrade},
         State,
@@ -8,6 +9,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use bytes::Bytes;
 use chrono::Utc;
 use cua_capture::{CaptureRequest, FrameBus, SyntheticCaptureBackend};
 use cua_core::{
@@ -18,8 +20,13 @@ use cua_input::{InputBackend, RefusingInputBackend};
 use cua_model::{run_eval_report, EvalConfig, EvalReport};
 use serde::Deserialize;
 use std::collections::BTreeMap;
+use std::convert::Infallible;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicU32, Ordering},
+    Arc,
+};
+use std::time::Duration;
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
 
@@ -29,6 +36,7 @@ pub struct DaemonState {
     pub started_at: chrono::DateTime<Utc>,
     pub frame_bus: Arc<FrameBus>,
     pub input: Arc<dyn InputBackend>,
+    pub active_streams: Arc<AtomicU32>,
 }
 
 impl DaemonState {
@@ -38,6 +46,7 @@ impl DaemonState {
             started_at: Utc::now(),
             frame_bus: Arc::new(FrameBus::new(Arc::new(SyntheticCaptureBackend::default()))),
             input: Arc::new(RefusingInputBackend),
+            active_streams: Arc::new(AtomicU32::new(0)),
         }
     }
 
@@ -50,7 +59,7 @@ impl DaemonState {
             started_at: self.started_at,
             permissions: PermissionReport::conservative_unknown(),
             latest_frame: self.frame_bus.latest_envelope().await,
-            active_streams: 0,
+            active_streams: self.active_streams.load(Ordering::Relaxed),
             model_sessions: 0,
             last_error: None,
         }
@@ -171,20 +180,41 @@ async fn screenshot(
 }
 
 async fn stream_mjpeg(State(state): State<DaemonState>) -> Result<Response, ApiError> {
-    let frame = state
-        .frame_bus
-        .latest_or_capture(CaptureRequest {
-            max_width: Some(1280),
-            encoding: FrameEncoding::Jpeg,
-            force_fresh: true,
-        })
-        .await
-        .map_err(ApiError::internal)?;
-    let mut body = Vec::new();
-    body.extend_from_slice(b"--cua-frame\r\nContent-Type: image/jpeg\r\n\r\n");
-    body.extend_from_slice(&frame.bytes);
-    body.extend_from_slice(b"\r\n--cua-frame--\r\n");
-    let mut response = body.into_response();
+    let guard = StreamGuard::new(state.active_streams.clone());
+    let mut interval = tokio::time::interval(Duration::from_millis(200));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let frame_bus = state.frame_bus.clone();
+    let stream = futures::stream::unfold(
+        (frame_bus, interval, guard),
+        |(frame_bus, mut interval, guard)| async move {
+            interval.tick().await;
+            let chunk = match frame_bus
+                .latest_or_capture(CaptureRequest {
+                    max_width: Some(1280),
+                    encoding: FrameEncoding::Jpeg,
+                    force_fresh: true,
+                })
+                .await
+            {
+                Ok(frame) => {
+                    let mut body = Vec::new();
+                    body.extend_from_slice(b"--cua-frame\r\nContent-Type: image/jpeg\r\n");
+                    body.extend_from_slice(
+                        format!("X-CUA-Frame-Id: {}\r\n\r\n", frame.envelope.frame_id).as_bytes(),
+                    );
+                    body.extend_from_slice(&frame.bytes);
+                    body.extend_from_slice(b"\r\n");
+                    Ok::<Bytes, Infallible>(Bytes::from(body))
+                }
+                Err(error) => Ok::<Bytes, Infallible>(Bytes::from(format!(
+                    "--cua-frame\r\nContent-Type: application/json\r\n\r\n{{\"error\":\"{}\"}}\r\n",
+                    error.to_string().replace('"', "'")
+                ))),
+            };
+            Some((chunk, (frame_bus, interval, guard)))
+        },
+    );
+    let mut response = Body::from_stream(stream).into_response();
     response.headers_mut().insert(
         header::CONTENT_TYPE,
         HeaderValue::from_static("multipart/x-mixed-replace; boundary=cua-frame"),
@@ -194,21 +224,66 @@ async fn stream_mjpeg(State(state): State<DaemonState>) -> Result<Response, ApiE
 
 async fn stream_ws(ws: WebSocketUpgrade, State(state): State<DaemonState>) -> impl IntoResponse {
     ws.on_upgrade(move |mut socket| async move {
-        if let Ok(frame) = state
-            .frame_bus
-            .latest_or_capture(CaptureRequest {
-                max_width: Some(1280),
-                encoding: FrameEncoding::Jpeg,
-                force_fresh: true,
-            })
-            .await
-        {
-            if let Ok(text) = serde_json::to_string(&frame.envelope) {
-                let _ = socket.send(Message::Text(text)).await;
-                let _ = socket.send(Message::Binary((*frame.bytes).clone())).await;
+        let _guard = StreamGuard::new(state.active_streams.clone());
+        let mut interval = tokio::time::interval(Duration::from_millis(200));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            match state
+                .frame_bus
+                .latest_or_capture(CaptureRequest {
+                    max_width: Some(1280),
+                    encoding: FrameEncoding::Jpeg,
+                    force_fresh: true,
+                })
+                .await
+            {
+                Ok(frame) => {
+                    let text = match serde_json::to_string(&frame.envelope) {
+                        Ok(text) => text,
+                        Err(_) => break,
+                    };
+                    if socket.send(Message::Text(text)).await.is_err() {
+                        break;
+                    }
+                    if socket
+                        .send(Message::Binary((*frame.bytes).clone()))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    let text = serde_json::json!({
+                        "schema_version": SCHEMA_VERSION,
+                        "error": error.to_string(),
+                    })
+                    .to_string();
+                    if socket.send(Message::Text(text)).await.is_err() {
+                        break;
+                    }
+                }
             }
         }
     })
+}
+
+struct StreamGuard {
+    active_streams: Arc<AtomicU32>,
+}
+
+impl StreamGuard {
+    fn new(active_streams: Arc<AtomicU32>) -> Self {
+        active_streams.fetch_add(1, Ordering::Relaxed);
+        Self { active_streams }
+    }
+}
+
+impl Drop for StreamGuard {
+    fn drop(&mut self) {
+        self.active_streams.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 async fn observe_desktop(State(state): State<DaemonState>) -> Result<Json<DesktopState>, ApiError> {

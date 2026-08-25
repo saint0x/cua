@@ -74,5 +74,4 @@ fozzy ci artifacts/cua/fozzy/cua-smoke.fozzy --json
 
 ## Status
 
-The current runtime has production-shaped contracts, daemon/CLI plumbing, synthetic capture, refusal-only input, schema export, trace inspection, and bounded model evals. Real platform capture/input backends and signed host installation are still in progress.
-
+The current runtime has production-shaped contracts, daemon/CLI plumbing, synthetic capture, continuous MJPEG/WebSocket streams, refusal-only input, schema export, trace inspection, and bounded model evals. Real platform capture/input backends and signed host installation are still in progress.
