@@ -42,3 +42,16 @@ sleep 1
 "$BIN" --server-addr "$ADDR" --profile "$PROFILE" perf bench stream --iterations 2 --warmup 1 --budget-ms "${CUA_BUDGET_STREAM_MS:-3000}" --json
 "$BIN" --server-addr "$ADDR" --profile "$PROFILE" perf bench input --iterations 2 --warmup 1 --budget-ms "${CUA_BUDGET_INPUT_MS:-500}" --json
 "$BIN" --server-addr "$ADDR" --profile "$PROFILE" perf bench model-prep --iterations 2 --warmup 1 --budget-ms "${CUA_BUDGET_MODEL_PREP_MS:-8000}" --json
+
+STREAM_SOAK_SECONDS="${CUA_STREAM_SOAK_SECONDS:-8}"
+STREAM_RSS_BUDGET_KB="${CUA_STREAM_RSS_BUDGET_KB:-65536}"
+rss_before="$(ps -o rss= -p "$DAEMON_PID" | tr -d ' ')"
+TOKEN="$(tr -d '\n' < "$HOME/.cua/profiles/$PROFILE/http.token")"
+curl --max-time "$STREAM_SOAK_SECONDS" -fs -H "Authorization: Bearer $TOKEN" "http://$ADDR/capture/stream.mjpeg" >/dev/null 2>&1 || true
+rss_after="$(ps -o rss= -p "$DAEMON_PID" | tr -d ' ')"
+rss_growth_kb="$((rss_after - rss_before))"
+if (( rss_growth_kb > STREAM_RSS_BUDGET_KB )); then
+  echo "{\"schema_version\":\"cua.v1\",\"target\":\"stream_memory\",\"passed\":false,\"rss_before_kb\":$rss_before,\"rss_after_kb\":$rss_after,\"rss_growth_kb\":$rss_growth_kb,\"budget_kb\":$STREAM_RSS_BUDGET_KB}"
+  exit 1
+fi
+echo "{\"schema_version\":\"cua.v1\",\"target\":\"stream_memory\",\"passed\":true,\"rss_before_kb\":$rss_before,\"rss_after_kb\":$rss_after,\"rss_growth_kb\":$rss_growth_kb,\"budget_kb\":$STREAM_RSS_BUDGET_KB}"

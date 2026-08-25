@@ -74,6 +74,8 @@ fozzy doctor --deep --scenario fozzy/scenarios/cua-smoke.json --runs 5 --seed 42
 fozzy test --det --strict-verify fozzy/scenarios/cua-smoke.json --json
 ```
 
+`scripts/ci-perf-gate.sh` runs local daemon latency benches and a bounded MJPEG stream memory soak. Budgets can be tuned with `CUA_BUDGET_*`, `CUA_STREAM_SOAK_SECONDS`, and `CUA_STREAM_RSS_BUDGET_KB`.
+
 For trace verification:
 
 ```sh
