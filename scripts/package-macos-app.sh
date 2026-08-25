@@ -87,9 +87,14 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
   <string>CUA needs local automation permission when a supervised profile grants desktop actions.</string>
   <key>NSMicrophoneUsageDescription</key>
   <string>CUA uses microphone input only when the voice HUD records a requested command.</string>
+  <key>NSInputMonitoringUsageDescription</key>
+  <string>CUA listens for a local double-Control shortcut to start voice recording.</string>
 </dict>
 </plist>
 PLIST
+
+plutil -extract NSMicrophoneUsageDescription raw -o - "$CONTENTS_DIR/Info.plist" >/dev/null
+plutil -extract NSInputMonitoringUsageDescription raw -o - "$CONTENTS_DIR/Info.plist" >/dev/null
 
 cat > "$ENTITLEMENTS" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
