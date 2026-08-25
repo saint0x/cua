@@ -1,17 +1,18 @@
 # CUA
 
-CUA is a CLI-first local computer-use runtime for agents. It provides one resident daemon, a local HTTP API, typed desktop observation, action delivery results, trace artifacts, and bounded model evals for selecting vision/action models without turning the project into an agent framework.
+CUA is a CLI-first local computer-use runtime for agents. It provides one resident daemon, a local Unix socket protocol for hot control paths, a local HTTP API for operator access, typed desktop observation, action delivery results, trace artifacts, and bounded model evals for selecting vision/action models without turning the project into an agent framework.
 
 Public control surfaces are intentionally limited to:
 
 - `cua` CLI
+- profile-local Unix socket protocol
 - loopback local HTTP API
 
 ## Structure
 
 - `crates/cua-core`: shared protocol types and JSON schema bundle
 - `crates/cua-cli`: human-facing CLI
-- `crates/cua-daemon`: resident local control plane and HTTP API
+- `crates/cua-daemon`: resident local control plane, Unix socket protocol, and HTTP API
 - `crates/cua-capture`: frame bus and capture backend contract
 - `crates/cua-input`: input backend contract and typed action results
 - `crates/cua-model`: OpenRouter eval harness and model selection report
@@ -37,7 +38,7 @@ cargo run -p cua -- kill-switch --json
 cargo run -p cua-voice
 ```
 
-`cua serve` refuses non-loopback binds unless `--allow-lan` is explicit. The local HTTP API uses a per-profile bearer token stored at `~/.cua/profiles/<profile>/http.token`; CLI client commands load it automatically.
+`cua serve` refuses non-loopback binds unless `--allow-lan` is explicit. The daemon also opens a profile-local socket at `~/.cua/profiles/<profile>/daemon.sock`; `cua-voice` uses that socket for screenshot, observe, and input dispatch. The local APIs use a per-profile bearer token stored at `~/.cua/profiles/<profile>/http.token`; CLI and voice client commands load it automatically.
 
 ## Package
 
@@ -101,4 +102,4 @@ fozzy replay artifacts/cua/macos/fozzy/cua-smoke.fozzy --json
 
 ## Status
 
-The current runtime has production-shaped contracts, daemon/CLI plumbing, macOS permission probes, profile policy state, pause/resume/kill-switch controls, profile-gated daemon clipboard, daemon-owned capture/encode/input/event/permission/trace/model lanes, ScreenCaptureKit-backed macOS capture with CoreGraphics fallback, native macOS display/cursor/window observation, CGEvent mouse/keyboard input with refusing fallback, signed macOS app packaging, continuous MJPEG/WebSocket streams, schema export, trace inspection, and bounded model evals.
+The current runtime has production-shaped contracts, daemon/CLI plumbing, Unix socket voice transport, macOS permission probes, profile policy state, pause/resume/kill-switch controls, profile-gated daemon clipboard, daemon-owned capture/encode/input/event/permission/trace/model lanes, ScreenCaptureKit-backed macOS capture with CoreGraphics fallback, native macOS display/cursor/window observation, CGEvent mouse/keyboard input with refusing fallback, signed macOS app packaging, continuous MJPEG/WebSocket streams, schema export, trace inspection, and bounded model evals.

@@ -34,6 +34,8 @@ use std::sync::{
     Arc,
 };
 use std::time::{Duration, Instant};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::UnixListener;
 use tokio::sync::{mpsc, oneshot, RwLock};
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
@@ -738,6 +740,7 @@ pub async fn serve(addr: SocketAddr, profile: String, allow_lan: bool) -> anyhow
         },
         Duration::from_millis(200),
     );
+    spawn_unix_socket(state.clone()).await?;
     axum::serve(listener, router(state)).await?;
     Ok(())
 }
@@ -770,6 +773,165 @@ fn profile_token_path(profile: &str) -> anyhow::Result<PathBuf> {
         .join("profiles")
         .join(profile)
         .join("http.token"))
+}
+
+pub fn profile_socket_path(profile: &str) -> anyhow::Result<PathBuf> {
+    let home = std::env::var("HOME")?;
+    Ok(PathBuf::from(home)
+        .join(".cua")
+        .join("profiles")
+        .join(profile)
+        .join("daemon.sock"))
+}
+
+async fn spawn_unix_socket(state: DaemonState) -> anyhow::Result<()> {
+    let path = profile_socket_path(&state.profile)?;
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    if tokio::fs::try_exists(&path).await.unwrap_or(false) {
+        tokio::fs::remove_file(&path).await?;
+    }
+    let listener = UnixListener::bind(&path)?;
+    tracing::info!(socket = %path.display(), "listening on cua unix socket");
+    tokio::spawn(async move {
+        loop {
+            match listener.accept().await {
+                Ok((stream, _)) => {
+                    let state = state.clone();
+                    tokio::spawn(async move {
+                        if let Err(error) = handle_unix_stream(stream, state).await {
+                            tracing::debug!(%error, "unix socket stream ended");
+                        }
+                    });
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "unix socket accept failed");
+                    break;
+                }
+            }
+        }
+    });
+    Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+struct UnixRequest {
+    id: Option<serde_json::Value>,
+    token: Option<String>,
+    method: String,
+    params: Option<serde_json::Value>,
+}
+
+async fn handle_unix_stream(
+    stream: tokio::net::UnixStream,
+    state: DaemonState,
+) -> anyhow::Result<()> {
+    let (read, mut write) = stream.into_split();
+    let mut lines = BufReader::new(read).lines();
+    while let Some(line) = lines.next_line().await? {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let response = match serde_json::from_str::<UnixRequest>(&line) {
+            Ok(request) => handle_unix_request(&state, request).await,
+            Err(error) => unix_error(None, "bad_request", error.to_string(), None),
+        };
+        write.write_all(response.to_string().as_bytes()).await?;
+        write.write_all(b"\n").await?;
+    }
+    Ok(())
+}
+
+async fn handle_unix_request(state: &DaemonState, request: UnixRequest) -> serde_json::Value {
+    let id = request.id.clone();
+    if request.token.as_deref() != Some(state.bearer_token.as_str()) {
+        return unix_error(
+            id,
+            "unauthorized",
+            "missing or invalid token",
+            Some(StatusCode::UNAUTHORIZED),
+        );
+    }
+    let result = match request.method.as_str() {
+        "capture.screenshot" => {
+            let params = request.params.unwrap_or_else(|| serde_json::json!({}));
+            match serde_json::from_value::<ScreenshotRequest>(params) {
+                Ok(request) => screenshot_payload(state, request)
+                    .await
+                    .map(serde_json::to_value),
+                Err(error) => {
+                    return unix_error(
+                        id,
+                        "bad_request",
+                        error.to_string(),
+                        Some(StatusCode::BAD_REQUEST),
+                    )
+                }
+            }
+        }
+        "observe.desktop" => desktop_state(state).await.map(serde_json::to_value),
+        "input.dispatch" => {
+            let params = request.params.unwrap_or_else(|| serde_json::json!({}));
+            match serde_json::from_value::<InputAction>(params) {
+                Ok(action) => {
+                    match serde_json::to_value(dispatch_input_action(state, action).await) {
+                        Ok(value) => Ok(Ok(value)),
+                        Err(error) => Ok(Err(error)),
+                    }
+                }
+                Err(error) => {
+                    return unix_error(
+                        id,
+                        "bad_request",
+                        error.to_string(),
+                        Some(StatusCode::BAD_REQUEST),
+                    )
+                }
+            }
+        }
+        method => {
+            return unix_error(
+                id,
+                "not_found",
+                format!("unknown method {method}"),
+                Some(StatusCode::NOT_FOUND),
+            )
+        }
+    };
+    match result {
+        Ok(Ok(value)) => serde_json::json!({ "id": id, "ok": true, "result": value }),
+        Ok(Err(error)) => unix_error(
+            id,
+            "serialization_error",
+            error.to_string(),
+            Some(StatusCode::INTERNAL_SERVER_ERROR),
+        ),
+        Err(error) => unix_api_error(id, error),
+    }
+}
+
+fn unix_api_error(id: Option<serde_json::Value>, error: ApiError) -> serde_json::Value {
+    let ApiError(body, status) = error;
+    unix_error(id, body.code, body.message, Some(status))
+}
+
+fn unix_error(
+    id: Option<serde_json::Value>,
+    code: impl Into<String>,
+    message: impl Into<String>,
+    status: Option<StatusCode>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "id": id,
+        "ok": false,
+        "error": {
+            "schema_version": SCHEMA_VERSION,
+            "code": code.into(),
+            "message": message.into(),
+            "status": status.map(|status| status.as_u16())
+        }
+    })
 }
 
 async fn require_auth(State(state): State<DaemonState>, request: Request, next: Next) -> Response {
@@ -817,7 +979,7 @@ async fn root() -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "schema_version": SCHEMA_VERSION,
         "name": "cua",
-        "control_surfaces": ["cli", "local_http"],
+        "control_surfaces": ["cli", "local_http", "local_unix_socket"],
     }))
 }
 
@@ -826,7 +988,11 @@ async fn manifest() -> Json<Manifest> {
         schema_version: SCHEMA_VERSION.to_string(),
         name: "cua".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
-        public_surfaces: vec!["cli".to_string(), "local_http".to_string()],
+        public_surfaces: vec![
+            "cli".to_string(),
+            "local_http".to_string(),
+            "local_unix_socket".to_string(),
+        ],
         endpoints: vec![
             "GET /manifest".to_string(),
             "GET /schemas".to_string(),
@@ -924,6 +1090,13 @@ async fn screenshot(
     State(state): State<DaemonState>,
     Json(request): Json<ScreenshotRequest>,
 ) -> Result<Json<FramePayload>, ApiError> {
+    Ok(Json(screenshot_payload(&state, request).await?))
+}
+
+async fn screenshot_payload(
+    state: &DaemonState,
+    request: ScreenshotRequest,
+) -> Result<FramePayload, ApiError> {
     let started = Instant::now();
     let lookup = state
         .frame_bus
@@ -947,7 +1120,7 @@ async fn screenshot(
             ApiError::busy(format!("encode lane unavailable: {error:?}"))
         })?;
     observe_encode_result(&state.metrics, &encoded);
-    Ok(Json(encoded.value))
+    Ok(encoded.value)
 }
 
 async fn stream_mjpeg(State(state): State<DaemonState>) -> Result<Response, ApiError> {
@@ -1075,6 +1248,10 @@ impl Drop for StreamGuard {
 }
 
 async fn observe_desktop(State(state): State<DaemonState>) -> Result<Json<DesktopState>, ApiError> {
+    Ok(Json(desktop_state(&state).await?))
+}
+
+async fn desktop_state(state: &DaemonState) -> Result<DesktopState, ApiError> {
     let permissions = state.permission_report().await;
     let displays = state
         .frame_bus
@@ -1084,14 +1261,14 @@ async fn observe_desktop(State(state): State<DaemonState>) -> Result<Json<Deskto
     let latest_frame = state.frame_bus.latest_envelope().await;
     let cursor = cua_platform_macos::cursor_state();
     let windows = cua_platform_macos::window_list().map_err(ApiError::internal)?;
-    Ok(Json(DesktopState {
+    Ok(DesktopState {
         schema_version: SCHEMA_VERSION.to_string(),
         displays,
         windows,
         cursor,
         permissions,
         latest_frame,
-    }))
+    })
 }
 
 async fn observe_displays(
@@ -1329,10 +1506,14 @@ async fn input_action(
     State(state): State<DaemonState>,
     Json(action): Json<InputAction>,
 ) -> Json<cua_core::InputResult> {
+    Json(dispatch_input_action(&state, action).await)
+}
+
+async fn dispatch_input_action(state: &DaemonState, action: InputAction) -> cua_core::InputResult {
     let started = Instant::now();
     let turn_id = Uuid::new_v4().to_string();
     let action_json = serde_json::to_value(&action).unwrap_or_else(|_| serde_json::json!(null));
-    let before = trace_snapshot(&state, &turn_id, "before").await;
+    let before = trace_snapshot(state, &turn_id, "before").await;
     if matches!(
         action,
         InputAction::ClipboardRead { .. } | InputAction::ClipboardWrite { .. }
@@ -1344,9 +1525,9 @@ async fn input_action(
         let result = refused_input_result(
             "clipboard actions must use /clipboard/read or /clipboard/write for explicit grants",
         );
-        let after = trace_snapshot(&state, &turn_id, "after").await;
+        let after = trace_snapshot(state, &turn_id, "after").await;
         append_action_turn(
-            &state,
+            state,
             turn_id,
             action_json,
             serde_json::to_value(&result).unwrap_or_else(|_| serde_json::json!(null)),
@@ -1354,8 +1535,8 @@ async fn input_action(
             after,
         )
         .await;
-        publish_input_event(&state, "input_refused", &result);
-        return Json(result);
+        publish_input_event(state, "input_refused", &result);
+        return result;
     }
     let dispatch_started = Instant::now();
     let (queue_wait, result) = state
@@ -1376,9 +1557,9 @@ async fn input_action(
     state
         .metrics
         .observe(MetricKind::InputDispatch, dispatch_started.elapsed());
-    let after = trace_snapshot(&state, &turn_id, "after").await;
+    let after = trace_snapshot(state, &turn_id, "after").await;
     append_action_turn(
-        &state,
+        state,
         turn_id,
         action_json,
         serde_json::to_value(&result).unwrap_or_else(|_| serde_json::json!(null)),
@@ -1386,8 +1567,8 @@ async fn input_action(
         after,
     )
     .await;
-    publish_input_event(&state, "input_completed", &result);
-    Json(result)
+    publish_input_event(state, "input_completed", &result);
+    result
 }
 
 async fn clipboard_read(

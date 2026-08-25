@@ -53,9 +53,9 @@ impl Default for HudSnapshot {
             step: HudStep {
                 index: 0,
                 total: 4,
-                label: "Double-tap Control".to_string(),
+                label: "Ready".to_string(),
             },
-            tool: "Local HTTP".to_string(),
+            tool: "Unix socket".to_string(),
             transcript: None,
             response: None,
             expanded_until: None,
@@ -94,7 +94,7 @@ impl HudSnapshot {
             VoiceUiEvent::Dispatching(action) => {
                 self.phase = HudPhase::Dispatching;
                 self.step = HudStep::new(4, 4, action);
-                self.tool = "Local HTTP".to_string();
+                self.tool = "Unix socket".to_string();
             }
             VoiceUiEvent::Reply(text) => {
                 self.phase = HudPhase::Reply;

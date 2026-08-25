@@ -1,22 +1,22 @@
 use clap::Parser;
 use cua_voice::activation::ControlDoubleTap;
-use cua_voice::ui_state::{HudPhase, HudSnapshot, VoiceUiEvent};
+use cua_voice::hud::{HudDisplay, HudRow, PANEL_RADIUS, TOP_MARGIN, WINDOW_HEIGHT, WINDOW_WIDTH};
+use cua_voice::orb::paint_orb;
+use cua_voice::ui_state::{HudSnapshot, VoiceUiEvent};
 use cua_voice::{run_voice_turn, VoiceConfig};
 use gpui::{
-    canvas, div, fill, hsla, point, prelude::*, px, rgb, size, App, Application, Bounds, BoxShadow,
-    Context, IntoElement, ParentElement, Render, Styled, Window, WindowBounds, WindowOptions,
+    canvas, div, hsla, point, prelude::*, px, rgb, size, App, Application, Bounds, BoxShadow,
+    Context, IntoElement, ParentElement, Render, Styled, Window, WindowBackgroundAppearance,
+    WindowBounds, WindowKind, WindowOptions,
 };
 use rdev::{listen, EventType, Key};
-use std::net::SocketAddr;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Parser)]
 #[command(name = "cua-voice", version, about = "Rust voice HUD for CUA")]
 struct Args {
-    #[arg(long, default_value = "127.0.0.1:8765")]
-    server_addr: SocketAddr,
     #[arg(long, default_value = "default")]
     profile: String,
     #[arg(long, default_value_t = 4500)]
@@ -25,6 +25,8 @@ struct Args {
     stt_model: String,
     #[arg(long, default_value = "openai/gpt-5.4-mini")]
     planner_model: String,
+    #[arg(long)]
+    demo: bool,
 }
 
 struct VoiceHud {
@@ -34,6 +36,7 @@ struct VoiceHud {
     runtime: Arc<tokio::runtime::Runtime>,
     snapshot: HudSnapshot,
     busy: bool,
+    execute_turns: bool,
     started: Instant,
 }
 
@@ -43,6 +46,7 @@ impl VoiceHud {
         tx: Sender<VoiceUiEvent>,
         config: VoiceConfig,
         runtime: Arc<tokio::runtime::Runtime>,
+        execute_turns: bool,
     ) -> Self {
         Self {
             rx,
@@ -51,6 +55,7 @@ impl VoiceHud {
             runtime,
             snapshot: HudSnapshot::default(),
             busy: false,
+            execute_turns,
             started: Instant::now(),
         }
     }
@@ -58,7 +63,7 @@ impl VoiceHud {
     fn drain_events(&mut self) {
         while let Ok(event) = self.rx.try_recv() {
             match event {
-                VoiceUiEvent::Armed if !self.busy => {
+                VoiceUiEvent::Armed if self.execute_turns && !self.busy => {
                     self.busy = true;
                     self.snapshot.apply(VoiceUiEvent::Armed);
                     let tx = self.tx.clone();
@@ -78,49 +83,49 @@ impl VoiceHud {
         let phase = self.snapshot.phase.clone();
         let elapsed = self.started.elapsed().as_secs_f32();
         canvas(
-            move |bounds, _, _| (bounds, phase, elapsed),
-            move |bounds, (layout, phase, elapsed), window, _| {
-                let center = point(
-                    layout.origin.x + layout.size.width / 2.0,
-                    layout.origin.y + layout.size.height / 2.0,
-                );
-                let pulse = (elapsed * 4.4).sin() * 0.5 + 0.5;
-                let base = match phase {
-                    HudPhase::Listening => hsla(200.0 / 360.0, 0.96, 0.62, 1.0),
-                    HudPhase::Transcribing | HudPhase::Planning => {
-                        hsla(286.0 / 360.0, 0.92, 0.66, 1.0)
-                    }
-                    HudPhase::Dispatching => hsla(152.0 / 360.0, 0.78, 0.58, 1.0),
-                    HudPhase::Error => hsla(352.0 / 360.0, 0.90, 0.62, 1.0),
-                    _ => hsla(218.0 / 360.0, 0.88, 0.64, 1.0),
-                };
-                for i in 0..5 {
-                    let scale = 1.0 - (i as f32 * 0.13);
-                    let alpha = (0.18 + pulse * 0.16) / (i as f32 + 1.0);
-                    let mut color = base;
-                    color.a = alpha;
-                    let radius = layout.size.width.min(layout.size.height) * scale / 2.0;
-                    window.paint_quad(fill(
-                        Bounds {
-                            origin: point(center.x - radius, center.y - radius),
-                            size: size(radius * 2.0, radius * 2.0),
-                        },
-                        color,
-                    ));
-                }
-                let mut core = rgb(0xdff7ff);
-                core.a = 0.88;
-                let radius = bounds.size.width.min(bounds.size.height) * (0.22 + pulse * 0.05);
-                window.paint_quad(fill(
-                    Bounds {
-                        origin: point(center.x - radius, center.y - radius),
-                        size: size(radius * 2.0, radius * 2.0),
-                    },
-                    core,
-                ));
+            move |_, _, _| (phase, elapsed),
+            move |bounds, (phase, elapsed), window, _| {
+                paint_orb(window, bounds, &phase, elapsed);
             },
         )
-        .size(px(28.0))
+        .size(px(13.0))
+    }
+
+    fn chip(label: impl Into<String>) -> impl IntoElement {
+        div()
+            .px_1()
+            .py_0p5()
+            .rounded(px(4.0))
+            .bg(hsla(0.0, 0.0, 1.0, 0.10))
+            .text_color(rgb(0xb9b9c0))
+            .text_xs()
+            .child(label.into())
+    }
+
+    fn row(dot: gpui::Hsla, row: &HudRow) -> impl IntoElement {
+        div()
+            .h(px(23.0))
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(div().w(px(6.0)).h(px(6.0)).rounded_full().bg(dot))
+            .child(
+                div()
+                    .flex_1()
+                    .text_color(rgb(0xc6c6c9))
+                    .text_sm()
+                    .child(row.label),
+            )
+            .child(Self::chip(row.tool))
+            .child(Self::chip(row.app))
+            .child(
+                div()
+                    .w(px(35.0))
+                    .overflow_hidden()
+                    .text_color(rgb(0x67676d))
+                    .text_xs()
+                    .child(row.age),
+            )
     }
 }
 
@@ -131,47 +136,83 @@ impl Render for VoiceHud {
             self.snapshot.apply(VoiceUiEvent::Idle);
         }
         window.request_animation_frame();
-        let expanded = self.snapshot.is_expanded();
-        let panel_width = if expanded { 360.0 } else { 520.0 };
-        let panel_height = if expanded { 300.0 } else { 54.0 };
-        let status_text = self
-            .snapshot
-            .response
-            .clone()
-            .or_else(|| self.snapshot.transcript.clone())
-            .unwrap_or_else(|| self.snapshot.step.label.clone());
+        let display = HudDisplay::from_snapshot(&self.snapshot);
         div()
             .size_full()
             .bg(hsla(0.0, 0.0, 0.0, 0.0))
             .flex()
             .items_start()
             .justify_center()
-            .pt(px(16.0))
             .child(
                 div()
-                    .w(px(panel_width))
-                    .h(px(panel_height))
-                    .rounded_lg()
-                    .bg(hsla(220.0 / 360.0, 0.23, 0.03, 0.92))
+                    .w(px(WINDOW_WIDTH))
+                    .h(px(WINDOW_HEIGHT))
+                    .rounded(px(PANEL_RADIUS))
+                    .overflow_hidden()
+                    .bg(hsla(0.0, 0.0, 0.0, 0.95))
                     .shadow(vec![BoxShadow {
-                        color: hsla(0.0, 0.0, 0.0, 0.44),
-                        blur_radius: px(24.0),
+                        color: hsla(0.0, 0.0, 0.0, 0.60),
+                        blur_radius: px(14.0),
                         spread_radius: px(0.0),
-                        offset: point(px(0.0), px(10.0)),
+                        offset: point(px(0.0), px(6.0)),
                     }])
-                    .border_1()
-                    .border_color(hsla(218.0 / 360.0, 0.14, 0.19, 0.75))
-                    .p_3()
+                    .px_3()
+                    .py_2()
                     .flex()
                     .flex_col()
-                    .gap_3()
                     .child(
                         div()
+                            .h(px(22.0))
+                            .flex()
+                            .items_center()
+                            .child(
+                                div()
+                                    .w(px(94.0))
+                                    .text_color(rgb(0xf3f0f3))
+                                    .text_sm()
+                                    .child("Help"),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .text_color(hsla(32.0 / 360.0, 0.95, 0.65, 1.0))
+                                            .text_xs()
+                                            .child("✦"),
+                                    )
+                                    .child(div().text_color(rgb(0xd8d8dc)).text_xs().child("5h"))
+                                    .child(
+                                        div()
+                                            .text_color(hsla(140.0 / 360.0, 0.86, 0.52, 1.0))
+                                            .text_xs()
+                                            .child("11%"),
+                                    )
+                                    .child(div().text_color(rgb(0x56565d)).text_xs().child("4h1m"))
+                                    .child(div().text_color(rgb(0x56565d)).text_xs().child("|"))
+                                    .child(div().text_color(rgb(0xd8d8dc)).text_xs().child("7d"))
+                                    .child(
+                                        div()
+                                            .text_color(hsla(140.0 / 360.0, 0.86, 0.52, 1.0))
+                                            .text_xs()
+                                            .child("2%"),
+                                    )
+                                    .child(div().text_color(rgb(0x56565d)).text_xs().child("6h1m")),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .h(px(58.0))
                             .flex()
                             .flex_row()
                             .items_center()
-                            .gap_3()
-                            .child(self.orb())
+                            .rounded(px(5.0))
+                            .bg(hsla(0.0, 0.0, 1.0, 0.055))
+                            .px_2()
+                            .gap_2()
+                            .child(div().w(px(14.0)).child(self.orb()))
                             .child(
                                 div()
                                     .flex()
@@ -182,34 +223,40 @@ impl Render for VoiceHud {
                                         div()
                                             .text_color(rgb(0xf6f7fb))
                                             .text_sm()
-                                            .child(self.snapshot.task.clone()),
+                                            .child(display.title),
                                     )
-                                    .child(div().text_color(rgb(0x9aa4b2)).text_xs().child(
-                                        format!(
-                                            "Step {}/{} · {} · {}",
-                                            self.snapshot.step.index,
-                                            self.snapshot.step.total,
-                                            self.snapshot.phase.label(),
-                                            self.snapshot.tool
-                                        ),
-                                    )),
+                                    .child(
+                                        div()
+                                            .text_color(rgb(0x828288))
+                                            .text_sm()
+                                            .child(format!("You: {}", display.prompt)),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_color(hsla(140.0 / 360.0, 0.90, 0.55, 1.0))
+                                            .text_sm()
+                                            .child(display.result),
+                                    ),
                             )
+                            .child(Self::chip(display.phase))
+                            .child(Self::chip(display.tool))
                             .child(
                                 div()
-                                    .text_color(rgb(0xb8c0ce))
+                                    .w(px(28.0))
+                                    .overflow_hidden()
+                                    .text_color(rgb(0x67676d))
                                     .text_xs()
-                                    .child(self.snapshot.step.label.clone()),
+                                    .child("now"),
                             ),
                     )
-                    .when(expanded, |panel| {
-                        panel.child(
-                            div()
-                                .text_color(rgb(0xf7f8fb))
-                                .text_sm()
-                                .line_height(px(20.0))
-                                .child(status_text),
-                        )
-                    }),
+                    .child(Self::row(
+                        hsla(216.0 / 360.0, 0.96, 0.58, 1.0),
+                        &display.rows[0],
+                    ))
+                    .child(Self::row(
+                        hsla(142.0 / 360.0, 0.78, 0.50, 1.0),
+                        &display.rows[1],
+                    )),
             )
     }
 }
@@ -217,8 +264,8 @@ impl Render for VoiceHud {
 fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     let args = Args::parse();
+    let demo = args.demo;
     let config = VoiceConfig {
-        server_addr: args.server_addr,
         profile: args.profile,
         record_ms: args.record_ms,
         stt_model: args.stt_model,
@@ -227,24 +274,67 @@ fn main() -> anyhow::Result<()> {
     let runtime = Arc::new(tokio::runtime::Runtime::new()?);
     let (tx, rx) = channel::<VoiceUiEvent>();
     start_double_control_listener(tx.clone());
+    if demo {
+        start_demo_cycle(tx.clone());
+    }
     Application::new().run(move |cx: &mut App| {
-        let bounds = Bounds::centered(None, size(px(620.0), px(360.0)), cx);
+        let bounds = top_centered_bounds(cx);
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
+                titlebar: None,
+                focus: false,
+                kind: WindowKind::PopUp,
+                is_resizable: false,
+                is_minimizable: false,
+                window_background: WindowBackgroundAppearance::Transparent,
                 ..Default::default()
             },
             {
                 let runtime = runtime.clone();
                 let tx = tx.clone();
                 let config = config.clone();
-                move |_, cx| cx.new(|_| VoiceHud::new(rx, tx, config, runtime))
+                let execute_turns = !demo;
+                move |_, cx| cx.new(|_| VoiceHud::new(rx, tx, config, runtime, execute_turns))
             },
         )
         .unwrap();
         cx.activate(true);
     });
     Ok(())
+}
+
+fn top_centered_bounds(cx: &App) -> Bounds<gpui::Pixels> {
+    let window_size = size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT));
+    let Some(display) = cx.primary_display() else {
+        return Bounds::centered(None, window_size, cx);
+    };
+    let display_bounds = display.bounds();
+    let x = display_bounds.origin.x.to_f64() as f32
+        + (display_bounds.size.width.to_f64() as f32 - WINDOW_WIDTH) / 2.0;
+    let y = display_bounds.origin.y.to_f64() as f32 + TOP_MARGIN;
+    Bounds {
+        origin: point(px(x), px(y)),
+        size: window_size,
+    }
+}
+
+fn start_demo_cycle(tx: Sender<VoiceUiEvent>) {
+    std::thread::spawn(move || {
+        let sequence = [
+            VoiceUiEvent::Armed,
+            VoiceUiEvent::Listening { ms: 1200 },
+            VoiceUiEvent::Transcribing,
+            VoiceUiEvent::Transcript("Click 640 360".to_string()),
+            VoiceUiEvent::Planning,
+            VoiceUiEvent::Dispatching("click 640 360".to_string()),
+            VoiceUiEvent::Reply("Clicked the center target.".to_string()),
+        ];
+        for event in sequence {
+            tx.send(event).ok();
+            std::thread::sleep(Duration::from_millis(650));
+        }
+    });
 }
 
 fn start_double_control_listener(tx: Sender<VoiceUiEvent>) {

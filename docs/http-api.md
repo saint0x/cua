@@ -1,6 +1,6 @@
 # Local HTTP API
 
-CUA is driven only by the CLI and local HTTP API.
+CUA exposes the CLI and local HTTP API for operator access. Latency-sensitive voice control uses the profile-local Unix socket at `~/.cua/profiles/<profile>/daemon.sock`.
 
 Default bind: `127.0.0.1:8765`.
 
@@ -9,6 +9,7 @@ Security:
 - `cua serve` refuses non-loopback binds unless `--allow-lan` is passed.
 - Authenticated endpoints require `Authorization: Bearer <token>`.
 - Profile tokens are loaded from `CUA_HTTP_TOKEN` or `~/.cua/profiles/<profile>/http.token`.
+- The Unix socket uses the same profile token and newline-delimited JSON requests.
 - `GET /`, `GET /version`, and `GET /healthz` are unauthenticated readiness/discovery endpoints.
 
 Initial endpoints:

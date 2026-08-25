@@ -4,7 +4,6 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-ADDR="${CUA_VOICE_SMOKE_ADDR:-127.0.0.1:9878}"
 PROFILE="${CUA_VOICE_SMOKE_PROFILE:-host-voice-smoke}"
 
 cargo build -p cua-voice
@@ -23,7 +22,6 @@ if [[ -z "$BIN" || ! -x "$BIN" ]]; then
 fi
 
 OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-smoke-only}" "$BIN" \
-  --server-addr "$ADDR" \
   --profile "$PROFILE" \
   --record-ms 250 &
 PID="$!"

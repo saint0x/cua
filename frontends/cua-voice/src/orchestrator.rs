@@ -4,13 +4,11 @@ use crate::planner::Planner;
 use crate::stt::SttClient;
 use crate::ui_state::VoiceUiEvent;
 use anyhow::Context;
-use std::net::SocketAddr;
 use std::sync::mpsc::Sender;
 use std::time::Duration;
 
 #[derive(Debug, Clone)]
 pub struct VoiceConfig {
-    pub server_addr: SocketAddr,
     pub profile: String,
     pub record_ms: u64,
     pub stt_model: String,
@@ -20,7 +18,6 @@ pub struct VoiceConfig {
 impl Default for VoiceConfig {
     fn default() -> Self {
         Self {
-            server_addr: "127.0.0.1:8765".parse().unwrap(),
             profile: "default".to_string(),
             record_ms: 4_500,
             stt_model: "openai/whisper-1".to_string(),
@@ -53,7 +50,7 @@ async fn run_voice_turn_inner(config: VoiceConfig, tx: Sender<VoiceUiEvent>) -> 
         .await?;
     tx.send(VoiceUiEvent::Transcript(transcript.clone())).ok();
     tx.send(VoiceUiEvent::Planning).ok();
-    let local = CuaClient::new(config.server_addr, config.profile).await?;
+    let local = CuaClient::new(config.profile).await?;
     let frame = local.screenshot(true).await.ok();
     let plan = Planner::new(&config.planner_model)
         .plan(&api_key, &transcript, frame.as_ref())

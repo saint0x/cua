@@ -1,6 +1,8 @@
 pub mod activation;
 pub mod audio;
 pub mod client;
+pub mod hud;
+pub mod orb;
 pub mod orchestrator;
 pub mod planner;
 pub mod stt;
