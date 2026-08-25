@@ -1,5 +1,8 @@
 use anyhow::{bail, Context};
-use cua_core::{DesktopContextSnapshot, DesktopState, FrameEncoding, FramePayload, InputAction};
+use cua_core::{
+    DesktopContextSnapshot, DesktopState, FrameEncoding, FramePayload, InputAction, UiStepRequest,
+    SCHEMA_VERSION,
+};
 use serde::Deserialize;
 use serde_json::Value;
 use std::path::PathBuf;
@@ -77,6 +80,24 @@ impl CuaClient {
         .await
     }
 
+    pub async fn ui_step(
+        &self,
+        label: impl Into<String>,
+        source: Option<String>,
+        ttl_ms: Option<u64>,
+    ) -> anyhow::Result<Value> {
+        self.request(
+            "ui.step",
+            Some(serde_json::to_value(UiStepRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                label: label.into(),
+                source,
+                ttl_ms,
+            })?),
+        )
+        .await
+    }
+
     pub async fn dispatch(&self, action: &InputAction) -> anyhow::Result<Value> {
         ensure_dispatchable(action)?;
         self.request("input.dispatch", Some(serde_json::to_value(action)?))
@@ -143,6 +164,24 @@ impl CuaSession {
         self.request(
             "events.after",
             Some(serde_json::json!({ "after_sequence": sequence })),
+        )
+        .await
+    }
+
+    pub async fn ui_step(
+        &mut self,
+        label: impl Into<String>,
+        source: Option<String>,
+        ttl_ms: Option<u64>,
+    ) -> anyhow::Result<Value> {
+        self.request(
+            "ui.step",
+            Some(serde_json::to_value(UiStepRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                label: label.into(),
+                source,
+                ttl_ms,
+            })?),
         )
         .await
     }

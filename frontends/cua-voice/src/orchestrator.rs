@@ -14,7 +14,10 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 type LocalTask = tokio::task::JoinHandle<anyhow::Result<CuaClient>>;
-type ContextTask = tokio::task::JoinHandle<PrefetchedContext>;
+const VOICE_STEP_SOURCE: &str = "voice";
+const VOICE_STEP_TTL_MS: u64 = 5_000;
+const VOICE_STEP_LABEL_MAX: usize = 96;
+const VOICE_STEP_TIMEOUT_MS: u64 = 500;
 
 struct PrefetchedContext {
     session: Option<CuaSession>,
@@ -122,18 +125,11 @@ async fn transcribe_and_run_turn_after_local(
     let overlap_started = Instant::now();
     let local = local_task.await.context("join local daemon preflight")??;
     send_metric(&tx, "stt_preflight_overlap_ms", overlap_started.elapsed());
-    let context_task = spawn_context_prefetch(local.clone());
+    publish_voice_step(&local, "transcribing audio").await;
     let transcript = stt_task.await.context("join speech to text")??;
     tx.send(VoiceUiEvent::Transcript(transcript.clone())).ok();
-    plan_and_dispatch(
-        config,
-        transcript,
-        Some(api_key),
-        local,
-        Some(context_task),
-        tx.clone(),
-    )
-    .await?;
+    publish_voice_step(&local, voice_step_label("transcript", &transcript)).await;
+    plan_and_dispatch(config, transcript, Some(api_key), local, tx.clone()).await?;
     send_metric(&tx, "turn_total_ms", turn_started.elapsed());
     Ok(())
 }
@@ -147,7 +143,8 @@ async fn run_transcript_turn(
     tx.send(VoiceUiEvent::Armed).ok();
     let local = preflight_local_client(&config.profile).await?;
     tx.send(VoiceUiEvent::Transcript(transcript.clone())).ok();
-    plan_and_dispatch(config, transcript, None, local, None, tx.clone()).await?;
+    publish_voice_step(&local, voice_step_label("transcript", &transcript)).await;
+    plan_and_dispatch(config, transcript, None, local, tx.clone()).await?;
     send_metric(&tx, "turn_total_ms", turn_started.elapsed());
     Ok(())
 }
@@ -157,27 +154,24 @@ async fn plan_and_dispatch(
     transcript: String,
     api_key: Option<String>,
     local: CuaClient,
-    context_task: Option<ContextTask>,
     tx: Sender<VoiceUiEvent>,
 ) -> anyhow::Result<()> {
     let plan_started = Instant::now();
     let plan = if let Some(plan) = parse_fast_command(&transcript) {
-        abort_context_prefetch(context_task);
         tx.send(VoiceUiEvent::Planning {
             tool: "Command parser".to_string(),
         })
         .ok();
+        publish_voice_step(&local, "planning fast command").await;
         plan
     } else {
         tx.send(VoiceUiEvent::Planning {
             tool: "OpenRouter Vision".to_string(),
         })
         .ok();
+        publish_voice_step(&local, "planning from screen context").await;
         let wait_started = Instant::now();
-        let context = match context_task {
-            Some(task) => task.await.unwrap_or_else(|_| PrefetchedContext::empty()),
-            None => prefetch_context_for_planning(local.clone()).await,
-        };
+        let context = prefetch_context_for_planning(local.clone()).await;
         send_metric(&tx, "context_wait_ms", wait_started.elapsed());
         send_metric(&tx, "context_prefetch_ms", context.elapsed);
         let api_key = api_key
@@ -225,6 +219,7 @@ async fn dispatch_plan(
     if let Some(action) = &plan.action {
         tx.send(VoiceUiEvent::Dispatching(format!("{action:?}")))
             .ok();
+        publish_voice_step(&local, voice_step_label("dispatch", &format!("{action:?}"))).await;
         let dispatch_started = Instant::now();
         let result = match session.as_mut() {
             Some(session) => session.dispatch(action).await?,
@@ -237,31 +232,12 @@ async fn dispatch_plan(
             result["effect"].as_str().unwrap_or("sent")
         )))
         .ok();
+        publish_voice_step(&local, voice_step_label("reply", &plan.response)).await;
     } else {
+        publish_voice_step(&local, voice_step_label("reply", &plan.response)).await;
         tx.send(VoiceUiEvent::Reply(plan.response)).ok();
     }
     Ok(())
-}
-
-impl PrefetchedContext {
-    fn empty() -> Self {
-        Self {
-            session: None,
-            frame: None,
-            desktop: None,
-            elapsed: Duration::ZERO,
-        }
-    }
-}
-
-fn spawn_context_prefetch(local: CuaClient) -> ContextTask {
-    tokio::spawn(async move { prefetch_context_for_planning(local).await })
-}
-
-fn abort_context_prefetch(context_task: Option<ContextTask>) {
-    if let Some(task) = context_task {
-        task.abort();
-    }
 }
 
 fn spawn_recording_progress(
@@ -283,6 +259,44 @@ fn spawn_recording_progress(
             .ok();
         }
     })
+}
+
+async fn publish_voice_step(local: &CuaClient, label: impl Into<String>) {
+    let label = label.into();
+    let _ = tokio::time::timeout(
+        Duration::from_millis(VOICE_STEP_TIMEOUT_MS),
+        local.ui_step(
+            label,
+            Some(VOICE_STEP_SOURCE.to_string()),
+            Some(VOICE_STEP_TTL_MS),
+        ),
+    )
+    .await
+    .map(|result| {
+        let _ = result;
+    });
+}
+
+fn voice_step_label(kind: &str, value: &str) -> String {
+    let compact = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    let label = if compact.is_empty() {
+        kind.to_string()
+    } else {
+        format!("{kind}: {compact}")
+    };
+    truncate_step_label(label)
+}
+
+fn truncate_step_label(label: String) -> String {
+    if label.chars().count() <= VOICE_STEP_LABEL_MAX {
+        return label;
+    }
+    let mut truncated = label
+        .chars()
+        .take(VOICE_STEP_LABEL_MAX.saturating_sub(3))
+        .collect::<String>();
+    truncated.push_str("...");
+    truncated
 }
 
 async fn prefetch_context_for_planning(local: CuaClient) -> PrefetchedContext {
@@ -349,5 +363,17 @@ mod tests {
         assert!(updates.len() >= 2, "{updates:?}");
         assert!(updates.windows(2).all(|pair| pair[1] >= pair[0]));
         assert!(updates.iter().any(|ms| *ms > 0));
+    }
+
+    #[test]
+    fn voice_step_label_compacts_and_bounds_turn_text() {
+        assert_eq!(
+            voice_step_label("transcript", " click   the center target "),
+            "transcript: click the center target"
+        );
+
+        let label = voice_step_label("reply", &"done ".repeat(40));
+        assert!(label.chars().count() <= VOICE_STEP_LABEL_MAX);
+        assert!(label.ends_with("..."));
     }
 }

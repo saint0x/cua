@@ -429,6 +429,9 @@ fn agent_step_from_daemon_event(event: &Value, last_sequence: u64) -> Option<(u6
         .get("source")
         .and_then(|value| value.as_str())
         .map(str::to_string);
+    if source.as_deref() == Some("voice") {
+        return None;
+    }
     Some((
         sequence,
         VoiceUiEvent::AgentStep {
@@ -631,6 +634,20 @@ mod tests {
         assert_eq!(sequence, 42);
         assert_eq!(label, "checking current focus");
         assert_eq!(source.as_deref(), Some("agent"));
+        assert!(agent_step_from_daemon_event(&event, 42).is_none());
+    }
+
+    #[test]
+    fn daemon_ui_step_event_ignores_voice_telemetry_echoes() {
+        let event = serde_json::json!({
+            "sequence": 43,
+            "kind": "ui_step",
+            "data": {
+                "label": "reply: done",
+                "source": "voice"
+            }
+        });
+
         assert!(agent_step_from_daemon_event(&event, 42).is_none());
     }
 

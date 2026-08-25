@@ -49,6 +49,7 @@ TRACE_DIR="$OUT_DIR/trace"
 AIFF="$OUT_DIR/input.aiff"
 WAV="$OUT_DIR/input.wav"
 EVENTS="$OUT_DIR/events.jsonl"
+DAEMON_EVENTS="$OUT_DIR/daemon-events.json"
 STATUS="$OUT_DIR/status.json"
 PROOF="$OUT_DIR/proof.json"
 
@@ -112,6 +113,13 @@ CUA_HTTP_TOKEN="$TOKEN" OPENROUTER_API_KEY="$OPENROUTER_API_KEY" "$VOICE_BIN_PAT
 END_MS="$(perl -MTime::HiRes=time -e 'printf "%.0f\n", time() * 1000')"
 VOICE_ELAPSED_MS="$((END_MS - START_MS))"
 
+sleep 0.2
+
+CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" \
+  --server-addr "$ADDR" \
+  --profile "$PROFILE" \
+  events --json > "$DAEMON_EVENTS"
+
 CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" \
   --server-addr "$ADDR" \
   --profile "$PROFILE" \
@@ -137,6 +145,13 @@ jq -s -e '
   "$EVENTS" >/dev/null
 
 jq -e '
+  any(.kind == "ui_step" and .data.source == "voice" and (.data.label | contains("transcript:"))) and
+  any(.kind == "ui_step" and .data.source == "voice" and (.data.label | contains("planning"))) and
+  any(.kind == "ui_step" and .data.source == "voice" and (.data.label | contains("dispatch:"))) and
+  any(.kind == "ui_step" and .data.source == "voice" and (.data.label | contains("reply:")))
+' "$DAEMON_EVENTS" >/dev/null
+
+jq -e '
   .safety_state == $expect_safety_state
 ' --arg expect_safety_state "$EXPECT_SAFETY_STATE" "$STATUS" >/dev/null
 
@@ -149,6 +164,7 @@ jq -n \
   --argjson elapsed_ms "$VOICE_ELAPSED_MS" \
   --argjson budget_ms "$BUDGET_MS" \
   --slurpfile events "$EVENTS" \
+  --slurpfile daemon_events "$DAEMON_EVENTS" \
   --slurpfile status "$STATUS" \
   '{
     schema_version: "cua.voice_proof.v1",
@@ -161,6 +177,7 @@ jq -n \
     budget_ms: $budget_ms,
     within_budget: ($elapsed_ms <= $budget_ms),
     events: ($events | map(.event)),
+    daemon_voice_steps: ($daemon_events[0] | map(select(.kind == "ui_step" and .data.source == "voice") | .data.label)),
     metrics: ($events | map(select(.event == "metric")) | map({(.name): .ms}) | add),
     transcript: (($events | map(select(.event == "transcript")) | first).text),
     dispatch: (($events | map(select(.event == "dispatching")) | first).action),
