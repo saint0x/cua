@@ -1,7 +1,8 @@
 use clap::Parser;
 use cua_voice::activation::ControlDoubleTap;
 use cua_voice::hud::{
-    HudDisplay, HudMetrics, COMPACT_HEIGHT, COMPACT_RADIUS, TOP_MARGIN, WINDOW_HEIGHT, WINDOW_WIDTH,
+    HudDisplay, HudMetrics, COMPACT_HEIGHT, COMPACT_RADIUS, COMPACT_WIDTH, TOP_MARGIN,
+    WINDOW_HEIGHT, WINDOW_WIDTH,
 };
 use cua_voice::orb::paint_orb;
 use cua_voice::ui_state::{HudSnapshot, VoiceUiEvent};
@@ -172,7 +173,7 @@ impl VoiceHud {
 
     fn compact_bar(&self, display: &HudDisplay, metrics: HudMetrics) -> impl IntoElement {
         div()
-            .w(px(metrics.width))
+            .w(px(compact_bar_width(metrics)))
             .h(px(compact_bar_height(metrics)))
             .rounded(px(compact_bar_radius(metrics)))
             .overflow_hidden()
@@ -193,7 +194,7 @@ impl VoiceHud {
             .child(self.orb())
             .child(
                 div()
-                    .w(px(132.0))
+                    .w(px(190.0))
                     .truncate()
                     .text_color(rgb(0xf2f2f6))
                     .text_sm()
@@ -202,7 +203,7 @@ impl VoiceHud {
             .child(Self::divider())
             .child(
                 div()
-                    .w(px(150.0))
+                    .w(px(270.0))
                     .truncate()
                     .text_color(rgb(0xb9b9c0))
                     .text_xs()
@@ -274,6 +275,10 @@ fn dot(alpha: f32) -> impl IntoElement {
         .bg(hsla(244.0 / 360.0, 0.92, 0.70, alpha))
 }
 
+fn compact_bar_width(_: HudMetrics) -> f32 {
+    COMPACT_WIDTH
+}
+
 fn compact_bar_height(_: HudMetrics) -> f32 {
     COMPACT_HEIGHT
 }
@@ -298,7 +303,7 @@ impl Render for VoiceHud {
         window.request_animation_frame();
         let display = HudDisplay::from_snapshot(&self.snapshot);
         let metrics = HudMetrics::interpolate(self.response_progress);
-        window.resize(size(px(metrics.width), px(metrics.height)));
+        window.resize(size(px(WINDOW_WIDTH), px(metrics.height)));
         div()
             .size_full()
             .relative()
@@ -313,6 +318,8 @@ impl Render for VoiceHud {
                 div()
                     .absolute()
                     .inset_0()
+                    .flex()
+                    .justify_center()
                     .child(self.response_panel(&display, metrics))
                     .into_any_element(),
             )
@@ -607,6 +614,8 @@ mod tests {
         let transitioning = HudMetrics::interpolate(0.45);
 
         assert!(transitioning.height > COMPACT_HEIGHT);
+        assert!(transitioning.width < COMPACT_WIDTH);
+        assert_eq!(compact_bar_width(transitioning), COMPACT_WIDTH);
         assert_eq!(compact_bar_height(transitioning), COMPACT_HEIGHT);
         assert_eq!(compact_bar_radius(transitioning), COMPACT_RADIUS);
     }

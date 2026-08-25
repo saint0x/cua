@@ -1,11 +1,11 @@
-pub const COMPACT_WIDTH: f32 = 500.0;
+pub const COMPACT_WIDTH: f32 = 815.0;
 pub const COMPACT_HEIGHT: f32 = 42.0;
 pub const COMPACT_RADIUS: f32 = 21.0;
-pub const EXPANDED_WIDTH: f32 = 500.0;
-pub const EXPANDED_HEIGHT: f32 = 162.0;
+pub const EXPANDED_WIDTH: f32 = 464.0;
+pub const EXPANDED_HEIGHT: f32 = 180.0;
 pub const WINDOW_WIDTH: f32 = COMPACT_WIDTH;
 pub const WINDOW_HEIGHT: f32 = COMPACT_HEIGHT;
-pub const PANEL_RADIUS: f32 = 11.0;
+pub const PANEL_RADIUS: f32 = 16.0;
 pub const TOP_MARGIN: f32 = 0.0;
 
 use crate::ui_state::HudSnapshot;
@@ -208,8 +208,9 @@ mod tests {
 
         assert_eq!(compact.width, COMPACT_WIDTH);
         assert_eq!(compact.height, COMPACT_HEIGHT);
-        assert_eq!(expanded.width, COMPACT_WIDTH);
+        assert_eq!(expanded.width, EXPANDED_WIDTH);
         assert_eq!(expanded.height, EXPANDED_HEIGHT);
+        assert!(expanded.width > expanded.height * 2.0);
         assert!(compact.bar_opacity > expanded.bar_opacity);
         assert_eq!(compact.response_opacity, 0.0);
         assert_eq!(expanded.response_opacity, 1.0);
