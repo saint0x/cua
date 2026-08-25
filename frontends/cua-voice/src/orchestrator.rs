@@ -12,12 +12,14 @@ use std::sync::{
     Arc,
 };
 use std::time::{Duration, Instant};
+use tokio::sync::mpsc;
 
 type LocalTask = tokio::task::JoinHandle<anyhow::Result<CuaClient>>;
 const VOICE_STEP_SOURCE: &str = "voice";
 const VOICE_STEP_TTL_MS: u64 = 5_000;
 const VOICE_STEP_LABEL_MAX: usize = 96;
 const VOICE_STEP_TIMEOUT_MS: u64 = 500;
+const VOICE_STEP_FLUSH_TIMEOUT_MS: u64 = 2_000;
 
 struct PrefetchedContext {
     session: Option<CuaSession>,
@@ -125,11 +127,20 @@ async fn transcribe_and_run_turn_after_local(
     let overlap_started = Instant::now();
     let local = local_task.await.context("join local daemon preflight")??;
     send_metric(&tx, "stt_preflight_overlap_ms", overlap_started.elapsed());
-    publish_voice_step(&local, "transcribing audio").await;
+    let step_publisher = VoiceStepPublisher::start(local.clone());
+    step_publisher.publish("transcribing audio");
     let transcript = stt_task.await.context("join speech to text")??;
     tx.send(VoiceUiEvent::Transcript(transcript.clone())).ok();
-    publish_voice_step(&local, voice_step_label("transcript", &transcript)).await;
-    plan_and_dispatch(config, transcript, Some(api_key), local, tx.clone()).await?;
+    step_publisher.publish(voice_step_label("transcript", &transcript));
+    plan_and_dispatch(
+        config,
+        transcript,
+        Some(api_key),
+        local,
+        step_publisher,
+        tx.clone(),
+    )
+    .await?;
     send_metric(&tx, "turn_total_ms", turn_started.elapsed());
     Ok(())
 }
@@ -142,9 +153,10 @@ async fn run_transcript_turn(
     let turn_started = Instant::now();
     tx.send(VoiceUiEvent::Armed).ok();
     let local = preflight_local_client(&config.profile).await?;
+    let step_publisher = VoiceStepPublisher::start(local.clone());
     tx.send(VoiceUiEvent::Transcript(transcript.clone())).ok();
-    publish_voice_step(&local, voice_step_label("transcript", &transcript)).await;
-    plan_and_dispatch(config, transcript, None, local, tx.clone()).await?;
+    step_publisher.publish(voice_step_label("transcript", &transcript));
+    plan_and_dispatch(config, transcript, None, local, step_publisher, tx.clone()).await?;
     send_metric(&tx, "turn_total_ms", turn_started.elapsed());
     Ok(())
 }
@@ -154,6 +166,7 @@ async fn plan_and_dispatch(
     transcript: String,
     api_key: Option<String>,
     local: CuaClient,
+    step_publisher: VoiceStepPublisher,
     tx: Sender<VoiceUiEvent>,
 ) -> anyhow::Result<()> {
     let plan_started = Instant::now();
@@ -162,14 +175,14 @@ async fn plan_and_dispatch(
             tool: "Command parser".to_string(),
         })
         .ok();
-        publish_voice_step(&local, "planning fast command").await;
+        step_publisher.publish("planning fast command");
         plan
     } else {
         tx.send(VoiceUiEvent::Planning {
             tool: "OpenRouter Vision".to_string(),
         })
         .ok();
-        publish_voice_step(&local, "planning from screen context").await;
+        step_publisher.publish("planning from screen context");
         let wait_started = Instant::now();
         let context = prefetch_context_for_planning(local.clone()).await;
         send_metric(&tx, "context_wait_ms", wait_started.elapsed());
@@ -186,10 +199,10 @@ async fn plan_and_dispatch(
             )
             .await?;
         send_metric(&tx, "plan_ms", plan_started.elapsed());
-        return dispatch_plan(local, context.session, plan, tx).await;
+        return dispatch_plan(local, context.session, plan, step_publisher, tx).await;
     };
     send_metric(&tx, "plan_ms", plan_started.elapsed());
-    dispatch_plan(local, None, plan, tx).await
+    dispatch_plan(local, None, plan, step_publisher, tx).await
 }
 
 async fn prefetch_context(
@@ -214,12 +227,13 @@ async fn dispatch_plan(
     local: CuaClient,
     mut session: Option<CuaSession>,
     plan: PlannedTurn,
+    step_publisher: VoiceStepPublisher,
     tx: Sender<VoiceUiEvent>,
 ) -> anyhow::Result<()> {
     if let Some(action) = &plan.action {
         tx.send(VoiceUiEvent::Dispatching(format!("{action:?}")))
             .ok();
-        publish_voice_step(&local, voice_step_label("dispatch", &format!("{action:?}"))).await;
+        step_publisher.publish(voice_step_label("dispatch", &format!("{action:?}")));
         let dispatch_started = Instant::now();
         let result = match session.as_mut() {
             Some(session) => session.dispatch(action).await?,
@@ -232,11 +246,12 @@ async fn dispatch_plan(
             result["effect"].as_str().unwrap_or("sent")
         )))
         .ok();
-        publish_voice_step(&local, voice_step_label("reply", &plan.response)).await;
+        step_publisher.publish(voice_step_label("reply", &plan.response));
     } else {
-        publish_voice_step(&local, voice_step_label("reply", &plan.response)).await;
+        step_publisher.publish(voice_step_label("reply", &plan.response));
         tx.send(VoiceUiEvent::Reply(plan.response)).ok();
     }
+    step_publisher.finish().await;
     Ok(())
 }
 
@@ -261,20 +276,55 @@ fn spawn_recording_progress(
     })
 }
 
-async fn publish_voice_step(local: &CuaClient, label: impl Into<String>) {
-    let label = label.into();
-    let _ = tokio::time::timeout(
-        Duration::from_millis(VOICE_STEP_TIMEOUT_MS),
-        local.ui_step(
-            label,
-            Some(VOICE_STEP_SOURCE.to_string()),
-            Some(VOICE_STEP_TTL_MS),
-        ),
-    )
-    .await
-    .map(|result| {
-        let _ = result;
-    });
+struct VoiceStepPublisher {
+    tx: mpsc::UnboundedSender<String>,
+    join: tokio::task::JoinHandle<()>,
+}
+
+impl VoiceStepPublisher {
+    fn start(local: CuaClient) -> Self {
+        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        let join = tokio::spawn(async move {
+            let mut session = local.session().await.ok();
+            while let Some(label) = rx.recv().await {
+                let request = async {
+                    if let Some(session) = session.as_mut() {
+                        session
+                            .ui_step(
+                                label,
+                                Some(VOICE_STEP_SOURCE.to_string()),
+                                Some(VOICE_STEP_TTL_MS),
+                            )
+                            .await
+                    } else {
+                        local
+                            .ui_step(
+                                label,
+                                Some(VOICE_STEP_SOURCE.to_string()),
+                                Some(VOICE_STEP_TTL_MS),
+                            )
+                            .await
+                    }
+                };
+                let _ = tokio::time::timeout(Duration::from_millis(VOICE_STEP_TIMEOUT_MS), request)
+                    .await;
+            }
+        });
+        Self { tx, join }
+    }
+
+    fn publish(&self, label: impl Into<String>) {
+        let _ = self.tx.send(label.into());
+    }
+
+    async fn finish(self) {
+        drop(self.tx);
+        let _ = tokio::time::timeout(
+            Duration::from_millis(VOICE_STEP_FLUSH_TIMEOUT_MS),
+            self.join,
+        )
+        .await;
+    }
 }
 
 fn voice_step_label(kind: &str, value: &str) -> String {
