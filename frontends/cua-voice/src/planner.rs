@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 const DEFAULT_PLANNER_TIMEOUT_MS: u64 = 12_000;
+const DEFAULT_PLANNER_ATTEMPTS: usize = 3;
+const DEFAULT_PLANNER_RETRY_BACKOFF_MS: u64 = 220;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlannedTurn {
@@ -57,17 +59,7 @@ impl Planner {
             "max_tokens": 160,
             "temperature": 0,
         });
-        let response = self
-            .client
-            .post("https://openrouter.ai/api/v1/chat/completions")
-            .header(AUTHORIZATION, format!("Bearer {api_key}"))
-            .header(CONTENT_TYPE, "application/json")
-            .header(REFERER, "http://localhost/cua")
-            .json(&body)
-            .timeout(openrouter_planner_timeout())
-            .send()
-            .await
-            .context("send planning request")?;
+        let response = self.send_planning_request(api_key, &body).await?;
         let status = response.status();
         let value: serde_json::Value = response.json().await.context("decode planning response")?;
         if !status.is_success() {
@@ -77,6 +69,51 @@ impl Planner {
             .as_str()
             .unwrap_or_default();
         parse_model_plan(raw)
+    }
+
+    async fn send_planning_request(
+        &self,
+        api_key: &str,
+        body: &serde_json::Value,
+    ) -> anyhow::Result<reqwest::Response> {
+        let attempts =
+            retry_attempts_from_env("CUA_VOICE_PLANNER_RETRY_ATTEMPTS", DEFAULT_PLANNER_ATTEMPTS);
+        let backoff = retry_backoff_from_env(
+            "CUA_VOICE_PLANNER_RETRY_BACKOFF_MS",
+            DEFAULT_PLANNER_RETRY_BACKOFF_MS,
+        );
+        let mut last_error = None;
+        for attempt in 1..=attempts {
+            match self
+                .client
+                .post("https://openrouter.ai/api/v1/chat/completions")
+                .header(AUTHORIZATION, format!("Bearer {api_key}"))
+                .header(CONTENT_TYPE, "application/json")
+                .header(REFERER, "http://localhost/cua")
+                .json(body)
+                .timeout(openrouter_planner_timeout())
+                .send()
+                .await
+            {
+                Ok(response) if !retryable_status(response.status()) || attempt == attempts => {
+                    return Ok(response);
+                }
+                Ok(response) => {
+                    last_error = Some(format!("planning retryable status {}", response.status()));
+                }
+                Err(error) if attempt == attempts || !error.is_request() => {
+                    return Err(error).context("send planning request");
+                }
+                Err(error) => {
+                    last_error = Some(error.to_string());
+                }
+            }
+            tokio::time::sleep(backoff * attempt as u32).await;
+        }
+        bail!(
+            "send planning request failed: {}",
+            last_error.unwrap_or_else(|| "retry attempts exhausted".to_string())
+        )
     }
 }
 
@@ -144,6 +181,27 @@ fn timeout_from_env(name: &str, default_ms: u64) -> Duration {
         .filter(|value| *value > 0)
         .unwrap_or(default_ms);
     Duration::from_millis(ms)
+}
+
+fn retry_attempts_from_env(name: &str, default_attempts: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| (1..=5).contains(value))
+        .unwrap_or(default_attempts)
+}
+
+fn retry_backoff_from_env(name: &str, default_ms: u64) -> Duration {
+    let ms = std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| (10..=2_000).contains(value))
+        .unwrap_or(default_ms);
+    Duration::from_millis(ms)
+}
+
+fn retryable_status(status: reqwest::StatusCode) -> bool {
+    status.as_u16() == 429 || status.is_server_error()
 }
 
 pub fn parse_model_plan(raw: &str) -> anyhow::Result<PlannedTurn> {
@@ -425,5 +483,40 @@ mod tests {
             timeout_from_env("__CUA_VOICE_TEST_TIMEOUT_MISSING", 456),
             Duration::from_millis(456)
         );
+    }
+
+    #[test]
+    fn retry_env_bounds_ignore_invalid_values() {
+        assert_eq!(
+            retry_attempts_from_env("__CUA_VOICE_TEST_RETRY_MISSING", 3),
+            3
+        );
+
+        let attempts = "__CUA_VOICE_TEST_PLANNER_RETRY_ATTEMPTS";
+        std::env::set_var(attempts, "9");
+        assert_eq!(retry_attempts_from_env(attempts, 3), 3);
+        std::env::set_var(attempts, "2");
+        assert_eq!(retry_attempts_from_env(attempts, 3), 2);
+        std::env::remove_var(attempts);
+
+        let backoff = "__CUA_VOICE_TEST_PLANNER_RETRY_BACKOFF";
+        std::env::set_var(backoff, "3");
+        assert_eq!(
+            retry_backoff_from_env(backoff, 220),
+            Duration::from_millis(220)
+        );
+        std::env::set_var(backoff, "500");
+        assert_eq!(
+            retry_backoff_from_env(backoff, 220),
+            Duration::from_millis(500)
+        );
+        std::env::remove_var(backoff);
+    }
+
+    #[test]
+    fn retryable_status_covers_rate_limits_and_server_errors() {
+        assert!(retryable_status(reqwest::StatusCode::TOO_MANY_REQUESTS));
+        assert!(retryable_status(reqwest::StatusCode::BAD_GATEWAY));
+        assert!(!retryable_status(reqwest::StatusCode::UNAUTHORIZED));
     }
 }
