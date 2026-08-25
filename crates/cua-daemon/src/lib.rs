@@ -20,7 +20,7 @@ use cua_core::{
     InputResult, InputRoute, Manifest, MetricBucket, MetricHistogram, MetricsSnapshot,
     ProfilePolicy, RuntimeControlState, RuntimeMode, SafetyState, SCHEMA_VERSION,
 };
-use cua_input::{InputBackend, RefusingInputBackend};
+use cua_input::InputBackend;
 use cua_model::{run_eval_report, EvalConfig, EvalReport};
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -58,7 +58,7 @@ impl DaemonState {
             frame_bus: Arc::new(FrameBus::new(
                 cua_platform_macos::capture_backend_or_synthetic(),
             )),
-            input: Arc::new(RefusingInputBackend),
+            input: cua_platform_macos::input_backend_or_refusing(),
             active_streams: Arc::new(AtomicU32::new(0)),
             bearer_token: Arc::new(bearer_token.into()),
             control: Arc::new(RwLock::new(default_control_state(&profile))),

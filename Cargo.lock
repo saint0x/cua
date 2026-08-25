@@ -466,8 +466,11 @@ dependencies = [
  "async-trait",
  "cua-capture",
  "cua-core",
+ "cua-input",
  "image",
  "sha2",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]
