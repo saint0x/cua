@@ -842,9 +842,20 @@
             "y"
           ],
           "type": "object"
+        },
+        "SafetyState": {
+          "enum": [
+            "running",
+            "paused",
+            "killed"
+          ],
+          "type": "string"
         }
       },
       "properties": {
+        "active_profile": {
+          "type": "string"
+        },
         "active_streams": {
           "format": "uint32",
           "minimum": 0.0,
@@ -877,6 +888,9 @@
         "profile": {
           "type": "string"
         },
+        "safety_state": {
+          "$ref": "#/definitions/SafetyState"
+        },
         "schema_version": {
           "type": "string"
         },
@@ -892,10 +906,12 @@
         }
       },
       "required": [
+        "active_profile",
         "active_streams",
         "model_sessions",
         "permissions",
         "profile",
+        "safety_state",
         "schema_version",
         "started_at",
         "status",
@@ -1594,6 +1610,225 @@
         "version"
       ],
       "title": "Manifest",
+      "type": "object"
+    },
+    "ProfilePolicy": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "CapabilityManifest": {
+          "properties": {
+            "actions": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "apps": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "clipboard": {
+              "type": "boolean"
+            },
+            "displays": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "max_fps": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "model_egress": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "actions",
+            "apps",
+            "clipboard",
+            "displays",
+            "max_fps",
+            "model_egress"
+          ],
+          "type": "object"
+        },
+        "RuntimeMode": {
+          "enum": [
+            "observe",
+            "supervised",
+            "autonomous"
+          ],
+          "type": "string"
+        }
+      },
+      "properties": {
+        "active": {
+          "type": "boolean"
+        },
+        "capabilities": {
+          "$ref": "#/definitions/CapabilityManifest"
+        },
+        "created_wall_ms": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "expires_wall_ms": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "mode": {
+          "$ref": "#/definitions/RuntimeMode"
+        },
+        "name": {
+          "type": "string"
+        },
+        "schema_version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "active",
+        "capabilities",
+        "created_wall_ms",
+        "mode",
+        "name",
+        "schema_version"
+      ],
+      "title": "ProfilePolicy",
+      "type": "object"
+    },
+    "RuntimeControlState": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "CapabilityManifest": {
+          "properties": {
+            "actions": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "apps": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "clipboard": {
+              "type": "boolean"
+            },
+            "displays": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "max_fps": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "model_egress": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "actions",
+            "apps",
+            "clipboard",
+            "displays",
+            "max_fps",
+            "model_egress"
+          ],
+          "type": "object"
+        },
+        "ProfilePolicy": {
+          "properties": {
+            "active": {
+              "type": "boolean"
+            },
+            "capabilities": {
+              "$ref": "#/definitions/CapabilityManifest"
+            },
+            "created_wall_ms": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "expires_wall_ms": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "mode": {
+              "$ref": "#/definitions/RuntimeMode"
+            },
+            "name": {
+              "type": "string"
+            },
+            "schema_version": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "active",
+            "capabilities",
+            "created_wall_ms",
+            "mode",
+            "name",
+            "schema_version"
+          ],
+          "type": "object"
+        },
+        "RuntimeMode": {
+          "enum": [
+            "observe",
+            "supervised",
+            "autonomous"
+          ],
+          "type": "string"
+        },
+        "SafetyState": {
+          "enum": [
+            "running",
+            "paused",
+            "killed"
+          ],
+          "type": "string"
+        }
+      },
+      "properties": {
+        "active_profile": {
+          "$ref": "#/definitions/ProfilePolicy"
+        },
+        "generation": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "safety_state": {
+          "$ref": "#/definitions/SafetyState"
+        },
+        "schema_version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "active_profile",
+        "generation",
+        "safety_state",
+        "schema_version"
+      ],
+      "title": "RuntimeControlState",
       "type": "object"
     }
   }

@@ -133,6 +133,64 @@ pub struct DesktopState {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+pub enum RuntimeMode {
+    Observe,
+    Supervised,
+    Autonomous,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SafetyState {
+    Running,
+    Paused,
+    Killed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct CapabilityManifest {
+    pub actions: Vec<String>,
+    pub displays: Vec<String>,
+    pub apps: Vec<String>,
+    pub clipboard: bool,
+    pub model_egress: bool,
+    pub max_fps: u32,
+}
+
+impl Default for CapabilityManifest {
+    fn default() -> Self {
+        Self {
+            actions: vec!["observe".to_string()],
+            displays: vec!["primary".to_string()],
+            apps: Vec::new(),
+            clipboard: false,
+            model_egress: false,
+            max_fps: 5,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ProfilePolicy {
+    pub schema_version: String,
+    pub name: String,
+    pub mode: RuntimeMode,
+    pub capabilities: CapabilityManifest,
+    pub created_wall_ms: i64,
+    pub expires_wall_ms: Option<i64>,
+    pub active: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct RuntimeControlState {
+    pub schema_version: String,
+    pub active_profile: ProfilePolicy,
+    pub safety_state: SafetyState,
+    pub generation: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum Effect {
     Confirmed,
     Partial,
@@ -264,6 +322,8 @@ pub struct HealthReport {
     pub started_at: DateTime<Utc>,
     pub permissions: PermissionReport,
     pub latest_frame: Option<FrameEnvelope>,
+    pub safety_state: SafetyState,
+    pub active_profile: String,
     pub active_streams: u32,
     pub model_sessions: u32,
     pub last_error: Option<String>,
@@ -314,6 +374,14 @@ pub fn schema_bundle() -> SchemaBundle {
     schemas.insert(
         "HealthReport".to_string(),
         serde_json::json!(schema_for!(HealthReport)),
+    );
+    schemas.insert(
+        "RuntimeControlState".to_string(),
+        serde_json::json!(schema_for!(RuntimeControlState)),
+    );
+    schemas.insert(
+        "ProfilePolicy".to_string(),
+        serde_json::json!(schema_for!(ProfilePolicy)),
     );
     schemas.insert(
         "InputAction".to_string(),

@@ -25,9 +25,25 @@ Initial endpoints:
 - `GET /observe/desktop`
 - `GET /observe/displays`
 - `GET /observe/cursor`
+- `GET /events`
+- `GET /events/live`
+- `POST /profile/create`
+- `POST /profile/activate`
+- `GET /profile/status`
+- `POST /control/pause`
+- `POST /control/resume`
+- `POST /control/kill-switch`
 - `POST /input/mouse`
 - `POST /input/keyboard`
 - `POST /input/clipboard`
 - `POST /model/eval`
 
 `GET /status` reports `active_streams`; stream clients increment the count on connect and decrement after disconnect cleanup.
+
+Profile and safety:
+
+- `POST /profile/create` installs an inactive in-daemon policy with mode, expiry, and capability manifest.
+- `POST /profile/activate` activates the current profile unless the daemon generation has been killed.
+- `POST /control/pause` pauses automation.
+- `POST /control/resume` resumes automation unless kill-switch is active.
+- `POST /control/kill-switch` is terminal for the current daemon generation.

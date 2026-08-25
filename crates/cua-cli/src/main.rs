@@ -1,7 +1,10 @@
 use anyhow::Context;
 use clap::{Args, Parser, Subcommand};
 use cua_capture::{CaptureRequest, FrameBus, SyntheticCaptureBackend};
-use cua_core::{schema_bundle, FrameEncoding, InputAction, MouseButton, SCHEMA_VERSION};
+use cua_core::{
+    schema_bundle, CapabilityManifest, FrameEncoding, InputAction, MouseButton, RuntimeMode,
+    SCHEMA_VERSION,
+};
 use cua_input::InputBackend;
 use cua_model::{run_eval_report, EvalConfig};
 use cua_trace::{TraceRecord, TraceWriter};
@@ -51,6 +54,13 @@ enum Command {
         #[command(subcommand)]
         command: TraceCommand,
     },
+    Profile {
+        #[command(subcommand)]
+        command: ProfileCommand,
+    },
+    Pause(JsonFlag),
+    Resume(JsonFlag),
+    KillSwitch(JsonFlag),
 }
 
 #[derive(Debug, Args)]
@@ -149,6 +159,44 @@ enum TraceCommand {
     },
 }
 
+#[derive(Debug, Subcommand)]
+enum ProfileCommand {
+    Create {
+        name: String,
+        #[arg(long, default_value = "observe")]
+        mode: RuntimeModeArg,
+        #[arg(long)]
+        duration_ms: Option<i64>,
+        #[arg(long)]
+        json: bool,
+    },
+    Activate {
+        #[arg(long)]
+        json: bool,
+    },
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Clone, clap::ValueEnum)]
+enum RuntimeModeArg {
+    Observe,
+    Supervised,
+    Autonomous,
+}
+
+impl From<RuntimeModeArg> for RuntimeMode {
+    fn from(value: RuntimeModeArg) -> Self {
+        match value {
+            RuntimeModeArg::Observe => RuntimeMode::Observe,
+            RuntimeModeArg::Supervised => RuntimeMode::Supervised,
+            RuntimeModeArg::Autonomous => RuntimeMode::Autonomous,
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
@@ -173,6 +221,37 @@ async fn main() -> anyhow::Result<()> {
         Some(Command::Model { command }) => model(command).await,
         Some(Command::Schema { command }) => schema(command).await,
         Some(Command::Trace { command }) => trace(command).await,
+        Some(Command::Profile { command }) => profile(cli.server_addr, &cli.profile, command).await,
+        Some(Command::Pause(flag)) => {
+            post_json(
+                cli.server_addr,
+                &cli.profile,
+                "/control/pause",
+                serde_json::json!({}),
+                flag.json,
+            )
+            .await
+        }
+        Some(Command::Resume(flag)) => {
+            post_json(
+                cli.server_addr,
+                &cli.profile,
+                "/control/resume",
+                serde_json::json!({}),
+                flag.json,
+            )
+            .await
+        }
+        Some(Command::KillSwitch(flag)) => {
+            post_json(
+                cli.server_addr,
+                &cli.profile,
+                "/control/kill-switch",
+                serde_json::json!({}),
+                flag.json,
+            )
+            .await
+        }
     }
 }
 
@@ -190,6 +269,31 @@ async fn get_json(addr: SocketAddr, profile: &str, path: &str, json: bool) -> an
     let value: serde_json::Value = reqwest::Client::new()
         .get(url)
         .bearer_auth(token)
+        .send()
+        .await?
+        .json()
+        .await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&value)?);
+    } else {
+        println!("{value}");
+    }
+    Ok(())
+}
+
+async fn post_json(
+    addr: SocketAddr,
+    profile: &str,
+    path: &str,
+    body: serde_json::Value,
+    json: bool,
+) -> anyhow::Result<()> {
+    let url = format!("http://{addr}{path}");
+    let token = cua_daemon::load_or_create_profile_token(profile).await?;
+    let value: serde_json::Value = reqwest::Client::new()
+        .post(url)
+        .bearer_auth(token)
+        .json(&body)
         .send()
         .await?
         .json()
@@ -389,6 +493,48 @@ async fn trace(command: TraceCommand) -> anyhow::Result<()> {
         }
         TraceCommand::Inspect { dir, json } => inspect_trace(dir, json, false).await,
         TraceCommand::Verify { dir, json } => inspect_trace(dir, json, true).await,
+    }
+}
+
+async fn profile(
+    addr: SocketAddr,
+    active_profile: &str,
+    command: ProfileCommand,
+) -> anyhow::Result<()> {
+    match command {
+        ProfileCommand::Create {
+            name,
+            mode,
+            duration_ms,
+            json,
+        } => {
+            post_json(
+                addr,
+                active_profile,
+                "/profile/create",
+                serde_json::json!({
+                    "name": name,
+                    "mode": RuntimeMode::from(mode),
+                    "duration_ms": duration_ms,
+                    "capabilities": CapabilityManifest::default(),
+                }),
+                json,
+            )
+            .await
+        }
+        ProfileCommand::Activate { json } => {
+            post_json(
+                addr,
+                active_profile,
+                "/profile/activate",
+                serde_json::json!({}),
+                json,
+            )
+            .await
+        }
+        ProfileCommand::Status { json } => {
+            get_json(addr, active_profile, "/profile/status", json).await
+        }
     }
 }
 

@@ -14,8 +14,9 @@ use bytes::Bytes;
 use chrono::Utc;
 use cua_capture::{CaptureRequest, FrameBus, SyntheticCaptureBackend};
 use cua_core::{
-    schema_bundle, ApiErrorBody, CapabilityState, DesktopState, FrameEncoding, HealthReport,
-    InputAction, InputRequest, Manifest, PermissionReport, SCHEMA_VERSION,
+    now_wall_ms, schema_bundle, ApiErrorBody, CapabilityManifest, CapabilityState, DesktopState,
+    FrameEncoding, HealthReport, InputAction, InputRequest, Manifest, PermissionReport,
+    ProfilePolicy, RuntimeControlState, RuntimeMode, SafetyState, SCHEMA_VERSION,
 };
 use cua_input::{InputBackend, RefusingInputBackend};
 use cua_model::{run_eval_report, EvalConfig, EvalReport};
@@ -29,6 +30,7 @@ use std::sync::{
     Arc,
 };
 use std::time::Duration;
+use tokio::sync::RwLock;
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
 
@@ -40,21 +42,25 @@ pub struct DaemonState {
     pub input: Arc<dyn InputBackend>,
     pub active_streams: Arc<AtomicU32>,
     pub bearer_token: Arc<String>,
+    pub control: Arc<RwLock<RuntimeControlState>>,
 }
 
 impl DaemonState {
     pub fn synthetic(profile: impl Into<String>, bearer_token: impl Into<String>) -> Self {
+        let profile = profile.into();
         Self {
-            profile: profile.into(),
+            profile: profile.clone(),
             started_at: Utc::now(),
             frame_bus: Arc::new(FrameBus::new(Arc::new(SyntheticCaptureBackend::default()))),
             input: Arc::new(RefusingInputBackend),
             active_streams: Arc::new(AtomicU32::new(0)),
             bearer_token: Arc::new(bearer_token.into()),
+            control: Arc::new(RwLock::new(default_control_state(&profile))),
         }
     }
 
     pub async fn health(&self) -> HealthReport {
+        let control = self.control.read().await;
         HealthReport {
             schema_version: SCHEMA_VERSION.to_string(),
             status: CapabilityState::Degraded,
@@ -63,6 +69,8 @@ impl DaemonState {
             started_at: self.started_at,
             permissions: PermissionReport::conservative_unknown(),
             latest_frame: self.frame_bus.latest_envelope().await,
+            safety_state: control.safety_state.clone(),
+            active_profile: control.active_profile.name.clone(),
             active_streams: self.active_streams.load(Ordering::Relaxed),
             model_sessions: 0,
             last_error: None,
@@ -87,6 +95,12 @@ pub fn router(state: DaemonState) -> Router {
         .route("/observe/cursor", get(observe_cursor))
         .route("/events", get(events))
         .route("/events/live", get(events_live))
+        .route("/profile/create", post(profile_create))
+        .route("/profile/activate", post(profile_activate))
+        .route("/profile/status", get(profile_status))
+        .route("/control/pause", post(control_pause))
+        .route("/control/resume", post(control_resume))
+        .route("/control/kill-switch", post(control_kill_switch))
         .route("/input/mouse", post(input_action))
         .route("/input/keyboard", post(input_action))
         .route("/input/clipboard", post(input_action))
@@ -193,6 +207,12 @@ async fn manifest() -> Json<Manifest> {
             "GET /observe/desktop".to_string(),
             "GET /events".to_string(),
             "GET /events/live".to_string(),
+            "POST /profile/create".to_string(),
+            "POST /profile/activate".to_string(),
+            "GET /profile/status".to_string(),
+            "POST /control/pause".to_string(),
+            "POST /control/resume".to_string(),
+            "POST /control/kill-switch".to_string(),
             "POST /input/mouse".to_string(),
             "POST /input/keyboard".to_string(),
             "POST /model/eval".to_string(),
@@ -202,9 +222,30 @@ async fn manifest() -> Json<Manifest> {
             "cua status --json".to_string(),
             "cua screenshot --out <path>".to_string(),
             "cua observe --json".to_string(),
+            "cua profile status --json".to_string(),
+            "cua pause --json".to_string(),
+            "cua resume --json".to_string(),
+            "cua kill-switch --json".to_string(),
             "cua model eval".to_string(),
         ],
     })
+}
+
+fn default_control_state(profile_name: &str) -> RuntimeControlState {
+    RuntimeControlState {
+        schema_version: SCHEMA_VERSION.to_string(),
+        active_profile: ProfilePolicy {
+            schema_version: SCHEMA_VERSION.to_string(),
+            name: profile_name.to_string(),
+            mode: RuntimeMode::Observe,
+            capabilities: CapabilityManifest::default(),
+            created_wall_ms: now_wall_ms(),
+            expires_wall_ms: None,
+            active: true,
+        },
+        safety_state: SafetyState::Running,
+        generation: 0,
+    }
 }
 
 async fn schemas() -> Json<cua_core::SchemaBundle> {
@@ -422,6 +463,72 @@ async fn events() -> Json<Vec<serde_json::Value>> {
 
 async fn events_live() -> Json<Vec<serde_json::Value>> {
     events().await
+}
+
+#[derive(Debug, Deserialize)]
+struct ProfileCreateRequest {
+    name: String,
+    mode: RuntimeMode,
+    capabilities: Option<CapabilityManifest>,
+    duration_ms: Option<i64>,
+}
+
+async fn profile_create(
+    State(state): State<DaemonState>,
+    Json(request): Json<ProfileCreateRequest>,
+) -> Json<RuntimeControlState> {
+    let mut control = state.control.write().await;
+    let now = now_wall_ms();
+    control.active_profile = ProfilePolicy {
+        schema_version: SCHEMA_VERSION.to_string(),
+        name: request.name,
+        mode: request.mode,
+        capabilities: request.capabilities.unwrap_or_default(),
+        created_wall_ms: now,
+        expires_wall_ms: request.duration_ms.map(|duration| now + duration.max(0)),
+        active: false,
+    };
+    control.generation += 1;
+    Json(control.clone())
+}
+
+async fn profile_activate(State(state): State<DaemonState>) -> Json<RuntimeControlState> {
+    let mut control = state.control.write().await;
+    if control.safety_state != SafetyState::Killed {
+        control.active_profile.active = true;
+        control.safety_state = SafetyState::Running;
+        control.generation += 1;
+    }
+    Json(control.clone())
+}
+
+async fn profile_status(State(state): State<DaemonState>) -> Json<RuntimeControlState> {
+    Json(state.control.read().await.clone())
+}
+
+async fn control_pause(State(state): State<DaemonState>) -> Json<RuntimeControlState> {
+    let mut control = state.control.write().await;
+    if control.safety_state != SafetyState::Killed {
+        control.safety_state = SafetyState::Paused;
+        control.generation += 1;
+    }
+    Json(control.clone())
+}
+
+async fn control_resume(State(state): State<DaemonState>) -> Json<RuntimeControlState> {
+    let mut control = state.control.write().await;
+    if control.safety_state != SafetyState::Killed {
+        control.safety_state = SafetyState::Running;
+        control.generation += 1;
+    }
+    Json(control.clone())
+}
+
+async fn control_kill_switch(State(state): State<DaemonState>) -> Json<RuntimeControlState> {
+    let mut control = state.control.write().await;
+    control.safety_state = SafetyState::Killed;
+    control.generation += 1;
+    Json(control.clone())
 }
 
 async fn input_action(
