@@ -13,7 +13,11 @@ use gpui::{
     WindowBounds, WindowKind, WindowOptions,
 };
 use rdev::{listen, EventType, Key};
-use std::path::PathBuf;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::io::ErrorKind;
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -108,18 +112,6 @@ impl VoiceHud {
         .size(px(13.0))
     }
 
-    fn large_orb(&self) -> impl IntoElement {
-        let phase = self.snapshot.phase.clone();
-        let elapsed = self.started.elapsed().as_secs_f32();
-        canvas(
-            move |_, _, _| (phase, elapsed),
-            move |bounds, (phase, elapsed), window, _| {
-                paint_orb(window, bounds, &phase, elapsed);
-            },
-        )
-        .size(px(18.0))
-    }
-
     fn chip(label: impl Into<String>) -> impl IntoElement {
         div()
             .px_1()
@@ -211,36 +203,6 @@ impl VoiceHud {
             .child(div().flex_1())
             .child(Self::activity_dots())
     }
-
-    fn response_card(&self, display: &HudDisplay, metrics: HudMetrics) -> impl IntoElement {
-        div()
-            .w(px(metrics.width))
-            .h(px(metrics.height))
-            .rounded(px(metrics.radius))
-            .overflow_hidden()
-            .opacity(metrics.response_opacity)
-            .bg(hsla(0.0, 0.0, 0.0, 0.94))
-            .border_1()
-            .border_color(hsla(0.0, 0.0, 1.0, 0.14))
-            .shadow(vec![BoxShadow {
-                color: hsla(0.0, 0.0, 0.0, 0.62),
-                blur_radius: px(22.0),
-                spread_radius: px(0.0),
-                offset: point(px(0.0), px(10.0)),
-            }])
-            .p_5()
-            .flex()
-            .flex_col()
-            .justify_between()
-            .child(div().flex().items_center().gap_2().child(self.large_orb()))
-            .child(
-                div()
-                    .text_color(rgb(0xf4f4f7))
-                    .text_sm()
-                    .line_height(px(21.0))
-                    .child(display.result.clone()),
-            )
-    }
 }
 
 fn dot(alpha: f32) -> impl IntoElement {
@@ -262,32 +224,20 @@ impl Render for VoiceHud {
         let display = HudDisplay::from_snapshot(&self.snapshot);
         let metrics = HudMetrics::interpolate(self.response_progress);
         window.resize(size(px(metrics.width), px(metrics.height)));
-        div()
-            .size_full()
-            .bg(hsla(0.0, 0.0, 0.0, 0.0))
-            .relative()
-            .overflow_hidden()
-            .child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .child(self.compact_bar(&display, metrics))
-                    .into_any_element(),
-            )
-            .child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .child(self.response_card(&display, metrics))
-                    .into_any_element(),
-            )
+        div().size_full().relative().child(
+            div()
+                .absolute()
+                .inset_0()
+                .child(self.compact_bar(&display, metrics))
+                .into_any_element(),
+        )
     }
 }
 
 fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     let args = Args::parse();
-    let demo = args.demo;
+    let demo = demo_should_run(args.demo);
     let once_transcript = args.once_transcript;
     let once_wav = args.once_wav;
     let once_record = args.once_record;
@@ -312,7 +262,14 @@ fn main() -> anyhow::Result<()> {
         let result = runtime.block_on(run_voice_turn_checked(config, tx));
         print_headless_events(rx);
         return result;
-    } else if demo {
+    }
+
+    let _single_instance = match SingleInstance::acquire(&config.profile)? {
+        Some(instance) => instance,
+        None => return Ok(()),
+    };
+
+    if demo {
         start_demo_cycle(tx.clone());
     } else {
         start_double_control_listener(tx.clone());
@@ -365,6 +322,77 @@ fn print_headless_events(rx: Receiver<VoiceUiEvent>) {
         };
         println!("{value}");
     }
+}
+
+struct SingleInstance {
+    _listener: UnixListener,
+    path: PathBuf,
+}
+
+impl SingleInstance {
+    fn acquire(profile: &str) -> anyhow::Result<Option<Self>> {
+        let path = single_instance_socket_path(profile);
+        match UnixListener::bind(&path) {
+            Ok(listener) => Ok(Some(Self {
+                _listener: listener,
+                path,
+            })),
+            Err(error) if error.kind() == ErrorKind::AddrInUse => {
+                if UnixStream::connect(&path).is_ok() {
+                    return Ok(None);
+                }
+                std::fs::remove_file(&path).ok();
+                let listener = UnixListener::bind(&path)?;
+                Ok(Some(Self {
+                    _listener: listener,
+                    path,
+                }))
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+}
+
+impl Drop for SingleInstance {
+    fn drop(&mut self) {
+        std::fs::remove_file(&self.path).ok();
+    }
+}
+
+fn single_instance_socket_path(profile: &str) -> PathBuf {
+    let mut hasher = DefaultHasher::new();
+    profile.hash(&mut hasher);
+    let hash = hasher.finish();
+    let prefix = profile
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .take(24)
+        .collect::<String>();
+    PathBuf::from("/tmp").join(format!("cua-voice-{prefix}-{hash:016x}.sock"))
+}
+
+fn demo_should_run(requested: bool) -> bool {
+    requested
+        && std::env::current_exe()
+            .map(|path| !path_looks_packaged_app(&path))
+            .unwrap_or(true)
+}
+
+fn path_looks_packaged_app(path: &Path) -> bool {
+    let parts = path
+        .components()
+        .filter_map(|component| component.as_os_str().to_str())
+        .collect::<Vec<_>>();
+
+    parts.windows(3).any(|window| {
+        window[0].ends_with(".app") && window[1] == "Contents" && window[2] == "MacOS"
+    })
 }
 
 fn top_centered_bounds(cx: &App) -> Bounds<gpui::Pixels> {
@@ -460,5 +488,45 @@ mod tests {
         assert!(hud.busy);
         assert_eq!(hud.snapshot.step.label, "mouse_move");
         assert_eq!(hud.snapshot.tool, "Unix socket");
+    }
+
+    #[test]
+    fn packaged_app_ignores_inherited_demo_arg() {
+        assert!(path_looks_packaged_app(Path::new(
+            "/Applications/CUA.app/Contents/MacOS/cua-voice"
+        )));
+        assert!(!demo_should_run_for_path(
+            true,
+            Path::new("/Applications/CUA.app/Contents/MacOS/cua-voice")
+        ));
+        assert!(demo_should_run_for_path(true, Path::new("/tmp/cua-voice")));
+        assert!(!demo_should_run_for_path(
+            false,
+            Path::new("/tmp/cua-voice")
+        ));
+    }
+
+    fn demo_should_run_for_path(requested: bool, path: &Path) -> bool {
+        requested && !path_looks_packaged_app(path)
+    }
+
+    #[test]
+    fn second_voice_hud_instance_exits_before_windowing() {
+        let profile = format!("test-{}", uuid::Uuid::new_v4());
+        let first = SingleInstance::acquire(&profile).unwrap();
+        let second = SingleInstance::acquire(&profile).unwrap();
+
+        assert!(first.is_some());
+        assert!(second.is_none());
+    }
+
+    #[test]
+    fn single_instance_socket_path_sanitizes_profile() {
+        let path = single_instance_socket_path("profile/with spaces");
+        let name = path.file_name().unwrap().to_string_lossy();
+
+        assert!(name.starts_with("cua-voice-profile_with_spaces-"));
+        assert!(name.ends_with(".sock"));
+        assert!(path.to_string_lossy().len() < 104);
     }
 }

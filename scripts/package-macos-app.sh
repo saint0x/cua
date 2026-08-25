@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="${CUA_APP_NAME:-CUA}"
-BUNDLE_ID="${CUA_BUNDLE_ID:-com.saint0x.cua}"
+BUNDLE_ID="${CUA_BUNDLE_ID:-io.saint0x.cua}"
 SIGN_IDENTITY="${CUA_CODESIGN_IDENTITY:--}"
 OUT_DIR="${CUA_APP_OUT_DIR:-$ROOT/artifacts/cua/macos}"
 APP_DIR="$OUT_DIR/$APP_NAME.app"
@@ -44,6 +44,13 @@ rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 install -m 0755 "$BIN" "$MACOS_DIR/cua"
 install -m 0755 "$VOICE_BIN" "$MACOS_DIR/cua-voice"
+cat > "$MACOS_DIR/cua-app" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+DIR="$(cd "$(dirname "$0")" && pwd)"
+exec "$DIR/cua-voice"
+SH
+chmod 0755 "$MACOS_DIR/cua-app"
 
 cat > "$CONTENTS_DIR/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -55,7 +62,7 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
   <key>CFBundleDisplayName</key>
   <string>$APP_NAME</string>
   <key>CFBundleExecutable</key>
-  <string>cua-voice</string>
+  <string>cua-app</string>
   <key>CFBundleIdentifier</key>
   <string>$BUNDLE_ID</string>
   <key>CFBundleInfoDictionaryVersion</key>
@@ -74,6 +81,8 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
   <string>14.0</string>
   <key>LSUIElement</key>
   <true/>
+  <key>NSQuitAlwaysKeepsWindows</key>
+  <false/>
   <key>NSAppleEventsUsageDescription</key>
   <string>CUA needs local automation permission when a supervised profile grants desktop actions.</string>
   <key>NSMicrophoneUsageDescription</key>
@@ -102,5 +111,10 @@ PLIST
 
 /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP_DIR"
 /usr/bin/codesign --display --verbose=2 "$APP_DIR"
+
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+if [[ -x "$LSREGISTER" ]]; then
+  "$LSREGISTER" -f "$APP_DIR"
+fi
 
 echo "$APP_DIR"
