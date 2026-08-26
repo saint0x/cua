@@ -52,6 +52,20 @@ daemon = subprocess.Popen(
     stderr=subprocess.DEVNULL,
 )
 
+class LineReader:
+    def __init__(self, stream):
+        self.stream = stream
+        self.buffer = b""
+
+    def recv_json(self):
+        while b"\n" not in self.buffer:
+            chunk = self.stream.recv(1 << 20)
+            if not chunk:
+                raise RuntimeError("socket closed while waiting for a line")
+            self.buffer += chunk
+        line, self.buffer = self.buffer.split(b"\n", 1)
+        return json.loads(line.decode("utf-8"))
+
 def percentile(values, pct):
     values = sorted(values)
     return values[min(len(values) - 1, int(round((pct / 100) * (len(values) - 1))))]
@@ -64,7 +78,7 @@ def stats(values):
         "max": max(values),
     }
 
-def persistent_call(stream, method, params=None):
+def persistent_call(stream, reader, method, params=None):
     request = {
         "id": str(uuid.uuid4()),
         "token": token,
@@ -73,20 +87,11 @@ def persistent_call(stream, method, params=None):
     }
     sent = time.perf_counter()
     stream.sendall((json.dumps(request) + "\n").encode("utf-8"))
-    line = b""
-    while not line.endswith(b"\n"):
-        line += stream.recv(1 << 20)
+    response = reader.recv_json()
     received = time.perf_counter()
-    response = json.loads(line.decode("utf-8"))
     if not response.get("ok"):
         raise RuntimeError(response)
     return (received - sent) * 1000, response["result"]
-
-def line(stream):
-    value = b""
-    while not value.endswith(b"\n"):
-        value += stream.recv(1 << 20)
-    return json.loads(value.decode("utf-8"))
 
 try:
     ready = None
@@ -106,7 +111,8 @@ try:
 
     stream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     stream.connect(str(socket_path))
-    _, events = persistent_call(stream, "events.snapshot")
+    reader = LineReader(stream)
+    _, events = persistent_call(stream, reader, "events.snapshot")
     sequence = max([event.get("sequence", 0) for event in events] or [0])
 
     step_rtt = []
@@ -114,6 +120,7 @@ try:
     for index in range(80):
         rtt, _ = persistent_call(
             stream,
+            reader,
             "ui.step",
             {
                 "schema_version": "cua.v1",
@@ -130,6 +137,7 @@ try:
         wait_started = time.perf_counter()
         _, new_events = persistent_call(
             stream,
+            reader,
             "events.wait",
             {"after_sequence": sequence, "timeout_ms": 500},
         )
@@ -140,6 +148,7 @@ try:
     for index in range(40):
         rtt, _ = persistent_call(
             stream,
+            reader,
             "input.dispatch",
             {"kind": "pause" if index % 2 == 0 else "resume"},
         )
@@ -149,6 +158,7 @@ try:
     for _ in range(8):
         rtt, _ = persistent_call(
             stream,
+            reader,
             "capture.screenshot",
             {
                 "max_width": 640,
@@ -162,6 +172,7 @@ try:
     time.sleep(0.25)
     visual = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     visual.connect(str(socket_path))
+    visual_reader = LineReader(visual)
     visual_request = {
         "id": str(uuid.uuid4()),
         "token": token,
@@ -175,8 +186,8 @@ try:
     }
     visual_started = time.perf_counter()
     visual.sendall((json.dumps(visual_request) + "\n").encode("utf-8"))
-    first_type = line(visual).get("type")
-    second_type = line(visual).get("type")
+    first_type = visual_reader.recv_json().get("type")
+    second_type = visual_reader.recv_json().get("type")
     visual_first_frame_ms = (time.perf_counter() - visual_started) * 1000
     visual.close()
 

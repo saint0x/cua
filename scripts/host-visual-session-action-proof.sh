@@ -129,7 +129,7 @@ try:
         raise RuntimeError("daemon socket did not become ready")
 
     stream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    stream.settimeout(20.0)
+    stream.settimeout(float(os.environ.get("CUA_VISUAL_ACTION_PROOF_TIMEOUT_SECS", "45")))
     stream.connect(str(socket_path))
     reader = LineReader(stream)
     started_at = time.perf_counter()

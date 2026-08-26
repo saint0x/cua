@@ -162,13 +162,31 @@ fn capture_main_display(
     started: Instant,
     request: CaptureRequest,
 ) -> anyhow::Result<CapturedFrame> {
+    let mut errors = Vec::new();
     if std::env::var("CUA_CAPTURE_USE_SCK").ok().as_deref() == Some("1") {
-        if let Ok(frame) = capture_main_display_sck(started, request.clone()) {
-            return Ok(frame);
+        match capture_main_display_sck(started, request.clone()) {
+            Ok(frame) => return Ok(frame),
+            Err(error) => errors.push(format!("sck: {error}")),
         }
     }
-    capture_main_display_core_graphics(started, request.clone())
-        .or_else(|_| capture_main_display_screencapture(started, request))
+    match capture_main_display_window_list(started, request.clone()) {
+        Ok(frame) => return Ok(frame),
+        Err(error) => errors.push(format!("window_list_image: {error}")),
+    }
+    match capture_main_display_core_graphics(started, request.clone()) {
+        Ok(frame) => return Ok(frame),
+        Err(error) => errors.push(format!("display_image: {error}")),
+    }
+    match capture_main_display_screencapture(started, request) {
+        Ok(frame) => Ok(frame),
+        Err(error) => {
+            errors.push(format!("screencapture: {error}"));
+            anyhow::bail!(
+                "macOS capture failed through all native routes: {}",
+                errors.join("; ")
+            )
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -236,6 +254,30 @@ fn capture_main_display_core_graphics(
         anyhow::bail!(
             "CGDisplayCreateImage returned null; Screen Recording permission may be missing"
         );
+    }
+    let result = unsafe { image_to_frame(started, capture_started, display_id, image, request) };
+    unsafe { CFRelease(image.cast()) };
+    result
+}
+
+#[cfg(target_os = "macos")]
+fn capture_main_display_window_list(
+    started: Instant,
+    request: CaptureRequest,
+) -> anyhow::Result<CapturedFrame> {
+    let capture_started = Instant::now();
+    let display_id = unsafe { CGMainDisplayID() };
+    let bounds = unsafe { CGDisplayBounds(display_id) };
+    let image = unsafe {
+        CGWindowListCreateImage(
+            bounds,
+            CG_WINDOW_LIST_OPTION_ON_SCREEN_ONLY,
+            CG_NULL_WINDOW_ID,
+            CG_WINDOW_IMAGE_DEFAULT,
+        )
+    };
+    if image.is_null() {
+        anyhow::bail!("CGWindowListCreateImage returned null");
     }
     let result = unsafe { image_to_frame(started, capture_started, display_id, image, request) };
     unsafe { CFRelease(image.cast()) };
@@ -946,6 +988,12 @@ unsafe extern "C" {
     fn CGEventCreate(source: *const std::ffi::c_void) -> *const std::ffi::c_void;
     fn CGEventGetLocation(event: *const std::ffi::c_void) -> CGPoint;
     fn CGDisplayCreateImage(display: u32) -> *const std::ffi::c_void;
+    fn CGWindowListCreateImage(
+        screen_bounds: CGRect,
+        list_option: u32,
+        window_id: u32,
+        image_option: u32,
+    ) -> *const std::ffi::c_void;
     fn CGWindowListCopyWindowInfo(option: u32, relative_to_window: u32) -> *const std::ffi::c_void;
     fn CGRectMakeWithDictionaryRepresentation(
         dict: *const std::ffi::c_void,
@@ -1040,6 +1088,10 @@ struct CGRect {
 const CG_HID_EVENT_TAP: u32 = 0;
 #[cfg(target_os = "macos")]
 const CG_WINDOW_LIST_OPTION_ON_SCREEN_ONLY: u32 = 1;
+#[cfg(target_os = "macos")]
+const CG_NULL_WINDOW_ID: u32 = 0;
+#[cfg(target_os = "macos")]
+const CG_WINDOW_IMAGE_DEFAULT: u32 = 0;
 #[cfg(target_os = "macos")]
 const K_CF_NUMBER_SINT64_TYPE: i32 = 4;
 #[cfg(target_os = "macos")]

@@ -65,7 +65,7 @@ impl HudDisplay {
                 .as_ref()
                 .or(snapshot.transcript.as_ref())
                 .map(|text| compact_label(text, 34))
-                .unwrap_or_else(|| snapshot.task.clone()),
+                .unwrap_or_else(|| snapshot.input_label.clone()),
             prompt,
             result,
             phase: snapshot.phase.label(),
@@ -182,6 +182,24 @@ mod tests {
         assert_eq!(display.rows[0].label, "Move 10-20.");
         assert_eq!(display.rows[1].tool, "Socket");
         assert_eq!(display.rows[1].app, "macOS");
+    }
+
+    #[test]
+    fn display_title_uses_live_input_label_without_transcript() {
+        let mut snapshot = HudSnapshot::default();
+        snapshot.apply(VoiceUiEvent::AgentStep {
+            label: "checking browser".to_string(),
+            source: Some("external agent".to_string()),
+            task: Some("Browser task".to_string()),
+            tool: Some("Unix socket".to_string()),
+            step_index: Some(1),
+            step_total: Some(4),
+            ttl_ms: None,
+        });
+
+        let display = HudDisplay::from_snapshot(&snapshot);
+
+        assert_eq!(display.title, "Automated");
     }
 
     #[test]

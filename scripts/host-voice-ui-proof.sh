@@ -4,11 +4,14 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-command -v screencapture >/dev/null
+command -v curl >/dev/null
 command -v python3 >/dev/null
 
 RUN_ID="$(date +%s)"
 PROFILE="${CUA_VOICE_UI_PROOF_PROFILE:-host-voice-ui-proof-$RUN_ID}"
+CAPTURE_PROFILE="${PROFILE}-capture"
+CAPTURE_ADDR="${CUA_VOICE_UI_PROOF_CAPTURE_ADDR:-127.0.0.1:$((26000 + RUN_ID % 1000))}"
+CAPTURE_TOKEN="${CUA_VOICE_UI_PROOF_CAPTURE_TOKEN:-host-voice-ui-proof-token-$RUN_ID}"
 OUT_DIR="${CUA_VOICE_UI_PROOF_OUT_DIR:-artifacts/cua/voice-ui-proof-$RUN_ID}"
 BEFORE="$OUT_DIR/before.png"
 COMPACT="$OUT_DIR/compact.png"
@@ -16,7 +19,15 @@ REPLY="$OUT_DIR/reply.png"
 COLLAPSED="$OUT_DIR/collapsed.png"
 PROOF="$OUT_DIR/proof.json"
 
-cargo build -p cua-voice
+cargo build -p cua -p cua-voice
+
+if [[ -n "${CUA_BIN:-}" ]]; then
+  CUA_BIN_PATH="$CUA_BIN"
+elif [[ -x target/debug/cua ]]; then
+  CUA_BIN_PATH="target/debug/cua"
+else
+  CUA_BIN_PATH="$(find target -path '*/debug/cua' -type f 2>/dev/null | head -n 1)"
+fi
 
 if [[ -n "${CUA_VOICE_BIN:-}" ]]; then
   BIN="$CUA_VOICE_BIN"
@@ -26,13 +37,41 @@ else
   BIN="$(find target -path '*/debug/cua-voice' -type f 2>/dev/null | head -n 1)"
 fi
 
+if [[ -z "$CUA_BIN_PATH" || ! -x "$CUA_BIN_PATH" ]]; then
+  echo "cua binary not found" >&2
+  exit 1
+fi
 if [[ -z "$BIN" || ! -x "$BIN" ]]; then
   echo "cua-voice binary not found" >&2
   exit 1
 fi
 
 mkdir -p "$OUT_DIR"
-screencapture -x "$BEFORE"
+
+CUA_HTTP_TOKEN="$CAPTURE_TOKEN" \
+CUA_RESIDENT_FRAME_FRESH_MS="${CUA_VOICE_UI_PROOF_RESIDENT_FRAME_FRESH_MS:-50}" \
+"$CUA_BIN_PATH" \
+  --server-addr "$CAPTURE_ADDR" \
+  --profile "$CAPTURE_PROFILE" \
+  serve --addr "$CAPTURE_ADDR" --hud-mode headless >/dev/null 2>&1 &
+CAPTURE_PID="$!"
+
+capture_png() {
+  local out="$1"
+  CUA_HTTP_TOKEN="$CAPTURE_TOKEN" "$CUA_BIN_PATH" \
+    --server-addr "$CAPTURE_ADDR" \
+    --profile "$CAPTURE_PROFILE" \
+    screenshot --out "$out" --force-fresh --max-width 1512 --json >/dev/null
+}
+
+for _ in $(seq 1 100); do
+  if curl -fs "http://$CAPTURE_ADDR/healthz" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 0.05
+done
+curl -fsS "http://$CAPTURE_ADDR/healthz" >/dev/null
+capture_png "$BEFORE"
 
 OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-ui-proof-only}" "$BIN" \
   --profile "$PROFILE" \
@@ -42,6 +81,8 @@ PID="$!"
 cleanup() {
   kill "$PID" >/dev/null 2>&1 || true
   wait "$PID" >/dev/null 2>&1 || true
+  kill "$CAPTURE_PID" >/dev/null 2>&1 || true
+  wait "$CAPTURE_PID" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -51,11 +92,11 @@ if ! kill -0 "$PID" >/dev/null 2>&1; then
   exit 1
 fi
 
-screencapture -x "$COMPACT"
+capture_png "$COMPACT"
 sleep "${CUA_VOICE_UI_PROOF_REPLY_WAIT_SECS:-4}"
-screencapture -x "$REPLY"
+capture_png "$REPLY"
 sleep "${CUA_VOICE_UI_PROOF_COLLAPSED_WAIT_SECS:-7}"
-screencapture -x "$COLLAPSED"
+capture_png "$COLLAPSED"
 
 python3 - "$BEFORE" "$COMPACT" "$REPLY" "$COLLAPSED" "$PROOF" <<'PY'
 import json

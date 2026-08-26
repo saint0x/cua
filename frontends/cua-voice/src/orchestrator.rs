@@ -21,6 +21,7 @@ const VOICE_STEP_TTL_MS: u64 = 5_000;
 const VOICE_STEP_LABEL_MAX: usize = 96;
 const VOICE_STEP_TIMEOUT_MS: u64 = 500;
 const VOICE_STEP_FLUSH_TIMEOUT_MS: u64 = 2_000;
+const DEFAULT_CONTEXT_PREFETCH_TIMEOUT_MS: u64 = 2_500;
 
 struct PrefetchedContext {
     session: Option<CuaSession>,
@@ -249,11 +250,25 @@ async fn prefetch_context(
         Ok(session) => session,
         Err(_) => return (None, None, None),
     };
-    let snapshot = match session.context(true).await {
-        Ok(snapshot) => snapshot,
-        Err(_) => return (None, None, None),
-    };
+    let snapshot =
+        match tokio::time::timeout(context_prefetch_timeout(), session.context(true)).await {
+            Ok(Ok(snapshot)) => snapshot,
+            Ok(Err(_)) => return (None, None, None),
+            Err(_) => {
+                let desktop = local.observe().await.ok();
+                return (None, None, desktop);
+            }
+        };
     (Some(session), Some(snapshot.frame), Some(snapshot.desktop))
+}
+
+fn context_prefetch_timeout() -> Duration {
+    let ms = std::env::var("CUA_VOICE_CONTEXT_PREFETCH_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_CONTEXT_PREFETCH_TIMEOUT_MS)
+        .clamp(250, 30_000);
+    Duration::from_millis(ms)
 }
 
 async fn dispatch_plan(
@@ -512,5 +527,20 @@ mod tests {
         assert!(context.session.is_none());
         assert!(context.frame.is_none());
         assert!(context.desktop.is_none());
+    }
+
+    #[test]
+    fn context_prefetch_timeout_is_bounded_for_voice_latency() {
+        std::env::set_var("CUA_VOICE_CONTEXT_PREFETCH_TIMEOUT_MS", "1");
+        assert_eq!(context_prefetch_timeout(), Duration::from_millis(250));
+
+        std::env::set_var("CUA_VOICE_CONTEXT_PREFETCH_TIMEOUT_MS", "60000");
+        assert_eq!(context_prefetch_timeout(), Duration::from_millis(30_000));
+
+        std::env::remove_var("CUA_VOICE_CONTEXT_PREFETCH_TIMEOUT_MS");
+        assert_eq!(
+            context_prefetch_timeout(),
+            Duration::from_millis(DEFAULT_CONTEXT_PREFETCH_TIMEOUT_MS)
+        );
     }
 }

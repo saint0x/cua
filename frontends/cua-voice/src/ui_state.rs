@@ -39,6 +39,7 @@ pub struct HudStep {
 pub struct HudSnapshot {
     pub phase: HudPhase,
     pub mode: UiMode,
+    pub input_label: String,
     pub task: String,
     pub step: HudStep,
     pub tool: String,
@@ -54,6 +55,7 @@ impl Default for HudSnapshot {
         Self {
             phase: HudPhase::Idle,
             mode: UiMode::Headful,
+            input_label: "Voice control".to_string(),
             task: "Voice control".to_string(),
             step: HudStep {
                 index: 0,
@@ -75,6 +77,7 @@ impl HudSnapshot {
         match event {
             VoiceUiEvent::Armed => {
                 self.phase = HudPhase::Armed;
+                self.input_label = "Voice control".to_string();
                 self.step = HudStep::new(1, 4, "Starting recorder");
                 self.tool = "Keyboard".to_string();
                 self.transcript = None;
@@ -85,6 +88,7 @@ impl HudSnapshot {
             }
             VoiceUiEvent::Listening { ms } => {
                 self.phase = HudPhase::Listening;
+                self.input_label = "Voice control".to_string();
                 self.step = HudStep::new(1, 4, format!("Recording {ms} ms"));
                 self.tool = "Microphone".to_string();
                 self.programmed_step_expires_at = None;
@@ -92,6 +96,7 @@ impl HudSnapshot {
             }
             VoiceUiEvent::Transcribing => {
                 self.phase = HudPhase::Transcribing;
+                self.input_label = "Voice control".to_string();
                 self.step = HudStep::new(2, 4, "Speech to text");
                 self.tool = "OpenRouter STT".to_string();
                 self.programmed_step_expires_at = None;
@@ -102,6 +107,7 @@ impl HudSnapshot {
             }
             VoiceUiEvent::Planning { tool } => {
                 self.phase = HudPhase::Planning;
+                self.input_label = "Voice control".to_string();
                 self.step = HudStep::new(3, 4, "Choosing action");
                 self.tool = tool;
                 self.programmed_step_expires_at = None;
@@ -109,6 +115,7 @@ impl HudSnapshot {
             }
             VoiceUiEvent::Dispatching(action) => {
                 self.phase = HudPhase::Dispatching;
+                self.input_label = "Voice control".to_string();
                 self.step = HudStep::new(4, 4, action);
                 self.tool = "Unix socket".to_string();
                 self.programmed_step_expires_at = None;
@@ -134,6 +141,11 @@ impl HudSnapshot {
                     snapshot
                 });
                 self.phase = HudPhase::Planning;
+                self.input_label = if source.as_deref() == Some("voice") {
+                    "Voice control".to_string()
+                } else {
+                    "Automated".to_string()
+                };
                 self.step = HudStep::new(
                     step_index.unwrap_or(3).into(),
                     step_total.unwrap_or(4).into(),
@@ -301,8 +313,29 @@ mod tests {
         assert_eq!(state.step.index, 2);
         assert_eq!(state.step.total, 5);
         assert_eq!(state.tool, "vision");
+        assert_eq!(state.input_label, "Automated");
         assert_eq!(state.transcript.as_deref(), Some("find the red button"));
         assert!(state.programmed_step_expires_at.is_some());
+    }
+
+    #[test]
+    fn voice_and_automation_events_set_live_input_label() {
+        let mut state = HudSnapshot::default();
+
+        state.apply(VoiceUiEvent::Listening { ms: 120 });
+        assert_eq!(state.input_label, "Voice control");
+
+        state.apply(VoiceUiEvent::AgentStep {
+            label: "checking target".to_string(),
+            source: Some("external agent".to_string()),
+            task: Some("Browser task".to_string()),
+            tool: Some("Unix socket".to_string()),
+            step_index: Some(1),
+            step_total: Some(3),
+            ttl_ms: None,
+        });
+        assert_eq!(state.input_label, "Automated");
+        assert_eq!(state.task, "Browser task");
     }
 
     #[test]
