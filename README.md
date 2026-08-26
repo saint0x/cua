@@ -2,7 +2,7 @@
 
 cua is a CLI-first local computer-use runtime for agents. It provides one resident daemon, a local Unix socket protocol for hot control paths, a local HTTP API for operator access, typed desktop observation, action delivery results, trace artifacts, and bounded model evals for selecting vision/action models without turning the project into an agent framework.
 
-On macOS, the shipped product is one menu-bar style app bundle: `cua.app`. The app opens the compact dynamic-island HUD and starts the local runtime it needs; the CLI and HTTP surfaces remain available for agents and operators.
+On macOS, the shipped product is one Dock-visible app bundle: `cua.app`. The app opens the compact dynamic-island HUD and starts the local runtime it needs; the CLI and HTTP surfaces remain available for agents and operators.
 
 Public control surfaces are intentionally limited to:
 

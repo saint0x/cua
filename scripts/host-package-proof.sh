@@ -61,7 +61,7 @@ jq -n \
       $bundle_id == "io.saint0x.cua" and
       ($app_path | endswith("/cua.app")) and
       $executable == "cua-voice" and
-      ($lsui_element == "1" or $lsui_element == "true") and
+      ($lsui_element == "0" or $lsui_element == "false") and
       ($microphone_usage | length) > 0 and
       ($screen_capture_usage | length) > 0 and
       $has_input_monitoring_usage == "false" and

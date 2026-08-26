@@ -42,7 +42,9 @@ sync_openrouter_env() {
   mv "$tmp" "$env_file"
 }
 
-if [[ ! -d "$SOURCE_APP" ]]; then
+if [[ -z "${CUA_APP_SOURCE:-}" ]]; then
+  "$ROOT/scripts/package-macos-app.sh" >/dev/null
+elif [[ ! -d "$SOURCE_APP" ]]; then
   "$ROOT/scripts/package-macos-app.sh" >/dev/null
 fi
 

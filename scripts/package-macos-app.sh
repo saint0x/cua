@@ -43,7 +43,7 @@ cat > "$EMBEDDED_INFO_PLIST" <<PLIST
   <key>LSMinimumSystemVersion</key>
   <string>14.0</string>
   <key>LSUIElement</key>
-  <true/>
+  <false/>
   <key>NSQuitAlwaysKeepsWindows</key>
   <false/>
   <key>NSAppleEventsUsageDescription</key>

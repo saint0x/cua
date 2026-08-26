@@ -254,6 +254,7 @@ impl VoiceHud {
             .h(px(island_height(metrics)))
             .rounded(px(island_radius(metrics)))
             .overflow_hidden()
+            .group("cua-island")
             .opacity(metrics.bar_opacity)
             .bg(hsla(0.0, 0.0, 0.0, 0.92))
             .border_1()
@@ -342,53 +343,49 @@ impl VoiceHud {
         div()
             .flex()
             .items_center()
-            .gap_1()
-            .opacity(0.18)
+            .gap_0p5()
+            .opacity(0.62)
+            .group_hover("cua-island", |style| style.opacity(1.0))
             .hover(|style| style.opacity(1.0))
-            .child(
-                stoplight(0xff5f57)
-                    .id("cua-island-close")
-                    .hover(|style| style.opacity(1.0))
-                    .on_click(cx.listener(|_, _, _, cx| {
-                        cx.quit();
-                    })),
-            )
-            .child(
-                stoplight(0xffbd2e)
-                    .id("cua-island-minimize")
-                    .hover(|style| style.opacity(1.0))
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.minimized = true;
-                        this.expanded = false;
-                        this.drag = None;
-                        cx.notify();
-                        cx.stop_propagation();
-                    })),
-            )
-            .child(
-                stoplight(0x28c840)
-                    .id("cua-island-expand")
-                    .hover(|style| style.opacity(1.0))
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.expanded = !this.expanded;
-                        this.minimized = false;
-                        this.drag = None;
-                        cx.notify();
-                        if let Some(display) = window.display(cx) {
-                            let bounds = animated_island_bounds(
-                                window.bounds(),
-                                HudMetrics::with_expansion(
-                                    this.response_progress,
-                                    this.expansion_progress,
-                                ),
-                                this.minimized_progress,
-                                display.bounds(),
-                            );
-                            window.set_bounds(bounds);
-                        }
-                        cx.stop_propagation();
-                    })),
-            )
+            .child(stoplight(0xff5f57).on_mouse_down(
+                GpuiMouseButton::Left,
+                cx.listener(|_, _, _, cx| {
+                    cx.quit();
+                    cx.stop_propagation();
+                }),
+            ))
+            .child(stoplight(0xffbd2e).on_mouse_down(
+                GpuiMouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.minimized = true;
+                    this.expanded = false;
+                    this.drag = None;
+                    cx.notify();
+                    cx.stop_propagation();
+                }),
+            ))
+            .child(stoplight(0x28c840).on_mouse_down(
+                GpuiMouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    this.expanded = !this.expanded;
+                    this.minimized = false;
+                    this.drag = None;
+                    cx.notify();
+                    if let Some(display) = window.display(cx) {
+                        let bounds = animated_island_bounds(
+                            window.bounds(),
+                            HudMetrics::with_expansion(
+                                this.response_progress,
+                                this.expansion_progress,
+                            ),
+                            this.minimized_progress,
+                            display.bounds(),
+                        );
+                        window.set_bounds(bounds);
+                    }
+                    cx.stop_propagation();
+                }),
+            ))
     }
 
     fn minimized_icon(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -721,13 +718,23 @@ fn dot(style: ActivityDotStyle) -> impl IntoElement {
 
 fn stoplight(color: u32) -> Div {
     div()
-        .w(px(8.0))
-        .h(px(8.0))
+        .w(px(16.0))
+        .h(px(16.0))
         .rounded_full()
-        .opacity(0.72)
-        .bg(rgb(color))
-        .border_1()
-        .border_color(hsla(0.0, 0.0, 0.0, 0.35))
+        .opacity(0.82)
+        .hover(|style| style.opacity(1.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(
+            div()
+                .w(px(9.0))
+                .h(px(9.0))
+                .rounded_full()
+                .bg(rgb(color))
+                .border_1()
+                .border_color(hsla(0.0, 0.0, 0.0, 0.35)),
+        )
 }
 
 fn action_glyph() -> impl IntoElement {
