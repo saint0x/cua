@@ -168,6 +168,10 @@ pub fn cursor_state() -> CursorState {
     native_cursor_state()
 }
 
+pub fn control_key_is_down() -> bool {
+    native_control_key_is_down()
+}
+
 pub fn window_list() -> anyhow::Result<Vec<WindowInfo>> {
     native_window_list()
 }
@@ -509,6 +513,19 @@ fn native_cursor_state() -> CursorState {
         visible: true,
         included_in_frame: false,
     }
+}
+
+#[cfg(target_os = "macos")]
+fn native_control_key_is_down() -> bool {
+    unsafe {
+        CGEventSourceKeyState(K_CG_EVENT_SOURCE_STATE_HID_SYSTEM_STATE, K_VK_CONTROL)
+            || CGEventSourceKeyState(K_CG_EVENT_SOURCE_STATE_HID_SYSTEM_STATE, K_VK_RIGHT_CONTROL)
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn native_control_key_is_down() -> bool {
+    false
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -922,6 +939,9 @@ fn screen_recording_permission() -> PermissionState {
 
 #[cfg(target_os = "macos")]
 fn native_request_screen_recording_access() -> PermissionState {
+    if screen_recording_permission() == PermissionState::Granted {
+        return PermissionState::Granted;
+    }
     if unsafe { CGRequestScreenCaptureAccess() } {
         PermissionState::Granted
     } else {
@@ -951,6 +971,9 @@ fn native_input_monitoring_permission() -> PermissionState {
 
 #[cfg(target_os = "macos")]
 fn native_request_input_monitoring_access() -> PermissionState {
+    if native_input_monitoring_permission() == PermissionState::Granted {
+        return PermissionState::Granted;
+    }
     if unsafe { IOHIDRequestAccess(K_IOHID_REQUEST_TYPE_LISTEN_EVENT) } {
         PermissionState::Granted
     } else {
@@ -1033,6 +1056,7 @@ unsafe extern "C" {
     fn CGMainDisplayID() -> u32;
     fn CGEventCreate(source: *const std::ffi::c_void) -> *const std::ffi::c_void;
     fn CGEventGetLocation(event: *const std::ffi::c_void) -> CGPoint;
+    fn CGEventSourceKeyState(state_id: i32, virtual_key: u16) -> bool;
     fn CGDisplayCreateImage(display: u32) -> *const std::ffi::c_void;
     fn CGWindowListCopyWindowInfo(option: u32, relative_to_window: u32) -> *const std::ffi::c_void;
     fn CGRectMakeWithDictionaryRepresentation(
@@ -1131,6 +1155,10 @@ const K_IOHID_ACCESS_TYPE_GRANTED: i32 = 0;
 const K_IOHID_ACCESS_TYPE_DENIED: i32 = 1;
 #[cfg(target_os = "macos")]
 const K_IOHID_ACCESS_TYPE_UNKNOWN: i32 = 2;
+
+const K_CG_EVENT_SOURCE_STATE_HID_SYSTEM_STATE: i32 = 1;
+const K_VK_CONTROL: u16 = 0x3B;
+const K_VK_RIGHT_CONTROL: u16 = 0x3E;
 
 #[cfg(target_os = "macos")]
 #[repr(C)]
@@ -1264,6 +1292,11 @@ mod tests {
         let cursor = cursor_state();
         assert!(cursor.x.is_finite());
         assert!(cursor.y.is_finite());
+    }
+
+    #[test]
+    fn native_control_key_state_is_observable() {
+        let _ = control_key_is_down();
     }
 
     #[test]

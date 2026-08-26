@@ -1,3 +1,3 @@
 # cua Remaining Production Plan
 
-- Verify the installed GUI process has macOS Input Monitoring trust for double-Control activation.
+- Prove installed GUI double-Control activation works without requiring macOS Input Monitoring trust.

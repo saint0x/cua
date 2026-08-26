@@ -869,9 +869,7 @@ async fn permissions(profile: &str, command: PermissionCommand) -> anyhow::Resul
         }
     };
     if preflight {
-        let _ = cua_platform_macos::request_screen_recording_access();
-        let _ = cua_platform_macos::request_accessibility_input_access();
-        let _ = cua_platform_macos::request_input_monitoring_access();
+        request_missing_desktop_permissions();
     }
     let permission_report = cua_platform_macos::permission_report();
     let report = serde_json::json!({
@@ -890,6 +888,26 @@ async fn permissions(profile: &str, command: PermissionCommand) -> anyhow::Resul
         println!("{report}");
     }
     Ok(())
+}
+
+fn request_missing_desktop_permissions() {
+    let report = cua_platform_macos::permission_report();
+    if should_request_permission(report.screen_recording) {
+        let _ = cua_platform_macos::request_screen_recording_access();
+    }
+    if should_request_permission(report.accessibility_input) {
+        let _ = cua_platform_macos::request_accessibility_input_access();
+    }
+    if should_request_permission(report.input_monitoring) {
+        let _ = cua_platform_macos::request_input_monitoring_access();
+    }
+}
+
+fn should_request_permission(state: cua_core::PermissionState) -> bool {
+    matches!(
+        state,
+        cua_core::PermissionState::Missing | cua_core::PermissionState::Denied
+    )
 }
 
 async fn unix_request_json(
@@ -1595,5 +1613,22 @@ mod tests {
         assert_eq!(action["from_y"], 25);
         assert_eq!(action["to_x"], 400);
         assert_eq!(action["to_y"], 50);
+    }
+
+    #[test]
+    fn preflight_does_not_request_granted_permissions() {
+        assert!(!should_request_permission(
+            cua_core::PermissionState::Granted
+        ));
+        assert!(!should_request_permission(
+            cua_core::PermissionState::NotApplicable
+        ));
+        assert!(!should_request_permission(
+            cua_core::PermissionState::Unknown
+        ));
+        assert!(should_request_permission(
+            cua_core::PermissionState::Missing
+        ));
+        assert!(should_request_permission(cua_core::PermissionState::Denied));
     }
 }

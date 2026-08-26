@@ -864,6 +864,23 @@ fn start_double_control_listener(tx: Sender<VoiceUiEvent>) {
     });
 }
 
+fn start_double_control_poll_listener(tx: Sender<VoiceUiEvent>) {
+    std::thread::spawn(move || {
+        let mut detector = ControlDoubleTap::default();
+        let mut was_down = false;
+        loop {
+            let is_down = cua_platform_macos::control_key_is_down();
+            if is_down && !was_down {
+                detector.key_down();
+            } else if !is_down && was_down && detector.key_up(Instant::now()) {
+                tx.send(VoiceUiEvent::Armed).ok();
+            }
+            was_down = is_down;
+            std::thread::sleep(Duration::from_millis(16));
+        }
+    });
+}
+
 fn start_embedded_daemon_if_needed(
     profile: String,
     runtime: Arc<tokio::runtime::Runtime>,
@@ -898,10 +915,7 @@ fn start_double_control_listener_if_allowed(profile: String, tx: Sender<VoiceUiE
     if permission == PermissionState::Granted {
         start_double_control_listener(tx);
     } else {
-        tx.send(VoiceUiEvent::Error(
-            "Input Monitoring permission is required for the double-Control shortcut.".to_string(),
-        ))
-        .ok();
+        start_double_control_poll_listener(tx);
     }
 }
 
