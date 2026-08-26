@@ -297,6 +297,28 @@ pub struct UiReplyResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+pub enum UiMode {
+    Headful,
+    Headless,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct UiModeRequest {
+    pub schema_version: String,
+    pub mode: UiMode,
+    pub source: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct UiModeResult {
+    pub schema_version: String,
+    pub accepted: bool,
+    pub mode: UiMode,
+    pub source: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum Effect {
     Confirmed,
     Partial,
@@ -588,6 +610,14 @@ pub fn schema_bundle() -> SchemaBundle {
     schemas.insert(
         "UiReplyResult".to_string(),
         serde_json::json!(schema_for!(UiReplyResult)),
+    );
+    schemas.insert(
+        "UiModeRequest".to_string(),
+        serde_json::json!(schema_for!(UiModeRequest)),
+    );
+    schemas.insert(
+        "UiModeResult".to_string(),
+        serde_json::json!(schema_for!(UiModeResult)),
     );
     schemas.insert(
         "InputAction".to_string(),

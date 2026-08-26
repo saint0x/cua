@@ -5,7 +5,7 @@ use cua_capture::{CaptureRequest, FrameBus, SyntheticCaptureBackend};
 use cua_core::{
     schema_bundle, CapabilityManifest, ClipboardReadRequest, ClipboardWriteRequest,
     DesktopContextSnapshot, FrameEncoding, FramePayload, InputAction, MouseButton, RuntimeMode,
-    UiReplyRequest, UiStepRequest, SCHEMA_VERSION,
+    UiMode, UiModeRequest, UiReplyRequest, UiStepRequest, SCHEMA_VERSION,
 };
 use cua_model::{run_eval_report, EvalConfig};
 use cua_trace::{ActionTurnRecord, TraceRecord, TraceWriter};
@@ -248,6 +248,29 @@ enum UiCommand {
         #[arg(long)]
         json: bool,
     },
+    Mode {
+        #[arg(value_enum)]
+        mode: UiModeArg,
+        #[arg(long)]
+        source: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Clone, clap::ValueEnum)]
+enum UiModeArg {
+    Headful,
+    Headless,
+}
+
+impl From<UiModeArg> for UiMode {
+    fn from(value: UiModeArg) -> Self {
+        match value {
+            UiModeArg::Headful => UiMode::Headful,
+            UiModeArg::Headless => UiMode::Headless,
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -462,6 +485,7 @@ async fn print_usage_and_status(server_addr: SocketAddr) -> anyhow::Result<()> {
     println!("       cua stream --unix --frames 3 --json");
     println!("       cua ui step <label> --step-index 2 --step-total 5 --json");
     println!("       cua ui reply <text> --json");
+    println!("       cua ui mode headless|headful --json");
     println!("       cua perf live --json");
     println!("       cua context --json");
     println!("       cua screenshot --out /tmp/screen.png");
@@ -514,6 +538,20 @@ async fn ui(addr: SocketAddr, profile: &str, command: UiCommand) -> anyhow::Resu
                     text,
                     source,
                     ttl_ms,
+                })?,
+                json,
+            )
+            .await
+        }
+        UiCommand::Mode { mode, source, json } => {
+            post_json(
+                addr,
+                profile,
+                "/ui/mode",
+                serde_json::to_value(UiModeRequest {
+                    schema_version: SCHEMA_VERSION.to_string(),
+                    mode: mode.into(),
+                    source,
                 })?,
                 json,
             )

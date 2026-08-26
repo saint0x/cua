@@ -19,8 +19,8 @@ use cua_core::{
     DesktopContextSnapshot, DesktopState, Effect, Evidence, EvidenceKind, FrameActionRequest,
     FrameEncoding, FramePayload, HealthReport, InputAction, InputRequest, InputResult, InputRoute,
     Manifest, MetricBucket, MetricHistogram, MetricsSnapshot, PermissionReport, ProfilePolicy,
-    RuntimeControlState, RuntimeMode, SafetyState, UiReplyRequest, UiReplyResult, UiStepRequest,
-    UiStepResult, VisualSessionRequest, SCHEMA_VERSION,
+    RuntimeControlState, RuntimeMode, SafetyState, UiModeRequest, UiModeResult, UiReplyRequest,
+    UiReplyResult, UiStepRequest, UiStepResult, VisualSessionRequest, SCHEMA_VERSION,
 };
 use cua_input::InputBackend;
 use cua_model::{run_eval_report, EvalConfig, EvalReport};
@@ -887,6 +887,7 @@ pub fn router(state: DaemonState) -> Router {
         .route("/events/live", get(events_live))
         .route("/ui/step", post(ui_step))
         .route("/ui/reply", post(ui_reply))
+        .route("/ui/mode", post(ui_mode))
         .route("/profile/create", post(profile_create))
         .route("/profile/activate", post(profile_activate))
         .route("/profile/status", get(profile_status))
@@ -1284,6 +1285,20 @@ async fn handle_unix_request(state: &DaemonState, request: UnixRequest) -> serde
                 }
             }
         }
+        "ui.mode" => {
+            let params = request.params.unwrap_or_else(|| serde_json::json!({}));
+            match serde_json::from_value::<UiModeRequest>(params) {
+                Ok(request) => ui_mode_state(state, request).map(serde_json::to_value),
+                Err(error) => {
+                    return unix_error(
+                        id,
+                        "bad_request",
+                        error.to_string(),
+                        Some(StatusCode::BAD_REQUEST),
+                    )
+                }
+            }
+        }
         "observe.desktop" => desktop_state(state).await.map(serde_json::to_value),
         "context.snapshot" => {
             let params = request.params.unwrap_or_else(|| serde_json::json!({}));
@@ -1483,6 +1498,7 @@ fn manifest_payload() -> Manifest {
             "GET /events/live?after=<sequence>&timeout_ms=<ms>".to_string(),
             "POST /ui/step".to_string(),
             "POST /ui/reply".to_string(),
+            "POST /ui/mode".to_string(),
             "POST /profile/create".to_string(),
             "POST /profile/activate".to_string(),
             "GET /profile/status".to_string(),
@@ -1505,6 +1521,7 @@ fn manifest_payload() -> Manifest {
             "cua events --json [--after <sequence>]".to_string(),
             "cua ui step <label> --step-index <n> --step-total <n> --json".to_string(),
             "cua ui reply <text> --json".to_string(),
+            "cua ui mode headless|headful --json".to_string(),
             "cua stream --unix --json".to_string(),
             "cua perf live --json".to_string(),
             "cua screenshot --out <path>".to_string(),
@@ -1878,6 +1895,13 @@ async fn ui_reply(
     Ok(Json(ui_reply_state(&state, request)?))
 }
 
+async fn ui_mode(
+    State(state): State<DaemonState>,
+    Json(request): Json<UiModeRequest>,
+) -> Result<Json<UiModeResult>, ApiError> {
+    Ok(Json(ui_mode_state(&state, request)?))
+}
+
 fn ui_step_state(state: &DaemonState, request: UiStepRequest) -> Result<UiStepResult, ApiError> {
     if request.schema_version != SCHEMA_VERSION {
         return Err(ApiError::bad_request(
@@ -2032,6 +2056,29 @@ fn ui_reply_state(state: &DaemonState, request: UiReplyRequest) -> Result<UiRepl
             "text": result.text,
             "source": result.source,
             "ttl_ms": result.ttl_ms,
+        }),
+    );
+    Ok(result)
+}
+
+fn ui_mode_state(state: &DaemonState, request: UiModeRequest) -> Result<UiModeResult, ApiError> {
+    if request.schema_version != SCHEMA_VERSION {
+        return Err(ApiError::bad_request(
+            "schema_version",
+            format!("expected {SCHEMA_VERSION}"),
+        ));
+    }
+    let result = UiModeResult {
+        schema_version: SCHEMA_VERSION.to_string(),
+        accepted: true,
+        mode: request.mode,
+        source: normalize_optional_step_field(request.source, 48),
+    };
+    state.publish_event(
+        "ui_mode",
+        serde_json::json!({
+            "mode": result.mode,
+            "source": result.source,
         }),
     );
     Ok(result)
@@ -3433,6 +3480,24 @@ mod tests {
         assert_eq!(step["step_index"], 1);
         assert_eq!(step["step_total"], 3);
 
+        let mode = unix_result(
+            handle_unix_request(
+                &state,
+                unix_request(
+                    "ui.mode",
+                    serde_json::json!({
+                        "schema_version": SCHEMA_VERSION,
+                        "mode": "headless",
+                        "source": "unix proof"
+                    }),
+                ),
+            )
+            .await,
+        );
+        assert_eq!(mode["accepted"], true);
+        assert_eq!(mode["mode"], "headless");
+        assert_eq!(mode["source"], "unix proof");
+
         let profile = unix_result(
             handle_unix_request(
                 &state,
@@ -3464,7 +3529,8 @@ mod tests {
             .filter_map(|event| event["kind"].as_str())
             .collect::<Vec<_>>();
         assert!(event_kinds.contains(&"ui_step"));
-        assert!(events.as_array().unwrap().len() >= 4);
+        assert!(event_kinds.contains(&"ui_mode"));
+        assert!(events.as_array().unwrap().len() >= 5);
 
         let last_sequence = events
             .as_array()
@@ -3745,6 +3811,35 @@ mod tests {
         assert_eq!(reply["data"]["text"], "Done with the target.");
         assert_eq!(reply["data"]["source"], "external agent");
         assert_eq!(reply["data"]["ttl_ms"], 250);
+    }
+
+    #[tokio::test]
+    async fn ui_mode_emits_live_headless_headful_event() {
+        let state = DaemonState::synthetic("test", "token");
+
+        let Json(result) = ui_mode(
+            State(state.clone()),
+            Json(UiModeRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                mode: cua_core::UiMode::Headless,
+                source: Some("  cli   ".to_string()),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert!(result.accepted);
+        assert_eq!(result.mode, cua_core::UiMode::Headless);
+        assert_eq!(result.source.as_deref(), Some("cli"));
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let events = state.events.snapshot().await;
+        let mode = events
+            .iter()
+            .find(|event| event["kind"] == "ui_mode")
+            .expect("ui_mode event");
+        assert_eq!(mode["data"]["mode"], "headless");
+        assert_eq!(mode["data"]["source"], "cli");
     }
 
     #[tokio::test]

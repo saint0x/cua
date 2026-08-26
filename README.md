@@ -33,6 +33,8 @@ cargo run -p cua -- metrics --json
 cargo run -p cua -- events --json
 cargo run -p cua -- ui step "checking target" --task "Click target" --tool vision --step-index 2 --step-total 5 --json
 cargo run -p cua -- ui reply "Done with the target." --json
+cargo run -p cua -- ui mode headless --json
+cargo run -p cua -- ui mode headful --json
 cargo run -p cua -- perf bench screenshot --iterations 5 --json
 cargo run -p cua -- context --json --force-fresh
 cargo run -p cua -- screenshot --out artifacts/cua/smoke/screen.png --json
@@ -49,6 +51,8 @@ cargo run -p cua -- stream --unix --frames 3 --json
 `cua` automatically loads environment values from the current directory `.env`, `CUA_ENV_FILE`, and `~/.cua/.env`. `OPENROUTER_API_KEY` can live in any of those locations.
 
 `cua serve` refuses non-loopback binds unless `--allow-lan` is explicit. The daemon also opens a profile-local socket at `~/.cua/profiles/<profile>/daemon.sock`; the app runtime uses that socket for context snapshots, visual sessions, and input dispatch. The local APIs use a per-profile bearer token stored at `~/.cua/profiles/<profile>/http.token`; CLI and app commands load it automatically.
+
+Run `cua-voice --headful` for the visible dynamic-island HUD or `cua-voice --headless` for the same resident voice/control event loop without a visible HUD. Agents can switch a running HUD with `cua ui mode headless|headful`.
 
 Voice capture and OpenRouter calls can be tuned with `CUA_VOICE_RECORD_MIN_MS`, `CUA_VOICE_RECORD_SILENCE_MS`, `CUA_VOICE_RECORD_THRESHOLD`, `CUA_VOICE_STT_TIMEOUT_MS`, `CUA_VOICE_STT_RETRY_ATTEMPTS`, `CUA_VOICE_STT_RETRY_BACKOFF_MS`, `CUA_VOICE_PLANNER_TIMEOUT_MS`, `CUA_VOICE_PLANNER_RETRY_ATTEMPTS`, and `CUA_VOICE_PLANNER_RETRY_BACKOFF_MS`.
 
@@ -114,4 +118,4 @@ fozzy replay artifacts/cua/macos/fozzy/cua-smoke.fozzy --json
 
 ## Status
 
-The current runtime has production-shaped contracts, daemon/CLI plumbing, Unix socket voice transport, persistent Unix visual-control sessions, frame-relative action dispatch, macOS permission probes, profile policy state, pause/resume/kill-switch controls, profile-gated daemon clipboard, daemon-owned capture/encode/input/event/permission/trace/model lanes, ScreenCaptureKit-backed macOS capture with CoreGraphics fallback, native macOS display/cursor/window observation, CGEvent mouse/keyboard input with refusing fallback, signed macOS app packaging, continuous MJPEG/WebSocket streams, schema export, trace inspection, and bounded model evals.
+The current runtime has production-shaped contracts, daemon/CLI plumbing, Unix socket voice transport, live headless/headful HUD mode switching, persistent Unix visual-control sessions, frame-relative action dispatch, macOS permission probes, profile policy state, pause/resume/kill-switch controls, profile-gated daemon clipboard, daemon-owned capture/encode/input/event/permission/trace/model lanes, ScreenCaptureKit-backed macOS capture with CoreGraphics fallback, native macOS display/cursor/window observation, CGEvent mouse/keyboard input with refusing fallback, signed macOS app packaging, continuous MJPEG/WebSocket streams, schema export, trace inspection, and bounded model evals.

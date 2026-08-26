@@ -1,4 +1,5 @@
 use clap::Parser;
+use cua_core::UiMode;
 use cua_voice::activation::ControlDoubleTap;
 use cua_voice::agent_events::{
     agent_reply_from_daemon_event, agent_step_from_daemon_event,
@@ -50,6 +51,10 @@ struct Args {
     planner_model: String,
     #[arg(long)]
     demo: bool,
+    #[arg(long, conflicts_with = "headless")]
+    headful: bool,
+    #[arg(long, conflicts_with = "headful")]
+    headless: bool,
     #[arg(long)]
     once_transcript: Option<String>,
     #[arg(long)]
@@ -88,13 +93,16 @@ impl VoiceHud {
         config: VoiceConfig,
         runtime: Arc<tokio::runtime::Runtime>,
         execute_turns: bool,
+        mode: UiMode,
     ) -> Self {
+        let mut snapshot = HudSnapshot::default();
+        snapshot.apply(VoiceUiEvent::UiMode { mode });
         Self {
             rx,
             tx,
             config,
             runtime,
-            snapshot: HudSnapshot::default(),
+            snapshot,
             busy: false,
             execute_turns,
             started: Instant::now(),
@@ -411,6 +419,11 @@ fn should_reset_after_reply_collapse(reply_window_expired: bool, response_progre
 impl Render for VoiceHud {
     fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         self.drain_events();
+        if !self.snapshot.is_headful() {
+            window.resize(size(px(1.0), px(1.0)));
+            window.request_animation_frame();
+            return div().size_full().opacity(0.0).into_any_element();
+        }
         let reply_window_expired =
             self.snapshot.expanded_until.is_some() && !self.snapshot.is_expanded();
         self.tick_animation();
@@ -424,10 +437,14 @@ impl Render for VoiceHud {
         let center_text = center_text_for(&display, &self.snapshot, metrics);
         self.sync_center_text(&center_text);
         window.resize(size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT)));
-        div().size_full().relative().child(
-            self.compact_bar(&display, metrics, center_text)
-                .into_any_element(),
-        )
+        div()
+            .size_full()
+            .relative()
+            .child(
+                self.compact_bar(&display, metrics, center_text)
+                    .into_any_element(),
+            )
+            .into_any_element()
     }
 }
 
@@ -435,6 +452,7 @@ fn main() -> anyhow::Result<()> {
     load_cua_dotenv();
     let args = Args::parse();
     let demo = demo_should_run(args.demo);
+    let ui_mode = ui_mode_from_flags(args.headful, args.headless);
     let once_transcript = args.once_transcript;
     let once_wav = args.once_wav;
     let once_record = args.once_record;
@@ -515,12 +533,23 @@ fn main() -> anyhow::Result<()> {
                 let tx = tx.clone();
                 let config = config.clone();
                 let execute_turns = !demo;
-                move |_, cx| cx.new(|_| VoiceHud::new(rx, tx, config, runtime, execute_turns))
+                move |_, cx| {
+                    cx.new(|_| {
+                        VoiceHud::new(rx, tx, config, runtime, execute_turns, ui_mode.clone())
+                    })
+                }
             },
         )
         .unwrap();
     });
     Ok(())
+}
+
+fn ui_mode_from_flags(headful: bool, headless: bool) -> UiMode {
+    match (headful, headless) {
+        (_, true) => UiMode::Headless,
+        _ => UiMode::Headful,
+    }
 }
 
 fn load_cua_dotenv() {
@@ -570,6 +599,9 @@ fn print_headless_events(rx: Receiver<VoiceUiEvent>) {
                 ttl_ms,
             } => {
                 serde_json::json!({"event": "agent_step", "label": label, "source": source, "task": task, "tool": tool, "step_index": step_index, "step_total": step_total, "ttl_ms": ttl_ms})
+            }
+            VoiceUiEvent::UiMode { mode } => {
+                serde_json::json!({"event": "ui_mode", "mode": mode})
             }
             VoiceUiEvent::Reply(text) => serde_json::json!({"event": "reply", "text": text}),
             VoiceUiEvent::Error(text) => serde_json::json!({"event": "error", "text": text}),
@@ -821,7 +853,14 @@ mod tests {
     fn busy_voice_turn_ignores_duplicate_arm_event() {
         let (tx, rx) = channel::<VoiceUiEvent>();
         let runtime = Arc::new(tokio::runtime::Runtime::new().unwrap());
-        let mut hud = VoiceHud::new(rx, tx.clone(), VoiceConfig::default(), runtime, true);
+        let mut hud = VoiceHud::new(
+            rx,
+            tx.clone(),
+            VoiceConfig::default(),
+            runtime,
+            true,
+            UiMode::Headful,
+        );
         hud.busy = true;
         hud.snapshot
             .apply(VoiceUiEvent::Dispatching("mouse_move".to_string()));
@@ -899,6 +938,29 @@ mod tests {
         let snapshot = HudSnapshot::default();
 
         assert_eq!(center_status_text(&snapshot), "Ready");
+    }
+
+    #[test]
+    fn ui_mode_flags_default_headful_and_accept_headless() {
+        assert_eq!(ui_mode_from_flags(false, false), UiMode::Headful);
+        assert_eq!(ui_mode_from_flags(true, false), UiMode::Headful);
+        assert_eq!(ui_mode_from_flags(false, true), UiMode::Headless);
+    }
+
+    #[test]
+    fn hud_constructor_applies_initial_ui_mode() {
+        let (_tx, rx) = channel::<VoiceUiEvent>();
+        let runtime = Arc::new(tokio::runtime::Runtime::new().unwrap());
+        let hud = VoiceHud::new(
+            rx,
+            channel::<VoiceUiEvent>().0,
+            VoiceConfig::default(),
+            runtime,
+            true,
+            UiMode::Headless,
+        );
+
+        assert_eq!(hud.snapshot.mode, UiMode::Headless);
     }
 
     #[test]

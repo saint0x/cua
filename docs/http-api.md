@@ -31,6 +31,7 @@ Initial endpoints:
 - `GET /events/live?after=<sequence>&timeout_ms=<ms>`: bounded long-poll event wait from the daemon event lane
 - `POST /ui/step`: publish an agent-programmed visible HUD step with `label`, optional `task`, `tool`, `source`, `step_index`, `step_total`, and `ttl_ms`
 - `POST /ui/reply`: publish an agent-programmed visible HUD reply flash with `text`, optional `source`, and `ttl_ms`
+- `POST /ui/mode`: switch a running HUD between `headful` and `headless` without changing the underlying computer-use control path
 - `POST /profile/create`
 - `POST /profile/activate`
 - `GET /profile/status`

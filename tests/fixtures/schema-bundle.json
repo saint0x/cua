@@ -3053,6 +3053,74 @@
       "title": "RuntimeControlState",
       "type": "object"
     },
+    "UiModeRequest": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "UiMode": {
+          "enum": [
+            "headful",
+            "headless"
+          ],
+          "type": "string"
+        }
+      },
+      "properties": {
+        "mode": {
+          "$ref": "#/definitions/UiMode"
+        },
+        "schema_version": {
+          "type": "string"
+        },
+        "source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "mode",
+        "schema_version"
+      ],
+      "title": "UiModeRequest",
+      "type": "object"
+    },
+    "UiModeResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "UiMode": {
+          "enum": [
+            "headful",
+            "headless"
+          ],
+          "type": "string"
+        }
+      },
+      "properties": {
+        "accepted": {
+          "type": "boolean"
+        },
+        "mode": {
+          "$ref": "#/definitions/UiMode"
+        },
+        "schema_version": {
+          "type": "string"
+        },
+        "source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "accepted",
+        "mode",
+        "schema_version"
+      ],
+      "title": "UiModeResult",
+      "type": "object"
+    },
     "UiReplyRequest": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {

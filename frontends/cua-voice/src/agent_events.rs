@@ -1,4 +1,5 @@
 use crate::ui_state::VoiceUiEvent;
+use cua_core::UiMode;
 use serde_json::Value;
 
 pub fn agent_ui_event_from_daemon_event_advancing_cursor(
@@ -22,8 +23,32 @@ pub fn agent_ui_event_from_daemon_event(
 ) -> Option<(u64, VoiceUiEvent)> {
     agent_step_from_daemon_event(event, last_sequence)
         .or_else(|| agent_reply_from_daemon_event(event, last_sequence))
+        .or_else(|| agent_mode_from_daemon_event(event, last_sequence))
         .or_else(|| agent_visual_session_from_daemon_event(event, last_sequence))
         .or_else(|| agent_input_from_daemon_event(event, last_sequence))
+}
+
+pub fn agent_mode_from_daemon_event(
+    event: &Value,
+    last_sequence: u64,
+) -> Option<(u64, VoiceUiEvent)> {
+    let sequence = event.get("sequence").and_then(|value| value.as_u64())?;
+    if sequence <= last_sequence {
+        return None;
+    }
+    if event.get("kind").and_then(|value| value.as_str()) != Some("ui_mode") {
+        return None;
+    }
+    let mode = event
+        .get("data")
+        .and_then(|data| data.get("mode"))
+        .and_then(|value| value.as_str())?;
+    let mode = match mode {
+        "headful" => UiMode::Headful,
+        "headless" => UiMode::Headless,
+        _ => return None,
+    };
+    Some((sequence, VoiceUiEvent::UiMode { mode }))
 }
 
 pub fn agent_step_from_daemon_event(
@@ -287,6 +312,28 @@ mod tests {
         });
 
         assert!(agent_reply_from_daemon_event(&event, 44).is_none());
+    }
+
+    #[test]
+    fn daemon_ui_mode_event_maps_to_live_visibility_mode() {
+        let event = serde_json::json!({
+            "sequence": 46,
+            "kind": "ui_mode",
+            "data": {
+                "mode": "headless",
+                "source": "cli"
+            }
+        });
+
+        let Some((sequence, VoiceUiEvent::UiMode { mode })) =
+            agent_mode_from_daemon_event(&event, 45)
+        else {
+            panic!("expected ui mode event");
+        };
+
+        assert_eq!(sequence, 46);
+        assert_eq!(mode, UiMode::Headless);
+        assert!(agent_mode_from_daemon_event(&event, 46).is_none());
     }
 
     #[test]

@@ -1,3 +1,4 @@
+use cua_core::UiMode;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,6 +38,7 @@ pub struct HudStep {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HudSnapshot {
     pub phase: HudPhase,
+    pub mode: UiMode,
     pub task: String,
     pub step: HudStep,
     pub tool: String,
@@ -51,6 +53,7 @@ impl Default for HudSnapshot {
     fn default() -> Self {
         Self {
             phase: HudPhase::Idle,
+            mode: UiMode::Headful,
             task: "Voice control".to_string(),
             step: HudStep {
                 index: 0,
@@ -145,6 +148,9 @@ impl HudSnapshot {
                 self.programmed_step_restore =
                     self.programmed_step_expires_at.map(|_| Box::new(restore));
             }
+            VoiceUiEvent::UiMode { mode } => {
+                self.mode = mode;
+            }
             VoiceUiEvent::Reply(text) => {
                 self.phase = HudPhase::Reply;
                 self.step = HudStep::new(4, 4, "Done");
@@ -172,6 +178,10 @@ impl HudSnapshot {
         self.expanded_until
             .map(|deadline| Instant::now() < deadline)
             .unwrap_or(false)
+    }
+
+    pub fn is_headful(&self) -> bool {
+        self.mode == UiMode::Headful
     }
 
     pub fn expire_programmed_step(&mut self, now: Instant) -> bool {
@@ -220,6 +230,9 @@ pub enum VoiceUiEvent {
         step_index: Option<u16>,
         step_total: Option<u16>,
         ttl_ms: Option<u64>,
+    },
+    UiMode {
+        mode: UiMode,
     },
     Reply(String),
     Error(String),
@@ -381,5 +394,27 @@ mod tests {
         assert_eq!(state.phase, HudPhase::Dispatching);
         assert_eq!(state.step.label, "click 10 20");
         assert_eq!(state.tool, "Unix socket");
+    }
+
+    #[test]
+    fn ui_mode_event_toggles_headful_state_without_resetting_work() {
+        let mut state = HudSnapshot::default();
+        state.apply(VoiceUiEvent::Dispatching(
+            "mouse click at 10,10".to_string(),
+        ));
+        state.apply(VoiceUiEvent::UiMode {
+            mode: UiMode::Headless,
+        });
+
+        assert!(!state.is_headful());
+        assert_eq!(state.phase, HudPhase::Dispatching);
+        assert_eq!(state.step.label, "mouse click at 10,10");
+
+        state.apply(VoiceUiEvent::UiMode {
+            mode: UiMode::Headful,
+        });
+
+        assert!(state.is_headful());
+        assert_eq!(state.phase, HudPhase::Dispatching);
     }
 }

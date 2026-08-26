@@ -1,7 +1,8 @@
 use anyhow::{bail, Context};
 use cua_core::{
     DesktopContextSnapshot, DesktopState, FrameActionRequest, FrameEncoding, FrameEnvelope,
-    FramePayload, InputAction, UiReplyRequest, UiStepRequest, SCHEMA_VERSION,
+    FramePayload, InputAction, UiMode, UiModeRequest, UiReplyRequest, UiStepRequest,
+    SCHEMA_VERSION,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -130,6 +131,18 @@ impl CuaClient {
                 text: text.into(),
                 source,
                 ttl_ms,
+            })?),
+        )
+        .await
+    }
+
+    pub async fn ui_mode(&self, mode: UiMode, source: Option<String>) -> anyhow::Result<Value> {
+        self.request(
+            "ui.mode",
+            Some(serde_json::to_value(UiModeRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                mode,
+                source,
             })?),
         )
         .await
@@ -293,6 +306,18 @@ impl CuaSession {
                 text: text.into(),
                 source,
                 ttl_ms,
+            })?),
+        )
+        .await
+    }
+
+    pub async fn ui_mode(&mut self, mode: UiMode, source: Option<String>) -> anyhow::Result<Value> {
+        self.request(
+            "ui.mode",
+            Some(serde_json::to_value(UiModeRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                mode,
+                source,
             })?),
         )
         .await

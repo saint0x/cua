@@ -20,6 +20,8 @@ HTTP_EVENTS="$OUT_DIR/http-events.json"
 HTTP_EVENTS_AFTER="$OUT_DIR/http-events-after.json"
 HTTP_UI_STEP="$OUT_DIR/http-ui-step.json"
 HTTP_UI_REPLY="$OUT_DIR/http-ui-reply.json"
+HTTP_UI_MODE_HEADLESS="$OUT_DIR/http-ui-mode-headless.json"
+HTTP_UI_MODE_HEADFUL="$OUT_DIR/http-ui-mode-headful.json"
 HTTP_OBSERVE="$OUT_DIR/http-observe.json"
 HTTP_CONTEXT="$OUT_DIR/http-context.json"
 HTTP_SCREENSHOT="$OUT_DIR/http-screenshot.json"
@@ -32,6 +34,8 @@ CLI_EVENTS="$OUT_DIR/cli-events.json"
 CLI_EVENTS_AFTER="$OUT_DIR/cli-events-after.json"
 CLI_UI_STEP="$OUT_DIR/cli-ui-step.json"
 CLI_UI_REPLY="$OUT_DIR/cli-ui-reply.json"
+CLI_UI_MODE_HEADLESS="$OUT_DIR/cli-ui-mode-headless.json"
+CLI_UI_MODE_HEADFUL="$OUT_DIR/cli-ui-mode-headful.json"
 CLI_OBSERVE="$OUT_DIR/cli-observe.json"
 CLI_CONTEXT="$OUT_DIR/cli-context.json"
 CLI_PROFILE="$OUT_DIR/cli-profile.json"
@@ -48,6 +52,8 @@ UNIX_EVENTS_AFTER="$OUT_DIR/unix-events-after.json"
 UNIX_EVENTS_WAIT="$OUT_DIR/unix-events-wait.json"
 UNIX_UI_STEP="$OUT_DIR/unix-ui-step.json"
 UNIX_UI_REPLY="$OUT_DIR/unix-ui-reply.json"
+UNIX_UI_MODE_HEADLESS="$OUT_DIR/unix-ui-mode-headless.json"
+UNIX_UI_MODE_HEADFUL="$OUT_DIR/unix-ui-mode-headful.json"
 VOICE_AGENT_STEP="$OUT_DIR/voice-agent-step.json"
 VOICE_AGENT_REPLY="$OUT_DIR/voice-agent-reply.json"
 UNIX_CONTEXT="$OUT_DIR/unix-context.json"
@@ -177,6 +183,16 @@ curl -fsS \
   -H "content-type: application/json" \
   -d '{"schema_version":"cua.v1","text":"http programmable reply","source":"http proof","ttl_ms":1750}' \
   "http://$ADDR/ui/reply" > "$HTTP_UI_REPLY"
+curl -fsS \
+  -H "authorization: Bearer $TOKEN" \
+  -H "content-type: application/json" \
+  -d '{"schema_version":"cua.v1","mode":"headless","source":"http proof"}' \
+  "http://$ADDR/ui/mode" > "$HTTP_UI_MODE_HEADLESS"
+curl -fsS \
+  -H "authorization: Bearer $TOKEN" \
+  -H "content-type: application/json" \
+  -d '{"schema_version":"cua.v1","mode":"headful","source":"http proof"}' \
+  "http://$ADDR/ui/mode" > "$HTTP_UI_MODE_HEADFUL"
 curl -fsS -H "authorization: Bearer $TOKEN" "http://$ADDR/events" > "$HTTP_EVENTS"
 HTTP_AFTER_SEQUENCE="$(jq -r '.[0].sequence' "$HTTP_EVENTS")"
 curl -fsS -H "authorization: Bearer $TOKEN" "http://$ADDR/events?after=$HTTP_AFTER_SEQUENCE" > "$HTTP_EVENTS_AFTER"
@@ -214,6 +230,12 @@ CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFIL
   --source "cli proof" \
   --ttl-ms 1750 \
   --json > "$CLI_UI_REPLY"
+CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFILE" ui mode headless \
+  --source "cli proof" \
+  --json > "$CLI_UI_MODE_HEADLESS"
+CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFILE" ui mode headful \
+  --source "cli proof" \
+  --json > "$CLI_UI_MODE_HEADFUL"
 CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFILE" events --json > "$CLI_EVENTS"
 CLI_AFTER_SEQUENCE="$(jq -r '.[0].sequence' "$CLI_EVENTS")"
 CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFILE" events --after "$CLI_AFTER_SEQUENCE" --json > "$CLI_EVENTS_AFTER"
@@ -238,6 +260,8 @@ unix_call "manifest" '{}' "$UNIX_MANIFEST"
 unix_call "metrics" '{}' "$UNIX_METRICS"
 unix_call "ui.step" '{"schema_version":"cua.v1","label":"unix programmable step","source":"unix proof","task":"unix task","tool":"unix tool","step_index":4,"step_total":5,"ttl_ms":1500}' "$UNIX_UI_STEP"
 unix_call "ui.reply" '{"schema_version":"cua.v1","text":"unix programmable reply","source":"unix proof","ttl_ms":1750}' "$UNIX_UI_REPLY"
+unix_call "ui.mode" '{"schema_version":"cua.v1","mode":"headless","source":"unix proof"}' "$UNIX_UI_MODE_HEADLESS"
+unix_call "ui.mode" '{"schema_version":"cua.v1","mode":"headful","source":"unix proof"}' "$UNIX_UI_MODE_HEADFUL"
 unix_call "events.snapshot" '{}' "$UNIX_EVENTS"
 UNIX_AFTER_SEQUENCE="$(jq -r '.[0].sequence' "$UNIX_EVENTS")"
 unix_call "events.after" "{\"after_sequence\":$UNIX_AFTER_SEQUENCE}" "$UNIX_EVENTS_AFTER"
@@ -260,7 +284,7 @@ unix_call "control.resume" '{}' "$UNIX_RESUME"
 
 jq -e '.schema_version == "cua.v1" and .active_profile == $profile' \
   --arg profile "$PROFILE" "$HTTP_STATUS" >/dev/null
-jq -e '(.public_surfaces | index("cli")) and (.public_surfaces | index("local_http")) and (.endpoints | index("POST /context/snapshot")) and (.endpoints | index("POST /input/frame")) and (.endpoints | index("UNIX visual.session"))' \
+jq -e '(.public_surfaces | index("cli")) and (.public_surfaces | index("local_http")) and (.endpoints | index("POST /context/snapshot")) and (.endpoints | index("POST /input/frame")) and (.endpoints | index("UNIX visual.session")) and (.endpoints | index("POST /ui/mode"))' \
   "$HTTP_MANIFEST" >/dev/null
 jq -e '.schema_version == "cua.v1" and (.histograms | type) == "array" and (.counters | type) == "object"' \
   "$HTTP_METRICS" >/dev/null
@@ -268,9 +292,13 @@ jq -e '.accepted == true and .label == "http programmable step" and .source == "
   "$HTTP_UI_STEP" >/dev/null
 jq -e '.accepted == true and .text == "http programmable reply" and .source == "http proof" and .ttl_ms == 1750' \
   "$HTTP_UI_REPLY" >/dev/null
-jq -e 'type == "array" and length >= 1 and .[0].kind == "daemon_started" and any(.[]; .kind == "ui_step" and .data.label == "http programmable step" and .data.task == "http task" and .data.tool == "http tool" and .data.step_index == 2 and .data.step_total == 5 and .data.ttl_ms == 1500) and any(.[]; .kind == "ui_reply" and .data.text == "http programmable reply" and .data.source == "http proof" and .data.ttl_ms == 1750)' \
+jq -e '.accepted == true and .mode == "headless" and .source == "http proof"' \
+  "$HTTP_UI_MODE_HEADLESS" >/dev/null
+jq -e '.accepted == true and .mode == "headful" and .source == "http proof"' \
+  "$HTTP_UI_MODE_HEADFUL" >/dev/null
+jq -e 'type == "array" and length >= 1 and .[0].kind == "daemon_started" and any(.[]; .kind == "ui_step" and .data.label == "http programmable step" and .data.task == "http task" and .data.tool == "http tool" and .data.step_index == 2 and .data.step_total == 5 and .data.ttl_ms == 1500) and any(.[]; .kind == "ui_reply" and .data.text == "http programmable reply" and .data.source == "http proof" and .data.ttl_ms == 1750) and any(.[]; .kind == "ui_mode" and .data.mode == "headless" and .data.source == "http proof") and any(.[]; .kind == "ui_mode" and .data.mode == "headful" and .data.source == "http proof")' \
   "$HTTP_EVENTS" >/dev/null
-jq -e 'type == "array" and length >= 1 and all(.[]; .sequence > '"$HTTP_AFTER_SEQUENCE"') and any(.[]; .kind == "ui_step" and .data.label == "http programmable step" and .data.task == "http task" and .data.tool == "http tool" and .data.step_index == 2 and .data.step_total == 5 and .data.ttl_ms == 1500) and any(.[]; .kind == "ui_reply" and .data.text == "http programmable reply" and .data.source == "http proof" and .data.ttl_ms == 1750)' \
+jq -e 'type == "array" and length >= 1 and all(.[]; .sequence > '"$HTTP_AFTER_SEQUENCE"') and any(.[]; .kind == "ui_step" and .data.label == "http programmable step" and .data.task == "http task" and .data.tool == "http tool" and .data.step_index == 2 and .data.step_total == 5 and .data.ttl_ms == 1500) and any(.[]; .kind == "ui_reply" and .data.text == "http programmable reply" and .data.source == "http proof" and .data.ttl_ms == 1750) and any(.[]; .kind == "ui_mode" and .data.mode == "headless" and .data.source == "http proof") and any(.[]; .kind == "ui_mode" and .data.mode == "headful" and .data.source == "http proof")' \
   "$HTTP_EVENTS_AFTER" >/dev/null
 jq -e '(.displays | length) >= 1 and (.windows | type) == "array" and (.cursor.visible | type) == "boolean"' \
   "$HTTP_OBSERVE" >/dev/null
@@ -284,7 +312,7 @@ jq -e '.effect == "confirmed" and .route == "accessibility"' "$HTTP_FRAME_ACTION
 jq -e '.x == '"$EXPECTED_FRAME_X"' and .y == '"$EXPECTED_FRAME_Y" "$HTTP_CURSOR_AFTER_FRAME_ACTION" >/dev/null
 jq -e '.schema_version == "cua.v1" and .active_profile == $profile' \
   --arg profile "$PROFILE" "$CLI_STATUS" >/dev/null
-jq -e '(.public_surfaces | index("cli")) and (.public_surfaces | index("local_http")) and (.commands | index("cua context --json")) and (.commands | index("cua stream --unix --json"))' \
+jq -e '(.public_surfaces | index("cli")) and (.public_surfaces | index("local_http")) and (.commands | index("cua context --json")) and (.commands | index("cua stream --unix --json")) and (.commands | index("cua ui mode headless|headful --json"))' \
   "$CLI_MANIFEST" >/dev/null
 jq -e '.schema_version == "cua.v1" and (.histograms | type) == "array" and (.counters | type) == "object"' \
   "$CLI_METRICS" >/dev/null
@@ -292,9 +320,13 @@ jq -e '.accepted == true and .label == "cli programmable step" and .source == "c
   "$CLI_UI_STEP" >/dev/null
 jq -e '.accepted == true and .text == "cli programmable reply" and .source == "cli proof" and .ttl_ms == 1750' \
   "$CLI_UI_REPLY" >/dev/null
-jq -e 'type == "array" and length >= 1 and .[0].kind == "daemon_started" and any(.[]; .kind == "ui_step" and .data.label == "cli programmable step" and .data.task == "cli task" and .data.tool == "cli tool" and .data.step_index == 3 and .data.step_total == 5 and .data.ttl_ms == 1500) and any(.[]; .kind == "ui_reply" and .data.text == "cli programmable reply" and .data.source == "cli proof" and .data.ttl_ms == 1750)' \
+jq -e '.accepted == true and .mode == "headless" and .source == "cli proof"' \
+  "$CLI_UI_MODE_HEADLESS" >/dev/null
+jq -e '.accepted == true and .mode == "headful" and .source == "cli proof"' \
+  "$CLI_UI_MODE_HEADFUL" >/dev/null
+jq -e 'type == "array" and length >= 1 and .[0].kind == "daemon_started" and any(.[]; .kind == "ui_step" and .data.label == "cli programmable step" and .data.task == "cli task" and .data.tool == "cli tool" and .data.step_index == 3 and .data.step_total == 5 and .data.ttl_ms == 1500) and any(.[]; .kind == "ui_reply" and .data.text == "cli programmable reply" and .data.source == "cli proof" and .data.ttl_ms == 1750) and any(.[]; .kind == "ui_mode" and .data.mode == "headless" and .data.source == "cli proof") and any(.[]; .kind == "ui_mode" and .data.mode == "headful" and .data.source == "cli proof")' \
   "$CLI_EVENTS" >/dev/null
-jq -e 'type == "array" and length >= 1 and all(.[]; .sequence > '"$CLI_AFTER_SEQUENCE"') and any(.[]; .kind == "ui_step" and .data.label == "cli programmable step" and .data.task == "cli task" and .data.tool == "cli tool" and .data.step_index == 3 and .data.step_total == 5 and .data.ttl_ms == 1500) and any(.[]; .kind == "ui_reply" and .data.text == "cli programmable reply" and .data.source == "cli proof" and .data.ttl_ms == 1750)' \
+jq -e 'type == "array" and length >= 1 and all(.[]; .sequence > '"$CLI_AFTER_SEQUENCE"') and any(.[]; .kind == "ui_step" and .data.label == "cli programmable step" and .data.task == "cli task" and .data.tool == "cli tool" and .data.step_index == 3 and .data.step_total == 5 and .data.ttl_ms == 1500) and any(.[]; .kind == "ui_reply" and .data.text == "cli programmable reply" and .data.source == "cli proof" and .data.ttl_ms == 1750) and any(.[]; .kind == "ui_mode" and .data.mode == "headless" and .data.source == "cli proof") and any(.[]; .kind == "ui_mode" and .data.mode == "headful" and .data.source == "cli proof")' \
   "$CLI_EVENTS_AFTER" >/dev/null
 jq -e '(.displays | length) >= 1 and (.windows | type) == "array" and (.cursor.visible | type) == "boolean"' \
   "$CLI_OBSERVE" >/dev/null
@@ -310,7 +342,7 @@ jq -s -e 'map(select(.type == "frame")) | length == 2 and all(.[]; .frame.envelo
   "$CLI_STREAM" >/dev/null
 jq -e '.schema_version == "cua.v1" and .active_profile == $profile' \
   --arg profile "$PROFILE" "$UNIX_STATUS" >/dev/null
-jq -e '(.public_surfaces | index("local_unix_socket")) and (.endpoints | index("POST /context/snapshot")) and (.endpoints | index("UNIX visual.session"))' \
+jq -e '(.public_surfaces | index("local_unix_socket")) and (.endpoints | index("POST /context/snapshot")) and (.endpoints | index("UNIX visual.session")) and (.endpoints | index("POST /ui/mode"))' \
   "$UNIX_MANIFEST" >/dev/null
 jq -e '.schema_version == "cua.v1" and (.histograms | type) == "array" and (.counters | type) == "object"' \
   "$UNIX_METRICS" >/dev/null
@@ -318,11 +350,15 @@ jq -e '.accepted == true and .label == "unix programmable step" and .source == "
   "$UNIX_UI_STEP" >/dev/null
 jq -e '.accepted == true and .text == "unix programmable reply" and .source == "unix proof" and .ttl_ms == 1750' \
   "$UNIX_UI_REPLY" >/dev/null
-jq -e 'type == "array" and length >= 1 and .[0].kind == "daemon_started" and any(.[]; .kind == "visual_session_started" and .data.fps == 5) and any(.[]; .kind == "ui_step" and .data.label == "unix programmable step" and .data.task == "unix task" and .data.tool == "unix tool" and .data.step_index == 4 and .data.step_total == 5 and .data.ttl_ms == 1500) and any(.[]; .kind == "ui_reply" and .data.text == "unix programmable reply" and .data.source == "unix proof" and .data.ttl_ms == 1750)' \
+jq -e '.accepted == true and .mode == "headless" and .source == "unix proof"' \
+  "$UNIX_UI_MODE_HEADLESS" >/dev/null
+jq -e '.accepted == true and .mode == "headful" and .source == "unix proof"' \
+  "$UNIX_UI_MODE_HEADFUL" >/dev/null
+jq -e 'type == "array" and length >= 1 and .[0].kind == "daemon_started" and any(.[]; .kind == "visual_session_started" and .data.fps == 5) and any(.[]; .kind == "ui_step" and .data.label == "unix programmable step" and .data.task == "unix task" and .data.tool == "unix tool" and .data.step_index == 4 and .data.step_total == 5 and .data.ttl_ms == 1500) and any(.[]; .kind == "ui_reply" and .data.text == "unix programmable reply" and .data.source == "unix proof" and .data.ttl_ms == 1750) and any(.[]; .kind == "ui_mode" and .data.mode == "headless" and .data.source == "unix proof") and any(.[]; .kind == "ui_mode" and .data.mode == "headful" and .data.source == "unix proof")' \
   "$UNIX_EVENTS" >/dev/null
-jq -e 'type == "array" and length >= 1 and all(.[]; .sequence > '"$UNIX_AFTER_SEQUENCE"') and any(.[]; .kind == "ui_step" and .data.label == "unix programmable step" and .data.task == "unix task" and .data.tool == "unix tool" and .data.step_index == 4 and .data.step_total == 5 and .data.ttl_ms == 1500) and any(.[]; .kind == "ui_reply" and .data.text == "unix programmable reply" and .data.source == "unix proof" and .data.ttl_ms == 1750)' \
+jq -e 'type == "array" and length >= 1 and all(.[]; .sequence > '"$UNIX_AFTER_SEQUENCE"') and any(.[]; .kind == "ui_step" and .data.label == "unix programmable step" and .data.task == "unix task" and .data.tool == "unix tool" and .data.step_index == 4 and .data.step_total == 5 and .data.ttl_ms == 1500) and any(.[]; .kind == "ui_reply" and .data.text == "unix programmable reply" and .data.source == "unix proof" and .data.ttl_ms == 1750) and any(.[]; .kind == "ui_mode" and .data.mode == "headless" and .data.source == "unix proof") and any(.[]; .kind == "ui_mode" and .data.mode == "headful" and .data.source == "unix proof")' \
   "$UNIX_EVENTS_AFTER" >/dev/null
-jq -e 'type == "array" and length >= 1 and all(.[]; .sequence > '"$UNIX_AFTER_SEQUENCE"') and any(.[]; .kind == "ui_step" and .data.label == "unix programmable step" and .data.step_index == 4 and .data.step_total == 5 and .data.ttl_ms == 1500) and any(.[]; .kind == "ui_reply" and .data.text == "unix programmable reply" and .data.source == "unix proof" and .data.ttl_ms == 1750)' \
+jq -e 'type == "array" and length >= 1 and all(.[]; .sequence > '"$UNIX_AFTER_SEQUENCE"') and any(.[]; .kind == "ui_step" and .data.label == "unix programmable step" and .data.step_index == 4 and .data.step_total == 5 and .data.ttl_ms == 1500) and any(.[]; .kind == "ui_reply" and .data.text == "unix programmable reply" and .data.source == "unix proof" and .data.ttl_ms == 1750) and any(.[]; .kind == "ui_mode" and .data.mode == "headless" and .data.source == "unix proof") and any(.[]; .kind == "ui_mode" and .data.mode == "headful" and .data.source == "unix proof")' \
   "$UNIX_EVENTS_WAIT" >/dev/null
 jq -e '.event == "agent_step" and .label == "voice bridge programmable step" and .source == "external agent" and .task == "voice bridge task" and .tool == "agent tool" and .step_index == 5 and .step_total == 7 and .ttl_ms == 1750' \
   "$VOICE_AGENT_STEP" >/dev/null
@@ -344,6 +380,8 @@ jq -n \
   --slurpfile http_events_after "$HTTP_EVENTS_AFTER" \
   --slurpfile http_ui_step "$HTTP_UI_STEP" \
   --slurpfile http_ui_reply "$HTTP_UI_REPLY" \
+  --slurpfile http_ui_mode_headless "$HTTP_UI_MODE_HEADLESS" \
+  --slurpfile http_ui_mode_headful "$HTTP_UI_MODE_HEADFUL" \
   --slurpfile http_observe "$HTTP_OBSERVE" \
   --slurpfile http_context "$HTTP_CONTEXT" \
   --slurpfile http_screenshot "$HTTP_SCREENSHOT" \
@@ -356,6 +394,8 @@ jq -n \
   --slurpfile cli_events_after "$CLI_EVENTS_AFTER" \
   --slurpfile cli_ui_step "$CLI_UI_STEP" \
   --slurpfile cli_ui_reply "$CLI_UI_REPLY" \
+  --slurpfile cli_ui_mode_headless "$CLI_UI_MODE_HEADLESS" \
+  --slurpfile cli_ui_mode_headful "$CLI_UI_MODE_HEADFUL" \
   --slurpfile cli_observe "$CLI_OBSERVE" \
   --slurpfile cli_context "$CLI_CONTEXT" \
   --slurpfile cli_profile "$CLI_PROFILE" \
@@ -371,6 +411,8 @@ jq -n \
   --slurpfile unix_events_wait "$UNIX_EVENTS_WAIT" \
   --slurpfile unix_ui_step "$UNIX_UI_STEP" \
   --slurpfile unix_ui_reply "$UNIX_UI_REPLY" \
+  --slurpfile unix_ui_mode_headless "$UNIX_UI_MODE_HEADLESS" \
+  --slurpfile unix_ui_mode_headful "$UNIX_UI_MODE_HEADFUL" \
   --slurpfile voice_agent_step "$VOICE_AGENT_STEP" \
   --slurpfile voice_agent_reply "$VOICE_AGENT_REPLY" \
   --slurpfile unix_context "$UNIX_CONTEXT" \
@@ -396,6 +438,7 @@ jq -n \
       ui_reply: $http_ui_reply[0].text,
       ui_reply_source: $http_ui_reply[0].source,
       ui_reply_ttl_ms: $http_ui_reply[0].ttl_ms,
+      ui_modes: [$http_ui_mode_headless[0].mode, $http_ui_mode_headful[0].mode],
       display_count: ($http_observe[0].displays | length),
       window_count: ($http_observe[0].windows | length),
       context: {
@@ -440,6 +483,7 @@ jq -n \
       ui_reply: $cli_ui_reply[0].text,
       ui_reply_source: $cli_ui_reply[0].source,
       ui_reply_ttl_ms: $cli_ui_reply[0].ttl_ms,
+      ui_modes: [$cli_ui_mode_headless[0].mode, $cli_ui_mode_headful[0].mode],
       profile_status: $cli_profile[0].active_profile.name,
       display_count: ($cli_observe[0].displays | length),
       window_count: ($cli_observe[0].windows | length),
@@ -485,6 +529,7 @@ jq -n \
       ui_reply: $unix_ui_reply[0].text,
       ui_reply_source: $unix_ui_reply[0].source,
       ui_reply_ttl_ms: $unix_ui_reply[0].ttl_ms,
+      ui_modes: [$unix_ui_mode_headless[0].mode, $unix_ui_mode_headful[0].mode],
       voice_bridge: {
         event: $voice_agent_step[0].event,
         label: $voice_agent_step[0].label,
