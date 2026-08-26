@@ -145,6 +145,7 @@ pub fn permission_report() -> PermissionReport {
     PermissionReport {
         screen_recording: screen_recording_permission(),
         accessibility_input: accessibility_permission(),
+        input_monitoring: input_monitoring_permission(),
         automation: automation_permission(),
         clipboard: clipboard_permission(),
         portal: PermissionState::NotApplicable,
@@ -153,6 +154,14 @@ pub fn permission_report() -> PermissionReport {
 
 pub fn request_screen_recording_access() -> PermissionState {
     native_request_screen_recording_access()
+}
+
+pub fn input_monitoring_permission() -> PermissionState {
+    native_input_monitoring_permission()
+}
+
+pub fn request_input_monitoring_access() -> PermissionState {
+    native_request_input_monitoring_access()
 }
 
 pub fn cursor_state() -> CursorState {
@@ -914,6 +923,35 @@ fn native_request_screen_recording_access() -> PermissionState {
 }
 
 #[cfg(target_os = "macos")]
+fn native_input_monitoring_permission() -> PermissionState {
+    match unsafe { IOHIDCheckAccess(K_IOHID_REQUEST_TYPE_LISTEN_EVENT) } {
+        K_IOHID_ACCESS_TYPE_GRANTED => PermissionState::Granted,
+        K_IOHID_ACCESS_TYPE_DENIED => PermissionState::Denied,
+        K_IOHID_ACCESS_TYPE_UNKNOWN => PermissionState::Missing,
+        _ => PermissionState::Unknown,
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn native_input_monitoring_permission() -> PermissionState {
+    PermissionState::NotApplicable
+}
+
+#[cfg(target_os = "macos")]
+fn native_request_input_monitoring_access() -> PermissionState {
+    if unsafe { IOHIDRequestAccess(K_IOHID_REQUEST_TYPE_LISTEN_EVENT) } {
+        PermissionState::Granted
+    } else {
+        native_input_monitoring_permission()
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn native_request_input_monitoring_access() -> PermissionState {
+    PermissionState::NotApplicable
+}
+
+#[cfg(target_os = "macos")]
 fn accessibility_permission() -> PermissionState {
     if unsafe { AXIsProcessTrusted() } {
         PermissionState::Granted
@@ -1017,6 +1055,22 @@ unsafe extern "C" {
 }
 
 #[cfg(target_os = "macos")]
+#[link(name = "IOKit", kind = "framework")]
+unsafe extern "C" {
+    fn IOHIDCheckAccess(request_type: u32) -> i32;
+    fn IOHIDRequestAccess(request_type: u32) -> bool;
+}
+
+#[cfg(target_os = "macos")]
+const K_IOHID_REQUEST_TYPE_LISTEN_EVENT: u32 = 1;
+#[cfg(target_os = "macos")]
+const K_IOHID_ACCESS_TYPE_GRANTED: i32 = 0;
+#[cfg(target_os = "macos")]
+const K_IOHID_ACCESS_TYPE_DENIED: i32 = 1;
+#[cfg(target_os = "macos")]
+const K_IOHID_ACCESS_TYPE_UNKNOWN: i32 = 2;
+
+#[cfg(target_os = "macos")]
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct CGPoint {
@@ -1089,6 +1143,7 @@ mod tests {
         assert_eq!(report.portal, PermissionState::NotApplicable);
         assert_ne!(report.screen_recording, PermissionState::Unknown);
         assert_ne!(report.accessibility_input, PermissionState::Unknown);
+        assert_ne!(report.input_monitoring, PermissionState::Unknown);
     }
 
     #[test]

@@ -464,6 +464,7 @@ mod tests {
             permissions: cua_core::PermissionReport {
                 screen_recording: cua_core::PermissionState::Granted,
                 accessibility_input: cua_core::PermissionState::Granted,
+                input_monitoring: cua_core::PermissionState::Granted,
                 automation: cua_core::PermissionState::Granted,
                 clipboard: cua_core::PermissionState::Granted,
                 portal: cua_core::PermissionState::NotApplicable,

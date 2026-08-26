@@ -60,9 +60,10 @@ Voice capture and OpenRouter calls can be tuned with `CUA_VOICE_RECORD_MIN_MS`, 
 
 ```sh
 CUA_CODESIGN_IDENTITY=- scripts/package-macos-app.sh
+scripts/install-macos-app.sh
 ```
 
-The packager builds `cua`, creates `artifacts/cua/macos/CUA.app`, signs it with bundle identifier `io.saint0x.cua`, verifies the signature, and prints the app path. Set `CUA_CODESIGN_IDENTITY` to a local signing identity for a non-ad-hoc signature.
+The packager builds `cua`, creates `artifacts/cua/macos/CUA.app`, signs it with bundle identifier `io.saint0x.cua`, verifies the signature, and prints the app path. The installer copies that bundle to `~/Applications/CUA.app` and registers the stable app path with LaunchServices so macOS privacy prompts show `CUA` instead of transient build artifacts. Set `CUA_CODESIGN_IDENTITY` to a local signing identity for a non-ad-hoc signature.
 
 ## Evaluate Models
 

@@ -470,6 +470,9 @@
             "clipboard": {
               "$ref": "#/definitions/PermissionState"
             },
+            "input_monitoring": {
+              "$ref": "#/definitions/PermissionState"
+            },
             "portal": {
               "$ref": "#/definitions/PermissionState"
             },
@@ -481,6 +484,7 @@
             "accessibility_input",
             "automation",
             "clipboard",
+            "input_monitoring",
             "portal",
             "screen_recording"
           ],
@@ -543,6 +547,11 @@
             },
             "id": {
               "type": "string"
+            },
+            "layer": {
+              "default": 0,
+              "format": "int32",
+              "type": "integer"
             },
             "title": {
               "type": [
@@ -797,6 +806,9 @@
             "clipboard": {
               "$ref": "#/definitions/PermissionState"
             },
+            "input_monitoring": {
+              "$ref": "#/definitions/PermissionState"
+            },
             "portal": {
               "$ref": "#/definitions/PermissionState"
             },
@@ -808,6 +820,7 @@
             "accessibility_input",
             "automation",
             "clipboard",
+            "input_monitoring",
             "portal",
             "screen_recording"
           ],
@@ -870,6 +883,11 @@
             },
             "id": {
               "type": "string"
+            },
+            "layer": {
+              "default": 0,
+              "format": "int32",
+              "type": "integer"
             },
             "title": {
               "type": [
@@ -1924,6 +1942,9 @@
             "clipboard": {
               "$ref": "#/definitions/PermissionState"
             },
+            "input_monitoring": {
+              "$ref": "#/definitions/PermissionState"
+            },
             "portal": {
               "$ref": "#/definitions/PermissionState"
             },
@@ -1935,6 +1956,7 @@
             "accessibility_input",
             "automation",
             "clipboard",
+            "input_monitoring",
             "portal",
             "screen_recording"
           ],
@@ -1979,6 +2001,109 @@
           ],
           "type": "object"
         },
+        "RuntimeInventory": {
+          "properties": {
+            "connected_clients": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "daemon_pid": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "http_addr": {
+              "type": "string"
+            },
+            "hud_pid": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "owner_session_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "profile_socket": {
+              "type": "string"
+            },
+            "schema_version": {
+              "type": "string"
+            },
+            "sessions": {
+              "items": {
+                "$ref": "#/definitions/RuntimeSessionInfo"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "connected_clients",
+            "daemon_pid",
+            "http_addr",
+            "profile_socket",
+            "schema_version",
+            "sessions"
+          ],
+          "type": "object"
+        },
+        "RuntimeSessionInfo": {
+          "properties": {
+            "active": {
+              "type": "boolean"
+            },
+            "client_name": {
+              "type": "string"
+            },
+            "connected_wall_ms": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "expires_wall_ms": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "last_seen_wall_ms": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "role": {
+              "$ref": "#/definitions/RuntimeSessionRole"
+            },
+            "schema_version": {
+              "type": "string"
+            },
+            "session_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "active",
+            "client_name",
+            "connected_wall_ms",
+            "last_seen_wall_ms",
+            "role",
+            "schema_version",
+            "session_id"
+          ],
+          "type": "object"
+        },
+        "RuntimeSessionRole": {
+          "enum": [
+            "owner",
+            "observer"
+          ],
+          "type": "string"
+        },
         "SafetyState": {
           "enum": [
             "running",
@@ -1996,6 +2121,9 @@
           "format": "uint32",
           "minimum": 0.0,
           "type": "integer"
+        },
+        "inventory": {
+          "$ref": "#/definitions/RuntimeInventory"
         },
         "last_error": {
           "type": [
@@ -2044,6 +2172,7 @@
       "required": [
         "active_profile",
         "active_streams",
+        "inventory",
         "model_sessions",
         "permissions",
         "profile",
@@ -3051,6 +3180,312 @@
         "schema_version"
       ],
       "title": "RuntimeControlState",
+      "type": "object"
+    },
+    "RuntimeInventory": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "RuntimeSessionInfo": {
+          "properties": {
+            "active": {
+              "type": "boolean"
+            },
+            "client_name": {
+              "type": "string"
+            },
+            "connected_wall_ms": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "expires_wall_ms": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "last_seen_wall_ms": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "role": {
+              "$ref": "#/definitions/RuntimeSessionRole"
+            },
+            "schema_version": {
+              "type": "string"
+            },
+            "session_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "active",
+            "client_name",
+            "connected_wall_ms",
+            "last_seen_wall_ms",
+            "role",
+            "schema_version",
+            "session_id"
+          ],
+          "type": "object"
+        },
+        "RuntimeSessionRole": {
+          "enum": [
+            "owner",
+            "observer"
+          ],
+          "type": "string"
+        }
+      },
+      "properties": {
+        "connected_clients": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "daemon_pid": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "http_addr": {
+          "type": "string"
+        },
+        "hud_pid": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "owner_session_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "profile_socket": {
+          "type": "string"
+        },
+        "schema_version": {
+          "type": "string"
+        },
+        "sessions": {
+          "items": {
+            "$ref": "#/definitions/RuntimeSessionInfo"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "connected_clients",
+        "daemon_pid",
+        "http_addr",
+        "profile_socket",
+        "schema_version",
+        "sessions"
+      ],
+      "title": "RuntimeInventory",
+      "type": "object"
+    },
+    "RuntimeSessionInfo": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "RuntimeSessionRole": {
+          "enum": [
+            "owner",
+            "observer"
+          ],
+          "type": "string"
+        }
+      },
+      "properties": {
+        "active": {
+          "type": "boolean"
+        },
+        "client_name": {
+          "type": "string"
+        },
+        "connected_wall_ms": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "expires_wall_ms": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "last_seen_wall_ms": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "role": {
+          "$ref": "#/definitions/RuntimeSessionRole"
+        },
+        "schema_version": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "active",
+        "client_name",
+        "connected_wall_ms",
+        "last_seen_wall_ms",
+        "role",
+        "schema_version",
+        "session_id"
+      ],
+      "title": "RuntimeSessionInfo",
+      "type": "object"
+    },
+    "SessionCancelRequest": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "schema_version": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "target_session_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "schema_version",
+        "session_id"
+      ],
+      "title": "SessionCancelRequest",
+      "type": "object"
+    },
+    "SessionLeaseRequest": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "RuntimeSessionRole": {
+          "enum": [
+            "owner",
+            "observer"
+          ],
+          "type": "string"
+        }
+      },
+      "properties": {
+        "client_name": {
+          "type": "string"
+        },
+        "role": {
+          "$ref": "#/definitions/RuntimeSessionRole"
+        },
+        "schema_version": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "ttl_ms": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "client_name",
+        "role",
+        "schema_version",
+        "session_id"
+      ],
+      "title": "SessionLeaseRequest",
+      "type": "object"
+    },
+    "SessionLeaseResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "RuntimeSessionInfo": {
+          "properties": {
+            "active": {
+              "type": "boolean"
+            },
+            "client_name": {
+              "type": "string"
+            },
+            "connected_wall_ms": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "expires_wall_ms": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "last_seen_wall_ms": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "role": {
+              "$ref": "#/definitions/RuntimeSessionRole"
+            },
+            "schema_version": {
+              "type": "string"
+            },
+            "session_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "active",
+            "client_name",
+            "connected_wall_ms",
+            "last_seen_wall_ms",
+            "role",
+            "schema_version",
+            "session_id"
+          ],
+          "type": "object"
+        },
+        "RuntimeSessionRole": {
+          "enum": [
+            "owner",
+            "observer"
+          ],
+          "type": "string"
+        }
+      },
+      "properties": {
+        "accepted": {
+          "type": "boolean"
+        },
+        "owner_session_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "schema_version": {
+          "type": "string"
+        },
+        "session": {
+          "$ref": "#/definitions/RuntimeSessionInfo"
+        }
+      },
+      "required": [
+        "accepted",
+        "schema_version",
+        "session"
+      ],
+      "title": "SessionLeaseResult",
       "type": "object"
     },
     "UiModeRequest": {

@@ -32,6 +32,7 @@ pub enum PermissionState {
 pub struct PermissionReport {
     pub screen_recording: PermissionState,
     pub accessibility_input: PermissionState,
+    pub input_monitoring: PermissionState,
     pub automation: PermissionState,
     pub clipboard: PermissionState,
     pub portal: PermissionState,
@@ -42,6 +43,7 @@ impl PermissionReport {
         Self {
             screen_recording: PermissionState::Unknown,
             accessibility_input: PermissionState::Unknown,
+            input_monitoring: PermissionState::Unknown,
             automation: PermissionState::Unknown,
             clipboard: PermissionState::Unknown,
             portal: PermissionState::NotApplicable,

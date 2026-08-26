@@ -845,12 +845,14 @@ async fn permissions(command: PermissionCommand) -> anyhow::Result<()> {
     };
     if preflight {
         let _ = cua_platform_macos::request_screen_recording_access();
+        let _ = cua_platform_macos::request_input_monitoring_access();
     }
     let permission_report = cua_platform_macos::permission_report();
     let report = serde_json::json!({
         "schema_version": SCHEMA_VERSION,
         "screen_recording": permission_report.screen_recording,
         "accessibility_input": permission_report.accessibility_input,
+        "input_monitoring": permission_report.input_monitoring,
         "automation": permission_report.automation,
         "clipboard": permission_report.clipboard,
         "portal": permission_report.portal,

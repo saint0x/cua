@@ -1,11 +1,12 @@
 use clap::Parser;
-use cua_core::UiMode;
+use cua_core::{PermissionState, UiMode};
 use cua_voice::activation::ControlDoubleTap;
 use cua_voice::agent_events::{
     agent_reply_from_daemon_event, agent_step_from_daemon_event,
     agent_ui_event_from_daemon_event_advancing_cursor,
 };
 use cua_voice::client::CuaClient;
+use cua_voice::daemon::spawn_profile_daemon;
 use cua_voice::hud::{
     HudDisplay, HudMetrics, COMPACT_HEIGHT, COMPACT_RADIUS, COMPACT_WIDTH, TOP_MARGIN,
     WINDOW_HEIGHT, WINDOW_WIDTH,
@@ -511,7 +512,11 @@ fn main() -> anyhow::Result<()> {
     if demo {
         start_demo_cycle(tx.clone());
     } else {
-        start_double_control_listener(tx.clone());
+        if let Err(error) = spawn_profile_daemon(&config.profile) {
+            tx.send(VoiceUiEvent::Error(format!("Daemon start failed: {error}")))
+                .ok();
+        }
+        start_double_control_listener_if_allowed(tx.clone());
         start_agent_step_poll(config.profile.clone(), runtime.clone(), tx.clone());
     }
     Application::new().run(move |cx: &mut App| {
@@ -843,6 +848,32 @@ fn start_double_control_listener(tx: Sender<VoiceUiEvent>) {
             .ok();
         }
     });
+}
+
+fn start_double_control_listener_if_allowed(tx: Sender<VoiceUiEvent>) {
+    let permission = cua_platform_macos::input_monitoring_permission();
+    let permission = if permission == PermissionState::Granted {
+        permission
+    } else if launched_from_app_bundle() {
+        cua_platform_macos::request_input_monitoring_access()
+    } else {
+        permission
+    };
+    if permission == PermissionState::Granted {
+        start_double_control_listener(tx);
+    } else {
+        tx.send(VoiceUiEvent::Error(
+            "Input Monitoring permission is required for the double-Control shortcut.".to_string(),
+        ))
+        .ok();
+    }
+}
+
+fn launched_from_app_bundle() -> bool {
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| path.to_str().map(|path| path.to_string()))
+        .is_some_and(|path| path.contains(".app/Contents/MacOS/"))
 }
 
 #[cfg(test)]

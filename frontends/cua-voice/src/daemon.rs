@@ -32,7 +32,15 @@ pub fn spawn_profile_daemon(profile: &str) -> anyhow::Result<()> {
     }
     let binary = bundled_cua_binary()?;
     Command::new(&binary)
-        .args(["--profile", profile, "serve", "--addr", "127.0.0.1:0"])
+        .args([
+            "--profile",
+            profile,
+            "serve",
+            "--addr",
+            "127.0.0.1:0",
+            "--hud-mode",
+            "headless",
+        ])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
