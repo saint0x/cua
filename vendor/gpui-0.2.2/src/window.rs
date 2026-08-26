@@ -1699,6 +1699,11 @@ impl Window {
         self.platform_window.resize(size);
     }
 
+    /// Set the bounds of the window in global coordinate space.
+    pub fn set_bounds(&mut self, bounds: Bounds<Pixels>) {
+        self.platform_window.set_bounds(bounds);
+    }
+
     /// Returns whether or not the window is currently fullscreen
     pub fn is_fullscreen(&self) -> bool {
         self.platform_window.is_fullscreen()

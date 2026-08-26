@@ -128,6 +128,10 @@ impl PlatformWindow for TestWindow {
         self.bounds().size
     }
 
+    fn set_bounds(&mut self, bounds: Bounds<Pixels>) {
+        self.0.lock().bounds = bounds;
+    }
+
     fn resize(&mut self, size: Size<Pixels>) {
         let mut lock = self.0.lock();
         lock.bounds.size = size;

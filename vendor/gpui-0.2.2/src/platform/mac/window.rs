@@ -970,6 +970,31 @@ impl PlatformWindow for MacWindow {
         self.0.as_ref().lock().content_size()
     }
 
+    fn set_bounds(&mut self, bounds: Bounds<Pixels>) {
+        let this = self.0.lock();
+        let window = this.native_window;
+        let screen = unsafe { NSWindow::screen(window) };
+        if screen == nil {
+            return;
+        }
+        let screen_frame = unsafe { NSScreen::frame(screen) };
+        let top_left = NSPoint {
+            x: screen_frame.origin.x + bounds.origin.x.0 as f64,
+            y: screen_frame.origin.y + screen_frame.size.height - bounds.origin.y.0 as f64,
+        };
+        this.executor
+            .spawn(async move {
+                unsafe {
+                    window.setContentSize_(NSSize {
+                        width: bounds.size.width.0 as f64,
+                        height: bounds.size.height.0 as f64,
+                    });
+                    NSWindow::setFrameTopLeftPoint_(window, top_left);
+                }
+            })
+            .detach();
+    }
+
     fn resize(&mut self, size: Size<Pixels>) {
         let this = self.0.lock();
         let window = this.native_window;

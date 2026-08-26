@@ -19,8 +19,9 @@ use cua_voice::{
 };
 use gpui::{
     canvas, div, hsla, point, prelude::*, px, rgb, size, App, Application, Bounds, BoxShadow,
-    Context, IntoElement, ParentElement, Render, Styled, Window, WindowBackgroundAppearance,
-    WindowBounds, WindowKind, WindowOptions,
+    Context, IntoElement, MouseButton as GpuiMouseButton, MouseMoveEvent, ParentElement, Pixels,
+    Point, Render, Styled, Window, WindowBackgroundAppearance, WindowBounds, WindowKind,
+    WindowOptions,
 };
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -39,6 +40,7 @@ const MARQUEE_SCROLL_SPEED_PX_PER_SEC: f32 = 24.0;
 const MARQUEE_CHAR_WIDTH_PX: f32 = 6.2;
 const ACTIVITY_DOT_COUNT: usize = 6;
 const CONTROL_SHORTCUT_POLL_INTERVAL: Duration = Duration::from_millis(4);
+const EDGE_SNAP_MARGIN_PX: f32 = 96.0;
 
 #[derive(Debug, Parser)]
 #[command(name = "cua-voice", version, about = "Rust voice HUD for cua")]
@@ -81,6 +83,13 @@ struct VoiceHud {
     center_text_key: String,
     center_text_since: Instant,
     response_progress: f32,
+    drag: Option<IslandDrag>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct IslandDrag {
+    start_cursor: Point<Pixels>,
+    start_bounds: Bounds<Pixels>,
 }
 
 impl VoiceHud {
@@ -99,6 +108,7 @@ impl VoiceHud {
             center_text_key: String::new(),
             center_text_since: Instant::now(),
             response_progress: 0.0,
+            drag: None,
         }
     }
 
@@ -175,6 +185,7 @@ impl VoiceHud {
         display: &HudDisplay,
         metrics: HudMetrics,
         center: String,
+        cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let reply_visible = response_flash_visible(metrics);
         let title = if reply_visible {
@@ -208,6 +219,44 @@ impl VoiceHud {
                 spread_radius: px(0.0),
                 offset: point(px(0.0), px(6.0)),
             }])
+            .on_mouse_down(
+                GpuiMouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    this.drag = Some(IslandDrag {
+                        start_cursor: current_cursor_point(),
+                        start_bounds: window.bounds(),
+                    });
+                    cx.stop_propagation();
+                }),
+            )
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
+                if event.pressed_button == Some(GpuiMouseButton::Left) {
+                    if let Some(drag) = this.drag {
+                        let cursor = current_cursor_point();
+                        let dx = cursor.x - drag.start_cursor.x;
+                        let dy = cursor.y - drag.start_cursor.y;
+                        let mut bounds = drag.start_bounds;
+                        bounds.origin.x = drag.start_bounds.origin.x + dx;
+                        bounds.origin.y = drag.start_bounds.origin.y + dy;
+                        window.set_bounds(bounds);
+                        cx.stop_propagation();
+                    }
+                }
+            }))
+            .on_mouse_up(
+                GpuiMouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    this.finish_drag(window, cx);
+                    cx.stop_propagation();
+                }),
+            )
+            .on_mouse_up_out(
+                GpuiMouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    this.finish_drag(window, cx);
+                    cx.stop_propagation();
+                }),
+            )
             .px_3()
             .flex()
             .items_center()
@@ -232,6 +281,14 @@ impl VoiceHud {
             .child(Self::chip(app))
             .child(div().flex_1())
             .child(self.activity_dots())
+    }
+
+    fn finish_drag(&mut self, window: &mut Window, cx: &mut App) {
+        self.drag = None;
+        if let Some(display) = window.display(cx) {
+            let snapped = snap_island_bounds(window.bounds(), display.bounds());
+            window.set_bounds(snapped);
+        }
     }
 }
 
@@ -396,7 +453,7 @@ fn should_reset_after_reply_collapse(reply_window_expired: bool, response_progre
 }
 
 impl Render for VoiceHud {
-    fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.drain_events();
         let reply_window_expired =
             self.snapshot.expanded_until.is_some() && !self.snapshot.is_expanded();
@@ -415,7 +472,7 @@ impl Render for VoiceHud {
             .size_full()
             .relative()
             .child(
-                self.compact_bar(&display, metrics, center_text)
+                self.compact_bar(&display, metrics, center_text, cx)
                     .into_any_element(),
             )
             .into_any_element()
@@ -500,7 +557,7 @@ fn main() -> anyhow::Result<()> {
                 kind: WindowKind::PopUp,
                 is_resizable: false,
                 is_minimizable: false,
-                mouse_passthrough: true,
+                mouse_passthrough: false,
                 window_background: WindowBackgroundAppearance::Transparent,
                 ..Default::default()
             },
@@ -766,6 +823,30 @@ fn top_centered_bounds(cx: &App) -> Bounds<gpui::Pixels> {
     Bounds {
         origin: point(px(x), px(y)),
         size: window_size,
+    }
+}
+
+fn current_cursor_point() -> Point<Pixels> {
+    let cursor = cua_platform_macos::cursor_state();
+    point(px(cursor.x as f32), px(cursor.y as f32))
+}
+
+fn snap_island_bounds(bounds: Bounds<Pixels>, display_bounds: Bounds<Pixels>) -> Bounds<Pixels> {
+    let left = display_bounds.origin.x.to_f64() as f32;
+    let right = display_bounds.origin.x.to_f64() as f32 + display_bounds.size.width.to_f64() as f32;
+    let top = display_bounds.origin.y.to_f64() as f32 + TOP_MARGIN;
+    let width = bounds.size.width.to_f64() as f32;
+    let raw_x = bounds.origin.x.to_f64() as f32;
+    let max_x = (right - width).max(left);
+    let mut x = raw_x.clamp(left, max_x);
+    if (x - left).abs() <= EDGE_SNAP_MARGIN_PX {
+        x = left;
+    } else if (max_x - x).abs() <= EDGE_SNAP_MARGIN_PX {
+        x = max_x;
+    }
+    Bounds {
+        origin: point(px(x), px(top)),
+        size: bounds.size,
     }
 }
 
@@ -1048,6 +1129,43 @@ mod tests {
         assert_eq!(compact_bar_width(transitioning), COMPACT_WIDTH);
         assert_eq!(compact_bar_height(transitioning), COMPACT_HEIGHT);
         assert_eq!(compact_bar_radius(transitioning), COMPACT_RADIUS);
+    }
+
+    #[test]
+    fn snap_island_bounds_attaches_to_top_edge_and_clamps_x() {
+        let display = Bounds {
+            origin: point(px(0.0), px(0.0)),
+            size: size(px(1512.0), px(982.0)),
+        };
+        let dropped = Bounds {
+            origin: point(px(900.0), px(220.0)),
+            size: size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT)),
+        };
+
+        let snapped = snap_island_bounds(dropped, display);
+
+        assert_eq!(snapped.origin.x, px(697.0));
+        assert_eq!(snapped.origin.y, px(TOP_MARGIN));
+        assert_eq!(snapped.size, dropped.size);
+    }
+
+    #[test]
+    fn snap_island_bounds_magnetizes_near_left_and_right_edges() {
+        let display = Bounds {
+            origin: point(px(0.0), px(0.0)),
+            size: size(px(1512.0), px(982.0)),
+        };
+        let left_drop = Bounds {
+            origin: point(px(40.0), px(80.0)),
+            size: size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT)),
+        };
+        let right_drop = Bounds {
+            origin: point(px(660.0), px(80.0)),
+            size: size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT)),
+        };
+
+        assert_eq!(snap_island_bounds(left_drop, display).origin.x, px(0.0));
+        assert_eq!(snap_island_bounds(right_drop, display).origin.x, px(697.0));
     }
 
     #[test]
