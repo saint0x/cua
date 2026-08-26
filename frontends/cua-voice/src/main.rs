@@ -278,6 +278,7 @@ impl Render for VoiceHud {
         if should_reset_after_reply_collapse(reply_window_expired, self.response_progress) {
             self.snapshot.apply(VoiceUiEvent::Idle);
         }
+        self.snapshot.expire_programmed_step(Instant::now());
         window.request_animation_frame();
         let display = HudDisplay::from_snapshot(&self.snapshot);
         let metrics = HudMetrics::interpolate(self.response_progress);
@@ -379,8 +380,9 @@ fn print_headless_events(rx: Receiver<VoiceUiEvent>) {
                 tool,
                 step_index,
                 step_total,
+                ttl_ms,
             } => {
-                serde_json::json!({"event": "agent_step", "label": label, "source": source, "task": task, "tool": tool, "step_index": step_index, "step_total": step_total})
+                serde_json::json!({"event": "agent_step", "label": label, "source": source, "task": task, "tool": tool, "step_index": step_index, "step_total": step_total, "ttl_ms": ttl_ms})
             }
             VoiceUiEvent::Reply(text) => serde_json::json!({"event": "reply", "text": text}),
             VoiceUiEvent::Error(text) => serde_json::json!({"event": "error", "text": text}),
@@ -490,6 +492,7 @@ fn agent_step_from_daemon_event(event: &Value, last_sequence: u64) -> Option<(u6
         .get("step_total")
         .and_then(|value| value.as_u64())
         .and_then(|value| u16::try_from(value).ok());
+    let ttl_ms = data.get("ttl_ms").and_then(|value| value.as_u64());
     if source.as_deref() == Some("voice") {
         return None;
     }
@@ -502,6 +505,7 @@ fn agent_step_from_daemon_event(event: &Value, last_sequence: u64) -> Option<(u6
             tool,
             step_index,
             step_total,
+            ttl_ms,
         },
     ))
 }
@@ -576,6 +580,7 @@ fn start_demo_cycle(tx: Sender<VoiceUiEvent>) {
                 tool: Some("vision".to_string()),
                 step_index: Some(2),
                 step_total: Some(4),
+                ttl_ms: Some(5_000),
             },
             VoiceUiEvent::Reply("Clicked the center target.".to_string()),
         ];
@@ -708,7 +713,8 @@ mod tests {
                 "task": "debug auth",
                 "tool": "browser",
                 "step_index": 2,
-                "step_total": 6
+                "step_total": 6,
+                "ttl_ms": 1750
             }
         });
 
@@ -721,6 +727,7 @@ mod tests {
                 tool,
                 step_index,
                 step_total,
+                ttl_ms,
             },
         )) = agent_step_from_daemon_event(&event, 41)
         else {
@@ -734,6 +741,7 @@ mod tests {
         assert_eq!(tool.as_deref(), Some("browser"));
         assert_eq!(step_index, Some(2));
         assert_eq!(step_total, Some(6));
+        assert_eq!(ttl_ms, Some(1750));
         assert!(agent_step_from_daemon_event(&event, 42).is_none());
     }
 

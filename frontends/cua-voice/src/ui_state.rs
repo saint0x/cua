@@ -43,6 +43,7 @@ pub struct HudSnapshot {
     pub transcript: Option<String>,
     pub response: Option<String>,
     pub expanded_until: Option<Instant>,
+    pub programmed_step_expires_at: Option<Instant>,
 }
 
 impl Default for HudSnapshot {
@@ -59,6 +60,7 @@ impl Default for HudSnapshot {
             transcript: None,
             response: None,
             expanded_until: None,
+            programmed_step_expires_at: None,
         }
     }
 }
@@ -73,16 +75,19 @@ impl HudSnapshot {
                 self.transcript = None;
                 self.response = None;
                 self.expanded_until = None;
+                self.programmed_step_expires_at = None;
             }
             VoiceUiEvent::Listening { ms } => {
                 self.phase = HudPhase::Listening;
                 self.step = HudStep::new(1, 4, format!("Recording {ms} ms"));
                 self.tool = "Microphone".to_string();
+                self.programmed_step_expires_at = None;
             }
             VoiceUiEvent::Transcribing => {
                 self.phase = HudPhase::Transcribing;
                 self.step = HudStep::new(2, 4, "Speech to text");
                 self.tool = "OpenRouter STT".to_string();
+                self.programmed_step_expires_at = None;
             }
             VoiceUiEvent::Transcript(text) => {
                 self.transcript = Some(text);
@@ -91,11 +96,13 @@ impl HudSnapshot {
                 self.phase = HudPhase::Planning;
                 self.step = HudStep::new(3, 4, "Choosing action");
                 self.tool = tool;
+                self.programmed_step_expires_at = None;
             }
             VoiceUiEvent::Dispatching(action) => {
                 self.phase = HudPhase::Dispatching;
                 self.step = HudStep::new(4, 4, action);
                 self.tool = "Unix socket".to_string();
+                self.programmed_step_expires_at = None;
             }
             VoiceUiEvent::AgentStep {
                 label,
@@ -104,6 +111,7 @@ impl HudSnapshot {
                 tool,
                 step_index,
                 step_total,
+                ttl_ms,
             } => {
                 self.phase = HudPhase::Planning;
                 self.step = HudStep::new(
@@ -115,18 +123,22 @@ impl HudSnapshot {
                     self.task = task;
                 }
                 self.tool = tool.or(source).unwrap_or_else(|| "Agent".to_string());
+                self.programmed_step_expires_at =
+                    ttl_ms.map(|ttl_ms| Instant::now() + Duration::from_millis(ttl_ms));
             }
             VoiceUiEvent::Reply(text) => {
                 self.phase = HudPhase::Reply;
                 self.step = HudStep::new(4, 4, "Done");
                 self.response = Some(text);
                 self.expanded_until = Some(Instant::now() + Duration::from_secs(5));
+                self.programmed_step_expires_at = None;
             }
             VoiceUiEvent::Error(text) => {
                 self.phase = HudPhase::Error;
                 self.step = HudStep::new(0, 4, "Stopped");
                 self.response = Some(text);
                 self.expanded_until = Some(Instant::now() + Duration::from_secs(5));
+                self.programmed_step_expires_at = None;
             }
             VoiceUiEvent::Metric { .. } => {}
             VoiceUiEvent::Idle => {
@@ -139,6 +151,17 @@ impl HudSnapshot {
         self.expanded_until
             .map(|deadline| Instant::now() < deadline)
             .unwrap_or(false)
+    }
+
+    pub fn expire_programmed_step(&mut self, now: Instant) -> bool {
+        let Some(deadline) = self.programmed_step_expires_at else {
+            return false;
+        };
+        if now < deadline {
+            return false;
+        }
+        *self = Self::default();
+        true
     }
 }
 
@@ -171,6 +194,7 @@ pub enum VoiceUiEvent {
         tool: Option<String>,
         step_index: Option<u16>,
         step_total: Option<u16>,
+        ttl_ms: Option<u64>,
     },
     Reply(String),
     Error(String),
@@ -230,6 +254,7 @@ mod tests {
             tool: Some("vision".to_string()),
             step_index: Some(2),
             step_total: Some(5),
+            ttl_ms: Some(1_500),
         });
 
         assert_eq!(state.phase, HudPhase::Planning);
@@ -239,5 +264,41 @@ mod tests {
         assert_eq!(state.step.total, 5);
         assert_eq!(state.tool, "vision");
         assert_eq!(state.transcript.as_deref(), Some("find the red button"));
+        assert!(state.programmed_step_expires_at.is_some());
+    }
+
+    #[test]
+    fn programmed_agent_step_expires_back_to_ready_state() {
+        let mut state = HudSnapshot::default();
+        state.apply(VoiceUiEvent::AgentStep {
+            label: "checking current focus".to_string(),
+            source: Some("agent".to_string()),
+            task: Some("Use browser".to_string()),
+            tool: Some("browser".to_string()),
+            step_index: Some(1),
+            step_total: Some(3),
+            ttl_ms: Some(250),
+        });
+
+        assert!(!state.expire_programmed_step(Instant::now()));
+        assert!(state.expire_programmed_step(Instant::now() + Duration::from_millis(251)));
+        assert_eq!(state, HudSnapshot::default());
+    }
+
+    #[test]
+    fn persistent_agent_step_does_not_expire_without_ttl() {
+        let mut state = HudSnapshot::default();
+        state.apply(VoiceUiEvent::AgentStep {
+            label: "waiting on tool".to_string(),
+            source: Some("agent".to_string()),
+            task: None,
+            tool: None,
+            step_index: None,
+            step_total: None,
+            ttl_ms: None,
+        });
+
+        assert!(!state.expire_programmed_step(Instant::now() + Duration::from_secs(60)));
+        assert_eq!(state.step.label, "waiting on tool");
     }
 }

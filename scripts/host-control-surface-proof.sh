@@ -183,11 +183,11 @@ jq -e '(.public_surfaces | index("cli")) and (.public_surfaces | index("local_ht
   "$HTTP_MANIFEST" >/dev/null
 jq -e '.schema_version == "cua.v1" and (.histograms | type) == "array" and (.counters | type) == "object"' \
   "$HTTP_METRICS" >/dev/null
-jq -e '.accepted == true and .label == "http programmable step" and .source == "http proof" and .task == "http task" and .tool == "http tool" and .step_index == 2 and .step_total == 5' \
+jq -e '.accepted == true and .label == "http programmable step" and .source == "http proof" and .task == "http task" and .tool == "http tool" and .step_index == 2 and .step_total == 5 and .ttl_ms == 1500' \
   "$HTTP_UI_STEP" >/dev/null
-jq -e 'type == "array" and length >= 1 and .[0].kind == "daemon_started" and any(.[]; .kind == "ui_step" and .data.label == "http programmable step" and .data.task == "http task" and .data.tool == "http tool" and .data.step_index == 2 and .data.step_total == 5)' \
+jq -e 'type == "array" and length >= 1 and .[0].kind == "daemon_started" and any(.[]; .kind == "ui_step" and .data.label == "http programmable step" and .data.task == "http task" and .data.tool == "http tool" and .data.step_index == 2 and .data.step_total == 5 and .data.ttl_ms == 1500)' \
   "$HTTP_EVENTS" >/dev/null
-jq -e 'type == "array" and length >= 1 and all(.[]; .sequence > '"$HTTP_AFTER_SEQUENCE"') and any(.[]; .kind == "ui_step" and .data.label == "http programmable step" and .data.task == "http task" and .data.tool == "http tool" and .data.step_index == 2 and .data.step_total == 5)' \
+jq -e 'type == "array" and length >= 1 and all(.[]; .sequence > '"$HTTP_AFTER_SEQUENCE"') and any(.[]; .kind == "ui_step" and .data.label == "http programmable step" and .data.task == "http task" and .data.tool == "http tool" and .data.step_index == 2 and .data.step_total == 5 and .data.ttl_ms == 1500)' \
   "$HTTP_EVENTS_AFTER" >/dev/null
 jq -e '(.displays | length) >= 1 and (.windows | type) == "array" and (.cursor.visible | type) == "boolean"' \
   "$HTTP_OBSERVE" >/dev/null
@@ -201,11 +201,11 @@ jq -e '(.public_surfaces | index("cli")) and (.public_surfaces | index("local_ht
   "$CLI_MANIFEST" >/dev/null
 jq -e '.schema_version == "cua.v1" and (.histograms | type) == "array" and (.counters | type) == "object"' \
   "$CLI_METRICS" >/dev/null
-jq -e '.accepted == true and .label == "cli programmable step" and .source == "cli proof" and .task == "cli task" and .tool == "cli tool" and .step_index == 3 and .step_total == 5' \
+jq -e '.accepted == true and .label == "cli programmable step" and .source == "cli proof" and .task == "cli task" and .tool == "cli tool" and .step_index == 3 and .step_total == 5 and .ttl_ms == 1500' \
   "$CLI_UI_STEP" >/dev/null
-jq -e 'type == "array" and length >= 1 and .[0].kind == "daemon_started" and any(.[]; .kind == "ui_step" and .data.label == "cli programmable step" and .data.task == "cli task" and .data.tool == "cli tool" and .data.step_index == 3 and .data.step_total == 5)' \
+jq -e 'type == "array" and length >= 1 and .[0].kind == "daemon_started" and any(.[]; .kind == "ui_step" and .data.label == "cli programmable step" and .data.task == "cli task" and .data.tool == "cli tool" and .data.step_index == 3 and .data.step_total == 5 and .data.ttl_ms == 1500)' \
   "$CLI_EVENTS" >/dev/null
-jq -e 'type == "array" and length >= 1 and all(.[]; .sequence > '"$CLI_AFTER_SEQUENCE"') and any(.[]; .kind == "ui_step" and .data.label == "cli programmable step" and .data.task == "cli task" and .data.tool == "cli tool" and .data.step_index == 3 and .data.step_total == 5)' \
+jq -e 'type == "array" and length >= 1 and all(.[]; .sequence > '"$CLI_AFTER_SEQUENCE"') and any(.[]; .kind == "ui_step" and .data.label == "cli programmable step" and .data.task == "cli task" and .data.tool == "cli tool" and .data.step_index == 3 and .data.step_total == 5 and .data.ttl_ms == 1500)' \
   "$CLI_EVENTS_AFTER" >/dev/null
 jq -e '(.displays | length) >= 1 and (.windows | type) == "array" and (.cursor.visible | type) == "boolean"' \
   "$CLI_OBSERVE" >/dev/null
@@ -223,13 +223,13 @@ jq -e '(.public_surfaces | index("local_unix_socket")) and (.endpoints | index("
   "$UNIX_MANIFEST" >/dev/null
 jq -e '.schema_version == "cua.v1" and (.histograms | type) == "array" and (.counters | type) == "object"' \
   "$UNIX_METRICS" >/dev/null
-jq -e '.accepted == true and .label == "unix programmable step" and .source == "unix proof" and .task == "unix task" and .tool == "unix tool" and .step_index == 4 and .step_total == 5' \
+jq -e '.accepted == true and .label == "unix programmable step" and .source == "unix proof" and .task == "unix task" and .tool == "unix tool" and .step_index == 4 and .step_total == 5 and .ttl_ms == 1500' \
   "$UNIX_UI_STEP" >/dev/null
-jq -e 'type == "array" and length >= 1 and .[0].kind == "daemon_started" and any(.[]; .kind == "ui_step" and .data.label == "unix programmable step" and .data.task == "unix task" and .data.tool == "unix tool" and .data.step_index == 4 and .data.step_total == 5)' \
+jq -e 'type == "array" and length >= 1 and .[0].kind == "daemon_started" and any(.[]; .kind == "ui_step" and .data.label == "unix programmable step" and .data.task == "unix task" and .data.tool == "unix tool" and .data.step_index == 4 and .data.step_total == 5 and .data.ttl_ms == 1500)' \
   "$UNIX_EVENTS" >/dev/null
-jq -e 'type == "array" and length >= 1 and all(.[]; .sequence > '"$UNIX_AFTER_SEQUENCE"') and any(.[]; .kind == "ui_step" and .data.label == "unix programmable step" and .data.task == "unix task" and .data.tool == "unix tool" and .data.step_index == 4 and .data.step_total == 5)' \
+jq -e 'type == "array" and length >= 1 and all(.[]; .sequence > '"$UNIX_AFTER_SEQUENCE"') and any(.[]; .kind == "ui_step" and .data.label == "unix programmable step" and .data.task == "unix task" and .data.tool == "unix tool" and .data.step_index == 4 and .data.step_total == 5 and .data.ttl_ms == 1500)' \
   "$UNIX_EVENTS_AFTER" >/dev/null
-jq -e 'type == "array" and length >= 1 and all(.[]; .sequence > '"$UNIX_AFTER_SEQUENCE"') and any(.[]; .kind == "ui_step" and .data.label == "unix programmable step" and .data.step_index == 4 and .data.step_total == 5)' \
+jq -e 'type == "array" and length >= 1 and all(.[]; .sequence > '"$UNIX_AFTER_SEQUENCE"') and any(.[]; .kind == "ui_step" and .data.label == "unix programmable step" and .data.step_index == 4 and .data.step_total == 5 and .data.ttl_ms == 1500)' \
   "$UNIX_EVENTS_WAIT" >/dev/null
 jq -e '.frame.envelope.encoding == "png" and .frame.envelope.width > 0 and (.desktop.displays | length) >= 1 and (.desktop.windows | type) == "array"' \
   "$UNIX_CONTEXT" >/dev/null
@@ -287,6 +287,7 @@ jq -n \
       ui_tool: $http_ui_step[0].tool,
       step_index: $http_ui_step[0].step_index,
       step_total: $http_ui_step[0].step_total,
+      ttl_ms: $http_ui_step[0].ttl_ms,
       display_count: ($http_observe[0].displays | length),
       window_count: ($http_observe[0].windows | length),
       context: {
@@ -311,6 +312,7 @@ jq -n \
       ui_tool: $cli_ui_step[0].tool,
       step_index: $cli_ui_step[0].step_index,
       step_total: $cli_ui_step[0].step_total,
+      ttl_ms: $cli_ui_step[0].ttl_ms,
       profile_status: $cli_profile[0].active_profile.name,
       display_count: ($cli_observe[0].displays | length),
       window_count: ($cli_observe[0].windows | length),
@@ -340,6 +342,7 @@ jq -n \
       ui_tool: $unix_ui_step[0].tool,
       step_index: $unix_ui_step[0].step_index,
       step_total: $unix_ui_step[0].step_total,
+      ttl_ms: $unix_ui_step[0].ttl_ms,
       context: {
         width: $unix_context[0].frame.envelope.width,
         height: $unix_context[0].frame.envelope.height,
