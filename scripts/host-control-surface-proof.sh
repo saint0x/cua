@@ -138,6 +138,32 @@ print(json.dumps(response["result"]))
 PY
 }
 
+http_json_call() {
+  local path="$1"
+  local body="$2"
+  local out="$3"
+  local attempts="${4:-1}"
+  local delay="${5:-0.25}"
+  local tmp="$out.tmp"
+
+  for attempt in $(seq 1 "$attempts"); do
+    if curl -fsS \
+      -H "authorization: Bearer $TOKEN" \
+      -H "content-type: application/json" \
+      -d "$body" \
+      "http://$ADDR$path" > "$tmp"; then
+      mv "$tmp" "$out"
+      return 0
+    fi
+    rm -f "$tmp"
+    if [[ "$attempt" != "$attempts" ]]; then
+      sleep "$delay"
+    fi
+  done
+
+  return 1
+}
+
 curl -fsS -H "authorization: Bearer $TOKEN" "http://$ADDR/status" > "$HTTP_STATUS"
 curl -fsS -H "authorization: Bearer $TOKEN" "http://$ADDR/manifest" > "$HTTP_MANIFEST"
 curl -fsS -H "authorization: Bearer $TOKEN" "http://$ADDR/metrics" > "$HTTP_METRICS"
@@ -155,16 +181,16 @@ curl -fsS -H "authorization: Bearer $TOKEN" "http://$ADDR/events" > "$HTTP_EVENT
 HTTP_AFTER_SEQUENCE="$(jq -r '.[0].sequence' "$HTTP_EVENTS")"
 curl -fsS -H "authorization: Bearer $TOKEN" "http://$ADDR/events?after=$HTTP_AFTER_SEQUENCE" > "$HTTP_EVENTS_AFTER"
 curl -fsS -H "authorization: Bearer $TOKEN" "http://$ADDR/observe/desktop" > "$HTTP_OBSERVE"
-curl -fsS \
-  -H "authorization: Bearer $TOKEN" \
-  -H "content-type: application/json" \
-  -d '{"max_width":640,"encoding":"png","force_fresh":true,"include_bytes":false}' \
-  "http://$ADDR/context/snapshot" > "$HTTP_CONTEXT"
-curl -fsS \
-  -H "authorization: Bearer $TOKEN" \
-  -H "content-type: application/json" \
-  -d '{"max_width":640,"encoding":"png","force_fresh":true,"include_bytes":false}' \
-  "http://$ADDR/capture/screenshot" > "$HTTP_SCREENSHOT"
+http_json_call "/context/snapshot" \
+  '{"max_width":640,"encoding":"png","force_fresh":true,"include_bytes":false}' \
+  "$HTTP_CONTEXT" \
+  5 \
+  0.5
+http_json_call "/capture/screenshot" \
+  '{"max_width":640,"encoding":"png","force_fresh":true,"include_bytes":false}' \
+  "$HTTP_SCREENSHOT" \
+  5 \
+  0.5
 curl -fsS \
   -H "authorization: Bearer $TOKEN" \
   -H "content-type: application/json" \

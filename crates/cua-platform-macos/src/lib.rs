@@ -62,7 +62,10 @@ impl Default for MacosCaptureBackend {
 #[async_trait]
 impl CaptureBackend for MacosCaptureBackend {
     async fn capture_latest(&self, request: CaptureRequest) -> anyhow::Result<CapturedFrame> {
-        capture_main_display(self.started, request)
+        let started = self.started;
+        tokio::task::spawn_blocking(move || capture_main_display(started, request))
+            .await
+            .map_err(|error| anyhow::anyhow!("macOS capture worker failed: {error}"))?
     }
 
     async fn displays(&self) -> anyhow::Result<Vec<DisplayInfo>> {
@@ -164,10 +167,8 @@ fn capture_main_display(
             return Ok(frame);
         }
     }
-    if let Ok(frame) = capture_main_display_core_graphics(started, request.clone()) {
-        return Ok(frame);
-    }
-    capture_main_display_sck(started, request)
+    capture_main_display_core_graphics(started, request.clone())
+        .or_else(|_| capture_main_display_screencapture(started, request))
 }
 
 #[cfg(target_os = "macos")]
@@ -239,6 +240,97 @@ fn capture_main_display_core_graphics(
     let result = unsafe { image_to_frame(started, capture_started, display_id, image, request) };
     unsafe { CFRelease(image.cast()) };
     result
+}
+
+#[cfg(target_os = "macos")]
+fn capture_main_display_screencapture(
+    started: Instant,
+    request: CaptureRequest,
+) -> anyhow::Result<CapturedFrame> {
+    let capture_started = Instant::now();
+    let path = std::env::temp_dir().join(format!(
+        "cua-screencapture-{}-{}.png",
+        std::process::id(),
+        monotonic_capture_id(started)
+    ));
+    let output = std::process::Command::new("/usr/sbin/screencapture")
+        .args(["-x", "-t", "png"])
+        .arg(&path)
+        .output()
+        .map_err(|error| anyhow::anyhow!("launch screencapture: {error}"))?;
+    if !output.status.success() {
+        let _ = std::fs::remove_file(&path);
+        anyhow::bail!(
+            "screencapture failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let image = image::open(&path)
+        .map_err(|error| anyhow::anyhow!("decode screencapture output: {error}"))?
+        .to_rgba8();
+    let _ = std::fs::remove_file(&path);
+    let source_width = image.width();
+    let source_height = image.height();
+    let target_width = request
+        .max_width
+        .filter(|max_width| *max_width < source_width)
+        .map(|max_width| max_width.max(64))
+        .unwrap_or(source_width);
+    let target_height = if target_width == source_width {
+        source_height
+    } else {
+        ((source_height as f64) * (target_width as f64 / source_width as f64)).round() as u32
+    }
+    .max(1);
+    let buffer = if target_width == source_width && target_height == source_height {
+        image
+    } else {
+        scale_rgba_source_to_rgba(
+            image.as_raw(),
+            source_width,
+            source_height,
+            target_width,
+            target_height,
+        )?
+    };
+
+    let encode_started = Instant::now();
+    let bytes = encode_image(&buffer, request.encoding.clone())?;
+    let encode_ns = elapsed_ns(encode_started);
+    let sha256 = format!("{:x}", Sha256::digest(&bytes));
+    let byte_len = bytes.len();
+    let display_id = unsafe { CGMainDisplayID() };
+    Ok(CapturedFrame {
+        envelope: FrameEnvelope {
+            schema_version: SCHEMA_VERSION.to_string(),
+            frame_id: monotonic_capture_id(started),
+            timestamp_mono_ns: started.elapsed().as_nanos(),
+            timestamp_wall_ms: now_wall_ms(),
+            display_id: display_id.to_string(),
+            display_width: unsafe { CGDisplayPixelsWide(display_id) } as u32,
+            display_height: unsafe { CGDisplayPixelsHigh(display_id) } as u32,
+            width: buffer.width(),
+            height: buffer.height(),
+            scale_factor: 1.0,
+            pixel_format: "rgba8".to_string(),
+            encoding: request.encoding,
+            byte_len,
+            sha256,
+            cursor: native_cursor_state(),
+            damage_rects: vec![Rect {
+                x: 0,
+                y: 0,
+                width: buffer.width(),
+                height: buffer.height(),
+            }],
+        },
+        bytes: Arc::new(bytes),
+        timings: CapturedFrameTimings {
+            capture_ns: elapsed_ns(capture_started),
+            encode_ns,
+        },
+    })
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -366,8 +458,34 @@ fn scaled_bgra_source_to_rgba(
         .ok_or_else(|| anyhow::anyhow!("failed to build macOS capture image buffer"))
 }
 
+#[cfg(target_os = "macos")]
+fn scale_rgba_source_to_rgba(
+    source: &[u8],
+    source_width: u32,
+    source_height: u32,
+    target_width: u32,
+    target_height: u32,
+) -> anyhow::Result<ImageBuffer<Rgba<u8>, Vec<u8>>> {
+    let mut rgba = Vec::with_capacity((target_width * target_height * 4) as usize);
+    for y in 0..target_height as usize {
+        let source_y = y * source_height as usize / target_height as usize;
+        for x in 0..target_width as usize {
+            let source_x = x * source_width as usize / target_width as usize;
+            let offset = (source_y * source_width as usize + source_x) * 4;
+            rgba.extend_from_slice(&source[offset..offset + 4]);
+        }
+    }
+    ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(target_width, target_height, rgba)
+        .ok_or_else(|| anyhow::anyhow!("failed to build screencapture image buffer"))
+}
+
 fn elapsed_ns(started: Instant) -> u64 {
     started.elapsed().as_nanos().min(u64::MAX as u128) as u64
+}
+
+#[cfg(target_os = "macos")]
+fn monotonic_capture_id(started: Instant) -> u64 {
+    started.elapsed().as_millis().min(u64::MAX as u128) as u64
 }
 
 #[cfg(target_os = "macos")]
