@@ -42,12 +42,13 @@ UNIX_EVENTS="$OUT_DIR/unix-events.json"
 UNIX_EVENTS_AFTER="$OUT_DIR/unix-events-after.json"
 UNIX_EVENTS_WAIT="$OUT_DIR/unix-events-wait.json"
 UNIX_UI_STEP="$OUT_DIR/unix-ui-step.json"
+VOICE_AGENT_STEP="$OUT_DIR/voice-agent-step.json"
 UNIX_CONTEXT="$OUT_DIR/unix-context.json"
 UNIX_PAUSE="$OUT_DIR/unix-pause.json"
 UNIX_RESUME="$OUT_DIR/unix-resume.json"
 PROOF="$OUT_DIR/proof.json"
 
-cargo build -p cua
+cargo build -p cua -p cua-voice
 
 if [[ -n "${CUA_BIN:-}" ]]; then
   CUA_BIN_PATH="$CUA_BIN"
@@ -59,6 +60,19 @@ fi
 
 if [[ -z "$CUA_BIN_PATH" || ! -x "$CUA_BIN_PATH" ]]; then
   echo "cua binary not found" >&2
+  exit 1
+fi
+
+if [[ -n "${CUA_VOICE_BIN:-}" ]]; then
+  CUA_VOICE_BIN_PATH="$CUA_VOICE_BIN"
+elif [[ -x target/debug/cua-voice ]]; then
+  CUA_VOICE_BIN_PATH="target/debug/cua-voice"
+else
+  CUA_VOICE_BIN_PATH="$(find target -path '*/debug/cua-voice' -type f 2>/dev/null | head -n 1)"
+fi
+
+if [[ -z "$CUA_VOICE_BIN_PATH" || ! -x "$CUA_VOICE_BIN_PATH" ]]; then
+  echo "cua-voice binary not found" >&2
   exit 1
 fi
 
@@ -173,6 +187,12 @@ unix_call "events.snapshot" '{}' "$UNIX_EVENTS"
 UNIX_AFTER_SEQUENCE="$(jq -r '.[0].sequence' "$UNIX_EVENTS")"
 unix_call "events.after" "{\"after_sequence\":$UNIX_AFTER_SEQUENCE}" "$UNIX_EVENTS_AFTER"
 unix_call "events.wait" "{\"after_sequence\":$UNIX_AFTER_SEQUENCE,\"timeout_ms\":25}" "$UNIX_EVENTS_WAIT"
+VOICE_AFTER_SEQUENCE="$(jq -r 'map(.sequence) | max // 0' "$UNIX_EVENTS")"
+unix_call "ui.step" '{"schema_version":"cua.v1","label":"voice bridge programmable step","source":"external agent","task":"voice bridge task","tool":"agent tool","step_index":5,"step_total":7,"ttl_ms":1750}' "$OUT_DIR/voice-bridge-ui-step.json" >/dev/null
+CUA_HTTP_TOKEN="$TOKEN" "$CUA_VOICE_BIN_PATH" \
+  --profile "$PROFILE" \
+  --once-agent-step-after "$VOICE_AFTER_SEQUENCE" \
+  --once-agent-step-wait-ms 2000 > "$VOICE_AGENT_STEP"
 unix_call "context.snapshot" '{"max_width":640,"encoding":"png","force_fresh":true,"include_bytes":false}' "$UNIX_CONTEXT"
 unix_call "control.pause" '{}' "$UNIX_PAUSE"
 unix_call "control.resume" '{}' "$UNIX_RESUME"
@@ -231,6 +251,8 @@ jq -e 'type == "array" and length >= 1 and all(.[]; .sequence > '"$UNIX_AFTER_SE
   "$UNIX_EVENTS_AFTER" >/dev/null
 jq -e 'type == "array" and length >= 1 and all(.[]; .sequence > '"$UNIX_AFTER_SEQUENCE"') and any(.[]; .kind == "ui_step" and .data.label == "unix programmable step" and .data.step_index == 4 and .data.step_total == 5 and .data.ttl_ms == 1500)' \
   "$UNIX_EVENTS_WAIT" >/dev/null
+jq -e '.event == "agent_step" and .label == "voice bridge programmable step" and .source == "external agent" and .task == "voice bridge task" and .tool == "agent tool" and .step_index == 5 and .step_total == 7 and .ttl_ms == 1750' \
+  "$VOICE_AGENT_STEP" >/dev/null
 jq -e '.frame.envelope.encoding == "png" and .frame.envelope.width > 0 and (.desktop.displays | length) >= 1 and (.desktop.windows | type) == "array"' \
   "$UNIX_CONTEXT" >/dev/null
 jq -e '.safety_state == "paused"' "$UNIX_PAUSE" >/dev/null
@@ -268,6 +290,7 @@ jq -n \
   --slurpfile unix_events_after "$UNIX_EVENTS_AFTER" \
   --slurpfile unix_events_wait "$UNIX_EVENTS_WAIT" \
   --slurpfile unix_ui_step "$UNIX_UI_STEP" \
+  --slurpfile voice_agent_step "$VOICE_AGENT_STEP" \
   --slurpfile unix_context "$UNIX_CONTEXT" \
   --slurpfile unix_pause "$UNIX_PAUSE" \
   --slurpfile unix_resume "$UNIX_RESUME" \
@@ -343,6 +366,16 @@ jq -n \
       step_index: $unix_ui_step[0].step_index,
       step_total: $unix_ui_step[0].step_total,
       ttl_ms: $unix_ui_step[0].ttl_ms,
+      voice_bridge: {
+        event: $voice_agent_step[0].event,
+        label: $voice_agent_step[0].label,
+        source: $voice_agent_step[0].source,
+        task: $voice_agent_step[0].task,
+        tool: $voice_agent_step[0].tool,
+        step_index: $voice_agent_step[0].step_index,
+        step_total: $voice_agent_step[0].step_total,
+        ttl_ms: $voice_agent_step[0].ttl_ms
+      },
       context: {
         width: $unix_context[0].frame.envelope.width,
         height: $unix_context[0].frame.envelope.height,

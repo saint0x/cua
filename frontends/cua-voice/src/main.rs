@@ -46,6 +46,10 @@ struct Args {
     once_wav: Option<PathBuf>,
     #[arg(long)]
     once_record: bool,
+    #[arg(long)]
+    once_agent_step_wait_ms: Option<u64>,
+    #[arg(long, default_value_t = 0)]
+    once_agent_step_after: u64,
 }
 
 struct VoiceHud {
@@ -297,6 +301,8 @@ fn main() -> anyhow::Result<()> {
     let once_transcript = args.once_transcript;
     let once_wav = args.once_wav;
     let once_record = args.once_record;
+    let once_agent_step_wait_ms = args.once_agent_step_wait_ms;
+    let once_agent_step_after = args.once_agent_step_after;
     let config = VoiceConfig {
         profile: args.profile,
         record_ms: args.record_ms,
@@ -316,6 +322,15 @@ fn main() -> anyhow::Result<()> {
         return result;
     } else if once_record {
         let result = runtime.block_on(run_voice_turn_checked(config, tx));
+        print_headless_events(rx);
+        return result;
+    } else if let Some(wait_ms) = once_agent_step_wait_ms {
+        let result = runtime.block_on(run_once_agent_step_wait(
+            config.profile.clone(),
+            once_agent_step_after,
+            wait_ms,
+            tx,
+        ));
         print_headless_events(rx);
         return result;
     }
@@ -460,6 +475,40 @@ fn start_agent_step_poll(
             }
         }
     });
+}
+
+async fn run_once_agent_step_wait(
+    profile: String,
+    after_sequence: u64,
+    wait_ms: u64,
+    tx: Sender<VoiceUiEvent>,
+) -> anyhow::Result<()> {
+    let client = CuaClient::new(profile).await?;
+    let mut session = client.session().await?;
+    let started = Instant::now();
+    let timeout = Duration::from_millis(wait_ms.clamp(25, 30_000));
+    let mut last_sequence = after_sequence;
+    loop {
+        let elapsed = started.elapsed();
+        if elapsed >= timeout {
+            anyhow::bail!("timed out waiting for programmed agent step");
+        }
+        let remaining_ms = timeout
+            .saturating_sub(elapsed)
+            .as_millis()
+            .clamp(25, u128::from(u64::MAX)) as u64;
+        let events = session.events_wait(last_sequence, remaining_ms).await?;
+        for event in events {
+            let Some(sequence) = event.get("sequence").and_then(|value| value.as_u64()) else {
+                continue;
+            };
+            last_sequence = last_sequence.max(sequence);
+            if let Some((_, event)) = agent_step_from_daemon_event(&event, after_sequence) {
+                tx.send(event).ok();
+                return Ok(());
+            }
+        }
+    }
 }
 
 fn agent_step_from_daemon_event(event: &Value, last_sequence: u64) -> Option<(u64, VoiceUiEvent)> {
