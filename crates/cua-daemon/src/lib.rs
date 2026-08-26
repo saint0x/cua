@@ -36,7 +36,7 @@ use std::sync::{
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
-use tokio::sync::{mpsc, oneshot, RwLock};
+use tokio::sync::{mpsc, oneshot, Notify, RwLock};
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
 
@@ -541,6 +541,7 @@ fn permission_lane_capacity() -> usize {
 struct EventLane {
     sender: mpsc::Sender<EventJob>,
     recent: Arc<RwLock<VecDeque<serde_json::Value>>>,
+    notify: Arc<Notify>,
 }
 
 #[derive(Debug)]
@@ -553,6 +554,8 @@ impl EventLane {
         let (sender, mut receiver) = mpsc::channel::<EventJob>(capacity);
         let recent = Arc::new(RwLock::new(VecDeque::with_capacity(retention)));
         let worker_recent = recent.clone();
+        let notify = Arc::new(Notify::new());
+        let worker_notify = notify.clone();
         tokio::spawn(async move {
             while let Some(job) = receiver.recv().await {
                 let mut recent = worker_recent.write().await;
@@ -560,9 +563,16 @@ impl EventLane {
                     recent.pop_front();
                 }
                 recent.push_back(job.event);
+                drop(recent);
+                worker_notify.notify_waiters();
+                worker_notify.notify_one();
             }
         });
-        Self { sender, recent }
+        Self {
+            sender,
+            recent,
+            notify,
+        }
     }
 
     fn publish(&self, kind: &'static str, data: serde_json::Value) -> bool {
@@ -597,6 +607,25 @@ impl EventLane {
             })
             .cloned()
             .collect()
+    }
+
+    async fn wait_after(&self, sequence: u64, timeout: Duration) -> Vec<serde_json::Value> {
+        loop {
+            let events = self.after(sequence).await;
+            if !events.is_empty() {
+                return events;
+            }
+            if tokio::time::timeout(timeout, self.notify.notified())
+                .await
+                .is_err()
+            {
+                let events = self.after(sequence).await;
+                if events.is_empty() {
+                    return Vec::new();
+                }
+                return events;
+            }
+        }
     }
 }
 
@@ -902,6 +931,18 @@ async fn handle_unix_request(state: &DaemonState, request: UnixRequest) -> serde
                 state.events.after(after_sequence).await,
             ))
         }
+        "events.wait" => {
+            let params = request.params.unwrap_or_else(|| serde_json::json!({}));
+            let after_sequence = params
+                .get("after_sequence")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0);
+            let timeout =
+                event_wait_timeout(params.get("timeout_ms").and_then(|value| value.as_u64()));
+            Ok(serde_json::to_value(
+                state.events.wait_after(after_sequence, timeout).await,
+            ))
+        }
         "ui.step" => {
             let params = request.params.unwrap_or_else(|| serde_json::json!({}));
             match serde_json::from_value::<UiStepRequest>(params) {
@@ -1092,7 +1133,7 @@ fn manifest_payload() -> Manifest {
             "GET /observe/desktop".to_string(),
             "GET /events".to_string(),
             "GET /events?after=<sequence>".to_string(),
-            "GET /events/live".to_string(),
+            "GET /events/live?after=<sequence>&timeout_ms=<ms>".to_string(),
             "POST /ui/step".to_string(),
             "POST /profile/create".to_string(),
             "POST /profile/activate".to_string(),
@@ -1113,7 +1154,7 @@ fn manifest_payload() -> Manifest {
             "cua manifest --json".to_string(),
             "cua metrics --json".to_string(),
             "cua events --json [--after <sequence>]".to_string(),
-            "cua ui step <label> --json".to_string(),
+            "cua ui step <label> --step-index <n> --step-total <n> --json".to_string(),
             "cua perf live --json".to_string(),
             "cua screenshot --out <path>".to_string(),
             "cua context --json".to_string(),
@@ -1424,6 +1465,7 @@ async fn observe_cursor(State(state): State<DaemonState>) -> Json<cua_core::Curs
 #[derive(Debug, Deserialize)]
 struct EventsQuery {
     after: Option<u64>,
+    timeout_ms: Option<u64>,
 }
 
 async fn events(
@@ -1441,9 +1483,18 @@ async fn events_live(
     Query(query): Query<EventsQuery>,
 ) -> Json<Vec<serde_json::Value>> {
     match query.after {
-        Some(sequence) => Json(state.events.after(sequence).await),
+        Some(sequence) => Json(
+            state
+                .events
+                .wait_after(sequence, event_wait_timeout(query.timeout_ms))
+                .await,
+        ),
         None => Json(state.events.snapshot().await),
     }
+}
+
+fn event_wait_timeout(timeout_ms: Option<u64>) -> Duration {
+    Duration::from_millis(timeout_ms.unwrap_or(1_000).clamp(25, 30_000))
 }
 
 async fn ui_step(
@@ -2884,6 +2935,21 @@ mod tests {
             .await,
         );
         assert_eq!(empty_after.as_array().unwrap().len(), 0);
+
+        let empty_wait = unix_result(
+            handle_unix_request(
+                &state,
+                unix_request(
+                    "events.wait",
+                    serde_json::json!({
+                        "after_sequence": last_sequence,
+                        "timeout_ms": 25
+                    }),
+                ),
+            )
+            .await,
+        );
+        assert_eq!(empty_wait.as_array().unwrap().len(), 0);
     }
 
     fn unix_request(method: &str, params: serde_json::Value) -> UnixRequest {
@@ -2911,9 +2977,28 @@ mod tests {
         let lane = EventLane {
             sender,
             recent: Arc::new(RwLock::new(VecDeque::new())),
+            notify: Arc::new(Notify::new()),
         };
 
         assert!(!lane.publish("overflow", serde_json::json!({})));
+    }
+
+    #[tokio::test]
+    async fn event_lane_wait_after_wakes_for_new_events() {
+        let lane = EventLane::spawn(4, 8);
+        let baseline = monotonic_event_sequence();
+
+        let waiter = {
+            let lane = lane.clone();
+            tokio::spawn(async move { lane.wait_after(baseline, Duration::from_millis(500)).await })
+        };
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(lane.publish("ui_step", serde_json::json!({ "label": "wake" })));
+
+        let events = waiter.await.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["kind"], "ui_step");
+        assert_eq!(events[0]["data"]["label"], "wake");
     }
 
     #[test]
@@ -3079,6 +3164,7 @@ mod tests {
             State(state),
             Query(EventsQuery {
                 after: Some(last_sequence),
+                timeout_ms: None,
             }),
         )
         .await;

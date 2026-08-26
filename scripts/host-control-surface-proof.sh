@@ -40,6 +40,7 @@ UNIX_MANIFEST="$OUT_DIR/unix-manifest.json"
 UNIX_METRICS="$OUT_DIR/unix-metrics.json"
 UNIX_EVENTS="$OUT_DIR/unix-events.json"
 UNIX_EVENTS_AFTER="$OUT_DIR/unix-events-after.json"
+UNIX_EVENTS_WAIT="$OUT_DIR/unix-events-wait.json"
 UNIX_UI_STEP="$OUT_DIR/unix-ui-step.json"
 UNIX_CONTEXT="$OUT_DIR/unix-context.json"
 UNIX_PAUSE="$OUT_DIR/unix-pause.json"
@@ -171,6 +172,7 @@ unix_call "ui.step" '{"schema_version":"cua.v1","label":"unix programmable step"
 unix_call "events.snapshot" '{}' "$UNIX_EVENTS"
 UNIX_AFTER_SEQUENCE="$(jq -r '.[0].sequence' "$UNIX_EVENTS")"
 unix_call "events.after" "{\"after_sequence\":$UNIX_AFTER_SEQUENCE}" "$UNIX_EVENTS_AFTER"
+unix_call "events.wait" "{\"after_sequence\":$UNIX_AFTER_SEQUENCE,\"timeout_ms\":25}" "$UNIX_EVENTS_WAIT"
 unix_call "context.snapshot" '{"max_width":640,"encoding":"png","force_fresh":true,"include_bytes":false}' "$UNIX_CONTEXT"
 unix_call "control.pause" '{}' "$UNIX_PAUSE"
 unix_call "control.resume" '{}' "$UNIX_RESUME"
@@ -227,6 +229,8 @@ jq -e 'type == "array" and length >= 1 and .[0].kind == "daemon_started" and any
   "$UNIX_EVENTS" >/dev/null
 jq -e 'type == "array" and length >= 1 and all(.[]; .sequence > '"$UNIX_AFTER_SEQUENCE"') and any(.[]; .kind == "ui_step" and .data.label == "unix programmable step" and .data.task == "unix task" and .data.tool == "unix tool" and .data.step_index == 4 and .data.step_total == 5)' \
   "$UNIX_EVENTS_AFTER" >/dev/null
+jq -e 'type == "array" and length >= 1 and all(.[]; .sequence > '"$UNIX_AFTER_SEQUENCE"') and any(.[]; .kind == "ui_step" and .data.label == "unix programmable step" and .data.step_index == 4 and .data.step_total == 5)' \
+  "$UNIX_EVENTS_WAIT" >/dev/null
 jq -e '.frame.envelope.encoding == "png" and .frame.envelope.width > 0 and (.desktop.displays | length) >= 1 and (.desktop.windows | type) == "array"' \
   "$UNIX_CONTEXT" >/dev/null
 jq -e '.safety_state == "paused"' "$UNIX_PAUSE" >/dev/null
@@ -262,6 +266,7 @@ jq -n \
   --slurpfile unix_metrics "$UNIX_METRICS" \
   --slurpfile unix_events "$UNIX_EVENTS" \
   --slurpfile unix_events_after "$UNIX_EVENTS_AFTER" \
+  --slurpfile unix_events_wait "$UNIX_EVENTS_WAIT" \
   --slurpfile unix_ui_step "$UNIX_UI_STEP" \
   --slurpfile unix_context "$UNIX_CONTEXT" \
   --slurpfile unix_pause "$UNIX_PAUSE" \
@@ -329,6 +334,7 @@ jq -n \
       histogram_count: ($unix_metrics[0].histograms | length),
       event_count: ($unix_events[0] | length),
       filtered_event_count: ($unix_events_after[0] | length),
+      waited_event_count: ($unix_events_wait[0] | length),
       ui_step: $unix_ui_step[0].label,
       ui_task: $unix_ui_step[0].task,
       ui_tool: $unix_ui_step[0].tool,

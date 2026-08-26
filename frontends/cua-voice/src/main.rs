@@ -407,7 +407,7 @@ fn start_agent_step_poll(
         };
         let mut last_sequence = 0_u64;
         loop {
-            if let Ok(events) = session.events_after(last_sequence).await {
+            if let Ok(events) = session.events_wait(last_sequence, 1_000).await {
                 for event in events {
                     if let Some((sequence, event)) =
                         agent_step_from_daemon_event(&event, last_sequence)
@@ -416,8 +416,11 @@ fn start_agent_step_poll(
                         tx.send(event).ok();
                     }
                 }
+            } else if let Ok(next_session) = client.session().await {
+                session = next_session;
+            } else {
+                tokio::time::sleep(Duration::from_millis(250)).await;
             }
-            tokio::time::sleep(Duration::from_millis(80)).await;
         }
     });
 }

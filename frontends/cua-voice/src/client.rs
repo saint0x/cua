@@ -80,6 +80,17 @@ impl CuaClient {
         .await
     }
 
+    pub async fn events_wait(&self, sequence: u64, timeout_ms: u64) -> anyhow::Result<Vec<Value>> {
+        self.request(
+            "events.wait",
+            Some(serde_json::json!({
+                "after_sequence": sequence,
+                "timeout_ms": timeout_ms
+            })),
+        )
+        .await
+    }
+
     pub async fn ui_step(
         &self,
         label: impl Into<String>,
@@ -172,6 +183,21 @@ impl CuaSession {
         self.request(
             "events.after",
             Some(serde_json::json!({ "after_sequence": sequence })),
+        )
+        .await
+    }
+
+    pub async fn events_wait(
+        &mut self,
+        sequence: u64,
+        timeout_ms: u64,
+    ) -> anyhow::Result<Vec<Value>> {
+        self.request(
+            "events.wait",
+            Some(serde_json::json!({
+                "after_sequence": sequence,
+                "timeout_ms": timeout_ms
+            })),
         )
         .await
     }
