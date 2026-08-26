@@ -160,12 +160,15 @@ impl HudSnapshot {
                 self.programmed_step_restore =
                     self.programmed_step_expires_at.map(|_| Box::new(restore));
             }
-            VoiceUiEvent::UiMode { mode } => {
+            VoiceUiEvent::UiMode { mode, source } => {
                 let headless = mode == UiMode::Headless;
                 self.mode = mode;
-                if headless {
+                if headless || source.as_deref() != Some("voice") {
                     self.input_label = "automation".to_string();
                     self.task = "Computer control".to_string();
+                } else {
+                    self.input_label = "Voice control".to_string();
+                    self.task = "Voice control".to_string();
                 }
             }
             VoiceUiEvent::AutomationActivity {
@@ -264,6 +267,7 @@ pub enum VoiceUiEvent {
     },
     UiMode {
         mode: UiMode,
+        source: Option<String>,
     },
     AutomationActivity {
         label: String,
@@ -387,10 +391,32 @@ mod tests {
 
         state.apply(VoiceUiEvent::UiMode {
             mode: UiMode::Headless,
+            source: Some("cli".to_string()),
         });
 
         assert_eq!(state.input_label, "automation");
         assert_eq!(state.task, "Computer control");
+    }
+
+    #[test]
+    fn non_voice_headful_mode_keeps_hud_labeled_as_automation() {
+        let mut state = HudSnapshot::default();
+
+        state.apply(VoiceUiEvent::UiMode {
+            mode: UiMode::Headful,
+            source: Some("remote".to_string()),
+        });
+
+        assert_eq!(state.input_label, "automation");
+        assert_eq!(state.task, "Computer control");
+
+        state.apply(VoiceUiEvent::UiMode {
+            mode: UiMode::Headful,
+            source: Some("voice".to_string()),
+        });
+
+        assert_eq!(state.input_label, "Voice control");
+        assert_eq!(state.task, "Voice control");
     }
 
     #[test]
@@ -504,6 +530,7 @@ mod tests {
         ));
         state.apply(VoiceUiEvent::UiMode {
             mode: UiMode::Headless,
+            source: Some("cli".to_string()),
         });
 
         assert!(!state.is_headful());
@@ -512,6 +539,7 @@ mod tests {
 
         state.apply(VoiceUiEvent::UiMode {
             mode: UiMode::Headful,
+            source: Some("voice".to_string()),
         });
 
         assert!(state.is_headful());

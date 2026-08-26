@@ -1709,6 +1709,7 @@ dependencies = [
  "clap",
  "cpal",
  "cua-core",
+ "cua-daemon",
  "cua-platform-macos",
  "dotenvy",
  "gpui",

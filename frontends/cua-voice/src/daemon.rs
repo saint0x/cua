@@ -49,7 +49,7 @@ pub fn spawn_profile_daemon(profile: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn profile_daemon_is_alive(profile: &str) -> bool {
+pub fn profile_daemon_is_alive(profile: &str) -> bool {
     let Ok(home) = std::env::var("HOME") else {
         return false;
     };

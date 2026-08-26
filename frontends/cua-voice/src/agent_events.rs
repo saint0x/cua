@@ -48,7 +48,12 @@ pub fn agent_mode_from_daemon_event(
         "headless" => UiMode::Headless,
         _ => return None,
     };
-    Some((sequence, VoiceUiEvent::UiMode { mode }))
+    let source = event
+        .get("data")
+        .and_then(|data| data.get("source"))
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
+    Some((sequence, VoiceUiEvent::UiMode { mode, source }))
 }
 
 pub fn agent_step_from_daemon_event(
@@ -332,7 +337,7 @@ mod tests {
             }
         });
 
-        let Some((sequence, VoiceUiEvent::UiMode { mode })) =
+        let Some((sequence, VoiceUiEvent::UiMode { mode, source })) =
             agent_mode_from_daemon_event(&event, 45)
         else {
             panic!("expected ui mode event");
@@ -340,6 +345,7 @@ mod tests {
 
         assert_eq!(sequence, 46);
         assert_eq!(mode, UiMode::Headless);
+        assert_eq!(source.as_deref(), Some("cli"));
         assert!(agent_mode_from_daemon_event(&event, 46).is_none());
     }
 

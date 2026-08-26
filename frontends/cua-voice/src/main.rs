@@ -6,7 +6,7 @@ use cua_voice::agent_events::{
     agent_ui_event_from_daemon_event_advancing_cursor,
 };
 use cua_voice::client::CuaClient;
-use cua_voice::daemon::spawn_profile_daemon;
+use cua_voice::daemon::profile_daemon_is_alive;
 use cua_voice::hud::{
     HudDisplay, HudMetrics, COMPACT_HEIGHT, COMPACT_RADIUS, COMPACT_WIDTH, TOP_MARGIN,
     WINDOW_HEIGHT, WINDOW_WIDTH,
@@ -97,7 +97,11 @@ impl VoiceHud {
         mode: UiMode,
     ) -> Self {
         let mut snapshot = HudSnapshot::default();
-        snapshot.apply(VoiceUiEvent::UiMode { mode });
+        let source = initial_ui_source(&mode).to_string();
+        snapshot.apply(VoiceUiEvent::UiMode {
+            mode,
+            source: Some(source),
+        });
         Self {
             rx,
             tx,
@@ -513,10 +517,7 @@ fn main() -> anyhow::Result<()> {
         start_demo_cycle(tx.clone());
     } else {
         request_screen_recording_access_if_packaged_app();
-        if let Err(error) = spawn_profile_daemon(&config.profile) {
-            tx.send(VoiceUiEvent::Error(format!("Daemon start failed: {error}")))
-                .ok();
-        }
+        start_embedded_daemon_if_needed(config.profile.clone(), runtime.clone(), tx.clone());
         start_double_control_listener_if_allowed(tx.clone());
         start_agent_step_poll(config.profile.clone(), runtime.clone(), tx.clone());
     }
@@ -555,6 +556,13 @@ fn ui_mode_from_flags(headful: bool, headless: bool) -> UiMode {
     match (headful, headless) {
         (_, true) => UiMode::Headless,
         _ => UiMode::Headful,
+    }
+}
+
+fn initial_ui_source(mode: &UiMode) -> &'static str {
+    match mode {
+        UiMode::Headful => "voice",
+        UiMode::Headless => "automation",
     }
 }
 
@@ -606,8 +614,8 @@ fn print_headless_events(rx: Receiver<VoiceUiEvent>) {
             } => {
                 serde_json::json!({"event": "agent_step", "label": label, "source": source, "task": task, "tool": tool, "step_index": step_index, "step_total": step_total, "ttl_ms": ttl_ms})
             }
-            VoiceUiEvent::UiMode { mode } => {
-                serde_json::json!({"event": "ui_mode", "mode": mode})
+            VoiceUiEvent::UiMode { mode, source } => {
+                serde_json::json!({"event": "ui_mode", "mode": mode, "source": source})
             }
             VoiceUiEvent::AutomationActivity {
                 label,
@@ -861,6 +869,23 @@ fn start_double_control_listener(tx: Sender<VoiceUiEvent>) {
     });
 }
 
+fn start_embedded_daemon_if_needed(
+    profile: String,
+    runtime: Arc<tokio::runtime::Runtime>,
+    tx: Sender<VoiceUiEvent>,
+) {
+    if profile_daemon_is_alive(&profile) {
+        return;
+    }
+    runtime.spawn(async move {
+        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 0));
+        if let Err(error) = cua_daemon::serve(addr, profile, false, UiMode::Headless).await {
+            tx.send(VoiceUiEvent::Error(format!("Daemon start failed: {error}")))
+                .ok();
+        }
+    });
+}
+
 fn start_double_control_listener_if_allowed(tx: Sender<VoiceUiEvent>) {
     let permission = cua_platform_macos::input_monitoring_permission();
     let permission = if permission == PermissionState::Granted {
@@ -1009,6 +1034,7 @@ mod tests {
         );
 
         assert_eq!(hud.snapshot.mode, UiMode::Headless);
+        assert_eq!(hud.snapshot.input_label, "automation");
     }
 
     #[test]
