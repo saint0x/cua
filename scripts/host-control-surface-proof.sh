@@ -61,8 +61,6 @@ UNIX_PAUSE="$OUT_DIR/unix-pause.json"
 UNIX_RESUME="$OUT_DIR/unix-resume.json"
 PROOF="$OUT_DIR/proof.json"
 
-cargo build -p cua -p cua-voice
-
 if [[ -n "${CUA_BIN:-}" ]]; then
   CUA_BIN_PATH="$CUA_BIN"
 elif [[ -x target/debug/cua ]]; then
@@ -71,6 +69,16 @@ else
   CUA_BIN_PATH="$(find target -path '*/debug/cua' -type f 2>/dev/null | head -n 1)"
 fi
 
+if [[ -z "$CUA_BIN_PATH" || ! -x "$CUA_BIN_PATH" ]]; then
+  cargo build -p cua
+fi
+if [[ -z "$CUA_BIN_PATH" || ! -x "$CUA_BIN_PATH" ]]; then
+  if [[ -x target/debug/cua ]]; then
+    CUA_BIN_PATH="target/debug/cua"
+  else
+    CUA_BIN_PATH="$(find target -path '*/debug/cua' -type f 2>/dev/null | head -n 1)"
+  fi
+fi
 if [[ -z "$CUA_BIN_PATH" || ! -x "$CUA_BIN_PATH" ]]; then
   echo "cua binary not found" >&2
   exit 1
@@ -84,6 +92,16 @@ else
   CUA_VOICE_BIN_PATH="$(find target -path '*/debug/cua-voice' -type f 2>/dev/null | head -n 1)"
 fi
 
+if [[ -z "$CUA_VOICE_BIN_PATH" || ! -x "$CUA_VOICE_BIN_PATH" ]]; then
+  cargo build -p cua-voice
+fi
+if [[ -z "$CUA_VOICE_BIN_PATH" || ! -x "$CUA_VOICE_BIN_PATH" ]]; then
+  if [[ -x target/debug/cua-voice ]]; then
+    CUA_VOICE_BIN_PATH="target/debug/cua-voice"
+  else
+    CUA_VOICE_BIN_PATH="$(find target -path '*/debug/cua-voice' -type f 2>/dev/null | head -n 1)"
+  fi
+fi
 if [[ -z "$CUA_VOICE_BIN_PATH" || ! -x "$CUA_VOICE_BIN_PATH" ]]; then
   echo "cua-voice binary not found" >&2
   exit 1

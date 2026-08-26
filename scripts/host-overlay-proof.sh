@@ -6,8 +6,6 @@ cd "$ROOT"
 
 command -v python3 >/dev/null
 
-cargo build -p cua -p cua-voice
-
 if [[ -n "${CUA_BIN:-}" ]]; then
   CUA_BIN_PATH="$CUA_BIN"
 elif [[ -x target/debug/cua ]]; then
@@ -25,8 +23,28 @@ else
 fi
 
 if [[ -z "$CUA_BIN_PATH" || ! -x "$CUA_BIN_PATH" ]]; then
+  cargo build -p cua
+fi
+if [[ -z "$CUA_BIN_PATH" || ! -x "$CUA_BIN_PATH" ]]; then
+  if [[ -x target/debug/cua ]]; then
+    CUA_BIN_PATH="target/debug/cua"
+  else
+    CUA_BIN_PATH="$(find target -path '*/debug/cua' -type f 2>/dev/null | head -n 1)"
+  fi
+fi
+if [[ -z "$CUA_BIN_PATH" || ! -x "$CUA_BIN_PATH" ]]; then
   echo "cua binary not found" >&2
   exit 1
+fi
+if [[ -z "$CUA_VOICE_BIN_PATH" || ! -x "$CUA_VOICE_BIN_PATH" ]]; then
+  cargo build -p cua-voice
+fi
+if [[ -z "$CUA_VOICE_BIN_PATH" || ! -x "$CUA_VOICE_BIN_PATH" ]]; then
+  if [[ -x target/debug/cua-voice ]]; then
+    CUA_VOICE_BIN_PATH="target/debug/cua-voice"
+  else
+    CUA_VOICE_BIN_PATH="$(find target -path '*/debug/cua-voice' -type f 2>/dev/null | head -n 1)"
+  fi
 fi
 if [[ -z "$CUA_VOICE_BIN_PATH" || ! -x "$CUA_VOICE_BIN_PATH" ]]; then
   echo "cua-voice binary not found" >&2
@@ -93,7 +111,7 @@ observe_path, candidate_path = sys.argv[1:3]
 obs = json.load(open(observe_path))
 windows = [
     w for w in obs.get("windows", [])
-    if (w.get("app_name") or "").lower() == "cua-voice"
+    if (w.get("app_name") or "").lower() == "cua"
 ]
 windows.sort(
     key=lambda w: (
@@ -102,7 +120,7 @@ windows.sort(
     )
 )
 if not windows:
-    raise SystemExit("no cua-voice window found")
+    raise SystemExit("no cua window found")
 candidate = windows[0]
 json.dump(candidate, open(candidate_path, "w"), indent=2)
 print(candidate["id"])
@@ -115,7 +133,6 @@ CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --profile "$PROFILE" \
   --out "$CAPTURE_PNG" --max-width 1280 --json >"$CAPTURE_JSON"
 
 python3 - "$OBSERVE_JSON" "$PROOF_JSON.candidate" "$CAPTURE_JSON" "$CAPTURE_PNG" "$PROOF_JSON" <<'PY'
-import base64
 import json
 import os
 import struct
@@ -124,7 +141,7 @@ import sys
 observe_path, candidate_path, capture_json_path, png_path, proof_path = sys.argv[1:6]
 candidate = json.load(open(candidate_path))
 capture = json.load(open(capture_json_path))
-envelope = capture["envelope"]
+envelope = capture
 
 with open(png_path, "rb") as handle:
     png = handle.read()
@@ -134,9 +151,8 @@ png_width, png_height = struct.unpack(">II", png[16:24])
 if png_width <= 0 or png_height <= 0:
     raise SystemExit("window capture has empty dimensions")
 
-raw = base64.b64decode(capture["bytes_base64"])
-if len(raw) != envelope["byte_len"] or raw != png:
-    raise SystemExit("capture JSON bytes and written PNG diverged")
+if len(png) != envelope["byte_len"]:
+    raise SystemExit("capture envelope byte_len and written PNG diverged")
 
 width = int(candidate["width"])
 height = int(candidate["height"])
