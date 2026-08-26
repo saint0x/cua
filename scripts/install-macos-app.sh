@@ -50,8 +50,4 @@ if [[ -x "$LSREGISTER" ]]; then
   "$LSREGISTER" -f "$INSTALL_APP"
 fi
 
-if [[ "${CUA_RESET_TCC:-0}" == "1" ]]; then
-  tccutil reset ListenEvent "$BUNDLE_ID" >/dev/null 2>&1 || true
-fi
-
 printf '%s\n' "$INSTALL_APP"

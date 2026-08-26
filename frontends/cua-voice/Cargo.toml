@@ -7,7 +7,7 @@ version.workspace = true
 
 [features]
 default = ["ui"]
-ui = ["dep:gpui", "dep:rdev"]
+ui = ["dep:gpui"]
 
 [dependencies]
 anyhow.workspace = true
@@ -21,7 +21,6 @@ dotenvy.workspace = true
 gpui = { workspace = true, optional = true }
 hound.workspace = true
 reqwest.workspace = true
-rdev = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

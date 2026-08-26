@@ -156,10 +156,6 @@ pub fn input_monitoring_permission() -> PermissionState {
     native_input_monitoring_permission()
 }
 
-pub fn request_input_monitoring_access() -> PermissionState {
-    native_request_input_monitoring_access()
-}
-
 pub fn request_accessibility_input_access() -> PermissionState {
     native_request_accessibility_input_access()
 }
@@ -970,23 +966,6 @@ fn native_input_monitoring_permission() -> PermissionState {
 }
 
 #[cfg(target_os = "macos")]
-fn native_request_input_monitoring_access() -> PermissionState {
-    if native_input_monitoring_permission() == PermissionState::Granted {
-        return PermissionState::Granted;
-    }
-    if unsafe { IOHIDRequestAccess(K_IOHID_REQUEST_TYPE_LISTEN_EVENT) } {
-        PermissionState::Granted
-    } else {
-        native_input_monitoring_permission()
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-fn native_request_input_monitoring_access() -> PermissionState {
-    PermissionState::NotApplicable
-}
-
-#[cfg(target_os = "macos")]
 fn native_request_accessibility_input_access() -> PermissionState {
     if unsafe { AXIsProcessTrusted() } {
         return PermissionState::Granted;
@@ -1144,7 +1123,6 @@ unsafe extern "C" {
 #[link(name = "IOKit", kind = "framework")]
 unsafe extern "C" {
     fn IOHIDCheckAccess(request_type: u32) -> i32;
-    fn IOHIDRequestAccess(request_type: u32) -> bool;
 }
 
 #[cfg(target_os = "macos")]

@@ -22,14 +22,13 @@ use gpui::{
     Context, IntoElement, ParentElement, Render, Styled, Window, WindowBackgroundAppearance,
     WindowBounds, WindowKind, WindowOptions,
 };
-use rdev::{listen, EventType, Key};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::io::ErrorKind;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const CENTER_LABEL_WIDTH: f32 = 270.0;
@@ -38,6 +37,7 @@ const MARQUEE_END_HOLD_SECS: f32 = 0.9;
 const MARQUEE_SCROLL_SPEED_PX_PER_SEC: f32 = 24.0;
 const MARQUEE_CHAR_WIDTH_PX: f32 = 6.2;
 const ACTIVITY_DOT_COUNT: usize = 6;
+const CONTROL_SHORTCUT_POLL_INTERVAL: Duration = Duration::from_millis(4);
 
 #[derive(Debug, Parser)]
 #[command(name = "cua-voice", version, about = "Rust voice HUD for cua")]
@@ -513,7 +513,7 @@ fn main() -> anyhow::Result<()> {
     } else {
         request_desktop_access_once_if_packaged_app(&config.profile);
         start_embedded_daemon_if_needed(config.profile.clone(), runtime.clone(), tx.clone());
-        start_double_control_listener_if_allowed(config.profile.clone(), tx.clone());
+        start_double_control_listener(tx.clone());
         start_agent_step_poll(config.profile.clone(), runtime.clone(), tx.clone());
     }
     Application::new().run(move |cx: &mut App| {
@@ -675,27 +675,32 @@ fn start_agent_step_poll(
 ) {
     runtime.spawn(async move {
         let Ok(client) = CuaClient::new(profile).await else {
-            return;
-        };
-        let Ok(mut session) = client.session().await else {
+            tx.send(VoiceUiEvent::Error("Invalid cua profile path".to_string()))
+                .ok();
             return;
         };
         let mut last_sequence = 0_u64;
         loop {
-            if let Ok(events) = session.events_wait(last_sequence, 1_000).await {
-                for event in events {
-                    if let Some(event) = agent_ui_event_from_daemon_event_advancing_cursor(
-                        &event,
-                        &mut last_sequence,
-                    ) {
-                        tx.send(event).ok();
+            let Ok(mut session) = client.session().await else {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            };
+            loop {
+                match session.events_wait(last_sequence, 1_000).await {
+                    Ok(events) => {
+                        for event in events {
+                            if let Some(event) = agent_ui_event_from_daemon_event_advancing_cursor(
+                                &event,
+                                &mut last_sequence,
+                            ) {
+                                tx.send(event).ok();
+                            }
+                        }
                     }
+                    Err(_) => break,
                 }
-            } else if let Ok(next_session) = client.session().await {
-                session = next_session;
-            } else {
-                tokio::time::sleep(Duration::from_millis(250)).await;
             }
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
     });
 }
@@ -830,42 +835,6 @@ fn start_demo_cycle(tx: Sender<VoiceUiEvent>) {
 
 fn start_double_control_listener(tx: Sender<VoiceUiEvent>) {
     std::thread::spawn(move || {
-        let detector = Arc::new(Mutex::new(ControlDoubleTap::default()));
-        let callback_detector = detector.clone();
-        let event_tx = tx.clone();
-        let result = listen(move |event| {
-            let is_control = matches!(
-                event.event_type,
-                EventType::KeyPress(Key::ControlLeft | Key::ControlRight)
-                    | EventType::KeyRelease(Key::ControlLeft | Key::ControlRight)
-            );
-            if !is_control {
-                return;
-            }
-            let mut detector = callback_detector.lock().unwrap();
-            match event.event_type {
-                EventType::KeyPress(_) => {
-                    detector.key_down();
-                }
-                EventType::KeyRelease(_) => {
-                    if detector.key_up(Instant::now()) {
-                        event_tx.send(VoiceUiEvent::Armed).ok();
-                    }
-                }
-                _ => {}
-            }
-        });
-        if let Err(error) = result {
-            tx.send(VoiceUiEvent::Error(format!(
-                "Control listener failed: {error:?}"
-            )))
-            .ok();
-        }
-    });
-}
-
-fn start_double_control_poll_listener(tx: Sender<VoiceUiEvent>) {
-    std::thread::spawn(move || {
         let mut detector = ControlDoubleTap::default();
         let mut was_down = false;
         loop {
@@ -877,7 +846,7 @@ fn start_double_control_poll_listener(tx: Sender<VoiceUiEvent>) {
             ) {
                 tx.send(VoiceUiEvent::Armed).ok();
             }
-            std::thread::sleep(Duration::from_millis(16));
+            std::thread::sleep(CONTROL_SHORTCUT_POLL_INTERVAL);
         }
     });
 }
@@ -913,47 +882,6 @@ fn start_embedded_daemon_if_needed(
                 .ok();
         }
     });
-}
-
-fn start_double_control_listener_if_allowed(profile: String, tx: Sender<VoiceUiEvent>) {
-    let permission = cua_platform_macos::input_monitoring_permission();
-    let backend = select_control_shortcut_backend(permission, launched_from_app_bundle(), || {
-        request_desktop_permission_once(
-            &profile,
-            "input-monitoring",
-            cua_platform_macos::input_monitoring_permission,
-            cua_platform_macos::request_input_monitoring_access,
-        )
-    });
-    match backend {
-        ControlShortcutBackend::InputMonitoring => start_double_control_listener(tx),
-        ControlShortcutBackend::KeyStatePolling => start_double_control_poll_listener(tx),
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ControlShortcutBackend {
-    InputMonitoring,
-    KeyStatePolling,
-}
-
-fn select_control_shortcut_backend(
-    permission: PermissionState,
-    launched_from_app_bundle: bool,
-    request_once: impl FnOnce() -> PermissionState,
-) -> ControlShortcutBackend {
-    let permission = if permission == PermissionState::Granted {
-        permission
-    } else if launched_from_app_bundle {
-        request_once()
-    } else {
-        permission
-    };
-    if permission == PermissionState::Granted {
-        ControlShortcutBackend::InputMonitoring
-    } else {
-        ControlShortcutBackend::KeyStatePolling
-    }
 }
 
 fn request_desktop_access_once_if_packaged_app(profile: &str) {
@@ -1165,37 +1093,64 @@ mod tests {
     }
 
     #[test]
-    fn control_shortcut_uses_input_monitoring_when_granted() {
-        let backend =
-            select_control_shortcut_backend(PermissionState::Granted, true, || unreachable!());
+    fn agent_step_poll_retries_until_daemon_socket_exists() {
+        let profile = format!("delayed-socket-{}", uuid::Uuid::new_v4());
+        let socket_path = PathBuf::from(std::env::var("HOME").unwrap())
+            .join(".cua")
+            .join("profiles")
+            .join(&profile)
+            .join("daemon.sock");
+        std::fs::remove_file(&socket_path).ok();
+        std::fs::create_dir_all(socket_path.parent().unwrap()).unwrap();
 
-        assert_eq!(backend, ControlShortcutBackend::InputMonitoring);
-    }
+        let (tx, rx) = channel::<VoiceUiEvent>();
+        let runtime = Arc::new(tokio::runtime::Runtime::new().unwrap());
+        start_agent_step_poll(profile, runtime.clone(), tx);
 
-    #[test]
-    fn control_shortcut_falls_back_to_polling_when_input_monitoring_is_denied() {
-        let backend = select_control_shortcut_backend(PermissionState::Denied, true, || {
-            PermissionState::Denied
+        std::thread::sleep(Duration::from_millis(150));
+        runtime.block_on(async {
+            tokio::fs::remove_file(&socket_path).await.ok();
+            let listener = tokio::net::UnixListener::bind(&socket_path).unwrap();
+            let (stream, _) = listener.accept().await.unwrap();
+            let (read, mut write) = stream.into_split();
+            let mut reader = tokio::io::BufReader::new(read);
+            let mut line = String::new();
+            tokio::io::AsyncBufReadExt::read_line(&mut reader, &mut line)
+                .await
+                .unwrap();
+            assert!(line.contains("\"events.wait\""));
+            tokio::io::AsyncWriteExt::write_all(
+                &mut write,
+                br#"{"ok":true,"result":[{"sequence":1,"kind":"ui_step","data":{"label":"remote delayed step","source":"external agent","task":"remote task","tool":"Unix socket","step_index":2,"step_total":8,"ttl_ms":1500}}]}"#,
+            )
+            .await
+            .unwrap();
+            tokio::io::AsyncWriteExt::write_all(&mut write, b"\n")
+                .await
+                .unwrap();
         });
 
-        assert_eq!(backend, ControlShortcutBackend::KeyStatePolling);
-    }
-
-    #[test]
-    fn control_shortcut_falls_back_to_polling_when_not_packaged_or_not_prompted() {
-        let backend =
-            select_control_shortcut_backend(PermissionState::Missing, false, || unreachable!());
-
-        assert_eq!(backend, ControlShortcutBackend::KeyStatePolling);
-    }
-
-    #[test]
-    fn control_shortcut_uses_input_monitoring_if_one_time_request_grants_it() {
-        let backend = select_control_shortcut_backend(PermissionState::Missing, true, || {
-            PermissionState::Granted
-        });
-
-        assert_eq!(backend, ControlShortcutBackend::InputMonitoring);
+        let event = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let VoiceUiEvent::AgentStep {
+            label,
+            source,
+            task,
+            tool,
+            step_index,
+            step_total,
+            ttl_ms,
+        } = event
+        else {
+            panic!("expected delayed agent step");
+        };
+        assert_eq!(label, "remote delayed step");
+        assert_eq!(source.as_deref(), Some("external agent"));
+        assert_eq!(task.as_deref(), Some("remote task"));
+        assert_eq!(tool.as_deref(), Some("Unix socket"));
+        assert_eq!(step_index, Some(2));
+        assert_eq!(step_total, Some(8));
+        assert_eq!(ttl_ms, Some(1500));
+        std::fs::remove_file(socket_path).ok();
     }
 
     #[test]

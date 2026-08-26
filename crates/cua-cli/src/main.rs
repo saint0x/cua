@@ -135,7 +135,6 @@ enum PermissionCommand {
     Status(JsonFlag),
     Preflight(JsonFlag),
     RequestAccessibility(JsonFlag),
-    RequestInputMonitoring(JsonFlag),
 }
 
 #[derive(Debug, Subcommand)]
@@ -565,7 +564,7 @@ async fn print_usage_and_status(server_addr: SocketAddr) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn ui(addr: SocketAddr, profile: &str, command: UiCommand) -> anyhow::Result<()> {
+async fn ui(_addr: SocketAddr, profile: &str, command: UiCommand) -> anyhow::Result<()> {
     match command {
         UiCommand::Step {
             label,
@@ -577,11 +576,10 @@ async fn ui(addr: SocketAddr, profile: &str, command: UiCommand) -> anyhow::Resu
             ttl_ms,
             json,
         } => {
-            post_json(
-                addr,
+            let value = unix_request_json(
                 profile,
-                "/ui/step",
-                serde_json::to_value(UiStepRequest {
+                "ui.step",
+                Some(serde_json::to_value(UiStepRequest {
                     schema_version: SCHEMA_VERSION.to_string(),
                     label,
                     source,
@@ -590,10 +588,10 @@ async fn ui(addr: SocketAddr, profile: &str, command: UiCommand) -> anyhow::Resu
                     step_index,
                     step_total,
                     ttl_ms,
-                })?,
-                json,
+                })?),
             )
-            .await
+            .await?;
+            print_json_value(&value, json)
         }
         UiCommand::Reply {
             text,
@@ -601,39 +599,41 @@ async fn ui(addr: SocketAddr, profile: &str, command: UiCommand) -> anyhow::Resu
             ttl_ms,
             json,
         } => {
-            post_json(
-                addr,
+            let value = unix_request_json(
                 profile,
-                "/ui/reply",
-                serde_json::to_value(UiReplyRequest {
+                "ui.reply",
+                Some(serde_json::to_value(UiReplyRequest {
                     schema_version: SCHEMA_VERSION.to_string(),
                     text,
                     source,
                     ttl_ms,
-                })?,
-                json,
+                })?),
             )
-            .await
+            .await?;
+            print_json_value(&value, json)
         }
         UiCommand::Mode { mode, source, json } => {
-            post_json(
-                addr,
+            let value = unix_request_json(
                 profile,
-                "/ui/mode",
-                serde_json::to_value(UiModeRequest {
+                "ui.mode",
+                Some(serde_json::to_value(UiModeRequest {
                     schema_version: SCHEMA_VERSION.to_string(),
                     mode: mode.into(),
                     source,
-                })?,
-                json,
+                })?),
             )
-            .await
+            .await?;
+            print_json_value(&value, json)
         }
     }
 }
 
 async fn get_json(addr: SocketAddr, profile: &str, path: &str, json: bool) -> anyhow::Result<()> {
     let value = request_json(addr, profile, reqwest::Method::GET, path, None).await?;
+    print_json_value(&value, json)
+}
+
+fn print_json_value(value: &serde_json::Value, json: bool) -> anyhow::Result<()> {
     if json {
         println!("{}", serde_json::to_string_pretty(&value)?);
     } else {
@@ -850,23 +850,10 @@ async fn permissions(profile: &str, command: PermissionCommand) -> anyhow::Resul
         }
         return Ok(());
     }
-    if let PermissionCommand::RequestInputMonitoring(flag) = command {
-        let value =
-            unix_request_json(profile, "permissions.request_input_monitoring", None).await?;
-        if flag.json {
-            println!("{}", serde_json::to_string_pretty(&value)?);
-        } else {
-            println!("{value}");
-        }
-        return Ok(());
-    }
     let preflight = matches!(command, PermissionCommand::Preflight(_));
     let json = match command {
         PermissionCommand::Status(flag) | PermissionCommand::Preflight(flag) => flag.json,
-        PermissionCommand::RequestAccessibility(_)
-        | PermissionCommand::RequestInputMonitoring(_) => {
-            unreachable!()
-        }
+        PermissionCommand::RequestAccessibility(_) => unreachable!(),
     };
     if preflight {
         request_missing_desktop_permissions();
@@ -897,9 +884,6 @@ fn request_missing_desktop_permissions() {
     }
     if should_request_permission(report.accessibility_input) {
         let _ = cua_platform_macos::request_accessibility_input_access();
-    }
-    if should_request_permission(report.input_monitoring) {
-        let _ = cua_platform_macos::request_input_monitoring_access();
     }
 }
 

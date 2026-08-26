@@ -52,15 +52,12 @@ cat > "$EMBEDDED_INFO_PLIST" <<PLIST
   <string>cua uses microphone input only when the voice HUD records a requested command.</string>
   <key>NSScreenCaptureUsageDescription</key>
   <string>cua captures the local screen only when a supervised profile requests desktop observation.</string>
-  <key>NSInputMonitoringUsageDescription</key>
-  <string>cua listens for a local double-Control shortcut to start voice recording.</string>
 </dict>
 </plist>
 PLIST
 
 plutil -extract NSMicrophoneUsageDescription raw -o - "$EMBEDDED_INFO_PLIST" >/dev/null
 plutil -extract NSScreenCaptureUsageDescription raw -o - "$EMBEDDED_INFO_PLIST" >/dev/null
-plutil -extract NSInputMonitoringUsageDescription raw -o - "$EMBEDDED_INFO_PLIST" >/dev/null
 
 PACKAGE_RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-C link-arg=-Wl,-sectcreate,__TEXT,__info_plist,$EMBEDDED_INFO_PLIST"
 RUSTFLAGS="$PACKAGE_RUSTFLAGS" cargo build -p cua --release

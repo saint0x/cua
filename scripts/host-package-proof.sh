@@ -35,8 +35,12 @@ EXECUTABLE="$(plutil -extract CFBundleExecutable raw -o - "$INFO_PLIST")"
 LSUI_ELEMENT="$(plutil -extract LSUIElement raw -o - "$INFO_PLIST")"
 MIC_USAGE="$(plutil -extract NSMicrophoneUsageDescription raw -o - "$INFO_PLIST")"
 SCREEN_USAGE="$(plutil -extract NSScreenCaptureUsageDescription raw -o - "$INFO_PLIST")"
-INPUT_USAGE="$(plutil -extract NSInputMonitoringUsageDescription raw -o - "$INFO_PLIST")"
 AUTOMATION_USAGE="$(plutil -extract NSAppleEventsUsageDescription raw -o - "$INFO_PLIST")"
+if plutil -extract NSInputMonitoringUsageDescription raw -o - "$INFO_PLIST" >/dev/null 2>&1; then
+  HAS_INPUT_MONITORING_USAGE="true"
+else
+  HAS_INPUT_MONITORING_USAGE="false"
+fi
 
 jq -n \
   --arg app_path "$APP_PATH" \
@@ -45,7 +49,7 @@ jq -n \
   --arg lsui_element "$LSUI_ELEMENT" \
   --arg microphone_usage "$MIC_USAGE" \
   --arg screen_capture_usage "$SCREEN_USAGE" \
-  --arg input_monitoring_usage "$INPUT_USAGE" \
+  --arg has_input_monitoring_usage "$HAS_INPUT_MONITORING_USAGE" \
   --arg automation_usage "$AUTOMATION_USAGE" \
   --arg signature "$SIGNATURE" \
   --arg designated_requirement "$DESIGNATED_REQUIREMENT" \
@@ -60,7 +64,7 @@ jq -n \
       ($lsui_element == "1" or $lsui_element == "true") and
       ($microphone_usage | length) > 0 and
       ($screen_capture_usage | length) > 0 and
-      ($input_monitoring_usage | length) > 0 and
+      $has_input_monitoring_usage == "false" and
       ($automation_usage | length) > 0 and
       ($signature | contains("Signature=adhoc") | not) and
       ($signature | contains("Authority=")) and
@@ -78,9 +82,10 @@ jq -n \
     usage_descriptions: {
       microphone: $microphone_usage,
       screen_capture: $screen_capture_usage,
-      input_monitoring: $input_monitoring_usage,
+      input_monitoring: null,
       automation: $automation_usage
     },
+    has_input_monitoring_usage: ($has_input_monitoring_usage == "true"),
     signature: $signature,
     daemon_signature: $daemon_signature,
     voice_signature: $voice_signature,
