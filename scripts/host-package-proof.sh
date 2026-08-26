@@ -65,7 +65,9 @@ jq -n \
       ($signature | contains("Signature=adhoc") | not) and
       ($signature | contains("Authority=")) and
       ($daemon_signature | contains("Identifier=io.saint0x.cua")) and
+      ($daemon_signature | contains("Info.plist entries=")) and
       ($voice_signature | contains("Identifier=io.saint0x.cua")) and
+      ($voice_signature | contains("Info.plist entries=")) and
       ($designated_requirement | contains("identifier \"io.saint0x.cua\"")) and
       ($designated_requirement | contains("cdhash") | not)
     ),

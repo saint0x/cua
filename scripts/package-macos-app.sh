@@ -11,41 +11,11 @@ CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 ENTITLEMENTS="$OUT_DIR/$APP_NAME.entitlements.plist"
+BUILD_SUPPORT_DIR="$ROOT/target/cua-package"
+EMBEDDED_INFO_PLIST="$BUILD_SUPPORT_DIR/$APP_NAME.binary-info.plist"
 
-cargo build -p cua --release
-cargo build -p cua-voice --release
-
-BIN="$ROOT/target/release/cua"
-VOICE_BIN="$ROOT/target/release/cua-voice"
-if [[ ! -x "$BIN" ]]; then
-  CANDIDATES=()
-  while IFS= read -r candidate; do
-    CANDIDATES+=("$candidate")
-  done < <(find "$ROOT/target" -path '*/release/cua' -type f -perm +111 | sort)
-  if [[ "${#CANDIDATES[@]}" -ne 1 ]]; then
-    printf 'expected one release cua binary, found %s\n' "${#CANDIDATES[@]}" >&2
-    exit 1
-  fi
-  BIN="${CANDIDATES[0]}"
-fi
-if [[ ! -x "$VOICE_BIN" ]]; then
-  VOICE_CANDIDATES=()
-  while IFS= read -r candidate; do
-    VOICE_CANDIDATES+=("$candidate")
-  done < <(find "$ROOT/target" -path '*/release/cua-voice' -type f -perm +111 | sort)
-  if [[ "${#VOICE_CANDIDATES[@]}" -ne 1 ]]; then
-    printf 'expected one release cua-voice binary, found %s\n' "${#VOICE_CANDIDATES[@]}" >&2
-    exit 1
-  fi
-  VOICE_BIN="${VOICE_CANDIDATES[0]}"
-fi
-
-rm -rf "$APP_DIR"
-mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
-install -m 0755 "$BIN" "$MACOS_DIR/cua"
-install -m 0755 "$VOICE_BIN" "$MACOS_DIR/cua-voice"
-
-cat > "$CONTENTS_DIR/Info.plist" <<PLIST
+mkdir -p "$OUT_DIR" "$BUILD_SUPPORT_DIR"
+cat > "$EMBEDDED_INFO_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -88,9 +58,44 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
 </plist>
 PLIST
 
-plutil -extract NSMicrophoneUsageDescription raw -o - "$CONTENTS_DIR/Info.plist" >/dev/null
-plutil -extract NSScreenCaptureUsageDescription raw -o - "$CONTENTS_DIR/Info.plist" >/dev/null
-plutil -extract NSInputMonitoringUsageDescription raw -o - "$CONTENTS_DIR/Info.plist" >/dev/null
+plutil -extract NSMicrophoneUsageDescription raw -o - "$EMBEDDED_INFO_PLIST" >/dev/null
+plutil -extract NSScreenCaptureUsageDescription raw -o - "$EMBEDDED_INFO_PLIST" >/dev/null
+plutil -extract NSInputMonitoringUsageDescription raw -o - "$EMBEDDED_INFO_PLIST" >/dev/null
+
+PACKAGE_RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-C link-arg=-Wl,-sectcreate,__TEXT,__info_plist,$EMBEDDED_INFO_PLIST"
+RUSTFLAGS="$PACKAGE_RUSTFLAGS" cargo build -p cua --release
+RUSTFLAGS="$PACKAGE_RUSTFLAGS" cargo build -p cua-voice --release
+
+BIN="$ROOT/target/release/cua"
+VOICE_BIN="$ROOT/target/release/cua-voice"
+if [[ ! -x "$BIN" ]]; then
+  CANDIDATES=()
+  while IFS= read -r candidate; do
+    CANDIDATES+=("$candidate")
+  done < <(find "$ROOT/target" -path '*/release/cua' -type f -perm +111 | sort)
+  if [[ "${#CANDIDATES[@]}" -ne 1 ]]; then
+    printf 'expected one release cua binary, found %s\n' "${#CANDIDATES[@]}" >&2
+    exit 1
+  fi
+  BIN="${CANDIDATES[0]}"
+fi
+if [[ ! -x "$VOICE_BIN" ]]; then
+  VOICE_CANDIDATES=()
+  while IFS= read -r candidate; do
+    VOICE_CANDIDATES+=("$candidate")
+  done < <(find "$ROOT/target" -path '*/release/cua-voice' -type f -perm +111 | sort)
+  if [[ "${#VOICE_CANDIDATES[@]}" -ne 1 ]]; then
+    printf 'expected one release cua-voice binary, found %s\n' "${#VOICE_CANDIDATES[@]}" >&2
+    exit 1
+  fi
+  VOICE_BIN="${VOICE_CANDIDATES[0]}"
+fi
+
+rm -rf "$APP_DIR"
+mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
+install -m 0755 "$BIN" "$MACOS_DIR/cua"
+install -m 0755 "$VOICE_BIN" "$MACOS_DIR/cua-voice"
+cp "$EMBEDDED_INFO_PLIST" "$CONTENTS_DIR/Info.plist"
 
 cat > "$ENTITLEMENTS" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
