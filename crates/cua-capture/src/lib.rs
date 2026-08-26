@@ -144,14 +144,23 @@ pub struct FrameBus {
     backend: Arc<dyn CaptureBackend>,
     latest: RwLock<Option<CapturedFrame>>,
     started: Instant,
+    capture_timeout: Duration,
 }
 
 impl FrameBus {
     pub fn new(backend: Arc<dyn CaptureBackend>) -> Self {
+        Self::new_with_capture_timeout(backend, capture_timeout_from_env())
+    }
+
+    pub fn new_with_capture_timeout(
+        backend: Arc<dyn CaptureBackend>,
+        capture_timeout: Duration,
+    ) -> Self {
         Self {
             backend,
             latest: RwLock::new(None),
             started: Instant::now(),
+            capture_timeout,
         }
     }
 
@@ -176,7 +185,7 @@ impl FrameBus {
                 });
             }
         }
-        let frame = match self.backend.capture_latest(request).await {
+        let frame = match capture_latest_timed(&self.backend, request, self.capture_timeout).await {
             Ok(frame) => frame,
             Err(error) => {
                 if let Some(frame) = self.latest.read().await.clone() {
@@ -208,7 +217,9 @@ impl FrameBus {
             request.force_fresh = true;
             loop {
                 ticker.tick().await;
-                if let Ok(frame) = self.backend.capture_latest(request.clone()).await {
+                if let Ok(frame) =
+                    capture_latest_timed(&self.backend, request.clone(), self.capture_timeout).await
+                {
                     *self.latest.write().await = Some(frame);
                 }
             }
@@ -244,6 +255,25 @@ impl FrameBus {
     pub fn uptime_ns(&self) -> u128 {
         self.started.elapsed().as_nanos()
     }
+}
+
+async fn capture_latest_timed(
+    backend: &Arc<dyn CaptureBackend>,
+    request: CaptureRequest,
+    timeout: Duration,
+) -> anyhow::Result<CapturedFrame> {
+    tokio::time::timeout(timeout, backend.capture_latest(request))
+        .await
+        .map_err(|_| anyhow::anyhow!("capture backend timed out after {}ms", timeout.as_millis()))?
+}
+
+fn capture_timeout_from_env() -> Duration {
+    let millis = std::env::var("CUA_CAPTURE_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(2_500)
+        .clamp(250, 30_000);
+    Duration::from_millis(millis)
 }
 
 fn elapsed_ns(started: Instant) -> u64 {
@@ -393,6 +423,7 @@ pub fn monotonic_seed() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::future;
     use std::sync::atomic::{AtomicBool, Ordering};
 
     #[tokio::test]
@@ -486,6 +517,100 @@ mod tests {
             first.frame.envelope.frame_id,
             second.frame.envelope.frame_id
         );
+    }
+
+    #[tokio::test]
+    async fn timed_out_capture_without_cached_frame_returns_error() {
+        let bus = FrameBus::new_with_capture_timeout(
+            Arc::new(HangingCaptureBackend),
+            Duration::from_millis(20),
+        );
+
+        let error = bus
+            .latest_or_capture_timed(CaptureRequest {
+                max_width: Some(320),
+                encoding: FrameEncoding::Jpeg,
+                force_fresh: true,
+            })
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("capture backend timed out"));
+    }
+
+    #[tokio::test]
+    async fn timed_out_fresh_capture_uses_last_good_frame() {
+        let backend = Arc::new(SwitchableCaptureBackend {
+            hang: AtomicBool::new(false),
+        });
+        let bus = FrameBus::new_with_capture_timeout(backend.clone(), Duration::from_millis(20));
+        let first = bus
+            .latest_or_capture_timed(CaptureRequest {
+                max_width: Some(320),
+                encoding: FrameEncoding::Jpeg,
+                force_fresh: true,
+            })
+            .await
+            .unwrap();
+
+        backend.hang.store(true, Ordering::SeqCst);
+        let second = bus
+            .latest_or_capture_timed(CaptureRequest {
+                max_width: Some(320),
+                encoding: FrameEncoding::Jpeg,
+                force_fresh: true,
+            })
+            .await
+            .unwrap();
+
+        assert!(second.cache_hit);
+        assert_eq!(
+            first.frame.envelope.frame_id,
+            second.frame.envelope.frame_id
+        );
+    }
+
+    struct HangingCaptureBackend;
+
+    #[async_trait]
+    impl CaptureBackend for HangingCaptureBackend {
+        async fn capture_latest(&self, _request: CaptureRequest) -> anyhow::Result<CapturedFrame> {
+            future::pending().await
+        }
+
+        async fn displays(&self) -> anyhow::Result<Vec<DisplayInfo>> {
+            SyntheticCaptureBackend::default().displays().await
+        }
+
+        fn name(&self) -> &'static str {
+            "hanging"
+        }
+    }
+
+    struct SwitchableCaptureBackend {
+        hang: AtomicBool,
+    }
+
+    #[async_trait]
+    impl CaptureBackend for SwitchableCaptureBackend {
+        async fn capture_latest(&self, request: CaptureRequest) -> anyhow::Result<CapturedFrame> {
+            if self.hang.load(Ordering::SeqCst) {
+                future::pending().await
+            } else {
+                SyntheticCaptureBackend::default()
+                    .capture_latest(request)
+                    .await
+            }
+        }
+
+        async fn displays(&self) -> anyhow::Result<Vec<DisplayInfo>> {
+            SyntheticCaptureBackend::default().displays().await
+        }
+
+        fn name(&self) -> &'static str {
+            "switchable"
+        }
     }
 
     struct FlakyCaptureBackend {

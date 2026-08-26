@@ -32,9 +32,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
 use std::convert::Infallible;
 use std::net::SocketAddr;
-#[cfg(not(test))]
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 #[cfg(not(test))]
 use std::process::{Command, Stdio};
 use std::sync::{
@@ -43,7 +41,7 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::UnixListener;
+use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{mpsc, oneshot, Notify, RwLock};
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
@@ -1018,6 +1016,13 @@ async fn spawn_unix_socket(state: DaemonState) -> anyhow::Result<()> {
         tokio::fs::create_dir_all(parent).await?;
     }
     if tokio::fs::try_exists(&path).await.unwrap_or(false) {
+        if profile_socket_is_live(&path).await {
+            anyhow::bail!(
+                "cua daemon for profile '{}' is already running at {}",
+                state.profile,
+                path.display()
+            );
+        }
         tokio::fs::remove_file(&path).await?;
     }
     let listener = UnixListener::bind(&path)?;
@@ -1041,6 +1046,12 @@ async fn spawn_unix_socket(state: DaemonState) -> anyhow::Result<()> {
         }
     });
     Ok(())
+}
+
+async fn profile_socket_is_live(path: &Path) -> bool {
+    tokio::time::timeout(Duration::from_millis(150), UnixStream::connect(path))
+        .await
+        .is_ok_and(|result| result.is_ok())
 }
 
 #[derive(Debug, Deserialize)]
@@ -3671,6 +3682,21 @@ mod tests {
             .await,
         );
         assert_eq!(empty_wait.as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn live_profile_socket_is_not_treated_as_stale() {
+        let dir = PathBuf::from(format!("/tmp/cua-daemon-{}", Uuid::new_v4().simple()));
+        let socket = dir.join("daemon.sock");
+        tokio::fs::create_dir_all(socket.parent().unwrap())
+            .await
+            .unwrap();
+        let listener = UnixListener::bind(&socket).unwrap();
+
+        assert!(profile_socket_is_live(&socket).await);
+
+        drop(listener);
+        let _ = tokio::fs::remove_dir_all(&dir).await;
     }
 
     fn unix_request(method: &str, params: serde_json::Value) -> UnixRequest {
