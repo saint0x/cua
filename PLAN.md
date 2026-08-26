@@ -1,5 +1,5 @@
 # cua Remaining Production Plan
 
 - Restore ScreenCaptureKit shareable-content delivery on the daemon capture bus.
-- Restore installed-app input backend selection from granted macOS permissions.
+- Verify the installed GUI process has macOS Accessibility trust for CGEvent input.
 - Prove the GPUI dynamic-island overlay with a host-visible capture path.

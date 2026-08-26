@@ -845,6 +845,7 @@ async fn permissions(command: PermissionCommand) -> anyhow::Result<()> {
     };
     if preflight {
         let _ = cua_platform_macos::request_screen_recording_access();
+        let _ = cua_platform_macos::request_accessibility_input_access();
         let _ = cua_platform_macos::request_input_monitoring_access();
     }
     let permission_report = cua_platform_macos::permission_report();

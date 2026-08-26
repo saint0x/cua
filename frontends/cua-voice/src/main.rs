@@ -511,9 +511,9 @@ fn main() -> anyhow::Result<()> {
     if demo {
         start_demo_cycle(tx.clone());
     } else {
-        request_screen_recording_access_if_packaged_app();
+        request_desktop_access_once_if_packaged_app(&config.profile);
         start_embedded_daemon_if_needed(config.profile.clone(), runtime.clone(), tx.clone());
-        start_double_control_listener_if_allowed(tx.clone());
+        start_double_control_listener_if_allowed(config.profile.clone(), tx.clone());
         start_agent_step_poll(config.profile.clone(), runtime.clone(), tx.clone());
     }
     Application::new().run(move |cx: &mut App| {
@@ -881,12 +881,17 @@ fn start_embedded_daemon_if_needed(
     });
 }
 
-fn start_double_control_listener_if_allowed(tx: Sender<VoiceUiEvent>) {
+fn start_double_control_listener_if_allowed(profile: String, tx: Sender<VoiceUiEvent>) {
     let permission = cua_platform_macos::input_monitoring_permission();
     let permission = if permission == PermissionState::Granted {
         permission
     } else if launched_from_app_bundle() {
-        cua_platform_macos::request_input_monitoring_access()
+        request_desktop_permission_once(
+            &profile,
+            "input-monitoring",
+            cua_platform_macos::input_monitoring_permission,
+            cua_platform_macos::request_input_monitoring_access,
+        )
     } else {
         permission
     };
@@ -900,9 +905,25 @@ fn start_double_control_listener_if_allowed(tx: Sender<VoiceUiEvent>) {
     }
 }
 
-fn request_screen_recording_access_if_packaged_app() {
-    if launched_from_app_bundle() {
-        let _ = cua_platform_macos::request_screen_recording_access();
+fn request_desktop_access_once_if_packaged_app(profile: &str) {
+    if !launched_from_app_bundle() {
+        return;
+    }
+    if cua_platform_macos::permission_report().screen_recording != PermissionState::Granted {
+        let _ = request_desktop_permission_once(
+            profile,
+            "screen-recording",
+            || cua_platform_macos::permission_report().screen_recording,
+            cua_platform_macos::request_screen_recording_access,
+        );
+    }
+    if cua_platform_macos::permission_report().accessibility_input != PermissionState::Granted {
+        let _ = request_desktop_permission_once(
+            profile,
+            "accessibility-input",
+            || cua_platform_macos::permission_report().accessibility_input,
+            cua_platform_macos::request_accessibility_input_access,
+        );
     }
 }
 
@@ -911,6 +932,34 @@ fn launched_from_app_bundle() -> bool {
         .ok()
         .and_then(|path| path.to_str().map(|path| path.to_string()))
         .is_some_and(|path| path.contains(".app/Contents/MacOS/"))
+}
+
+fn request_desktop_permission_once(
+    profile: &str,
+    permission: &str,
+    current: impl FnOnce() -> PermissionState,
+    request: impl FnOnce() -> PermissionState,
+) -> PermissionState {
+    let path = desktop_permission_prompt_marker_path(profile, permission);
+    if path.is_file() {
+        return current();
+    }
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let result = request();
+    let _ = std::fs::write(&path, format!("{:?}\n", result));
+    result
+}
+
+fn desktop_permission_prompt_marker_path(profile: &str, permission: &str) -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home)
+        .join(".cua")
+        .join("profiles")
+        .join(profile)
+        .join("permission-prompts")
+        .join(permission)
 }
 
 #[cfg(test)]

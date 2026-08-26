@@ -91,7 +91,7 @@ impl DaemonState {
         hud_mode: UiMode,
     ) -> Self {
         let profile = profile.into();
-        let input = cua_platform_macos::input_backend_or_refusing();
+        let input = cua_platform_macos::input_backend();
         let events = EventLane::spawn(event_lane_capacity(), event_lane_retention());
         let state = Self {
             profile: profile.clone(),

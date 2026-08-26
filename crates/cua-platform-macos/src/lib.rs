@@ -12,7 +12,7 @@ use cua_core::{
     FrameEnvelope, InputAction, InputRequest, InputResult, InputRoute, MouseButton,
     PermissionReport, PermissionState, Rect, WindowInfo, SCHEMA_VERSION,
 };
-use cua_input::{InputBackend, RefusingInputBackend};
+use cua_input::InputBackend;
 use image::{ImageBuffer, Rgba};
 use sha2::{Digest, Sha256};
 #[cfg(target_os = "macos")]
@@ -40,12 +40,8 @@ pub fn capture_backend_or_unavailable() -> Arc<dyn CaptureBackend> {
     }
 }
 
-pub fn input_backend_or_refusing() -> Arc<dyn InputBackend> {
-    if permission_report().accessibility_input == PermissionState::Granted {
-        Arc::new(MacosInputBackend)
-    } else {
-        Arc::new(RefusingInputBackend)
-    }
+pub fn input_backend() -> Arc<dyn InputBackend> {
+    Arc::new(MacosInputBackend)
 }
 
 #[derive(Debug)]
@@ -162,6 +158,10 @@ pub fn input_monitoring_permission() -> PermissionState {
 
 pub fn request_input_monitoring_access() -> PermissionState {
     native_request_input_monitoring_access()
+}
+
+pub fn request_accessibility_input_access() -> PermissionState {
+    native_request_accessibility_input_access()
 }
 
 pub fn cursor_state() -> CursorState {
@@ -634,8 +634,22 @@ fn native_displays() -> anyhow::Result<Vec<DisplayInfo>> {
 
 #[cfg(target_os = "macos")]
 fn post_mouse_move(x: i32, y: i32) -> Result<String, String> {
+    let before = native_cursor_state();
     post_mouse_event(CG_EVENT_MOUSE_MOVED, x, y, CG_MOUSE_BUTTON_LEFT)?;
-    Ok("mouse move posted through CGEvent".to_string())
+    let deadline = Instant::now() + Duration::from_millis(120);
+    loop {
+        let cursor = native_cursor_state();
+        if point_near(cursor.x, cursor.y, x as f64, y as f64, 2.0) {
+            return Ok("mouse move delivered through CGEvent with cursor readback".to_string());
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "CGEvent mouse move was not observed; cursor stayed at {:.0},{:.0} after targeting {x},{y}",
+                before.x, before.y
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(4));
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -699,6 +713,7 @@ fn post_mouse_drag(_from_x: i32, _from_y: i32, _to_x: i32, _to_y: i32) -> Result
 
 #[cfg(target_os = "macos")]
 fn post_mouse_event(event_type: u32, x: i32, y: i32, button: u32) -> Result<(), String> {
+    ensure_accessibility_trusted()?;
     let point = CGPoint {
         x: x as f64,
         y: y as f64,
@@ -755,6 +770,7 @@ fn post_text(_text: &str) -> Result<String, String> {
 
 #[cfg(target_os = "macos")]
 fn post_key(key: u16, flags: u64) -> Result<(), String> {
+    ensure_accessibility_trusted()?;
     for down in [true, false] {
         let event = unsafe { CGEventCreateKeyboardEvent(std::ptr::null(), key, down) };
         if event.is_null() {
@@ -771,6 +787,7 @@ fn post_key(key: u16, flags: u64) -> Result<(), String> {
 
 #[cfg(target_os = "macos")]
 fn post_unicode_key(utf16: &[u16], down: bool) -> Result<(), String> {
+    ensure_accessibility_trusted()?;
     let event = unsafe { CGEventCreateKeyboardEvent(std::ptr::null(), 0, down) };
     if event.is_null() {
         return Err("CGEventCreateKeyboardEvent returned null".to_string());
@@ -781,6 +798,20 @@ fn post_unicode_key(utf16: &[u16], down: bool) -> Result<(), String> {
         CFRelease(event.cast());
     }
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn ensure_accessibility_trusted() -> Result<(), String> {
+    if unsafe { AXIsProcessTrusted() } {
+        Ok(())
+    } else {
+        Err("macOS Accessibility permission is required for CGEvent input".to_string())
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn point_near(x: f64, y: f64, target_x: f64, target_y: f64, tolerance: f64) -> bool {
+    (x - target_x).abs() <= tolerance && (y - target_y).abs() <= tolerance
 }
 
 fn input_result(
@@ -929,6 +960,44 @@ fn native_request_input_monitoring_access() -> PermissionState {
 }
 
 #[cfg(target_os = "macos")]
+fn native_request_accessibility_input_access() -> PermissionState {
+    if unsafe { AXIsProcessTrusted() } {
+        return PermissionState::Granted;
+    }
+    let key = unsafe { kAXTrustedCheckOptionPrompt };
+    let value = unsafe { kCFBooleanTrue };
+    let keys = [key];
+    let values = [value];
+    let options = unsafe {
+        CFDictionaryCreate(
+            std::ptr::null(),
+            keys.as_ptr(),
+            values.as_ptr(),
+            1,
+            std::ptr::null(),
+            std::ptr::null(),
+        )
+    };
+    if options.is_null() {
+        return accessibility_permission();
+    }
+    let trusted = unsafe { AXIsProcessTrustedWithOptions(options) };
+    unsafe {
+        CFRelease(options.cast());
+    }
+    if trusted {
+        PermissionState::Granted
+    } else {
+        accessibility_permission()
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn native_request_accessibility_input_access() -> PermissionState {
+    PermissionState::NotApplicable
+}
+
+#[cfg(target_os = "macos")]
 fn accessibility_permission() -> PermissionState {
     if unsafe { AXIsProcessTrusted() } {
         PermissionState::Granted
@@ -956,6 +1025,7 @@ unsafe extern "C" {
     fn CGPreflightScreenCaptureAccess() -> bool;
     fn CGRequestScreenCaptureAccess() -> bool;
     fn AXIsProcessTrusted() -> bool;
+    fn AXIsProcessTrustedWithOptions(options: *const std::ffi::c_void) -> bool;
     fn CGMainDisplayID() -> u32;
     fn CGEventCreate(source: *const std::ffi::c_void) -> *const std::ffi::c_void;
     fn CGEventGetLocation(event: *const std::ffi::c_void) -> CGPoint;
@@ -1001,6 +1071,14 @@ unsafe extern "C" {
         key: *const std::ffi::c_void,
         value: *mut *const std::ffi::c_void,
     ) -> bool;
+    fn CFDictionaryCreate(
+        allocator: *const std::ffi::c_void,
+        keys: *const *const std::ffi::c_void,
+        values: *const *const std::ffi::c_void,
+        num_values: isize,
+        key_callbacks: *const std::ffi::c_void,
+        value_callbacks: *const std::ffi::c_void,
+    ) -> *const std::ffi::c_void;
     fn CFNumberGetValue(
         number: *const std::ffi::c_void,
         the_type: i32,
@@ -1025,6 +1103,8 @@ unsafe extern "C" {
     fn CFRelease(cf: *const std::ffi::c_void);
 
     static kCFRunLoopDefaultMode: *const std::ffi::c_void;
+    static kCFBooleanTrue: *const std::ffi::c_void;
+    static kAXTrustedCheckOptionPrompt: *const std::ffi::c_void;
     static kCGWindowNumber: *const std::ffi::c_void;
     static kCGWindowOwnerName: *const std::ffi::c_void;
     static kCGWindowName: *const std::ffi::c_void;
@@ -1171,8 +1251,8 @@ mod tests {
 
     #[test]
     fn input_backend_selection_is_available() {
-        let backend = input_backend_or_refusing();
-        assert!(matches!(backend.name(), "macos-cgevent" | "refusing"));
+        let backend = input_backend();
+        assert_eq!(backend.name(), "macos-cgevent");
     }
 
     #[test]
