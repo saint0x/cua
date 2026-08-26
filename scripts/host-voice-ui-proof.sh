@@ -61,7 +61,7 @@ capture_png() {
   CUA_HTTP_TOKEN="$CAPTURE_TOKEN" "$CUA_BIN_PATH" \
     --server-addr "$CAPTURE_ADDR" \
     --profile "$CAPTURE_PROFILE" \
-    screenshot --out "$out" --force-fresh --max-width 1512 --json >/dev/null
+    screenshot --out "$out" --force-fresh --max-width 1280 --json >/dev/null
 }
 
 for _ in $(seq 1 100); do
