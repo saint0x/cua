@@ -134,6 +134,7 @@ struct StreamArgs {
 enum PermissionCommand {
     Status(JsonFlag),
     Preflight(JsonFlag),
+    RequestAccessibility(JsonFlag),
 }
 
 #[derive(Debug, Subcommand)]
@@ -439,7 +440,7 @@ async fn main() -> anyhow::Result<()> {
             get_json(cli.server_addr, &cli.profile, "/status", flag.json).await
         }
         Some(Command::Doctor(flag)) => doctor(flag.json).await,
-        Some(Command::Permissions { command }) => permissions(command).await,
+        Some(Command::Permissions { command }) => permissions(&cli.profile, command).await,
         Some(Command::Perf { command }) => perf(cli.server_addr, &cli.profile, command).await,
         Some(Command::Context(args)) => context(cli.server_addr, &cli.profile, args).await,
         Some(Command::Manifest(flag)) => {
@@ -838,10 +839,20 @@ fn profile_socket_path(profile: &str) -> anyhow::Result<PathBuf> {
         .join("daemon.sock"))
 }
 
-async fn permissions(command: PermissionCommand) -> anyhow::Result<()> {
+async fn permissions(profile: &str, command: PermissionCommand) -> anyhow::Result<()> {
+    if let PermissionCommand::RequestAccessibility(flag) = command {
+        let value = unix_request_json(profile, "permissions.request_accessibility", None).await?;
+        if flag.json {
+            println!("{}", serde_json::to_string_pretty(&value)?);
+        } else {
+            println!("{value}");
+        }
+        return Ok(());
+    }
     let preflight = matches!(command, PermissionCommand::Preflight(_));
     let json = match command {
         PermissionCommand::Status(flag) | PermissionCommand::Preflight(flag) => flag.json,
+        PermissionCommand::RequestAccessibility(_) => unreachable!(),
     };
     if preflight {
         let _ = cua_platform_macos::request_screen_recording_access();
@@ -865,6 +876,41 @@ async fn permissions(command: PermissionCommand) -> anyhow::Result<()> {
         println!("{report}");
     }
     Ok(())
+}
+
+async fn unix_request_json(
+    profile: &str,
+    method: &str,
+    params: Option<serde_json::Value>,
+) -> anyhow::Result<serde_json::Value> {
+    let token = load_profile_token(profile).await?;
+    let socket_path = profile_socket_path(profile)?;
+    let stream = UnixStream::connect(&socket_path)
+        .await
+        .with_context(|| format!("connect {}", socket_path.display()))?;
+    let (read, mut write) = stream.into_split();
+    let mut lines = BufReader::new(read).lines();
+    let request = serde_json::json!({
+        "id": uuid::Uuid::new_v4().to_string(),
+        "token": token,
+        "method": method,
+        "params": params.unwrap_or_else(|| serde_json::json!({}))
+    });
+    write.write_all(request.to_string().as_bytes()).await?;
+    write.write_all(b"\n").await?;
+    write.flush().await?;
+    let line = lines
+        .next_line()
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("empty unix response for {method}"))?;
+    let response: serde_json::Value = serde_json::from_str(&line)?;
+    if response.get("ok").and_then(|ok| ok.as_bool()) != Some(true) {
+        anyhow::bail!("unix request {method} failed: {}", response["error"]);
+    }
+    Ok(response
+        .get("result")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null))
 }
 
 async fn perf(addr: SocketAddr, profile: &str, command: PerfCommand) -> anyhow::Result<()> {

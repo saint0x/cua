@@ -1156,6 +1156,10 @@ pub fn router(state: DaemonState) -> Router {
         .route("/observe/cursor", get(observe_cursor))
         .route("/events", get(events))
         .route("/events/live", get(events_live))
+        .route(
+            "/permissions/accessibility/request",
+            post(request_accessibility),
+        )
         .route("/session/acquire", post(session_acquire))
         .route("/session/cancel", post(session_cancel))
         .route("/session/status", get(session_status))
@@ -1604,6 +1608,9 @@ async fn handle_unix_request(state: &DaemonState, request: UnixRequest) -> serde
         "status" => Ok(serde_json::to_value(state.health().await)),
         "manifest" => Ok(serde_json::to_value(manifest_payload())),
         "metrics" => Ok(serde_json::to_value(metrics_snapshot(state))),
+        "permissions.request_accessibility" => Ok(serde_json::to_value(
+            request_accessibility_state(state).await,
+        )),
         "events.snapshot" => Ok(serde_json::to_value(state.events.snapshot().await)),
         "events.after" => {
             let params = request.params.unwrap_or_else(|| serde_json::json!({}));
@@ -1896,6 +1903,7 @@ fn manifest_payload() -> Manifest {
             "GET /events".to_string(),
             "GET /events?after=<sequence>".to_string(),
             "GET /events/live?after=<sequence>&timeout_ms=<ms>".to_string(),
+            "POST /permissions/accessibility/request".to_string(),
             "POST /session/acquire".to_string(),
             "POST /session/cancel".to_string(),
             "GET /session/status".to_string(),
@@ -1925,6 +1933,7 @@ fn manifest_payload() -> Manifest {
             "cua manifest --json".to_string(),
             "cua metrics --json".to_string(),
             "cua events --json [--after <sequence>]".to_string(),
+            "cua permissions request-accessibility --json".to_string(),
             "cua session acquire <session-id> --role owner|observer --json".to_string(),
             "cua session cancel <session-id> --json".to_string(),
             "cua session status --json".to_string(),
@@ -1987,6 +1996,26 @@ fn metrics_snapshot(state: &DaemonState) -> MetricsSnapshot {
     state
         .metrics
         .snapshot(state.active_streams.load(Ordering::Relaxed))
+}
+
+async fn request_accessibility(State(state): State<DaemonState>) -> Json<PermissionReport> {
+    Json(request_accessibility_state(&state).await)
+}
+
+async fn request_accessibility_state(state: &DaemonState) -> PermissionReport {
+    let before = state.permission_report().await;
+    let requested = cua_platform_macos::request_accessibility_input_access();
+    let after = state.permission_report().await;
+    state.publish_event(
+        "permission_request",
+        serde_json::json!({
+            "permission": "accessibility_input",
+            "before": before.accessibility_input,
+            "requested": requested,
+            "after": after.accessibility_input,
+        }),
+    );
+    after
 }
 
 async fn healthz(State(state): State<DaemonState>) -> impl IntoResponse {
