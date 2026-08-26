@@ -138,6 +138,9 @@ impl HudSnapshot {
                     let mut snapshot = self.clone();
                     snapshot.programmed_step_expires_at = None;
                     snapshot.programmed_step_restore = None;
+                    if source.as_deref() != Some("voice") {
+                        snapshot.mark_automation_control();
+                    }
                     snapshot
                 });
                 self.phase = HudPhase::Planning;
@@ -187,6 +190,16 @@ impl HudSnapshot {
             }
             VoiceUiEvent::Reply(text) => {
                 self.phase = HudPhase::Reply;
+                self.mark_voice_control();
+                self.step = HudStep::new(4, 4, "Done");
+                self.response = Some(text);
+                self.expanded_until = Some(Instant::now() + Duration::from_secs(5));
+                self.programmed_step_expires_at = None;
+                self.programmed_step_restore = None;
+            }
+            VoiceUiEvent::AutomationReply(text) => {
+                self.phase = HudPhase::Reply;
+                self.mark_automation_control();
                 self.step = HudStep::new(4, 4, "Done");
                 self.response = Some(text);
                 self.expanded_until = Some(Instant::now() + Duration::from_secs(5));
@@ -292,6 +305,7 @@ pub enum VoiceUiEvent {
         tool: Option<String>,
     },
     Reply(String),
+    AutomationReply(String),
     Error(String),
     Metric {
         name: String,
@@ -310,6 +324,23 @@ mod tests {
         state.apply(VoiceUiEvent::Reply("ready".to_string()));
         assert!(state.is_expanded());
         assert_eq!(state.phase, HudPhase::Reply);
+        assert_eq!(state.input_label, "Voice control");
+    }
+
+    #[test]
+    fn automation_reply_holds_automation_as_last_use() {
+        let mut state = HudSnapshot::default();
+        state.apply(VoiceUiEvent::AutomationReply("ready".to_string()));
+
+        assert!(state.is_expanded());
+        assert_eq!(state.phase, HudPhase::Reply);
+        assert_eq!(state.input_label, "automation");
+
+        state.apply(VoiceUiEvent::Idle);
+
+        assert_eq!(state.phase, HudPhase::Idle);
+        assert_eq!(state.step.label, "Ready");
+        assert_eq!(state.input_label, "automation");
     }
 
     #[test]
@@ -489,7 +520,7 @@ mod tests {
     }
 
     #[test]
-    fn programmed_agent_step_expires_back_to_prior_state() {
+    fn voice_programmed_step_expires_back_to_prior_voice_state() {
         let mut state = HudSnapshot::default();
         state.apply(VoiceUiEvent::Transcript("open settings".to_string()));
         state.apply(VoiceUiEvent::Planning {
@@ -497,7 +528,7 @@ mod tests {
         });
         state.apply(VoiceUiEvent::AgentStep {
             label: "checking current focus".to_string(),
-            source: Some("agent".to_string()),
+            source: Some("voice".to_string()),
             task: Some("Use browser".to_string()),
             tool: Some("browser".to_string()),
             step_index: Some(1),
@@ -510,7 +541,29 @@ mod tests {
         assert_eq!(state.phase, HudPhase::Planning);
         assert_eq!(state.step.label, "Choosing action");
         assert_eq!(state.tool, "OpenRouter Vision");
+        assert_eq!(state.input_label, "Voice control");
         assert_eq!(state.transcript.as_deref(), Some("open settings"));
+    }
+
+    #[test]
+    fn external_programmed_step_expires_to_ready_automation() {
+        let mut state = HudSnapshot::default();
+        state.apply(VoiceUiEvent::AgentStep {
+            label: "automation permission cleanup proof".to_string(),
+            source: Some("external agent".to_string()),
+            task: Some("Programmatic control".to_string()),
+            tool: Some("Unix socket".to_string()),
+            step_index: Some(6),
+            step_total: Some(9),
+            ttl_ms: Some(250),
+        });
+
+        assert_eq!(state.input_label, "automation");
+        assert!(state.expire_programmed_step(Instant::now() + Duration::from_millis(251)));
+        assert_eq!(state.phase, HudPhase::Idle);
+        assert_eq!(state.input_label, "automation");
+        assert_eq!(state.task, "Computer control");
+        assert_eq!(state.step.label, "Ready");
     }
 
     #[test]

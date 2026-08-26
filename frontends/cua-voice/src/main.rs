@@ -131,7 +131,9 @@ impl VoiceHud {
                     let config = self.config.clone();
                     self.runtime.spawn(run_voice_turn(config, tx));
                 }
-                VoiceUiEvent::Reply(_) | VoiceUiEvent::Error(_) => {
+                VoiceUiEvent::Reply(_)
+                | VoiceUiEvent::AutomationReply(_)
+                | VoiceUiEvent::Error(_) => {
                     self.busy = false;
                     self.snapshot.apply(event);
                 }
@@ -623,6 +625,9 @@ fn print_headless_events(rx: Receiver<VoiceUiEvent>) {
                 "tool": tool
             }),
             VoiceUiEvent::Reply(text) => serde_json::json!({"event": "reply", "text": text}),
+            VoiceUiEvent::AutomationReply(text) => {
+                serde_json::json!({"event": "automation_reply", "text": text})
+            }
             VoiceUiEvent::Error(text) => serde_json::json!({"event": "error", "text": text}),
             VoiceUiEvent::Metric { name, ms } => {
                 serde_json::json!({"event": "metric", "name": name, "ms": ms})

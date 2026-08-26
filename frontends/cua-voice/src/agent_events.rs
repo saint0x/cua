@@ -124,7 +124,7 @@ pub fn agent_reply_from_daemon_event(
     if source == Some("voice") {
         return None;
     }
-    Some((sequence, VoiceUiEvent::Reply(text.to_string())))
+    Some((sequence, VoiceUiEvent::AutomationReply(text.to_string())))
 }
 
 pub fn agent_visual_session_from_daemon_event(
@@ -318,7 +318,8 @@ mod tests {
             }
         });
 
-        let Some((sequence, VoiceUiEvent::Reply(text))) = agent_reply_from_daemon_event(&event, 43)
+        let Some((sequence, VoiceUiEvent::AutomationReply(text))) =
+            agent_reply_from_daemon_event(&event, 43)
         else {
             panic!("expected reply event");
         };
