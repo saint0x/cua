@@ -13,7 +13,7 @@ use cua_core::{
     PermissionReport, PermissionState, Rect, WindowInfo, SCHEMA_VERSION,
 };
 use cua_input::{InputBackend, RefusingInputBackend};
-use image::{imageops::FilterType, ImageBuffer, Rgba};
+use image::{ImageBuffer, Rgba};
 use sha2::{Digest, Sha256};
 #[cfg(target_os = "macos")]
 use std::ffi::CStr;
@@ -159,10 +159,15 @@ fn capture_main_display(
     started: Instant,
     request: CaptureRequest,
 ) -> anyhow::Result<CapturedFrame> {
-    if let Ok(frame) = capture_main_display_sck(started, request.clone()) {
+    if std::env::var("CUA_CAPTURE_USE_SCK").ok().as_deref() == Some("1") {
+        if let Ok(frame) = capture_main_display_sck(started, request.clone()) {
+            return Ok(frame);
+        }
+    }
+    if let Ok(frame) = capture_main_display_core_graphics(started, request.clone()) {
         return Ok(frame);
     }
-    capture_main_display_core_graphics(started, request)
+    capture_main_display_sck(started, request)
 }
 
 #[cfg(target_os = "macos")]
@@ -271,36 +276,26 @@ unsafe fn image_to_frame(
     let data_len = CFDataGetLength(data);
     let bytes_per_row = CGImageGetBytesPerRow(image);
     let source = std::slice::from_raw_parts(data_ptr, data_len);
-    let mut rgba = Vec::with_capacity((source_width * source_height * 4) as usize);
-    for y in 0..source_height as usize {
-        let row_start = y * bytes_per_row;
-        for x in 0..source_width as usize {
-            let offset = row_start + x * 4;
-            let b = source[offset];
-            let g = source[offset + 1];
-            let r = source[offset + 2];
-            let a = source[offset + 3];
-            rgba.extend_from_slice(&[r, g, b, a]);
-        }
+    let target_width = request
+        .max_width
+        .filter(|max_width| *max_width < source_width)
+        .map(|max_width| max_width.max(64))
+        .unwrap_or(source_width);
+    let target_height = if target_width == source_width {
+        source_height
+    } else {
+        ((source_height as f64) * (target_width as f64 / source_width as f64)).round() as u32
     }
+    .max(1);
+    let buffer = scaled_bgra_source_to_rgba(
+        source,
+        bytes_per_row,
+        source_width,
+        source_height,
+        target_width,
+        target_height,
+    )?;
     CFRelease(data.cast());
-
-    let mut buffer = ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(source_width, source_height, rgba)
-        .ok_or_else(|| anyhow::anyhow!("failed to build macOS capture image buffer"))?;
-    if let Some(max_width) = request.max_width {
-        if max_width < source_width {
-            let target_width = max_width.max(64);
-            let target_height = ((source_height as f64)
-                * (target_width as f64 / source_width as f64))
-                .round() as u32;
-            buffer = image::imageops::resize(
-                &buffer,
-                target_width,
-                target_height.max(1),
-                FilterType::Triangle,
-            );
-        }
-    }
 
     let encode_started = Instant::now();
     let bytes = encode_image(&buffer, request.encoding.clone())?;
@@ -342,6 +337,33 @@ unsafe fn image_to_frame(
             encode_ns,
         },
     })
+}
+
+#[cfg(target_os = "macos")]
+fn scaled_bgra_source_to_rgba(
+    source: &[u8],
+    bytes_per_row: usize,
+    source_width: u32,
+    source_height: u32,
+    target_width: u32,
+    target_height: u32,
+) -> anyhow::Result<ImageBuffer<Rgba<u8>, Vec<u8>>> {
+    let mut rgba = Vec::with_capacity((target_width * target_height * 4) as usize);
+    for y in 0..target_height as usize {
+        let source_y = y * source_height as usize / target_height as usize;
+        let row_start = source_y * bytes_per_row;
+        for x in 0..target_width as usize {
+            let source_x = x * source_width as usize / target_width as usize;
+            let offset = row_start + source_x * 4;
+            let b = source[offset];
+            let g = source[offset + 1];
+            let r = source[offset + 2];
+            let a = source[offset + 3];
+            rgba.extend_from_slice(&[r, g, b, a]);
+        }
+    }
+    ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(target_width, target_height, rgba)
+        .ok_or_else(|| anyhow::anyhow!("failed to build macOS capture image buffer"))
 }
 
 fn elapsed_ns(started: Instant) -> u64 {
@@ -941,6 +963,19 @@ mod tests {
     fn capture_backend_selection_is_available() {
         let backend = capture_backend_or_synthetic();
         assert!(matches!(backend.name(), "macos" | "synthetic"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn scaled_bgra_source_samples_directly_to_target_size() {
+        let source = [
+            10, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 255, 100, 110, 120, 255,
+        ];
+        let image = scaled_bgra_source_to_rgba(&source, 8, 2, 2, 1, 1).unwrap();
+
+        assert_eq!(image.width(), 1);
+        assert_eq!(image.height(), 1);
+        assert_eq!(image.as_raw(), &[30, 20, 10, 255]);
     }
 
     #[test]

@@ -993,7 +993,7 @@ async fn handle_visual_session(
                     .latest_or_capture_timed(CaptureRequest {
                         max_width: visual.max_width.or(Some(1280)),
                         encoding: FrameEncoding::Jpeg,
-                        force_fresh: true,
+                        force_fresh: false,
                     })
                     .await
                 {
@@ -1540,7 +1540,7 @@ async fn stream_mjpeg(State(state): State<DaemonState>) -> Result<Response, ApiE
                 .latest_or_capture_timed(CaptureRequest {
                     max_width: Some(1280),
                     encoding: FrameEncoding::Jpeg,
-                    force_fresh: true,
+                    force_fresh: false,
                 })
                 .await
             {
@@ -1590,7 +1590,7 @@ async fn stream_ws(ws: WebSocketUpgrade, State(state): State<DaemonState>) -> im
                 .latest_or_capture_timed(CaptureRequest {
                     max_width: Some(1280),
                     encoding: FrameEncoding::Jpeg,
-                    force_fresh: true,
+                    force_fresh: false,
                 })
                 .await
             {
