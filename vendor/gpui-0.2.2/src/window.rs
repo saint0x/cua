@@ -941,6 +941,9 @@ impl Window {
             is_movable,
             is_resizable,
             is_minimizable,
+            #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
+            #[cfg(target_os = "macos")]
+            mouse_passthrough,
             display_id,
             window_background,
             app_id,
@@ -962,6 +965,8 @@ impl Window {
                 is_movable,
                 is_resizable,
                 is_minimizable,
+                #[cfg(target_os = "macos")]
+                mouse_passthrough,
                 focus,
                 show,
                 display_id,

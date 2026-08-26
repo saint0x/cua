@@ -577,6 +577,7 @@ impl MacWindow {
             is_movable,
             is_resizable,
             is_minimizable,
+            mouse_passthrough,
             focus,
             show,
             display_id,
@@ -676,6 +677,8 @@ impl MacWindow {
                 native_window,
                 setReleasedWhenClosed: NO
             ];
+            let ignores_mouse_events = if mouse_passthrough { YES } else { NO };
+            let _: () = msg_send![native_window, setIgnoresMouseEvents: ignores_mouse_events];
 
             let content_view = native_window.contentView();
             let native_view: id = msg_send![VIEW_CLASS, alloc];

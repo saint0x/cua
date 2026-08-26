@@ -1113,6 +1113,10 @@ pub struct WindowOptions {
     /// Whether the window should be minimized by the user
     pub is_minimizable: bool,
 
+    /// Whether the native window should let mouse events pass through to windows underneath.
+    #[cfg(target_os = "macos")]
+    pub mouse_passthrough: bool,
+
     /// The display to create the window on, if this is None,
     /// the window will be created on the main display
     pub display_id: Option<DisplayId>,
@@ -1165,6 +1169,9 @@ pub(crate) struct WindowParams {
     /// Whether the window should be minimized by the user
     #[cfg_attr(any(target_os = "linux", target_os = "freebsd"), allow(dead_code))]
     pub is_minimizable: bool,
+
+    #[cfg(target_os = "macos")]
+    pub mouse_passthrough: bool,
 
     #[cfg_attr(
         any(target_os = "linux", target_os = "freebsd", target_os = "windows"),
@@ -1233,6 +1240,8 @@ impl Default for WindowOptions {
             is_movable: true,
             is_resizable: true,
             is_minimizable: true,
+            #[cfg(target_os = "macos")]
+            mouse_passthrough: false,
             display_id: None,
             window_background: WindowBackgroundAppearance::default(),
             app_id: None,

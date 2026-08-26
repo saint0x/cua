@@ -506,6 +506,7 @@ fn main() -> anyhow::Result<()> {
                 kind: WindowKind::PopUp,
                 is_resizable: false,
                 is_minimizable: false,
+                mouse_passthrough: true,
                 window_background: WindowBackgroundAppearance::Transparent,
                 ..Default::default()
             },
@@ -518,7 +519,6 @@ fn main() -> anyhow::Result<()> {
             },
         )
         .unwrap();
-        cx.activate(true);
     });
     Ok(())
 }
