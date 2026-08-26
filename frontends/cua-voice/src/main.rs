@@ -49,7 +49,7 @@ struct Args {
     record_ms: u64,
     #[arg(long, default_value = "openai/whisper-1")]
     stt_model: String,
-    #[arg(long, default_value = "google/gemini-2.5-flash")]
+    #[arg(long, default_value = "anthropic/claude-sonnet-5")]
     planner_model: String,
     #[arg(long)]
     demo: bool,
