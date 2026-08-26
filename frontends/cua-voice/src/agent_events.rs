@@ -1,0 +1,276 @@
+use crate::ui_state::VoiceUiEvent;
+use serde_json::Value;
+
+pub fn agent_ui_event_from_daemon_event_advancing_cursor(
+    event: &Value,
+    last_sequence: &mut u64,
+) -> Option<VoiceUiEvent> {
+    let previous_sequence = *last_sequence;
+    if let Some(sequence) = daemon_event_sequence(event) {
+        *last_sequence = (*last_sequence).max(sequence);
+    }
+    agent_ui_event_from_daemon_event(event, previous_sequence).map(|(_, event)| event)
+}
+
+fn daemon_event_sequence(event: &Value) -> Option<u64> {
+    event.get("sequence").and_then(|value| value.as_u64())
+}
+
+pub fn agent_ui_event_from_daemon_event(
+    event: &Value,
+    last_sequence: u64,
+) -> Option<(u64, VoiceUiEvent)> {
+    agent_step_from_daemon_event(event, last_sequence)
+        .or_else(|| agent_reply_from_daemon_event(event, last_sequence))
+        .or_else(|| agent_input_from_daemon_event(event, last_sequence))
+}
+
+pub fn agent_step_from_daemon_event(
+    event: &Value,
+    last_sequence: u64,
+) -> Option<(u64, VoiceUiEvent)> {
+    let sequence = event.get("sequence").and_then(|value| value.as_u64())?;
+    if sequence <= last_sequence {
+        return None;
+    }
+    if event.get("kind").and_then(|value| value.as_str()) != Some("ui_step") {
+        return None;
+    }
+    let data = event.get("data")?;
+    let label = data.get("label").and_then(|value| value.as_str())?;
+    let source = data
+        .get("source")
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
+    let task = data
+        .get("task")
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
+    let tool = data
+        .get("tool")
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
+    let step_index = data
+        .get("step_index")
+        .and_then(|value| value.as_u64())
+        .and_then(|value| u16::try_from(value).ok());
+    let step_total = data
+        .get("step_total")
+        .and_then(|value| value.as_u64())
+        .and_then(|value| u16::try_from(value).ok());
+    let ttl_ms = data.get("ttl_ms").and_then(|value| value.as_u64());
+    if source.as_deref() == Some("voice") {
+        return None;
+    }
+    Some((
+        sequence,
+        VoiceUiEvent::AgentStep {
+            label: label.to_string(),
+            source,
+            task,
+            tool,
+            step_index,
+            step_total,
+            ttl_ms,
+        },
+    ))
+}
+
+pub fn agent_reply_from_daemon_event(
+    event: &Value,
+    last_sequence: u64,
+) -> Option<(u64, VoiceUiEvent)> {
+    let sequence = event.get("sequence").and_then(|value| value.as_u64())?;
+    if sequence <= last_sequence {
+        return None;
+    }
+    if event.get("kind").and_then(|value| value.as_str()) != Some("ui_reply") {
+        return None;
+    }
+    let data = event.get("data")?;
+    let text = data.get("text").and_then(|value| value.as_str())?;
+    let source = data.get("source").and_then(|value| value.as_str());
+    if source == Some("voice") {
+        return None;
+    }
+    Some((sequence, VoiceUiEvent::Reply(text.to_string())))
+}
+
+pub fn agent_input_from_daemon_event(
+    event: &Value,
+    last_sequence: u64,
+) -> Option<(u64, VoiceUiEvent)> {
+    let sequence = event.get("sequence").and_then(|value| value.as_u64())?;
+    if sequence <= last_sequence {
+        return None;
+    }
+    let kind = event.get("kind").and_then(|value| value.as_str())?;
+    match kind {
+        "input_completed" => None,
+        "input_refused" => Some((
+            sequence,
+            VoiceUiEvent::Error("Remote action refused".to_string()),
+        )),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn daemon_ui_step_event_maps_to_visible_agent_step() {
+        let event = serde_json::json!({
+            "sequence": 42,
+            "kind": "ui_step",
+            "data": {
+                "label": "checking current focus",
+                "source": "agent",
+                "task": "debug auth",
+                "tool": "browser",
+                "step_index": 2,
+                "step_total": 6,
+                "ttl_ms": 1750
+            }
+        });
+
+        let Some((
+            sequence,
+            VoiceUiEvent::AgentStep {
+                label,
+                source,
+                task,
+                tool,
+                step_index,
+                step_total,
+                ttl_ms,
+            },
+        )) = agent_step_from_daemon_event(&event, 41)
+        else {
+            panic!("expected agent step event");
+        };
+
+        assert_eq!(sequence, 42);
+        assert_eq!(label, "checking current focus");
+        assert_eq!(source.as_deref(), Some("agent"));
+        assert_eq!(task.as_deref(), Some("debug auth"));
+        assert_eq!(tool.as_deref(), Some("browser"));
+        assert_eq!(step_index, Some(2));
+        assert_eq!(step_total, Some(6));
+        assert_eq!(ttl_ms, Some(1750));
+        assert!(agent_step_from_daemon_event(&event, 42).is_none());
+    }
+
+    #[test]
+    fn daemon_event_cursor_advances_across_ignored_events() {
+        let ignored = serde_json::json!({
+            "sequence": 1,
+            "kind": "daemon_started",
+            "data": {}
+        });
+        let step = serde_json::json!({
+            "sequence": 2,
+            "kind": "ui_step",
+            "data": {
+                "label": "typing proof text through CUA",
+                "task": "Live E2E",
+                "tool": "CLI API",
+                "step_index": 3,
+                "step_total": 12
+            }
+        });
+        let mut last_sequence = 0;
+
+        assert!(
+            agent_ui_event_from_daemon_event_advancing_cursor(&ignored, &mut last_sequence)
+                .is_none()
+        );
+        assert_eq!(last_sequence, 1);
+
+        let Some(VoiceUiEvent::AgentStep {
+            label,
+            task,
+            tool,
+            step_index,
+            step_total,
+            ..
+        }) = agent_ui_event_from_daemon_event_advancing_cursor(&step, &mut last_sequence)
+        else {
+            panic!("expected visible agent step after ignored event");
+        };
+
+        assert_eq!(last_sequence, 2);
+        assert_eq!(label, "typing proof text through CUA");
+        assert_eq!(task.as_deref(), Some("Live E2E"));
+        assert_eq!(tool.as_deref(), Some("CLI API"));
+        assert_eq!(step_index, Some(3));
+        assert_eq!(step_total, Some(12));
+    }
+
+    #[test]
+    fn daemon_ui_step_event_ignores_voice_telemetry_echoes() {
+        let event = serde_json::json!({
+            "sequence": 43,
+            "kind": "ui_step",
+            "data": {
+                "label": "reply: done",
+                "source": "voice"
+            }
+        });
+
+        assert!(agent_step_from_daemon_event(&event, 42).is_none());
+    }
+
+    #[test]
+    fn daemon_ui_reply_event_maps_to_visible_reply_flash() {
+        let event = serde_json::json!({
+            "sequence": 44,
+            "kind": "ui_reply",
+            "data": {
+                "text": "Ready for the next step.",
+                "source": "external agent",
+                "ttl_ms": 1750
+            }
+        });
+
+        let Some((sequence, VoiceUiEvent::Reply(text))) = agent_reply_from_daemon_event(&event, 43)
+        else {
+            panic!("expected reply event");
+        };
+
+        assert_eq!(sequence, 44);
+        assert_eq!(text, "Ready for the next step.");
+        assert!(agent_reply_from_daemon_event(&event, 44).is_none());
+    }
+
+    #[test]
+    fn daemon_ui_reply_event_ignores_voice_echoes() {
+        let event = serde_json::json!({
+            "sequence": 45,
+            "kind": "ui_reply",
+            "data": {
+                "text": "internal voice reply",
+                "source": "voice"
+            }
+        });
+
+        assert!(agent_reply_from_daemon_event(&event, 44).is_none());
+    }
+
+    #[test]
+    fn daemon_input_completed_event_does_not_override_protocol_steps() {
+        let event = serde_json::json!({
+            "sequence": 46,
+            "kind": "input_completed",
+            "data": {
+                "effect": "confirmed",
+                "route": "accessibility",
+                "evidence_kind": "cursor_readback"
+            }
+        });
+
+        assert!(agent_input_from_daemon_event(&event, 45).is_none());
+        assert!(agent_input_from_daemon_event(&event, 46).is_none());
+    }
+}

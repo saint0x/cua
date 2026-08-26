@@ -1,5 +1,9 @@
 use clap::Parser;
 use cua_voice::activation::ControlDoubleTap;
+use cua_voice::agent_events::{
+    agent_reply_from_daemon_event, agent_step_from_daemon_event,
+    agent_ui_event_from_daemon_event_advancing_cursor,
+};
 use cua_voice::client::CuaClient;
 use cua_voice::hud::{
     HudDisplay, HudMetrics, COMPACT_HEIGHT, COMPACT_RADIUS, COMPACT_WIDTH, TOP_MARGIN,
@@ -17,7 +21,6 @@ use gpui::{
     WindowBounds, WindowKind, WindowOptions,
 };
 use rdev::{listen, EventType, Key};
-use serde_json::Value;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::io::ErrorKind;
@@ -630,10 +633,10 @@ fn start_agent_step_poll(
         loop {
             if let Ok(events) = session.events_wait(last_sequence, 1_000).await {
                 for event in events {
-                    if let Some((sequence, event)) =
-                        agent_ui_event_from_daemon_event(&event, last_sequence)
-                    {
-                        last_sequence = last_sequence.max(sequence);
+                    if let Some(event) = agent_ui_event_from_daemon_event_advancing_cursor(
+                        &event,
+                        &mut last_sequence,
+                    ) {
                         tx.send(event).ok();
                     }
                 }
@@ -688,96 +691,6 @@ async fn run_once_agent_ui_event_wait(
                 return Ok(());
             }
         }
-    }
-}
-
-fn agent_ui_event_from_daemon_event(
-    event: &Value,
-    last_sequence: u64,
-) -> Option<(u64, VoiceUiEvent)> {
-    agent_step_from_daemon_event(event, last_sequence)
-        .or_else(|| agent_reply_from_daemon_event(event, last_sequence))
-        .or_else(|| agent_input_from_daemon_event(event, last_sequence))
-}
-
-fn agent_step_from_daemon_event(event: &Value, last_sequence: u64) -> Option<(u64, VoiceUiEvent)> {
-    let sequence = event.get("sequence").and_then(|value| value.as_u64())?;
-    if sequence <= last_sequence {
-        return None;
-    }
-    if event.get("kind").and_then(|value| value.as_str()) != Some("ui_step") {
-        return None;
-    }
-    let data = event.get("data")?;
-    let label = data.get("label").and_then(|value| value.as_str())?;
-    let source = data
-        .get("source")
-        .and_then(|value| value.as_str())
-        .map(str::to_string);
-    let task = data
-        .get("task")
-        .and_then(|value| value.as_str())
-        .map(str::to_string);
-    let tool = data
-        .get("tool")
-        .and_then(|value| value.as_str())
-        .map(str::to_string);
-    let step_index = data
-        .get("step_index")
-        .and_then(|value| value.as_u64())
-        .and_then(|value| u16::try_from(value).ok());
-    let step_total = data
-        .get("step_total")
-        .and_then(|value| value.as_u64())
-        .and_then(|value| u16::try_from(value).ok());
-    let ttl_ms = data.get("ttl_ms").and_then(|value| value.as_u64());
-    if source.as_deref() == Some("voice") {
-        return None;
-    }
-    Some((
-        sequence,
-        VoiceUiEvent::AgentStep {
-            label: label.to_string(),
-            source,
-            task,
-            tool,
-            step_index,
-            step_total,
-            ttl_ms,
-        },
-    ))
-}
-
-fn agent_reply_from_daemon_event(event: &Value, last_sequence: u64) -> Option<(u64, VoiceUiEvent)> {
-    let sequence = event.get("sequence").and_then(|value| value.as_u64())?;
-    if sequence <= last_sequence {
-        return None;
-    }
-    if event.get("kind").and_then(|value| value.as_str()) != Some("ui_reply") {
-        return None;
-    }
-    let data = event.get("data")?;
-    let text = data.get("text").and_then(|value| value.as_str())?;
-    let source = data.get("source").and_then(|value| value.as_str());
-    if source == Some("voice") {
-        return None;
-    }
-    Some((sequence, VoiceUiEvent::Reply(text.to_string())))
-}
-
-fn agent_input_from_daemon_event(event: &Value, last_sequence: u64) -> Option<(u64, VoiceUiEvent)> {
-    let sequence = event.get("sequence").and_then(|value| value.as_u64())?;
-    if sequence <= last_sequence {
-        return None;
-    }
-    let kind = event.get("kind").and_then(|value| value.as_str())?;
-    match kind {
-        "input_completed" => None,
-        "input_refused" => Some((
-            sequence,
-            VoiceUiEvent::Error("Remote action refused".to_string()),
-        )),
-        _ => None,
     }
 }
 
@@ -1065,14 +978,7 @@ mod tests {
             .map(|index| activity_dot_alpha(index, 1.0 / speed, true, speed))
             .collect::<Vec<_>>();
         let wrapped = (0..ACTIVITY_DOT_COUNT)
-            .map(|index| {
-                activity_dot_alpha(
-                    index,
-                    ACTIVITY_DOT_COUNT as f32 / speed,
-                    true,
-                    speed,
-                )
-            })
+            .map(|index| activity_dot_alpha(index, ACTIVITY_DOT_COUNT as f32 / speed, true, speed))
             .collect::<Vec<_>>();
         let brightest_start = start
             .iter()
@@ -1106,115 +1012,6 @@ mod tests {
         assert!(older_trail.alpha > dormant.alpha);
         assert!(head.lightness < immediate_trail.lightness);
         assert!(immediate_trail.lightness < older_trail.lightness);
-    }
-
-    #[test]
-    fn daemon_ui_step_event_maps_to_visible_agent_step() {
-        let event = serde_json::json!({
-            "sequence": 42,
-            "kind": "ui_step",
-            "data": {
-                "label": "checking current focus",
-                "source": "agent",
-                "task": "debug auth",
-                "tool": "browser",
-                "step_index": 2,
-                "step_total": 6,
-                "ttl_ms": 1750
-            }
-        });
-
-        let Some((
-            sequence,
-            VoiceUiEvent::AgentStep {
-                label,
-                source,
-                task,
-                tool,
-                step_index,
-                step_total,
-                ttl_ms,
-            },
-        )) = agent_step_from_daemon_event(&event, 41)
-        else {
-            panic!("expected agent step event");
-        };
-
-        assert_eq!(sequence, 42);
-        assert_eq!(label, "checking current focus");
-        assert_eq!(source.as_deref(), Some("agent"));
-        assert_eq!(task.as_deref(), Some("debug auth"));
-        assert_eq!(tool.as_deref(), Some("browser"));
-        assert_eq!(step_index, Some(2));
-        assert_eq!(step_total, Some(6));
-        assert_eq!(ttl_ms, Some(1750));
-        assert!(agent_step_from_daemon_event(&event, 42).is_none());
-    }
-
-    #[test]
-    fn daemon_ui_step_event_ignores_voice_telemetry_echoes() {
-        let event = serde_json::json!({
-            "sequence": 43,
-            "kind": "ui_step",
-            "data": {
-                "label": "reply: done",
-                "source": "voice"
-            }
-        });
-
-        assert!(agent_step_from_daemon_event(&event, 42).is_none());
-    }
-
-    #[test]
-    fn daemon_ui_reply_event_maps_to_visible_reply_flash() {
-        let event = serde_json::json!({
-            "sequence": 44,
-            "kind": "ui_reply",
-            "data": {
-                "text": "Ready for the next step.",
-                "source": "external agent",
-                "ttl_ms": 1750
-            }
-        });
-
-        let Some((sequence, VoiceUiEvent::Reply(text))) = agent_reply_from_daemon_event(&event, 43)
-        else {
-            panic!("expected reply event");
-        };
-
-        assert_eq!(sequence, 44);
-        assert_eq!(text, "Ready for the next step.");
-        assert!(agent_reply_from_daemon_event(&event, 44).is_none());
-    }
-
-    #[test]
-    fn daemon_ui_reply_event_ignores_voice_echoes() {
-        let event = serde_json::json!({
-            "sequence": 45,
-            "kind": "ui_reply",
-            "data": {
-                "text": "internal voice reply",
-                "source": "voice"
-            }
-        });
-
-        assert!(agent_reply_from_daemon_event(&event, 44).is_none());
-    }
-
-    #[test]
-    fn daemon_input_completed_event_does_not_override_protocol_steps() {
-        let event = serde_json::json!({
-            "sequence": 46,
-            "kind": "input_completed",
-            "data": {
-                "effect": "confirmed",
-                "route": "accessibility",
-                "evidence_kind": "cursor_readback"
-            }
-        });
-
-        assert!(agent_input_from_daemon_event(&event, 45).is_none());
-        assert!(agent_input_from_daemon_event(&event, 46).is_none());
     }
 
     #[test]

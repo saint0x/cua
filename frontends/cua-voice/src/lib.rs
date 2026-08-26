@@ -1,8 +1,11 @@
 pub mod activation;
+pub mod agent_events;
 pub mod audio;
 pub mod client;
 pub mod daemon;
+#[cfg(feature = "ui")]
 pub mod hud;
+#[cfg(feature = "ui")]
 pub mod orb;
 pub mod orchestrator;
 pub mod planner;
