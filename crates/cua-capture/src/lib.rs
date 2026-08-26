@@ -234,6 +234,12 @@ impl FrameBus {
         })
     }
 
+    pub async fn publish_resident_frame(&self, frame: CapturedFrame) -> anyhow::Result<()> {
+        validate_resident_frame(&frame)?;
+        *self.latest.write().await = Some(frame);
+        Ok(())
+    }
+
     pub fn spawn_capture_lane(
         self: Arc<Self>,
         mut request: CaptureRequest,
@@ -249,7 +255,9 @@ impl FrameBus {
                     .await
                 {
                     Ok(frame) => {
-                        *self.latest.write().await = Some(frame);
+                        if self.publish_resident_frame(frame).await.is_err() {
+                            tokio::time::sleep(capture_failure_backoff()).await;
+                        }
                     }
                     Err(_) => {
                         tokio::time::sleep(capture_failure_backoff()).await;
@@ -288,6 +296,45 @@ impl FrameBus {
     pub fn uptime_ns(&self) -> u128 {
         self.started.elapsed().as_nanos()
     }
+}
+
+fn validate_resident_frame(frame: &CapturedFrame) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        frame.envelope.schema_version == SCHEMA_VERSION,
+        "resident frame schema version {} does not match {}",
+        frame.envelope.schema_version,
+        SCHEMA_VERSION
+    );
+    anyhow::ensure!(
+        frame.envelope.width > 0,
+        "resident frame width must be positive"
+    );
+    anyhow::ensure!(
+        frame.envelope.height > 0,
+        "resident frame height must be positive"
+    );
+    anyhow::ensure!(
+        frame.envelope.byte_len == frame.bytes.len(),
+        "resident frame byte_len {} does not match {} bytes",
+        frame.envelope.byte_len,
+        frame.bytes.len()
+    );
+    if frame.envelope.encoding == FrameEncoding::RawBgra {
+        let expected_len = frame
+            .envelope
+            .width
+            .checked_mul(frame.envelope.height)
+            .and_then(|pixels| pixels.checked_mul(4))
+            .context("resident raw BGRA frame dimensions overflow")?
+            as usize;
+        anyhow::ensure!(
+            frame.bytes.len() == expected_len,
+            "resident raw BGRA byte length {} does not match expected {}",
+            frame.bytes.len(),
+            expected_len
+        );
+    }
+    Ok(())
 }
 
 async fn capture_latest_timed(
@@ -517,6 +564,60 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(30)).await;
         let envelope = bus.latest_envelope().await;
         assert!(envelope.is_some());
+    }
+
+    #[tokio::test]
+    async fn resident_frame_publish_populates_latest_without_backend_capture() {
+        let frame = SyntheticCaptureBackend::default()
+            .capture_latest(CaptureRequest {
+                max_width: Some(640),
+                encoding: FrameEncoding::Jpeg,
+                force_fresh: true,
+            })
+            .await
+            .unwrap();
+        let bus = FrameBus::new_with_capture_timeout(
+            Arc::new(HangingCaptureBackend),
+            Duration::from_millis(20),
+        );
+
+        bus.publish_resident_frame(frame.clone()).await.unwrap();
+        let lookup = bus
+            .latest_or_capture_timed(CaptureRequest {
+                max_width: Some(320),
+                encoding: FrameEncoding::Png,
+                force_fresh: false,
+            })
+            .await
+            .unwrap();
+
+        assert!(lookup.cache_hit);
+        assert_eq!(lookup.frame.envelope.frame_id, frame.envelope.frame_id);
+        assert_eq!(lookup.frame.envelope.width, frame.envelope.width);
+        assert_eq!(lookup.frame.envelope.encoding, frame.envelope.encoding);
+    }
+
+    #[tokio::test]
+    async fn resident_frame_publish_rejects_malformed_byte_lengths() {
+        let mut frame = SyntheticCaptureBackend::default()
+            .capture_latest(CaptureRequest {
+                max_width: Some(320),
+                encoding: FrameEncoding::Jpeg,
+                force_fresh: true,
+            })
+            .await
+            .unwrap();
+        frame.envelope.byte_len += 1;
+        let bus = FrameBus::new(Arc::new(SyntheticCaptureBackend::default()));
+
+        let error = bus
+            .publish_resident_frame(frame)
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("byte_len"));
+        assert!(bus.latest_envelope().await.is_none());
     }
 
     #[tokio::test]

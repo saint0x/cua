@@ -944,6 +944,14 @@ fn request_desktop_permission_once(
     if path.is_file() {
         return current();
     }
+    if legacy_desktop_permission_prompt_marker_path(profile, permission).is_file() {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let result = current();
+        let _ = std::fs::write(&path, format!("{:?}\n", result));
+        return result;
+    }
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -952,10 +960,34 @@ fn request_desktop_permission_once(
     result
 }
 
-fn desktop_permission_prompt_marker_path(profile: &str, permission: &str) -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home)
-        .join(".cua")
+fn desktop_permission_prompt_marker_path(_profile: &str, permission: &str) -> PathBuf {
+    desktop_permission_prompt_marker_path_under(
+        Path::new(&std::env::var("HOME").unwrap_or_else(|_| ".".to_string())),
+        permission,
+    )
+}
+
+fn desktop_permission_prompt_marker_path_under(home: &Path, permission: &str) -> PathBuf {
+    home.join(".cua")
+        .join("permission-prompts")
+        .join("io.saint0x.cua")
+        .join(permission)
+}
+
+fn legacy_desktop_permission_prompt_marker_path(profile: &str, permission: &str) -> PathBuf {
+    legacy_desktop_permission_prompt_marker_path_under(
+        Path::new(&std::env::var("HOME").unwrap_or_else(|_| ".".to_string())),
+        profile,
+        permission,
+    )
+}
+
+fn legacy_desktop_permission_prompt_marker_path_under(
+    home: &Path,
+    profile: &str,
+    permission: &str,
+) -> PathBuf {
+    home.join(".cua")
         .join("profiles")
         .join(profile)
         .join("permission-prompts")
@@ -1212,5 +1244,42 @@ mod tests {
         assert!(name.starts_with("cua-voice-profile_with_spaces-"));
         assert!(name.ends_with(".sock"));
         assert!(path.to_string_lossy().len() < 104);
+    }
+
+    #[test]
+    fn desktop_permission_prompt_marker_is_app_scoped_not_profile_scoped() {
+        let home = Path::new("/tmp/cua-test-home");
+        let first = desktop_permission_prompt_marker_path_under(home, "screen-recording");
+        let second = desktop_permission_prompt_marker_path_under(home, "screen-recording");
+
+        assert_eq!(first, second);
+        assert_eq!(
+            first,
+            Path::new("/tmp/cua-test-home")
+                .join(".cua")
+                .join("permission-prompts")
+                .join("io.saint0x.cua")
+                .join("screen-recording")
+        );
+    }
+
+    #[test]
+    fn legacy_desktop_permission_prompt_marker_stays_profile_scoped_for_migration_only() {
+        let home = Path::new("/tmp/cua-test-home");
+        let first =
+            legacy_desktop_permission_prompt_marker_path_under(home, "default", "screen-recording");
+        let second =
+            legacy_desktop_permission_prompt_marker_path_under(home, "other", "screen-recording");
+
+        assert_ne!(first, second);
+        assert_eq!(
+            first,
+            Path::new("/tmp/cua-test-home")
+                .join(".cua")
+                .join("profiles")
+                .join("default")
+                .join("permission-prompts")
+                .join("screen-recording")
+        );
     }
 }
