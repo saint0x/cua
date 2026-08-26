@@ -5,7 +5,8 @@ use cua_capture::{CaptureRequest, FrameBus, SyntheticCaptureBackend};
 use cua_core::{
     schema_bundle, CapabilityManifest, ClipboardReadRequest, ClipboardWriteRequest,
     DesktopContextSnapshot, FrameEncoding, FramePayload, InputAction, MouseButton, RuntimeMode,
-    UiMode, UiModeRequest, UiReplyRequest, UiStepRequest, SCHEMA_VERSION,
+    RuntimeSessionRole, SessionCancelRequest, SessionLeaseRequest, UiMode, UiModeRequest,
+    UiReplyRequest, UiStepRequest, SCHEMA_VERSION,
 };
 use cua_model::{run_eval_report, EvalConfig};
 use cua_trace::{ActionTurnRecord, TraceRecord, TraceWriter};
@@ -44,6 +45,10 @@ enum Command {
     Manifest(JsonFlag),
     Metrics(JsonFlag),
     Events(EventsArgs),
+    Session {
+        #[command(subcommand)]
+        command: SessionCommand,
+    },
     Stream(StreamArgs),
     Ui {
         #[command(subcommand)]
@@ -134,6 +139,47 @@ enum PermissionCommand {
 enum PerfCommand {
     Live(JsonFlag),
     Bench(PerfBenchArgs),
+}
+
+#[derive(Debug, Subcommand)]
+enum SessionCommand {
+    Acquire {
+        session_id: String,
+        #[arg(long)]
+        client_name: Option<String>,
+        #[arg(long, value_enum, default_value_t = SessionRoleArg::Owner)]
+        role: SessionRoleArg,
+        #[arg(long)]
+        ttl_ms: Option<i64>,
+        #[arg(long)]
+        json: bool,
+    },
+    Cancel {
+        session_id: String,
+        #[arg(long)]
+        target_session_id: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum SessionRoleArg {
+    Owner,
+    Observer,
+}
+
+impl From<SessionRoleArg> for RuntimeSessionRole {
+    fn from(value: SessionRoleArg) -> Self {
+        match value {
+            SessionRoleArg::Owner => RuntimeSessionRole::Owner,
+            SessionRoleArg::Observer => RuntimeSessionRole::Observer,
+        }
+    }
 }
 
 #[derive(Debug, Args)]
@@ -397,6 +443,7 @@ async fn main() -> anyhow::Result<()> {
             };
             get_json(cli.server_addr, &cli.profile, &path, args.json).await
         }
+        Some(Command::Session { command }) => session(cli.server_addr, &cli.profile, command).await,
         Some(Command::Stream(args)) => stream(&cli.profile, args).await,
         Some(Command::Ui { command }) => ui(cli.server_addr, &cli.profile, command).await,
         Some(Command::Screenshot(args)) => screenshot(cli.server_addr, &cli.profile, args).await,
@@ -697,6 +744,54 @@ async fn stream(profile: &str, args: StreamArgs) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+async fn session(addr: SocketAddr, profile: &str, command: SessionCommand) -> anyhow::Result<()> {
+    match command {
+        SessionCommand::Acquire {
+            session_id,
+            client_name,
+            role,
+            ttl_ms,
+            json,
+        } => {
+            let request = SessionLeaseRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                client_name: client_name.unwrap_or_else(|| "cua cli".to_string()),
+                session_id,
+                role: role.into(),
+                ttl_ms,
+            };
+            post_json(
+                addr,
+                profile,
+                "/session/acquire",
+                serde_json::to_value(request)?,
+                json,
+            )
+            .await
+        }
+        SessionCommand::Cancel {
+            session_id,
+            target_session_id,
+            json,
+        } => {
+            let request = SessionCancelRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                session_id,
+                target_session_id,
+            };
+            post_json(
+                addr,
+                profile,
+                "/session/cancel",
+                serde_json::to_value(request)?,
+                json,
+            )
+            .await
+        }
+        SessionCommand::Status { json } => get_json(addr, profile, "/session/status", json).await,
+    }
 }
 
 async fn load_profile_token(profile: &str) -> anyhow::Result<String> {

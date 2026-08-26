@@ -21,9 +21,10 @@ use cua_core::{
     DesktopContextSnapshot, DesktopState, Effect, Evidence, EvidenceKind, FrameActionRequest,
     FrameEncoding, FramePayload, HealthReport, InputAction, InputRequest, InputResult, InputRoute,
     Manifest, MetricBucket, MetricHistogram, MetricsSnapshot, PermissionReport, ProfilePolicy,
-    RuntimeControlState, RuntimeMode, SafetyState, UiMode, UiModeRequest, UiModeResult,
-    UiReplyRequest, UiReplyResult, UiStepRequest, UiStepResult, VisualSessionRequest,
-    SCHEMA_VERSION,
+    RuntimeControlState, RuntimeInventory, RuntimeMode, RuntimeSessionInfo, RuntimeSessionRole,
+    SafetyState, SessionCancelRequest, SessionLeaseRequest, SessionLeaseResult, UiMode,
+    UiModeRequest, UiModeResult, UiReplyRequest, UiReplyResult, UiStepRequest, UiStepResult,
+    VisualSessionRequest, SCHEMA_VERSION,
 };
 use cua_input::InputBackend;
 use cua_model::{run_eval_report, EvalConfig, EvalReport};
@@ -66,6 +67,9 @@ pub struct DaemonState {
     ui_step_context: Arc<StdMutex<Option<UiStepContext>>>,
     hud_supervisor: HudSupervisor,
     hud_mode: UiMode,
+    http_addr: Arc<StdMutex<String>>,
+    profile_socket: Arc<StdMutex<String>>,
+    sessions: SessionRegistry,
 }
 
 #[derive(Debug, Clone)]
@@ -107,6 +111,9 @@ impl DaemonState {
             ui_step_context: Arc::new(StdMutex::new(None)),
             hud_supervisor: HudSupervisor::default(),
             hud_mode,
+            http_addr: Arc::new(StdMutex::new(String::new())),
+            profile_socket: Arc::new(StdMutex::new(String::new())),
+            sessions: SessionRegistry::default(),
         };
         state.publish_event("daemon_started", serde_json::json!({}));
         state
@@ -127,7 +134,30 @@ impl DaemonState {
             active_profile: control.active_profile.name.clone(),
             active_streams: self.active_streams.load(Ordering::Relaxed),
             model_sessions: self.model_lane.active_count(),
+            inventory: self.runtime_inventory().await,
             last_error: None,
+        }
+    }
+
+    async fn runtime_inventory(&self) -> RuntimeInventory {
+        let session_snapshot = self.sessions.snapshot();
+        RuntimeInventory {
+            schema_version: SCHEMA_VERSION.to_string(),
+            daemon_pid: std::process::id(),
+            http_addr: self
+                .http_addr
+                .lock()
+                .map(|value| value.clone())
+                .unwrap_or_default(),
+            profile_socket: self
+                .profile_socket
+                .lock()
+                .map(|value| value.clone())
+                .unwrap_or_default(),
+            hud_pid: self.hud_supervisor.pid(),
+            connected_clients: session_snapshot.sessions.len() as u32,
+            owner_session_id: session_snapshot.owner_session_id,
+            sessions: session_snapshot.sessions,
         }
     }
 }
@@ -197,9 +227,17 @@ impl DaemonState {
 #[derive(Clone, Default)]
 struct HudSupervisor {
     last_attempt_wall_ms: Arc<AtomicI64>,
+    pid: Arc<AtomicU32>,
 }
 
 impl HudSupervisor {
+    fn pid(&self) -> Option<u32> {
+        match self.pid.load(Ordering::Relaxed) {
+            0 => None,
+            pid => Some(pid),
+        }
+    }
+
     fn ensure_running(&self, profile: &str, token: &str, mode: UiMode) {
         if std::env::var("CUA_HUD_AUTOSTART").ok().as_deref() == Some("0") {
             return;
@@ -226,6 +264,7 @@ impl HudSupervisor {
             }
             let profile = profile.to_string();
             let token = token.to_string();
+            let pid = self.pid.clone();
             std::thread::spawn(move || {
                 let Some(binary) = hud_binary_path() else {
                     return;
@@ -241,8 +280,196 @@ impl HudSupervisor {
                     .stdin(Stdio::null())
                     .stdout(Stdio::null())
                     .stderr(Stdio::null());
-                let _ = command.spawn();
+                if let Ok(child) = command.spawn() {
+                    pid.store(child.id(), Ordering::Relaxed);
+                }
             });
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+struct SessionRegistry {
+    inner: Arc<StdMutex<SessionRegistryState>>,
+}
+
+#[derive(Default)]
+struct SessionRegistryState {
+    sessions: BTreeMap<String, RuntimeSessionInfo>,
+    owner_session_id: Option<String>,
+}
+
+struct SessionSnapshot {
+    sessions: Vec<RuntimeSessionInfo>,
+    owner_session_id: Option<String>,
+}
+
+impl SessionRegistry {
+    fn acquire(&self, request: SessionLeaseRequest) -> Result<SessionLeaseResult, ApiError> {
+        if request.schema_version != SCHEMA_VERSION {
+            return Err(ApiError::bad_request(
+                "schema_version",
+                format!("expected {SCHEMA_VERSION}"),
+            ));
+        }
+        let session_id = normalize_session_field(request.session_id, 96, "session_id")?;
+        let client_name = normalize_session_field(request.client_name, 80, "client_name")?;
+        let now = now_wall_ms();
+        let expires_wall_ms = request
+            .ttl_ms
+            .map(|ttl_ms| now + ttl_ms.clamp(1_000, 86_400_000));
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| ApiError::internal(anyhow::anyhow!("session registry poisoned")))?;
+        prune_expired_sessions(&mut inner, now);
+        if request.role == RuntimeSessionRole::Owner {
+            match inner.owner_session_id.as_deref() {
+                Some(owner) if owner != session_id => {
+                    return Err(ApiError::conflict(
+                        "session_owner",
+                        format!("owner session {owner} already holds the write lease"),
+                    ));
+                }
+                _ => inner.owner_session_id = Some(session_id.clone()),
+            }
+        }
+        let session = RuntimeSessionInfo {
+            schema_version: SCHEMA_VERSION.to_string(),
+            session_id: session_id.clone(),
+            role: request.role,
+            client_name,
+            connected_wall_ms: inner
+                .sessions
+                .get(&session_id)
+                .map(|session| session.connected_wall_ms)
+                .unwrap_or(now),
+            last_seen_wall_ms: now,
+            expires_wall_ms,
+            active: true,
+        };
+        inner.sessions.insert(session_id, session.clone());
+        Ok(SessionLeaseResult {
+            schema_version: SCHEMA_VERSION.to_string(),
+            accepted: true,
+            session,
+            owner_session_id: inner.owner_session_id.clone(),
+        })
+    }
+
+    fn cancel(&self, request: SessionCancelRequest) -> Result<(), ApiError> {
+        if request.schema_version != SCHEMA_VERSION {
+            return Err(ApiError::bad_request(
+                "schema_version",
+                format!("expected {SCHEMA_VERSION}"),
+            ));
+        }
+        let session_id = normalize_session_field(request.session_id, 96, "session_id")?;
+        let target = request
+            .target_session_id
+            .map(|value| normalize_session_field(value, 96, "target_session_id"))
+            .transpose()?
+            .unwrap_or_else(|| session_id.clone());
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| ApiError::internal(anyhow::anyhow!("session registry poisoned")))?;
+        prune_expired_sessions(&mut inner, now_wall_ms());
+        let caller_is_owner = inner.owner_session_id.as_deref() == Some(session_id.as_str());
+        if target != session_id && !caller_is_owner {
+            return Err(ApiError::forbidden(
+                "session_cancel",
+                "only the owner can cancel another session",
+            ));
+        }
+        inner.sessions.remove(&target);
+        if inner.owner_session_id.as_deref() == Some(target.as_str()) {
+            inner.owner_session_id = None;
+        }
+        Ok(())
+    }
+
+    fn remove(&self, session_id: &str) {
+        let Ok(mut inner) = self.inner.lock() else {
+            return;
+        };
+        inner.sessions.remove(session_id);
+        if inner.owner_session_id.as_deref() == Some(session_id) {
+            inner.owner_session_id = None;
+        }
+    }
+
+    fn authorize_write(&self, session_id: Option<&str>) -> Result<(), ApiError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| ApiError::internal(anyhow::anyhow!("session registry poisoned")))?;
+        prune_expired_sessions(&mut inner, now_wall_ms());
+        let Some(owner) = inner.owner_session_id.clone() else {
+            return Ok(());
+        };
+        let Some(session_id) = session_id else {
+            return Err(ApiError::forbidden(
+                "session_owner",
+                format!("write lease is held by owner session {owner}"),
+            ));
+        };
+        if owner != session_id {
+            return Err(ApiError::forbidden(
+                "session_owner",
+                format!("write lease is held by owner session {owner}"),
+            ));
+        }
+        match inner.sessions.get_mut(session_id) {
+            Some(session) if session.role == RuntimeSessionRole::Owner => {
+                session.last_seen_wall_ms = now_wall_ms();
+                Ok(())
+            }
+            _ => Err(ApiError::forbidden(
+                "session_owner",
+                "session does not hold an active owner lease",
+            )),
+        }
+    }
+
+    fn snapshot(&self) -> SessionSnapshot {
+        let mut inner = self.inner.lock().expect("session registry lock");
+        prune_expired_sessions(&mut inner, now_wall_ms());
+        SessionSnapshot {
+            sessions: inner.sessions.values().cloned().collect(),
+            owner_session_id: inner.owner_session_id.clone(),
+        }
+    }
+}
+
+fn normalize_session_field(
+    value: String,
+    max_chars: usize,
+    field: &'static str,
+) -> Result<String, ApiError> {
+    let normalized = value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(max_chars)
+        .collect::<String>();
+    if normalized.is_empty() {
+        return Err(ApiError::bad_request(
+            field,
+            format!("{field} must not be empty"),
+        ));
+    }
+    Ok(normalized)
+}
+
+fn prune_expired_sessions(inner: &mut SessionRegistryState, now: i64) {
+    inner
+        .sessions
+        .retain(|_, session| session.expires_wall_ms.is_none_or(|expires| expires > now));
+    if let Some(owner) = inner.owner_session_id.clone() {
+        if !inner.sessions.contains_key(&owner) {
+            inner.owner_session_id = None;
         }
     }
 }
@@ -923,6 +1150,9 @@ pub fn router(state: DaemonState) -> Router {
         .route("/observe/cursor", get(observe_cursor))
         .route("/events", get(events))
         .route("/events/live", get(events_live))
+        .route("/session/acquire", post(session_acquire))
+        .route("/session/cancel", post(session_cancel))
+        .route("/session/status", get(session_status))
         .route("/ui/step", post(ui_step))
         .route("/ui/reply", post(ui_reply))
         .route("/ui/mode", post(ui_mode))
@@ -957,7 +1187,11 @@ pub async fn serve(
     }
     let token = load_or_create_profile_token(&profile).await?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
+    let bound_addr = listener.local_addr()?;
     let state = DaemonState::synthetic_with_hud_mode(profile, token, hud_mode);
+    if let Ok(mut http_addr) = state.http_addr.lock() {
+        *http_addr = bound_addr.to_string();
+    }
     state.frame_bus.clone().spawn_capture_lane(
         CaptureRequest {
             max_width: Some(1280),
@@ -1026,6 +1260,9 @@ async fn spawn_unix_socket(state: DaemonState) -> anyhow::Result<()> {
         tokio::fs::remove_file(&path).await?;
     }
     let listener = UnixListener::bind(&path)?;
+    if let Ok(mut profile_socket) = state.profile_socket.lock() {
+        *profile_socket = path.display().to_string();
+    }
     tracing::info!(socket = %path.display(), "listening on cua unix socket");
     tokio::spawn(async move {
         loop {
@@ -1058,6 +1295,7 @@ async fn profile_socket_is_live(path: &Path) -> bool {
 struct UnixRequest {
     id: Option<serde_json::Value>,
     token: Option<String>,
+    session_id: Option<String>,
     method: String,
     params: Option<serde_json::Value>,
 }
@@ -1130,9 +1368,26 @@ async fn handle_visual_session(
         }
     };
     let fps = visual.fps.unwrap_or(10).clamp(1, 30);
+    let session_id = request
+        .session_id
+        .as_ref()
+        .map(|session_id| session_id.trim())
+        .filter(|session_id| !session_id.is_empty())
+        .map(ToOwned::to_owned);
+    if let Some(session_id) = session_id.as_ref() {
+        let _ = state.sessions.acquire(SessionLeaseRequest {
+            schema_version: SCHEMA_VERSION.to_string(),
+            session_id: session_id.clone(),
+            client_name: "unix visual session".to_string(),
+            role: RuntimeSessionRole::Observer,
+            ttl_ms: None,
+        });
+    }
     let mut interval = tokio::time::interval(Duration::from_millis(1_000 / u64::from(fps)));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let _guard = StreamGuard::new(state.active_streams.clone());
+    let _session_guard =
+        session_id.map(|session_id| SessionGuard::new(state.sessions.clone(), session_id));
     state.publish_event(
         "visual_session_started",
         serde_json::json!({
@@ -1248,6 +1503,26 @@ enum VisualSessionMessage {
     },
 }
 
+struct SessionGuard {
+    sessions: SessionRegistry,
+    session_id: String,
+}
+
+impl SessionGuard {
+    fn new(sessions: SessionRegistry, session_id: String) -> Self {
+        Self {
+            sessions,
+            session_id,
+        }
+    }
+}
+
+impl Drop for SessionGuard {
+    fn drop(&mut self) {
+        self.sessions.remove(&self.session_id);
+    }
+}
+
 async fn write_json_line<T: Serialize>(
     write: &mut tokio::net::unix::OwnedWriteHalf,
     value: &T,
@@ -1262,6 +1537,7 @@ async fn write_json_line<T: Serialize>(
 
 async fn handle_unix_request(state: &DaemonState, request: UnixRequest) -> serde_json::Value {
     let id = request.id.clone();
+    let session_id = request.session_id.clone();
     if request.token.as_deref() != Some(state.bearer_token.as_str()) {
         return unix_error(
             id,
@@ -1271,6 +1547,38 @@ async fn handle_unix_request(state: &DaemonState, request: UnixRequest) -> serde
         );
     }
     let result = match request.method.as_str() {
+        "session.acquire" => {
+            let params = request.params.unwrap_or_else(|| serde_json::json!({}));
+            match serde_json::from_value::<SessionLeaseRequest>(params) {
+                Ok(request) => state.sessions.acquire(request).map(serde_json::to_value),
+                Err(error) => {
+                    return unix_error(
+                        id,
+                        "bad_request",
+                        error.to_string(),
+                        Some(StatusCode::BAD_REQUEST),
+                    )
+                }
+            }
+        }
+        "session.cancel" => {
+            let params = request.params.unwrap_or_else(|| serde_json::json!({}));
+            match serde_json::from_value::<SessionCancelRequest>(params) {
+                Ok(request) => match state.sessions.cancel(request) {
+                    Ok(()) => Ok(serde_json::to_value(state.runtime_inventory().await)),
+                    Err(error) => Err(error),
+                },
+                Err(error) => {
+                    return unix_error(
+                        id,
+                        "bad_request",
+                        error.to_string(),
+                        Some(StatusCode::BAD_REQUEST),
+                    )
+                }
+            }
+        }
+        "session.status" => Ok(serde_json::to_value(state.runtime_inventory().await)),
         "capture.screenshot" => {
             let params = request.params.unwrap_or_else(|| serde_json::json!({}));
             match serde_json::from_value::<ScreenshotRequest>(params) {
@@ -1374,6 +1682,9 @@ async fn handle_unix_request(state: &DaemonState, request: UnixRequest) -> serde
         }
         "profile.status" => Ok(serde_json::to_value(state.control.read().await.clone())),
         "profile.create" => {
+            if let Err(error) = state.sessions.authorize_write(session_id.as_deref()) {
+                return unix_api_error(id, error);
+            }
             let params = request.params.unwrap_or_else(|| serde_json::json!({}));
             match serde_json::from_value::<ProfileCreateRequest>(params) {
                 Ok(request) => Ok(serde_json::to_value(
@@ -1389,11 +1700,34 @@ async fn handle_unix_request(state: &DaemonState, request: UnixRequest) -> serde
                 }
             }
         }
-        "profile.activate" => Ok(serde_json::to_value(profile_activate_state(state).await)),
-        "control.pause" => Ok(serde_json::to_value(control_pause_state(state).await)),
-        "control.resume" => Ok(serde_json::to_value(control_resume_state(state).await)),
-        "control.kill_switch" => Ok(serde_json::to_value(control_kill_switch_state(state).await)),
+        "profile.activate" => {
+            if let Err(error) = state.sessions.authorize_write(session_id.as_deref()) {
+                return unix_api_error(id, error);
+            }
+            Ok(serde_json::to_value(profile_activate_state(state).await))
+        }
+        "control.pause" => {
+            if let Err(error) = state.sessions.authorize_write(session_id.as_deref()) {
+                return unix_api_error(id, error);
+            }
+            Ok(serde_json::to_value(control_pause_state(state).await))
+        }
+        "control.resume" => {
+            if let Err(error) = state.sessions.authorize_write(session_id.as_deref()) {
+                return unix_api_error(id, error);
+            }
+            Ok(serde_json::to_value(control_resume_state(state).await))
+        }
+        "control.kill_switch" => {
+            if let Err(error) = state.sessions.authorize_write(session_id.as_deref()) {
+                return unix_api_error(id, error);
+            }
+            Ok(serde_json::to_value(control_kill_switch_state(state).await))
+        }
         "input.dispatch" => {
+            if let Err(error) = state.sessions.authorize_write(session_id.as_deref()) {
+                return unix_api_error(id, error);
+            }
             let params = request.params.unwrap_or_else(|| serde_json::json!({}));
             match serde_json::from_value::<InputAction>(params) {
                 Ok(action) => {
@@ -1413,6 +1747,9 @@ async fn handle_unix_request(state: &DaemonState, request: UnixRequest) -> serde
             }
         }
         "input.dispatch_frame" => {
+            if let Err(error) = state.sessions.authorize_write(session_id.as_deref()) {
+                return unix_api_error(id, error);
+            }
             let params = request.params.unwrap_or_else(|| serde_json::json!({}));
             match serde_json::from_value::<FrameActionRequest>(params) {
                 Ok(request) => match serde_json::to_value(
@@ -1552,6 +1889,12 @@ fn manifest_payload() -> Manifest {
             "GET /events".to_string(),
             "GET /events?after=<sequence>".to_string(),
             "GET /events/live?after=<sequence>&timeout_ms=<ms>".to_string(),
+            "POST /session/acquire".to_string(),
+            "POST /session/cancel".to_string(),
+            "GET /session/status".to_string(),
+            "UNIX session.acquire".to_string(),
+            "UNIX session.cancel".to_string(),
+            "UNIX session.status".to_string(),
             "POST /ui/step".to_string(),
             "POST /ui/reply".to_string(),
             "POST /ui/mode".to_string(),
@@ -1575,10 +1918,13 @@ fn manifest_payload() -> Manifest {
             "cua manifest --json".to_string(),
             "cua metrics --json".to_string(),
             "cua events --json [--after <sequence>]".to_string(),
+            "cua session acquire <session-id> --role owner|observer --json".to_string(),
+            "cua session cancel <session-id> --json".to_string(),
+            "cua session status --json".to_string(),
+            "cua stream --unix --json".to_string(),
             "cua ui step <label> --step-index <n> --step-total <n> --json".to_string(),
             "cua ui reply <text> --json".to_string(),
             "cua ui mode headless|headful --json".to_string(),
-            "cua stream --unix --json".to_string(),
             "cua perf live --json".to_string(),
             "cua screenshot --out <path>".to_string(),
             "cua context --json".to_string(),
@@ -1966,6 +2312,25 @@ async fn events_live(
 
 fn event_wait_timeout(timeout_ms: Option<u64>) -> Duration {
     Duration::from_millis(timeout_ms.unwrap_or(1_000).clamp(25, 30_000))
+}
+
+async fn session_acquire(
+    State(state): State<DaemonState>,
+    Json(request): Json<SessionLeaseRequest>,
+) -> Result<Json<SessionLeaseResult>, ApiError> {
+    Ok(Json(state.sessions.acquire(request)?))
+}
+
+async fn session_cancel(
+    State(state): State<DaemonState>,
+    Json(request): Json<SessionCancelRequest>,
+) -> Result<Json<RuntimeInventory>, ApiError> {
+    state.sessions.cancel(request)?;
+    Ok(Json(state.runtime_inventory().await))
+}
+
+async fn session_status(State(state): State<DaemonState>) -> Json<RuntimeInventory> {
+    Json(state.runtime_inventory().await)
 }
 
 async fn ui_step(
@@ -3268,6 +3633,30 @@ impl ApiError {
             StatusCode::BAD_REQUEST,
         )
     }
+
+    fn forbidden(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self(
+            ApiErrorBody {
+                schema_version: SCHEMA_VERSION.to_string(),
+                code: code.into(),
+                message: message.into(),
+                details: BTreeMap::new(),
+            },
+            StatusCode::FORBIDDEN,
+        )
+    }
+
+    fn conflict(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self(
+            ApiErrorBody {
+                schema_version: SCHEMA_VERSION.to_string(),
+                code: code.into(),
+                message: message.into(),
+                details: BTreeMap::new(),
+            },
+            StatusCode::CONFLICT,
+        )
+    }
 }
 
 impl IntoResponse for ApiError {
@@ -3685,6 +4074,79 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unix_owner_lease_blocks_observer_and_anonymous_writes() {
+        let state = DaemonState::synthetic("unix-lease", "token");
+
+        let owner = unix_result(
+            handle_unix_request(
+                &state,
+                unix_request(
+                    "session.acquire",
+                    serde_json::json!({
+                        "schema_version": SCHEMA_VERSION,
+                        "session_id": "owner-1",
+                        "client_name": "owner test",
+                        "role": "owner",
+                        "ttl_ms": 60000
+                    }),
+                ),
+            )
+            .await,
+        );
+        assert_eq!(owner["accepted"], true);
+        assert_eq!(owner["owner_session_id"], "owner-1");
+
+        let observer = unix_result(
+            handle_unix_request(
+                &state,
+                unix_request(
+                    "session.acquire",
+                    serde_json::json!({
+                        "schema_version": SCHEMA_VERSION,
+                        "session_id": "observer-1",
+                        "client_name": "observer test",
+                        "role": "observer"
+                    }),
+                ),
+            )
+            .await,
+        );
+        assert_eq!(observer["session"]["role"], "observer");
+
+        let anonymous =
+            handle_unix_request(&state, unix_request("control.pause", serde_json::json!({}))).await;
+        assert_eq!(anonymous["ok"], false);
+        assert_eq!(anonymous["error"]["code"], "session_owner");
+
+        let observer_write = handle_unix_request(
+            &state,
+            unix_request_with_session("control.pause", serde_json::json!({}), "observer-1"),
+        )
+        .await;
+        assert_eq!(observer_write["ok"], false);
+        assert_eq!(observer_write["error"]["code"], "session_owner");
+
+        let owner_write = unix_result(
+            handle_unix_request(
+                &state,
+                unix_request_with_session("control.pause", serde_json::json!({}), "owner-1"),
+            )
+            .await,
+        );
+        assert_eq!(owner_write["safety_state"], "paused");
+
+        let inventory = unix_result(
+            handle_unix_request(
+                &state,
+                unix_request("session.status", serde_json::json!({})),
+            )
+            .await,
+        );
+        assert_eq!(inventory["owner_session_id"], "owner-1");
+        assert_eq!(inventory["connected_clients"], 2);
+    }
+
+    #[tokio::test]
     async fn live_profile_socket_is_not_treated_as_stale() {
         let dir = PathBuf::from(format!("/tmp/cua-daemon-{}", Uuid::new_v4().simple()));
         let socket = dir.join("daemon.sock");
@@ -3700,9 +4162,26 @@ mod tests {
     }
 
     fn unix_request(method: &str, params: serde_json::Value) -> UnixRequest {
+        unix_request_with_optional_session(method, params, None)
+    }
+
+    fn unix_request_with_session(
+        method: &str,
+        params: serde_json::Value,
+        session_id: &str,
+    ) -> UnixRequest {
+        unix_request_with_optional_session(method, params, Some(session_id.to_string()))
+    }
+
+    fn unix_request_with_optional_session(
+        method: &str,
+        params: serde_json::Value,
+        session_id: Option<String>,
+    ) -> UnixRequest {
         UnixRequest {
             id: Some(serde_json::json!("test")),
             token: Some("token".to_string()),
+            session_id,
             method: method.to_string(),
             params: Some(params),
         }

@@ -232,6 +232,61 @@ pub struct RuntimeControlState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeSessionRole {
+    Owner,
+    Observer,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct RuntimeSessionInfo {
+    pub schema_version: String,
+    pub session_id: String,
+    pub role: RuntimeSessionRole,
+    pub client_name: String,
+    pub connected_wall_ms: i64,
+    pub last_seen_wall_ms: i64,
+    pub expires_wall_ms: Option<i64>,
+    pub active: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct RuntimeInventory {
+    pub schema_version: String,
+    pub daemon_pid: u32,
+    pub http_addr: String,
+    pub profile_socket: String,
+    pub hud_pid: Option<u32>,
+    pub connected_clients: u32,
+    pub owner_session_id: Option<String>,
+    pub sessions: Vec<RuntimeSessionInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct SessionLeaseRequest {
+    pub schema_version: String,
+    pub session_id: String,
+    pub client_name: String,
+    pub role: RuntimeSessionRole,
+    pub ttl_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct SessionLeaseResult {
+    pub schema_version: String,
+    pub accepted: bool,
+    pub session: RuntimeSessionInfo,
+    pub owner_session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct SessionCancelRequest {
+    pub schema_version: String,
+    pub session_id: String,
+    pub target_session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct MetricBucket {
     pub le_ms: u64,
     pub count: u64,
@@ -530,6 +585,7 @@ pub struct HealthReport {
     pub active_profile: String,
     pub active_streams: u32,
     pub model_sessions: u32,
+    pub inventory: RuntimeInventory,
     pub last_error: Option<String>,
 }
 
@@ -586,6 +642,26 @@ pub fn schema_bundle() -> SchemaBundle {
     schemas.insert(
         "RuntimeControlState".to_string(),
         serde_json::json!(schema_for!(RuntimeControlState)),
+    );
+    schemas.insert(
+        "RuntimeInventory".to_string(),
+        serde_json::json!(schema_for!(RuntimeInventory)),
+    );
+    schemas.insert(
+        "RuntimeSessionInfo".to_string(),
+        serde_json::json!(schema_for!(RuntimeSessionInfo)),
+    );
+    schemas.insert(
+        "SessionLeaseRequest".to_string(),
+        serde_json::json!(schema_for!(SessionLeaseRequest)),
+    );
+    schemas.insert(
+        "SessionLeaseResult".to_string(),
+        serde_json::json!(schema_for!(SessionLeaseResult)),
+    );
+    schemas.insert(
+        "SessionCancelRequest".to_string(),
+        serde_json::json!(schema_for!(SessionCancelRequest)),
     );
     schemas.insert(
         "ProfilePolicy".to_string(),
