@@ -299,7 +299,7 @@ impl Render for VoiceHud {
 }
 
 fn main() -> anyhow::Result<()> {
-    dotenvy::dotenv().ok();
+    load_cua_dotenv();
     let args = Args::parse();
     let demo = demo_should_run(args.demo);
     let once_transcript = args.once_transcript;
@@ -388,6 +388,28 @@ fn main() -> anyhow::Result<()> {
         cx.activate(true);
     });
     Ok(())
+}
+
+fn load_cua_dotenv() {
+    dotenvy::dotenv().ok();
+    if let Ok(path) = std::env::var("CUA_ENV_FILE") {
+        load_dotenv_path(Path::new(&path));
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        load_dotenv_path(&PathBuf::from(home).join(".cua").join(".env"));
+    }
+}
+
+fn load_dotenv_path(path: &Path) {
+    let Ok(iter) = dotenvy::from_path_iter(path) else {
+        return;
+    };
+    for item in iter.flatten() {
+        let (key, value) = item;
+        if std::env::var_os(&key).is_none() {
+            std::env::set_var(key, value);
+        }
+    }
 }
 
 fn print_headless_events(rx: Receiver<VoiceUiEvent>) {

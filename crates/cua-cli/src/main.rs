@@ -10,7 +10,7 @@ use cua_core::{
 use cua_model::{run_eval_report, EvalConfig};
 use cua_trace::{ActionTurnRecord, TraceRecord, TraceWriter};
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -319,7 +319,7 @@ impl From<RuntimeModeArg> for RuntimeMode {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    dotenvy::dotenv().ok();
+    load_cua_dotenv();
     tracing_subscriber::fmt().with_env_filter("info").init();
     let cli = Cli::parse();
     match cli.command {
@@ -406,6 +406,28 @@ async fn main() -> anyhow::Result<()> {
                 flag.json,
             )
             .await
+        }
+    }
+}
+
+fn load_cua_dotenv() {
+    dotenvy::dotenv().ok();
+    if let Ok(path) = std::env::var("CUA_ENV_FILE") {
+        load_dotenv_path(Path::new(&path));
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        load_dotenv_path(&PathBuf::from(home).join(".cua").join(".env"));
+    }
+}
+
+fn load_dotenv_path(path: &Path) {
+    let Ok(iter) = dotenvy::from_path_iter(path) else {
+        return;
+    };
+    for item in iter.flatten() {
+        let (key, value) = item;
+        if std::env::var_os(&key).is_none() {
+            std::env::set_var(key, value);
         }
     }
 }

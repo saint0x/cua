@@ -39,6 +39,8 @@ cargo run -p cua -- profile activate --json
 cargo run -p cua -- clipboard write "hello from cua" --json
 cargo run -p cua -- clipboard read --allow-sensitive --json
 cargo run -p cua -- pause --json
+
+`cua` and `cua-voice` automatically load environment values from the current directory `.env`, `CUA_ENV_FILE`, and `~/.cua/.env`. `OPENROUTER_API_KEY` can live in any of those locations.
 cargo run -p cua -- resume --json
 cargo run -p cua -- kill-switch --json
 cargo run -p cua-voice
