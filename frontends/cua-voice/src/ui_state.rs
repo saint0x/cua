@@ -77,7 +77,7 @@ impl HudSnapshot {
         match event {
             VoiceUiEvent::Armed => {
                 self.phase = HudPhase::Armed;
-                self.input_label = "Voice control".to_string();
+                self.mark_voice_control();
                 self.step = HudStep::new(1, 4, "Starting recorder");
                 self.tool = "Keyboard".to_string();
                 self.transcript = None;
@@ -88,7 +88,7 @@ impl HudSnapshot {
             }
             VoiceUiEvent::Listening { ms } => {
                 self.phase = HudPhase::Listening;
-                self.input_label = "Voice control".to_string();
+                self.mark_voice_control();
                 self.step = HudStep::new(1, 4, format!("Recording {ms} ms"));
                 self.tool = "Microphone".to_string();
                 self.programmed_step_expires_at = None;
@@ -96,7 +96,7 @@ impl HudSnapshot {
             }
             VoiceUiEvent::Transcribing => {
                 self.phase = HudPhase::Transcribing;
-                self.input_label = "Voice control".to_string();
+                self.mark_voice_control();
                 self.step = HudStep::new(2, 4, "Speech to text");
                 self.tool = "OpenRouter STT".to_string();
                 self.programmed_step_expires_at = None;
@@ -107,7 +107,7 @@ impl HudSnapshot {
             }
             VoiceUiEvent::Planning { tool } => {
                 self.phase = HudPhase::Planning;
-                self.input_label = "Voice control".to_string();
+                self.mark_voice_control();
                 self.step = HudStep::new(3, 4, "Choosing action");
                 self.tool = tool;
                 self.programmed_step_expires_at = None;
@@ -115,7 +115,7 @@ impl HudSnapshot {
             }
             VoiceUiEvent::Dispatching(action) => {
                 self.phase = HudPhase::Dispatching;
-                self.input_label = "Voice control".to_string();
+                self.mark_voice_control();
                 self.step = HudStep::new(4, 4, action);
                 self.tool = "Unix socket".to_string();
                 self.programmed_step_expires_at = None;
@@ -180,7 +180,7 @@ impl HudSnapshot {
                     return;
                 }
                 self.phase = HudPhase::Dispatching;
-                self.input_label = "automation".to_string();
+                self.mark_automation_control();
                 self.task = source.unwrap_or_else(|| "Computer control".to_string());
                 self.step = HudStep::new(1, 1, label);
                 self.tool = tool.unwrap_or_else(|| "Unix socket".to_string());
@@ -203,7 +203,13 @@ impl HudSnapshot {
             }
             VoiceUiEvent::Metric { .. } => {}
             VoiceUiEvent::Idle => {
+                let mode = self.mode.clone();
+                let input_label = self.input_label.clone();
                 *self = Self::default();
+                self.mode = mode;
+                if input_label == "automation" || self.mode == UiMode::Headless {
+                    self.mark_automation_control();
+                }
             }
         }
     }
@@ -231,6 +237,17 @@ impl HudSnapshot {
             .map(|snapshot| *snapshot)
             .unwrap_or_default();
         true
+    }
+
+    fn mark_voice_control(&mut self) {
+        self.mode = UiMode::Headful;
+        self.input_label = "Voice control".to_string();
+        self.task = "Voice control".to_string();
+    }
+
+    fn mark_automation_control(&mut self) {
+        self.input_label = "automation".to_string();
+        self.task = "Computer control".to_string();
     }
 }
 
@@ -396,6 +413,27 @@ mod tests {
 
         assert_eq!(state.input_label, "automation");
         assert_eq!(state.task, "Computer control");
+    }
+
+    #[test]
+    fn idle_preserves_automation_source_after_remote_use() {
+        let mut state = HudSnapshot::default();
+        state.apply(VoiceUiEvent::UiMode {
+            mode: UiMode::Headless,
+            source: Some("remote".to_string()),
+        });
+        state.apply(VoiceUiEvent::AutomationActivity {
+            label: "mouse click at 10,10".to_string(),
+            source: Some("Computer control".to_string()),
+            tool: Some("Unix socket".to_string()),
+        });
+
+        state.apply(VoiceUiEvent::Idle);
+
+        assert_eq!(state.mode, UiMode::Headless);
+        assert_eq!(state.input_label, "automation");
+        assert_eq!(state.task, "Computer control");
+        assert_eq!(state.phase, HudPhase::Idle);
     }
 
     #[test]

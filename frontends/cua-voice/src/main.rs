@@ -424,11 +424,6 @@ fn should_reset_after_reply_collapse(reply_window_expired: bool, response_progre
 impl Render for VoiceHud {
     fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         self.drain_events();
-        if !self.snapshot.is_headful() {
-            window.resize(size(px(1.0), px(1.0)));
-            window.request_animation_frame();
-            return div().size_full().opacity(0.0).into_any_element();
-        }
         let reply_window_expired =
             self.snapshot.expanded_until.is_some() && !self.snapshot.is_expanded();
         self.tick_animation();

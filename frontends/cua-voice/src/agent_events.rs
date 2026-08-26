@@ -167,6 +167,22 @@ pub fn agent_input_from_daemon_event(
     }
     let kind = event.get("kind").and_then(|value| value.as_str())?;
     match kind {
+        "input_started" => {
+            let data = event.get("data");
+            let label = data
+                .and_then(|data| data.get("label"))
+                .and_then(|value| value.as_str())
+                .unwrap_or("remote action started")
+                .to_string();
+            Some((
+                sequence,
+                VoiceUiEvent::AutomationActivity {
+                    label,
+                    source: Some("Computer control".to_string()),
+                    tool: Some("Unix socket".to_string()),
+                },
+            ))
+        }
         "input_completed" => Some((
             sequence,
             VoiceUiEvent::AutomationActivity {
@@ -377,6 +393,36 @@ mod tests {
         assert_eq!(source.as_deref(), Some("Computer control"));
         assert_eq!(tool.as_deref(), Some("Unix socket"));
         assert!(agent_input_from_daemon_event(&event, 46).is_none());
+    }
+
+    #[test]
+    fn daemon_input_started_event_maps_to_immediate_automation_activity() {
+        let event = serde_json::json!({
+            "sequence": 74,
+            "kind": "input_started",
+            "data": {
+                "label": "mouse move to 30,40",
+                "source": "automation",
+                "tool": "Unix socket"
+            }
+        });
+
+        let Some((
+            sequence,
+            VoiceUiEvent::AutomationActivity {
+                label,
+                source,
+                tool,
+            },
+        )) = agent_input_from_daemon_event(&event, 73)
+        else {
+            panic!("expected automation activity");
+        };
+
+        assert_eq!(sequence, 74);
+        assert_eq!(label, "mouse move to 30,40");
+        assert_eq!(source.as_deref(), Some("Computer control"));
+        assert_eq!(tool.as_deref(), Some("Unix socket"));
     }
 
     #[test]

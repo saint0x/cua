@@ -482,6 +482,7 @@ fn hud_wake_event(kind: &str) -> bool {
         kind,
         "ui_step"
             | "ui_reply"
+            | "input_started"
             | "input_completed"
             | "input_refused"
             | "control_paused"
@@ -2973,6 +2974,14 @@ async fn dispatch_input_action(state: &DaemonState, action: InputAction) -> cua_
     let started = Instant::now();
     let turn_id = Uuid::new_v4().to_string();
     let action_label = input_action_label(&action);
+    state.publish_event(
+        "input_started",
+        serde_json::json!({
+            "label": action_label,
+            "source": "automation",
+            "tool": "Unix socket",
+        }),
+    );
     publish_protocol_step(
         state,
         1,
