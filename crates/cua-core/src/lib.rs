@@ -244,6 +244,23 @@ pub struct UiStepResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct UiReplyRequest {
+    pub schema_version: String,
+    pub text: String,
+    pub source: Option<String>,
+    pub ttl_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct UiReplyResult {
+    pub schema_version: String,
+    pub accepted: bool,
+    pub text: String,
+    pub source: Option<String>,
+    pub ttl_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Effect {
     Confirmed,
@@ -472,6 +489,14 @@ pub fn schema_bundle() -> SchemaBundle {
     schemas.insert(
         "UiStepResult".to_string(),
         serde_json::json!(schema_for!(UiStepResult)),
+    );
+    schemas.insert(
+        "UiReplyRequest".to_string(),
+        serde_json::json!(schema_for!(UiReplyRequest)),
+    );
+    schemas.insert(
+        "UiReplyResult".to_string(),
+        serde_json::json!(schema_for!(UiReplyResult)),
     );
     schemas.insert(
         "InputAction".to_string(),

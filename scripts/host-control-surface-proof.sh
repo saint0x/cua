@@ -19,6 +19,7 @@ HTTP_METRICS="$OUT_DIR/http-metrics.json"
 HTTP_EVENTS="$OUT_DIR/http-events.json"
 HTTP_EVENTS_AFTER="$OUT_DIR/http-events-after.json"
 HTTP_UI_STEP="$OUT_DIR/http-ui-step.json"
+HTTP_UI_REPLY="$OUT_DIR/http-ui-reply.json"
 HTTP_OBSERVE="$OUT_DIR/http-observe.json"
 HTTP_CONTEXT="$OUT_DIR/http-context.json"
 HTTP_SCREENSHOT="$OUT_DIR/http-screenshot.json"
@@ -28,6 +29,7 @@ CLI_METRICS="$OUT_DIR/cli-metrics.json"
 CLI_EVENTS="$OUT_DIR/cli-events.json"
 CLI_EVENTS_AFTER="$OUT_DIR/cli-events-after.json"
 CLI_UI_STEP="$OUT_DIR/cli-ui-step.json"
+CLI_UI_REPLY="$OUT_DIR/cli-ui-reply.json"
 CLI_OBSERVE="$OUT_DIR/cli-observe.json"
 CLI_CONTEXT="$OUT_DIR/cli-context.json"
 CLI_PROFILE="$OUT_DIR/cli-profile.json"
@@ -42,7 +44,9 @@ UNIX_EVENTS="$OUT_DIR/unix-events.json"
 UNIX_EVENTS_AFTER="$OUT_DIR/unix-events-after.json"
 UNIX_EVENTS_WAIT="$OUT_DIR/unix-events-wait.json"
 UNIX_UI_STEP="$OUT_DIR/unix-ui-step.json"
+UNIX_UI_REPLY="$OUT_DIR/unix-ui-reply.json"
 VOICE_AGENT_STEP="$OUT_DIR/voice-agent-step.json"
+VOICE_AGENT_REPLY="$OUT_DIR/voice-agent-reply.json"
 UNIX_CONTEXT="$OUT_DIR/unix-context.json"
 UNIX_PAUSE="$OUT_DIR/unix-pause.json"
 UNIX_RESUME="$OUT_DIR/unix-resume.json"
@@ -139,6 +143,11 @@ curl -fsS \
   -H "content-type: application/json" \
   -d '{"schema_version":"cua.v1","label":"http programmable step","source":"http proof","task":"http task","tool":"http tool","step_index":2,"step_total":5,"ttl_ms":1500}' \
   "http://$ADDR/ui/step" > "$HTTP_UI_STEP"
+curl -fsS \
+  -H "authorization: Bearer $TOKEN" \
+  -H "content-type: application/json" \
+  -d '{"schema_version":"cua.v1","text":"http programmable reply","source":"http proof","ttl_ms":1750}' \
+  "http://$ADDR/ui/reply" > "$HTTP_UI_REPLY"
 curl -fsS -H "authorization: Bearer $TOKEN" "http://$ADDR/events" > "$HTTP_EVENTS"
 HTTP_AFTER_SEQUENCE="$(jq -r '.[0].sequence' "$HTTP_EVENTS")"
 curl -fsS -H "authorization: Bearer $TOKEN" "http://$ADDR/events?after=$HTTP_AFTER_SEQUENCE" > "$HTTP_EVENTS_AFTER"
@@ -165,6 +174,10 @@ CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFIL
   --step-total 5 \
   --ttl-ms 1500 \
   --json > "$CLI_UI_STEP"
+CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFILE" ui reply "cli programmable reply" \
+  --source "cli proof" \
+  --ttl-ms 1750 \
+  --json > "$CLI_UI_REPLY"
 CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFILE" events --json > "$CLI_EVENTS"
 CLI_AFTER_SEQUENCE="$(jq -r '.[0].sequence' "$CLI_EVENTS")"
 CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFILE" events --after "$CLI_AFTER_SEQUENCE" --json > "$CLI_EVENTS_AFTER"
@@ -183,6 +196,7 @@ unix_call "status" '{}' "$UNIX_STATUS"
 unix_call "manifest" '{}' "$UNIX_MANIFEST"
 unix_call "metrics" '{}' "$UNIX_METRICS"
 unix_call "ui.step" '{"schema_version":"cua.v1","label":"unix programmable step","source":"unix proof","task":"unix task","tool":"unix tool","step_index":4,"step_total":5,"ttl_ms":1500}' "$UNIX_UI_STEP"
+unix_call "ui.reply" '{"schema_version":"cua.v1","text":"unix programmable reply","source":"unix proof","ttl_ms":1750}' "$UNIX_UI_REPLY"
 unix_call "events.snapshot" '{}' "$UNIX_EVENTS"
 UNIX_AFTER_SEQUENCE="$(jq -r '.[0].sequence' "$UNIX_EVENTS")"
 unix_call "events.after" "{\"after_sequence\":$UNIX_AFTER_SEQUENCE}" "$UNIX_EVENTS_AFTER"
@@ -193,6 +207,12 @@ CUA_HTTP_TOKEN="$TOKEN" "$CUA_VOICE_BIN_PATH" \
   --profile "$PROFILE" \
   --once-agent-step-after "$VOICE_AFTER_SEQUENCE" \
   --once-agent-step-wait-ms 2000 > "$VOICE_AGENT_STEP"
+VOICE_REPLY_AFTER_SEQUENCE="$(jq -r 'map(.sequence) | max // 0' "$UNIX_EVENTS")"
+unix_call "ui.reply" '{"schema_version":"cua.v1","text":"voice bridge programmable reply","source":"external agent","ttl_ms":1750}' "$OUT_DIR/voice-bridge-ui-reply.json" >/dev/null
+CUA_HTTP_TOKEN="$TOKEN" "$CUA_VOICE_BIN_PATH" \
+  --profile "$PROFILE" \
+  --once-agent-reply-after "$VOICE_REPLY_AFTER_SEQUENCE" \
+  --once-agent-reply-wait-ms 2000 > "$VOICE_AGENT_REPLY"
 unix_call "context.snapshot" '{"max_width":640,"encoding":"png","force_fresh":true,"include_bytes":false}' "$UNIX_CONTEXT"
 unix_call "control.pause" '{}' "$UNIX_PAUSE"
 unix_call "control.resume" '{}' "$UNIX_RESUME"
@@ -205,9 +225,11 @@ jq -e '.schema_version == "cua.v1" and (.histograms | type) == "array" and (.cou
   "$HTTP_METRICS" >/dev/null
 jq -e '.accepted == true and .label == "http programmable step" and .source == "http proof" and .task == "http task" and .tool == "http tool" and .step_index == 2 and .step_total == 5 and .ttl_ms == 1500' \
   "$HTTP_UI_STEP" >/dev/null
-jq -e 'type == "array" and length >= 1 and .[0].kind == "daemon_started" and any(.[]; .kind == "ui_step" and .data.label == "http programmable step" and .data.task == "http task" and .data.tool == "http tool" and .data.step_index == 2 and .data.step_total == 5 and .data.ttl_ms == 1500)' \
+jq -e '.accepted == true and .text == "http programmable reply" and .source == "http proof" and .ttl_ms == 1750' \
+  "$HTTP_UI_REPLY" >/dev/null
+jq -e 'type == "array" and length >= 1 and .[0].kind == "daemon_started" and any(.[]; .kind == "ui_step" and .data.label == "http programmable step" and .data.task == "http task" and .data.tool == "http tool" and .data.step_index == 2 and .data.step_total == 5 and .data.ttl_ms == 1500) and any(.[]; .kind == "ui_reply" and .data.text == "http programmable reply" and .data.source == "http proof" and .data.ttl_ms == 1750)' \
   "$HTTP_EVENTS" >/dev/null
-jq -e 'type == "array" and length >= 1 and all(.[]; .sequence > '"$HTTP_AFTER_SEQUENCE"') and any(.[]; .kind == "ui_step" and .data.label == "http programmable step" and .data.task == "http task" and .data.tool == "http tool" and .data.step_index == 2 and .data.step_total == 5 and .data.ttl_ms == 1500)' \
+jq -e 'type == "array" and length >= 1 and all(.[]; .sequence > '"$HTTP_AFTER_SEQUENCE"') and any(.[]; .kind == "ui_step" and .data.label == "http programmable step" and .data.task == "http task" and .data.tool == "http tool" and .data.step_index == 2 and .data.step_total == 5 and .data.ttl_ms == 1500) and any(.[]; .kind == "ui_reply" and .data.text == "http programmable reply" and .data.source == "http proof" and .data.ttl_ms == 1750)' \
   "$HTTP_EVENTS_AFTER" >/dev/null
 jq -e '(.displays | length) >= 1 and (.windows | type) == "array" and (.cursor.visible | type) == "boolean"' \
   "$HTTP_OBSERVE" >/dev/null
@@ -223,9 +245,11 @@ jq -e '.schema_version == "cua.v1" and (.histograms | type) == "array" and (.cou
   "$CLI_METRICS" >/dev/null
 jq -e '.accepted == true and .label == "cli programmable step" and .source == "cli proof" and .task == "cli task" and .tool == "cli tool" and .step_index == 3 and .step_total == 5 and .ttl_ms == 1500' \
   "$CLI_UI_STEP" >/dev/null
-jq -e 'type == "array" and length >= 1 and .[0].kind == "daemon_started" and any(.[]; .kind == "ui_step" and .data.label == "cli programmable step" and .data.task == "cli task" and .data.tool == "cli tool" and .data.step_index == 3 and .data.step_total == 5 and .data.ttl_ms == 1500)' \
+jq -e '.accepted == true and .text == "cli programmable reply" and .source == "cli proof" and .ttl_ms == 1750' \
+  "$CLI_UI_REPLY" >/dev/null
+jq -e 'type == "array" and length >= 1 and .[0].kind == "daemon_started" and any(.[]; .kind == "ui_step" and .data.label == "cli programmable step" and .data.task == "cli task" and .data.tool == "cli tool" and .data.step_index == 3 and .data.step_total == 5 and .data.ttl_ms == 1500) and any(.[]; .kind == "ui_reply" and .data.text == "cli programmable reply" and .data.source == "cli proof" and .data.ttl_ms == 1750)' \
   "$CLI_EVENTS" >/dev/null
-jq -e 'type == "array" and length >= 1 and all(.[]; .sequence > '"$CLI_AFTER_SEQUENCE"') and any(.[]; .kind == "ui_step" and .data.label == "cli programmable step" and .data.task == "cli task" and .data.tool == "cli tool" and .data.step_index == 3 and .data.step_total == 5 and .data.ttl_ms == 1500)' \
+jq -e 'type == "array" and length >= 1 and all(.[]; .sequence > '"$CLI_AFTER_SEQUENCE"') and any(.[]; .kind == "ui_step" and .data.label == "cli programmable step" and .data.task == "cli task" and .data.tool == "cli tool" and .data.step_index == 3 and .data.step_total == 5 and .data.ttl_ms == 1500) and any(.[]; .kind == "ui_reply" and .data.text == "cli programmable reply" and .data.source == "cli proof" and .data.ttl_ms == 1750)' \
   "$CLI_EVENTS_AFTER" >/dev/null
 jq -e '(.displays | length) >= 1 and (.windows | type) == "array" and (.cursor.visible | type) == "boolean"' \
   "$CLI_OBSERVE" >/dev/null
@@ -245,14 +269,18 @@ jq -e '.schema_version == "cua.v1" and (.histograms | type) == "array" and (.cou
   "$UNIX_METRICS" >/dev/null
 jq -e '.accepted == true and .label == "unix programmable step" and .source == "unix proof" and .task == "unix task" and .tool == "unix tool" and .step_index == 4 and .step_total == 5 and .ttl_ms == 1500' \
   "$UNIX_UI_STEP" >/dev/null
-jq -e 'type == "array" and length >= 1 and .[0].kind == "daemon_started" and any(.[]; .kind == "ui_step" and .data.label == "unix programmable step" and .data.task == "unix task" and .data.tool == "unix tool" and .data.step_index == 4 and .data.step_total == 5 and .data.ttl_ms == 1500)' \
+jq -e '.accepted == true and .text == "unix programmable reply" and .source == "unix proof" and .ttl_ms == 1750' \
+  "$UNIX_UI_REPLY" >/dev/null
+jq -e 'type == "array" and length >= 1 and .[0].kind == "daemon_started" and any(.[]; .kind == "ui_step" and .data.label == "unix programmable step" and .data.task == "unix task" and .data.tool == "unix tool" and .data.step_index == 4 and .data.step_total == 5 and .data.ttl_ms == 1500) and any(.[]; .kind == "ui_reply" and .data.text == "unix programmable reply" and .data.source == "unix proof" and .data.ttl_ms == 1750)' \
   "$UNIX_EVENTS" >/dev/null
-jq -e 'type == "array" and length >= 1 and all(.[]; .sequence > '"$UNIX_AFTER_SEQUENCE"') and any(.[]; .kind == "ui_step" and .data.label == "unix programmable step" and .data.task == "unix task" and .data.tool == "unix tool" and .data.step_index == 4 and .data.step_total == 5 and .data.ttl_ms == 1500)' \
+jq -e 'type == "array" and length >= 1 and all(.[]; .sequence > '"$UNIX_AFTER_SEQUENCE"') and any(.[]; .kind == "ui_step" and .data.label == "unix programmable step" and .data.task == "unix task" and .data.tool == "unix tool" and .data.step_index == 4 and .data.step_total == 5 and .data.ttl_ms == 1500) and any(.[]; .kind == "ui_reply" and .data.text == "unix programmable reply" and .data.source == "unix proof" and .data.ttl_ms == 1750)' \
   "$UNIX_EVENTS_AFTER" >/dev/null
-jq -e 'type == "array" and length >= 1 and all(.[]; .sequence > '"$UNIX_AFTER_SEQUENCE"') and any(.[]; .kind == "ui_step" and .data.label == "unix programmable step" and .data.step_index == 4 and .data.step_total == 5 and .data.ttl_ms == 1500)' \
+jq -e 'type == "array" and length >= 1 and all(.[]; .sequence > '"$UNIX_AFTER_SEQUENCE"') and any(.[]; .kind == "ui_step" and .data.label == "unix programmable step" and .data.step_index == 4 and .data.step_total == 5 and .data.ttl_ms == 1500) and any(.[]; .kind == "ui_reply" and .data.text == "unix programmable reply" and .data.source == "unix proof" and .data.ttl_ms == 1750)' \
   "$UNIX_EVENTS_WAIT" >/dev/null
 jq -e '.event == "agent_step" and .label == "voice bridge programmable step" and .source == "external agent" and .task == "voice bridge task" and .tool == "agent tool" and .step_index == 5 and .step_total == 7 and .ttl_ms == 1750' \
   "$VOICE_AGENT_STEP" >/dev/null
+jq -e '.event == "reply" and .text == "voice bridge programmable reply"' \
+  "$VOICE_AGENT_REPLY" >/dev/null
 jq -e '.frame.envelope.encoding == "png" and .frame.envelope.width > 0 and (.desktop.displays | length) >= 1 and (.desktop.windows | type) == "array"' \
   "$UNIX_CONTEXT" >/dev/null
 jq -e '.safety_state == "paused"' "$UNIX_PAUSE" >/dev/null
@@ -268,6 +296,7 @@ jq -n \
   --slurpfile http_events "$HTTP_EVENTS" \
   --slurpfile http_events_after "$HTTP_EVENTS_AFTER" \
   --slurpfile http_ui_step "$HTTP_UI_STEP" \
+  --slurpfile http_ui_reply "$HTTP_UI_REPLY" \
   --slurpfile http_observe "$HTTP_OBSERVE" \
   --slurpfile http_context "$HTTP_CONTEXT" \
   --slurpfile http_screenshot "$HTTP_SCREENSHOT" \
@@ -277,6 +306,7 @@ jq -n \
   --slurpfile cli_events "$CLI_EVENTS" \
   --slurpfile cli_events_after "$CLI_EVENTS_AFTER" \
   --slurpfile cli_ui_step "$CLI_UI_STEP" \
+  --slurpfile cli_ui_reply "$CLI_UI_REPLY" \
   --slurpfile cli_observe "$CLI_OBSERVE" \
   --slurpfile cli_context "$CLI_CONTEXT" \
   --slurpfile cli_profile "$CLI_PROFILE" \
@@ -290,7 +320,9 @@ jq -n \
   --slurpfile unix_events_after "$UNIX_EVENTS_AFTER" \
   --slurpfile unix_events_wait "$UNIX_EVENTS_WAIT" \
   --slurpfile unix_ui_step "$UNIX_UI_STEP" \
+  --slurpfile unix_ui_reply "$UNIX_UI_REPLY" \
   --slurpfile voice_agent_step "$VOICE_AGENT_STEP" \
+  --slurpfile voice_agent_reply "$VOICE_AGENT_REPLY" \
   --slurpfile unix_context "$UNIX_CONTEXT" \
   --slurpfile unix_pause "$UNIX_PAUSE" \
   --slurpfile unix_resume "$UNIX_RESUME" \
@@ -311,6 +343,9 @@ jq -n \
       step_index: $http_ui_step[0].step_index,
       step_total: $http_ui_step[0].step_total,
       ttl_ms: $http_ui_step[0].ttl_ms,
+      ui_reply: $http_ui_reply[0].text,
+      ui_reply_source: $http_ui_reply[0].source,
+      ui_reply_ttl_ms: $http_ui_reply[0].ttl_ms,
       display_count: ($http_observe[0].displays | length),
       window_count: ($http_observe[0].windows | length),
       context: {
@@ -336,6 +371,9 @@ jq -n \
       step_index: $cli_ui_step[0].step_index,
       step_total: $cli_ui_step[0].step_total,
       ttl_ms: $cli_ui_step[0].ttl_ms,
+      ui_reply: $cli_ui_reply[0].text,
+      ui_reply_source: $cli_ui_reply[0].source,
+      ui_reply_ttl_ms: $cli_ui_reply[0].ttl_ms,
       profile_status: $cli_profile[0].active_profile.name,
       display_count: ($cli_observe[0].displays | length),
       window_count: ($cli_observe[0].windows | length),
@@ -366,6 +404,9 @@ jq -n \
       step_index: $unix_ui_step[0].step_index,
       step_total: $unix_ui_step[0].step_total,
       ttl_ms: $unix_ui_step[0].ttl_ms,
+      ui_reply: $unix_ui_reply[0].text,
+      ui_reply_source: $unix_ui_reply[0].source,
+      ui_reply_ttl_ms: $unix_ui_reply[0].ttl_ms,
       voice_bridge: {
         event: $voice_agent_step[0].event,
         label: $voice_agent_step[0].label,
@@ -374,7 +415,9 @@ jq -n \
         tool: $voice_agent_step[0].tool,
         step_index: $voice_agent_step[0].step_index,
         step_total: $voice_agent_step[0].step_total,
-        ttl_ms: $voice_agent_step[0].ttl_ms
+        ttl_ms: $voice_agent_step[0].ttl_ms,
+        reply_event: $voice_agent_reply[0].event,
+        reply_text: $voice_agent_reply[0].text
       },
       context: {
         width: $unix_context[0].frame.envelope.width,

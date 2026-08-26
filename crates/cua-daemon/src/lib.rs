@@ -19,7 +19,8 @@ use cua_core::{
     DesktopContextSnapshot, DesktopState, Effect, Evidence, EvidenceKind, FrameEncoding,
     FramePayload, HealthReport, InputAction, InputRequest, InputResult, InputRoute, Manifest,
     MetricBucket, MetricHistogram, MetricsSnapshot, PermissionReport, ProfilePolicy,
-    RuntimeControlState, RuntimeMode, SafetyState, UiStepRequest, UiStepResult, SCHEMA_VERSION,
+    RuntimeControlState, RuntimeMode, SafetyState, UiReplyRequest, UiReplyResult, UiStepRequest,
+    UiStepResult, SCHEMA_VERSION,
 };
 use cua_input::InputBackend;
 use cua_model::{run_eval_report, EvalConfig, EvalReport};
@@ -753,6 +754,7 @@ pub fn router(state: DaemonState) -> Router {
         .route("/events", get(events))
         .route("/events/live", get(events_live))
         .route("/ui/step", post(ui_step))
+        .route("/ui/reply", post(ui_reply))
         .route("/profile/create", post(profile_create))
         .route("/profile/activate", post(profile_activate))
         .route("/profile/status", get(profile_status))
@@ -957,6 +959,20 @@ async fn handle_unix_request(state: &DaemonState, request: UnixRequest) -> serde
                 }
             }
         }
+        "ui.reply" => {
+            let params = request.params.unwrap_or_else(|| serde_json::json!({}));
+            match serde_json::from_value::<UiReplyRequest>(params) {
+                Ok(request) => ui_reply_state(state, request).map(serde_json::to_value),
+                Err(error) => {
+                    return unix_error(
+                        id,
+                        "bad_request",
+                        error.to_string(),
+                        Some(StatusCode::BAD_REQUEST),
+                    )
+                }
+            }
+        }
         "observe.desktop" => desktop_state(state).await.map(serde_json::to_value),
         "context.snapshot" => {
             let params = request.params.unwrap_or_else(|| serde_json::json!({}));
@@ -1135,6 +1151,7 @@ fn manifest_payload() -> Manifest {
             "GET /events?after=<sequence>".to_string(),
             "GET /events/live?after=<sequence>&timeout_ms=<ms>".to_string(),
             "POST /ui/step".to_string(),
+            "POST /ui/reply".to_string(),
             "POST /profile/create".to_string(),
             "POST /profile/activate".to_string(),
             "GET /profile/status".to_string(),
@@ -1155,6 +1172,7 @@ fn manifest_payload() -> Manifest {
             "cua metrics --json".to_string(),
             "cua events --json [--after <sequence>]".to_string(),
             "cua ui step <label> --step-index <n> --step-total <n> --json".to_string(),
+            "cua ui reply <text> --json".to_string(),
             "cua perf live --json".to_string(),
             "cua screenshot --out <path>".to_string(),
             "cua context --json".to_string(),
@@ -1504,6 +1522,13 @@ async fn ui_step(
     Ok(Json(ui_step_state(&state, request)?))
 }
 
+async fn ui_reply(
+    State(state): State<DaemonState>,
+    Json(request): Json<UiReplyRequest>,
+) -> Result<Json<UiReplyResult>, ApiError> {
+    Ok(Json(ui_reply_state(&state, request)?))
+}
+
 fn ui_step_state(state: &DaemonState, request: UiStepRequest) -> Result<UiStepResult, ApiError> {
     if request.schema_version != SCHEMA_VERSION {
         return Err(ApiError::bad_request(
@@ -1553,6 +1578,47 @@ fn ui_step_state(state: &DaemonState, request: UiStepRequest) -> Result<UiStepRe
             "tool": result.tool,
             "step_index": result.step_index,
             "step_total": result.step_total,
+            "ttl_ms": result.ttl_ms,
+        }),
+    );
+    Ok(result)
+}
+
+fn ui_reply_state(state: &DaemonState, request: UiReplyRequest) -> Result<UiReplyResult, ApiError> {
+    if request.schema_version != SCHEMA_VERSION {
+        return Err(ApiError::bad_request(
+            "schema_version",
+            format!("expected {SCHEMA_VERSION}"),
+        ));
+    }
+    let text = request
+        .text
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if text.is_empty() {
+        return Err(ApiError::bad_request("text", "text must not be empty"));
+    }
+    if text.chars().count() > 480 {
+        return Err(ApiError::bad_request(
+            "text",
+            "text must be 480 characters or fewer",
+        ));
+    }
+    let source = normalize_optional_step_field(request.source, 48);
+    let ttl_ms = request.ttl_ms.map(|value| value.clamp(250, 60_000));
+    let result = UiReplyResult {
+        schema_version: SCHEMA_VERSION.to_string(),
+        accepted: true,
+        text,
+        source,
+        ttl_ms,
+    };
+    state.publish_event(
+        "ui_reply",
+        serde_json::json!({
+            "text": result.text,
+            "source": result.source,
             "ttl_ms": result.ttl_ms,
         }),
     );
@@ -3131,6 +3197,38 @@ mod tests {
         assert_eq!(step["data"]["tool"], "browser probe");
         assert_eq!(step["data"]["step_index"], 3);
         assert_eq!(step["data"]["step_total"], 3);
+    }
+
+    #[tokio::test]
+    async fn ui_reply_normalizes_and_emits_agent_visible_reply_event() {
+        let state = DaemonState::synthetic("test", "token");
+
+        let Json(result) = ui_reply(
+            State(state.clone()),
+            Json(UiReplyRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                text: "  Done   with   the target. ".to_string(),
+                source: Some("external agent".to_string()),
+                ttl_ms: Some(125),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert!(result.accepted);
+        assert_eq!(result.text, "Done with the target.");
+        assert_eq!(result.source.as_deref(), Some("external agent"));
+        assert_eq!(result.ttl_ms, Some(250));
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let events = state.events.snapshot().await;
+        let reply = events
+            .iter()
+            .find(|event| event["kind"] == "ui_reply")
+            .expect("ui_reply event");
+        assert_eq!(reply["data"]["text"], "Done with the target.");
+        assert_eq!(reply["data"]["source"], "external agent");
+        assert_eq!(reply["data"]["ttl_ms"], 250);
     }
 
     #[tokio::test]

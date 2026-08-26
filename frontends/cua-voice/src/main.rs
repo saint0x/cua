@@ -50,6 +50,10 @@ struct Args {
     once_agent_step_wait_ms: Option<u64>,
     #[arg(long, default_value_t = 0)]
     once_agent_step_after: u64,
+    #[arg(long)]
+    once_agent_reply_wait_ms: Option<u64>,
+    #[arg(long, default_value_t = 0)]
+    once_agent_reply_after: u64,
 }
 
 struct VoiceHud {
@@ -303,6 +307,8 @@ fn main() -> anyhow::Result<()> {
     let once_record = args.once_record;
     let once_agent_step_wait_ms = args.once_agent_step_wait_ms;
     let once_agent_step_after = args.once_agent_step_after;
+    let once_agent_reply_wait_ms = args.once_agent_reply_wait_ms;
+    let once_agent_reply_after = args.once_agent_reply_after;
     let config = VoiceConfig {
         profile: args.profile,
         record_ms: args.record_ms,
@@ -325,11 +331,22 @@ fn main() -> anyhow::Result<()> {
         print_headless_events(rx);
         return result;
     } else if let Some(wait_ms) = once_agent_step_wait_ms {
-        let result = runtime.block_on(run_once_agent_step_wait(
+        let result = runtime.block_on(run_once_agent_ui_event_wait(
             config.profile.clone(),
             once_agent_step_after,
             wait_ms,
             tx,
+            DaemonUiEventKind::Step,
+        ));
+        print_headless_events(rx);
+        return result;
+    } else if let Some(wait_ms) = once_agent_reply_wait_ms {
+        let result = runtime.block_on(run_once_agent_ui_event_wait(
+            config.profile.clone(),
+            once_agent_reply_after,
+            wait_ms,
+            tx,
+            DaemonUiEventKind::Reply,
         ));
         print_headless_events(rx);
         return result;
@@ -462,7 +479,7 @@ fn start_agent_step_poll(
             if let Ok(events) = session.events_wait(last_sequence, 1_000).await {
                 for event in events {
                     if let Some((sequence, event)) =
-                        agent_step_from_daemon_event(&event, last_sequence)
+                        agent_ui_event_from_daemon_event(&event, last_sequence)
                     {
                         last_sequence = last_sequence.max(sequence);
                         tx.send(event).ok();
@@ -477,11 +494,18 @@ fn start_agent_step_poll(
     });
 }
 
-async fn run_once_agent_step_wait(
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum DaemonUiEventKind {
+    Step,
+    Reply,
+}
+
+async fn run_once_agent_ui_event_wait(
     profile: String,
     after_sequence: u64,
     wait_ms: u64,
     tx: Sender<VoiceUiEvent>,
+    kind: DaemonUiEventKind,
 ) -> anyhow::Result<()> {
     let client = CuaClient::new(profile).await?;
     let mut session = client.session().await?;
@@ -503,12 +527,24 @@ async fn run_once_agent_step_wait(
                 continue;
             };
             last_sequence = last_sequence.max(sequence);
-            if let Some((_, event)) = agent_step_from_daemon_event(&event, after_sequence) {
+            let mapped = match kind {
+                DaemonUiEventKind::Step => agent_step_from_daemon_event(&event, after_sequence),
+                DaemonUiEventKind::Reply => agent_reply_from_daemon_event(&event, after_sequence),
+            };
+            if let Some((_, event)) = mapped {
                 tx.send(event).ok();
                 return Ok(());
             }
         }
     }
+}
+
+fn agent_ui_event_from_daemon_event(
+    event: &Value,
+    last_sequence: u64,
+) -> Option<(u64, VoiceUiEvent)> {
+    agent_step_from_daemon_event(event, last_sequence)
+        .or_else(|| agent_reply_from_daemon_event(event, last_sequence))
 }
 
 fn agent_step_from_daemon_event(event: &Value, last_sequence: u64) -> Option<(u64, VoiceUiEvent)> {
@@ -557,6 +593,23 @@ fn agent_step_from_daemon_event(event: &Value, last_sequence: u64) -> Option<(u6
             ttl_ms,
         },
     ))
+}
+
+fn agent_reply_from_daemon_event(event: &Value, last_sequence: u64) -> Option<(u64, VoiceUiEvent)> {
+    let sequence = event.get("sequence").and_then(|value| value.as_u64())?;
+    if sequence <= last_sequence {
+        return None;
+    }
+    if event.get("kind").and_then(|value| value.as_str()) != Some("ui_reply") {
+        return None;
+    }
+    let data = event.get("data")?;
+    let text = data.get("text").and_then(|value| value.as_str())?;
+    let source = data.get("source").and_then(|value| value.as_str());
+    if source == Some("voice") {
+        return None;
+    }
+    Some((sequence, VoiceUiEvent::Reply(text.to_string())))
 }
 
 fn single_instance_socket_path(profile: &str) -> PathBuf {
@@ -806,6 +859,42 @@ mod tests {
         });
 
         assert!(agent_step_from_daemon_event(&event, 42).is_none());
+    }
+
+    #[test]
+    fn daemon_ui_reply_event_maps_to_visible_reply_flash() {
+        let event = serde_json::json!({
+            "sequence": 44,
+            "kind": "ui_reply",
+            "data": {
+                "text": "Ready for the next step.",
+                "source": "external agent",
+                "ttl_ms": 1750
+            }
+        });
+
+        let Some((sequence, VoiceUiEvent::Reply(text))) = agent_reply_from_daemon_event(&event, 43)
+        else {
+            panic!("expected reply event");
+        };
+
+        assert_eq!(sequence, 44);
+        assert_eq!(text, "Ready for the next step.");
+        assert!(agent_reply_from_daemon_event(&event, 44).is_none());
+    }
+
+    #[test]
+    fn daemon_ui_reply_event_ignores_voice_echoes() {
+        let event = serde_json::json!({
+            "sequence": 45,
+            "kind": "ui_reply",
+            "data": {
+                "text": "internal voice reply",
+                "source": "voice"
+            }
+        });
+
+        assert!(agent_reply_from_daemon_event(&event, 44).is_none());
     }
 
     #[test]

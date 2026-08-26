@@ -1,7 +1,7 @@
 use anyhow::{bail, Context};
 use cua_core::{
-    DesktopContextSnapshot, DesktopState, FrameEncoding, FramePayload, InputAction, UiStepRequest,
-    SCHEMA_VERSION,
+    DesktopContextSnapshot, DesktopState, FrameEncoding, FramePayload, InputAction, UiReplyRequest,
+    UiStepRequest, SCHEMA_VERSION,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -117,6 +117,24 @@ impl CuaClient {
         .await
     }
 
+    pub async fn ui_reply(
+        &self,
+        text: impl Into<String>,
+        source: Option<String>,
+        ttl_ms: Option<u64>,
+    ) -> anyhow::Result<Value> {
+        self.request(
+            "ui.reply",
+            Some(serde_json::to_value(UiReplyRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                text: text.into(),
+                source,
+                ttl_ms,
+            })?),
+        )
+        .await
+    }
+
     pub async fn dispatch(&self, action: &InputAction) -> anyhow::Result<Value> {
         ensure_dispatchable(action)?;
         self.request("input.dispatch", Some(serde_json::to_value(action)?))
@@ -222,6 +240,24 @@ impl CuaSession {
                 tool,
                 step_index,
                 step_total,
+                ttl_ms,
+            })?),
+        )
+        .await
+    }
+
+    pub async fn ui_reply(
+        &mut self,
+        text: impl Into<String>,
+        source: Option<String>,
+        ttl_ms: Option<u64>,
+    ) -> anyhow::Result<Value> {
+        self.request(
+            "ui.reply",
+            Some(serde_json::to_value(UiReplyRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                text: text.into(),
+                source,
                 ttl_ms,
             })?),
         )

@@ -5,7 +5,7 @@ use cua_capture::{CaptureRequest, FrameBus, SyntheticCaptureBackend};
 use cua_core::{
     schema_bundle, CapabilityManifest, ClipboardReadRequest, ClipboardWriteRequest,
     DesktopContextSnapshot, FrameEncoding, FramePayload, InputAction, MouseButton, RuntimeMode,
-    UiStepRequest, SCHEMA_VERSION,
+    UiReplyRequest, UiStepRequest, SCHEMA_VERSION,
 };
 use cua_model::{run_eval_report, EvalConfig};
 use cua_trace::{ActionTurnRecord, TraceRecord, TraceWriter};
@@ -220,6 +220,15 @@ enum UiCommand {
         #[arg(long)]
         json: bool,
     },
+    Reply {
+        text: String,
+        #[arg(long)]
+        source: Option<String>,
+        #[arg(long)]
+        ttl_ms: Option<u64>,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -409,6 +418,7 @@ async fn print_usage_and_status(server_addr: SocketAddr) -> anyhow::Result<()> {
     println!("       cua metrics --json");
     println!("       cua events --json [--after <sequence>]");
     println!("       cua ui step <label> --step-index 2 --step-total 5 --json");
+    println!("       cua ui reply <text> --json");
     println!("       cua perf live --json");
     println!("       cua context --json");
     println!("       cua screenshot --out /tmp/screen.png");
@@ -440,6 +450,26 @@ async fn ui(addr: SocketAddr, profile: &str, command: UiCommand) -> anyhow::Resu
                     tool,
                     step_index,
                     step_total,
+                    ttl_ms,
+                })?,
+                json,
+            )
+            .await
+        }
+        UiCommand::Reply {
+            text,
+            source,
+            ttl_ms,
+            json,
+        } => {
+            post_json(
+                addr,
+                profile,
+                "/ui/reply",
+                serde_json::to_value(UiReplyRequest {
+                    schema_version: SCHEMA_VERSION.to_string(),
+                    text,
+                    source,
                     ttl_ms,
                 })?,
                 json,
