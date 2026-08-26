@@ -15,7 +15,8 @@ use chrono::Utc;
 #[cfg(test)]
 use cua_capture::SyntheticCaptureBackend;
 use cua_capture::{
-    encode_image, CaptureRequest, CapturedFrame, CapturedFrameTimings, FrameBus, FrameLookup,
+    encode_image, CaptureRequest, CaptureSource, CapturedFrame, CapturedFrameTimings, FrameBus,
+    FrameLookup,
 };
 use cua_core::{
     now_wall_ms, schema_bundle, ApiErrorBody, CapabilityManifest, CapabilityState,
@@ -2163,6 +2164,7 @@ fn crop_window_frame(
                 .capture_ns
                 .saturating_add(elapsed_ns(crop_started)),
             encode_ns,
+            source: frame.timings.source,
         },
     })
 }
@@ -2729,6 +2731,12 @@ fn normalize_optional_step_field(value: Option<String>, max_chars: usize) -> Opt
 
 fn observe_frame_lookup(metrics: &RuntimeMetrics, lookup: &FrameLookup) {
     metrics.observe_ns(MetricKind::CaptureQueueWait, lookup.wait_ns);
+    match lookup.frame.timings.source {
+        CaptureSource::ScreenCaptureKit => metrics.increment(CounterKind::CaptureSckFrames),
+        CaptureSource::CoreGraphics => metrics.increment(CounterKind::CaptureCoreGraphicsFrames),
+        CaptureSource::Synthetic => metrics.increment(CounterKind::CaptureSyntheticFrames),
+        CaptureSource::Resident | CaptureSource::Unknown => {}
+    }
     if !lookup.cache_hit {
         metrics.observe_ns(MetricKind::CaptureEncode, lookup.frame.timings.encode_ns);
     }
@@ -3552,6 +3560,9 @@ enum CounterKind {
     MjpegFrames,
     WsFrames,
     UnixFrames,
+    CaptureSckFrames,
+    CaptureCoreGraphicsFrames,
+    CaptureSyntheticFrames,
     InputRefusals,
     ClipboardRefusals,
     EventDrops,
@@ -3562,10 +3573,13 @@ enum CounterKind {
 }
 
 impl CounterKind {
-    const ALL: [Self; 10] = [
+    const ALL: [Self; 13] = [
         Self::MjpegFrames,
         Self::WsFrames,
         Self::UnixFrames,
+        Self::CaptureSckFrames,
+        Self::CaptureCoreGraphicsFrames,
+        Self::CaptureSyntheticFrames,
         Self::InputRefusals,
         Self::ClipboardRefusals,
         Self::EventDrops,
@@ -3580,13 +3594,16 @@ impl CounterKind {
             Self::MjpegFrames => 0,
             Self::WsFrames => 1,
             Self::UnixFrames => 2,
-            Self::InputRefusals => 3,
-            Self::ClipboardRefusals => 4,
-            Self::EventDrops => 5,
-            Self::PermissionFallbacks => 6,
-            Self::TraceDrops => 7,
-            Self::ModelDrops => 8,
-            Self::EncodeDrops => 9,
+            Self::CaptureSckFrames => 3,
+            Self::CaptureCoreGraphicsFrames => 4,
+            Self::CaptureSyntheticFrames => 5,
+            Self::InputRefusals => 6,
+            Self::ClipboardRefusals => 7,
+            Self::EventDrops => 8,
+            Self::PermissionFallbacks => 9,
+            Self::TraceDrops => 10,
+            Self::ModelDrops => 11,
+            Self::EncodeDrops => 12,
         }
     }
 
@@ -3595,6 +3612,9 @@ impl CounterKind {
             Self::MjpegFrames => "stream.mjpeg.frames",
             Self::WsFrames => "stream.ws.frames",
             Self::UnixFrames => "stream.unix.frames",
+            Self::CaptureSckFrames => "capture.sck.frames",
+            Self::CaptureCoreGraphicsFrames => "capture.core_graphics.frames",
+            Self::CaptureSyntheticFrames => "capture.synthetic.frames",
             Self::InputRefusals => "input.refusals",
             Self::ClipboardRefusals => "clipboard.refusals",
             Self::EventDrops => "events.dropped",
@@ -4069,6 +4089,28 @@ mod tests {
             .histograms
             .iter()
             .any(|histogram| histogram.name == "encode.dispatch" && histogram.count == 1));
+    }
+
+    #[tokio::test]
+    async fn capture_source_counters_are_recorded_for_frame_lookups() {
+        let state = DaemonState::synthetic("test", "token");
+
+        let _ = screenshot_payload(
+            &state,
+            ScreenshotRequest {
+                max_width: Some(640),
+                include_bytes: Some(false),
+                force_fresh: Some(true),
+                encoding: Some(FrameEncoding::Png),
+            },
+        )
+        .await
+        .expect("synthetic screenshot should succeed");
+        let snapshot = state.metrics.snapshot(0);
+
+        assert_eq!(snapshot.counters["capture.synthetic.frames"], 1);
+        assert_eq!(snapshot.counters["capture.sck.frames"], 0);
+        assert_eq!(snapshot.counters["capture.core_graphics.frames"], 0);
     }
 
     #[tokio::test]

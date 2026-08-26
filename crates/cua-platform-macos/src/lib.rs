@@ -4,8 +4,8 @@
 
 use async_trait::async_trait;
 use cua_capture::{
-    encode_image, CaptureBackend, CaptureRequest, CapturedFrame, CapturedFrameTimings,
-    UnavailableCaptureBackend,
+    encode_image, CaptureBackend, CaptureRequest, CaptureSource, CapturedFrame,
+    CapturedFrameTimings, UnavailableCaptureBackend,
 };
 use cua_core::{
     now_wall_ms, CursorState, DeliveryMode, DisplayInfo, Effect, Evidence, EvidenceKind,
@@ -232,6 +232,7 @@ fn capture_main_display_sck(
                             frame_origin_x: display_bounds.origin.x.round() as i32,
                             frame_origin_y: display_bounds.origin.y.round() as i32,
                         },
+                        CaptureSource::ScreenCaptureKit,
                     )
                 }
             };
@@ -282,6 +283,7 @@ fn capture_main_display_core_graphics(
             image,
             request,
             FrameGeometry::display(display_id),
+            CaptureSource::CoreGraphics,
         )
     };
     unsafe {
@@ -352,6 +354,7 @@ unsafe fn image_to_frame(
     image: *const std::ffi::c_void,
     request: CaptureRequest,
     geometry: FrameGeometry,
+    capture_source: CaptureSource,
 ) -> anyhow::Result<CapturedFrame> {
     let source_width = CGImageGetWidth(image) as u32;
     let source_height = CGImageGetHeight(image) as u32;
@@ -435,6 +438,7 @@ unsafe fn image_to_frame(
         timings: CapturedFrameTimings {
             capture_ns: elapsed_ns(capture_started),
             encode_ns,
+            source: capture_source,
         },
     })
 }

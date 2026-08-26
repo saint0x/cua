@@ -16,6 +16,7 @@ TRACE_DIR="$OUT_DIR/trace"
 HTTP_STATUS="$OUT_DIR/http-status.json"
 HTTP_MANIFEST="$OUT_DIR/http-manifest.json"
 HTTP_METRICS="$OUT_DIR/http-metrics.json"
+FINAL_METRICS="$OUT_DIR/final-metrics.json"
 HTTP_EVENTS="$OUT_DIR/http-events.json"
 HTTP_EVENTS_AFTER="$OUT_DIR/http-events-after.json"
 HTTP_UI_STEP="$OUT_DIR/http-ui-step.json"
@@ -299,6 +300,7 @@ CUA_HTTP_TOKEN="$TOKEN" "$CUA_VOICE_BIN_PATH" \
 unix_call "context.snapshot" '{"max_width":640,"encoding":"png","force_fresh":true,"include_bytes":false}' "$UNIX_CONTEXT"
 unix_call "control.pause" '{}' "$UNIX_PAUSE"
 unix_call "control.resume" '{}' "$UNIX_RESUME"
+curl -fsS -H "authorization: Bearer $TOKEN" "http://$ADDR/metrics" > "$FINAL_METRICS"
 
 jq -e '.schema_version == "cua.v1" and .active_profile == $profile' \
   --arg profile "$PROFILE" "$HTTP_STATUS" >/dev/null
@@ -306,6 +308,8 @@ jq -e '(.public_surfaces | index("cli")) and (.public_surfaces | index("local_ht
   "$HTTP_MANIFEST" >/dev/null
 jq -e '.schema_version == "cua.v1" and (.histograms | type) == "array" and (.counters | type) == "object"' \
   "$HTTP_METRICS" >/dev/null
+jq -e '.schema_version == "cua.v1" and .counters["capture.sck.frames"] > 0' \
+  "$FINAL_METRICS" >/dev/null
 jq -e '.accepted == true and .label == "http programmable step" and .source == "http proof" and .task == "http task" and .tool == "http tool" and .step_index == 2 and .step_total == 5 and .ttl_ms == 1500' \
   "$HTTP_UI_STEP" >/dev/null
 jq -e '.accepted == true and .text == "http programmable reply" and .source == "http proof" and .ttl_ms == 1750' \
@@ -394,6 +398,7 @@ jq -n \
   --slurpfile http_status "$HTTP_STATUS" \
   --slurpfile http_manifest "$HTTP_MANIFEST" \
   --slurpfile http_metrics "$HTTP_METRICS" \
+  --slurpfile final_metrics "$FINAL_METRICS" \
   --slurpfile http_events "$HTTP_EVENTS" \
   --slurpfile http_events_after "$HTTP_EVENTS_AFTER" \
   --slurpfile http_ui_step "$HTTP_UI_STEP" \
@@ -445,6 +450,9 @@ jq -n \
       active_profile: $http_status[0].active_profile,
       endpoint_count: ($http_manifest[0].endpoints | length),
       histogram_count: ($http_metrics[0].histograms | length),
+      sck_frames: $final_metrics[0].counters["capture.sck.frames"],
+      core_graphics_frames: ($final_metrics[0].counters["capture.core_graphics.frames"] // 0),
+      synthetic_frames: ($final_metrics[0].counters["capture.synthetic.frames"] // 0),
       event_count: ($http_events[0] | length),
       filtered_event_count: ($http_events_after[0] | length),
       ui_step: $http_ui_step[0].label,

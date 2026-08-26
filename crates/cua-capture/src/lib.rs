@@ -62,10 +62,21 @@ pub struct CapturedFrame {
     pub timings: CapturedFrameTimings,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CaptureSource {
+    #[default]
+    Unknown,
+    Synthetic,
+    ScreenCaptureKit,
+    CoreGraphics,
+    Resident,
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct CapturedFrameTimings {
     pub capture_ns: u64,
     pub encode_ns: u64,
+    pub source: CaptureSource,
 }
 
 #[derive(Debug, Clone)]
@@ -136,6 +147,7 @@ impl CapturedFrame {
             timings: CapturedFrameTimings {
                 capture_ns: 0,
                 encode_ns,
+                source: self.timings.source,
             },
         })
     }
@@ -449,6 +461,7 @@ impl CaptureBackend for SyntheticCaptureBackend {
             timings: CapturedFrameTimings {
                 capture_ns: elapsed_ns(capture_started),
                 encode_ns,
+                source: CaptureSource::Synthetic,
             },
         })
     }
