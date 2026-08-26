@@ -135,6 +135,7 @@ enum PermissionCommand {
     Status(JsonFlag),
     Preflight(JsonFlag),
     RequestAccessibility(JsonFlag),
+    RequestInputMonitoring(JsonFlag),
 }
 
 #[derive(Debug, Subcommand)]
@@ -849,10 +850,23 @@ async fn permissions(profile: &str, command: PermissionCommand) -> anyhow::Resul
         }
         return Ok(());
     }
+    if let PermissionCommand::RequestInputMonitoring(flag) = command {
+        let value =
+            unix_request_json(profile, "permissions.request_input_monitoring", None).await?;
+        if flag.json {
+            println!("{}", serde_json::to_string_pretty(&value)?);
+        } else {
+            println!("{value}");
+        }
+        return Ok(());
+    }
     let preflight = matches!(command, PermissionCommand::Preflight(_));
     let json = match command {
         PermissionCommand::Status(flag) | PermissionCommand::Preflight(flag) => flag.json,
-        PermissionCommand::RequestAccessibility(_) => unreachable!(),
+        PermissionCommand::RequestAccessibility(_)
+        | PermissionCommand::RequestInputMonitoring(_) => {
+            unreachable!()
+        }
     };
     if preflight {
         let _ = cua_platform_macos::request_screen_recording_access();
