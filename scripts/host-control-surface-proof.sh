@@ -274,12 +274,12 @@ jq -e 'type == "array" and length >= 1 and all(.[]; .sequence > '"$HTTP_AFTER_SE
   "$HTTP_EVENTS_AFTER" >/dev/null
 jq -e '(.displays | length) >= 1 and (.windows | type) == "array" and (.cursor.visible | type) == "boolean"' \
   "$HTTP_OBSERVE" >/dev/null
-jq -e '.frame.envelope.encoding == "png" and .frame.envelope.width > 0 and (.desktop.displays | length) >= 1 and (.desktop.windows | type) == "array"' \
+jq -e '.frame.envelope.encoding == "png" and .frame.envelope.width > 0 and (.frame.envelope.display_x | type) == "number" and (.frame.envelope.display_y | type) == "number" and (.frame.envelope.frame_origin_x | type) == "number" and (.frame.envelope.frame_origin_y | type) == "number" and (.desktop.displays | length) >= 1 and (.desktop.windows | type) == "array"' \
   "$HTTP_CONTEXT" >/dev/null
-jq -e '.envelope.encoding == "png" and .envelope.width > 0 and .envelope.height > 0 and (.envelope.sha256 | length) > 0' \
+jq -e '.envelope.encoding == "png" and .envelope.width > 0 and .envelope.height > 0 and (.envelope.display_x | type) == "number" and (.envelope.display_y | type) == "number" and (.envelope.frame_origin_x | type) == "number" and (.envelope.frame_origin_y | type) == "number" and (.envelope.sha256 | length) > 0' \
   "$HTTP_SCREENSHOT" >/dev/null
-EXPECTED_FRAME_X="$(jq '((100 * (.envelope.display_width / .envelope.width)) | round)' "$HTTP_SCREENSHOT")"
-EXPECTED_FRAME_Y="$(jq '((100 * (.envelope.display_height / .envelope.height)) | round)' "$HTTP_SCREENSHOT")"
+EXPECTED_FRAME_X="$(jq '(.envelope.display_x + ((100 - .envelope.frame_origin_x) * (.envelope.display_width / .envelope.width)) | round)' "$HTTP_SCREENSHOT")"
+EXPECTED_FRAME_Y="$(jq '(.envelope.display_y + ((100 - .envelope.frame_origin_y) * (.envelope.display_height / .envelope.height)) | round)' "$HTTP_SCREENSHOT")"
 jq -e '.effect == "confirmed" and .route == "accessibility"' "$HTTP_FRAME_ACTION" >/dev/null
 jq -e '.x == '"$EXPECTED_FRAME_X"' and .y == '"$EXPECTED_FRAME_Y" "$HTTP_CURSOR_AFTER_FRAME_ACTION" >/dev/null
 jq -e '.schema_version == "cua.v1" and .active_profile == $profile' \
@@ -306,7 +306,7 @@ jq -e '.safety_state == "running"' "$CLI_RESUME" >/dev/null
 jq -e '.encoding == "png" and .width > 0 and .height > 0 and (.sha256 | length) > 0' \
   "$CLI_SCREENSHOT_JSON" >/dev/null
 test -s "$CLI_SCREENSHOT_PNG"
-jq -s -e 'map(select(.type == "frame")) | length == 2 and all(.[]; .frame.envelope.width > 0 and .frame.envelope.display_width > 0 and .frame.bytes_base64 == null)' \
+jq -s -e 'map(select(.type == "frame")) | length == 2 and all(.[]; .frame.envelope.width > 0 and .frame.envelope.display_width > 0 and (.frame.envelope.display_x | type) == "number" and (.frame.envelope.frame_origin_x | type) == "number" and .frame.bytes_base64 == null)' \
   "$CLI_STREAM" >/dev/null
 jq -e '.schema_version == "cua.v1" and .active_profile == $profile' \
   --arg profile "$PROFILE" "$UNIX_STATUS" >/dev/null
@@ -318,7 +318,7 @@ jq -e '.accepted == true and .label == "unix programmable step" and .source == "
   "$UNIX_UI_STEP" >/dev/null
 jq -e '.accepted == true and .text == "unix programmable reply" and .source == "unix proof" and .ttl_ms == 1750' \
   "$UNIX_UI_REPLY" >/dev/null
-jq -e 'type == "array" and length >= 1 and .[0].kind == "daemon_started" and any(.[]; .kind == "ui_step" and .data.label == "unix programmable step" and .data.task == "unix task" and .data.tool == "unix tool" and .data.step_index == 4 and .data.step_total == 5 and .data.ttl_ms == 1500) and any(.[]; .kind == "ui_reply" and .data.text == "unix programmable reply" and .data.source == "unix proof" and .data.ttl_ms == 1750)' \
+jq -e 'type == "array" and length >= 1 and .[0].kind == "daemon_started" and any(.[]; .kind == "visual_session_started" and .data.fps == 5) and any(.[]; .kind == "ui_step" and .data.label == "unix programmable step" and .data.task == "unix task" and .data.tool == "unix tool" and .data.step_index == 4 and .data.step_total == 5 and .data.ttl_ms == 1500) and any(.[]; .kind == "ui_reply" and .data.text == "unix programmable reply" and .data.source == "unix proof" and .data.ttl_ms == 1750)' \
   "$UNIX_EVENTS" >/dev/null
 jq -e 'type == "array" and length >= 1 and all(.[]; .sequence > '"$UNIX_AFTER_SEQUENCE"') and any(.[]; .kind == "ui_step" and .data.label == "unix programmable step" and .data.task == "unix task" and .data.tool == "unix tool" and .data.step_index == 4 and .data.step_total == 5 and .data.ttl_ms == 1500) and any(.[]; .kind == "ui_reply" and .data.text == "unix programmable reply" and .data.source == "unix proof" and .data.ttl_ms == 1750)' \
   "$UNIX_EVENTS_AFTER" >/dev/null
@@ -328,7 +328,7 @@ jq -e '.event == "agent_step" and .label == "voice bridge programmable step" and
   "$VOICE_AGENT_STEP" >/dev/null
 jq -e '.event == "reply" and .text == "voice bridge programmable reply"' \
   "$VOICE_AGENT_REPLY" >/dev/null
-jq -e '.frame.envelope.encoding == "png" and .frame.envelope.width > 0 and (.desktop.displays | length) >= 1 and (.desktop.windows | type) == "array"' \
+jq -e '.frame.envelope.encoding == "png" and .frame.envelope.width > 0 and (.frame.envelope.display_x | type) == "number" and (.frame.envelope.display_y | type) == "number" and (.frame.envelope.frame_origin_x | type) == "number" and (.frame.envelope.frame_origin_y | type) == "number" and (.desktop.displays | length) >= 1 and (.desktop.windows | type) == "array"' \
   "$UNIX_CONTEXT" >/dev/null
 jq -e '.safety_state == "paused"' "$UNIX_PAUSE" >/dev/null
 jq -e '.safety_state == "running"' "$UNIX_RESUME" >/dev/null
@@ -401,13 +401,21 @@ jq -n \
       context: {
         width: $http_context[0].frame.envelope.width,
         height: $http_context[0].frame.envelope.height,
+        display_x: $http_context[0].frame.envelope.display_x,
+        display_y: $http_context[0].frame.envelope.display_y,
+        frame_origin_x: $http_context[0].frame.envelope.frame_origin_x,
+        frame_origin_y: $http_context[0].frame.envelope.frame_origin_y,
         window_count: ($http_context[0].desktop.windows | length)
       },
       screenshot: {
         width: $http_screenshot[0].envelope.width,
         height: $http_screenshot[0].envelope.height,
+        display_x: $http_screenshot[0].envelope.display_x,
+        display_y: $http_screenshot[0].envelope.display_y,
         display_width: $http_screenshot[0].envelope.display_width,
         display_height: $http_screenshot[0].envelope.display_height,
+        frame_origin_x: $http_screenshot[0].envelope.frame_origin_x,
+        frame_origin_y: $http_screenshot[0].envelope.frame_origin_y,
         sha256: $http_screenshot[0].envelope.sha256
       },
       frame_action: {
@@ -438,6 +446,10 @@ jq -n \
       context: {
         width: $cli_context[0].frame.envelope.width,
         height: $cli_context[0].frame.envelope.height,
+        display_x: $cli_context[0].frame.envelope.display_x,
+        display_y: $cli_context[0].frame.envelope.display_y,
+        frame_origin_x: $cli_context[0].frame.envelope.frame_origin_x,
+        frame_origin_y: $cli_context[0].frame.envelope.frame_origin_y,
         window_count: ($cli_context[0].desktop.windows | length)
       },
       pause_state: $cli_pause[0].safety_state,
@@ -451,7 +463,9 @@ jq -n \
       stream: {
         frames: ($cli_stream | map(select(.type == "frame")) | length),
         width: ($cli_stream | map(select(.type == "frame")) | .[0].frame.envelope.width),
-        display_width: ($cli_stream | map(select(.type == "frame")) | .[0].frame.envelope.display_width)
+        display_x: ($cli_stream | map(select(.type == "frame")) | .[0].frame.envelope.display_x),
+        display_width: ($cli_stream | map(select(.type == "frame")) | .[0].frame.envelope.display_width),
+        frame_origin_x: ($cli_stream | map(select(.type == "frame")) | .[0].frame.envelope.frame_origin_x)
       }
     },
     unix: {
@@ -459,6 +473,7 @@ jq -n \
       endpoint_count: ($unix_manifest[0].endpoints | length),
       histogram_count: ($unix_metrics[0].histograms | length),
       event_count: ($unix_events[0] | length),
+      visual_session_started_count: ($unix_events[0] | map(select(.kind == "visual_session_started")) | length),
       filtered_event_count: ($unix_events_after[0] | length),
       waited_event_count: ($unix_events_wait[0] | length),
       ui_step: $unix_ui_step[0].label,
@@ -485,6 +500,10 @@ jq -n \
       context: {
         width: $unix_context[0].frame.envelope.width,
         height: $unix_context[0].frame.envelope.height,
+        display_x: $unix_context[0].frame.envelope.display_x,
+        display_y: $unix_context[0].frame.envelope.display_y,
+        frame_origin_x: $unix_context[0].frame.envelope.frame_origin_x,
+        frame_origin_y: $unix_context[0].frame.envelope.frame_origin_y,
         window_count: ($unix_context[0].desktop.windows | length)
       },
       pause_state: $unix_pause[0].safety_state,

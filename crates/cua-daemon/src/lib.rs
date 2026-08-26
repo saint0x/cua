@@ -29,7 +29,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
 use std::convert::Infallible;
 use std::net::SocketAddr;
+#[cfg(not(test))]
+use std::path::Path;
 use std::path::PathBuf;
+#[cfg(not(test))]
+use std::process::{Command, Stdio};
 use std::sync::{
     atomic::{AtomicU32, AtomicU64, Ordering},
     Arc, Mutex as StdMutex,
@@ -59,6 +63,7 @@ pub struct DaemonState {
     events: EventLane,
     trace_lane: Option<TraceLane>,
     ui_step_context: Arc<StdMutex<Option<UiStepContext>>>,
+    hud_supervisor: HudSupervisor,
 }
 
 #[derive(Debug, Clone)]
@@ -92,6 +97,7 @@ impl DaemonState {
                 .and_then(|dir| TraceWriter::from_dir(dir).ok())
                 .map(|writer| TraceLane::spawn(writer, trace_lane_capacity())),
             ui_step_context: Arc::new(StdMutex::new(None)),
+            hud_supervisor: HudSupervisor::default(),
         };
         state.publish_event("daemon_started", serde_json::json!({}));
         state
@@ -119,6 +125,10 @@ impl DaemonState {
 
 impl DaemonState {
     fn publish_event(&self, kind: &'static str, data: serde_json::Value) {
+        if hud_wake_event(kind) {
+            self.hud_supervisor
+                .ensure_visible(&self.profile, &self.bearer_token);
+        }
         if !self.events.publish(kind, data) {
             self.metrics.increment(CounterKind::EventDrops);
         }
@@ -162,6 +172,94 @@ impl DaemonState {
         }
         result.report
     }
+}
+
+#[derive(Clone, Default)]
+struct HudSupervisor {
+    last_attempt: Arc<StdMutex<Option<Instant>>>,
+}
+
+impl HudSupervisor {
+    fn ensure_visible(&self, profile: &str, token: &str) {
+        if std::env::var("CUA_HUD_AUTOSTART").ok().as_deref() == Some("0") {
+            return;
+        }
+        #[cfg(test)]
+        {
+            let _ = self.last_attempt.lock().ok();
+            let _ = (profile, token);
+            return;
+        }
+        #[cfg(not(test))]
+        {
+            let now = Instant::now();
+            let Ok(mut last_attempt) = self.last_attempt.lock() else {
+                return;
+            };
+            if last_attempt
+                .map(|attempt| now.duration_since(attempt) < Duration::from_secs(2))
+                .unwrap_or(false)
+            {
+                return;
+            }
+            *last_attempt = Some(now);
+            drop(last_attempt);
+
+            let Some(binary) = hud_binary_path() else {
+                return;
+            };
+            let mut command = Command::new(&binary);
+            command
+                .args(["--profile", profile])
+                .env("CUA_HTTP_TOKEN", token)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            let _ = command.spawn();
+        }
+    }
+}
+
+fn hud_wake_event(kind: &str) -> bool {
+    matches!(
+        kind,
+        "ui_step"
+            | "ui_reply"
+            | "input_completed"
+            | "input_refused"
+            | "control_paused"
+            | "control_resumed"
+            | "kill_switch"
+            | "visual_session_started"
+    )
+}
+
+#[cfg(not(test))]
+fn hud_binary_path() -> Option<PathBuf> {
+    if let Ok(path) = std::env::var("CUA_VOICE_BIN") {
+        let path = PathBuf::from(path);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    let current = std::env::current_exe().ok()?;
+    hud_binary_candidates(&current)
+        .into_iter()
+        .find(|candidate| candidate.is_file())
+}
+
+#[cfg(not(test))]
+fn hud_binary_candidates(current: &Path) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(parent) = current.parent() {
+        candidates.push(parent.join("cua-voice"));
+        candidates.push(
+            parent
+                .join("cua-voice.app")
+                .join("Contents/MacOS/cua-voice"),
+        );
+    }
+    candidates
 }
 
 #[derive(Clone)]
@@ -978,6 +1076,14 @@ async fn handle_visual_session(
     let mut interval = tokio::time::interval(Duration::from_millis(1_000 / u64::from(fps)));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let _guard = StreamGuard::new(state.active_streams.clone());
+    state.publish_event(
+        "visual_session_started",
+        serde_json::json!({
+            "fps": fps,
+            "max_width": visual.max_width,
+            "include_bytes": visual.include_bytes,
+        }),
+    );
     publish_protocol_step(
         state,
         1,
@@ -3831,8 +3937,12 @@ mod tests {
                 timestamp_mono_ns: 0,
                 timestamp_wall_ms: now_wall_ms(),
                 display_id: "test-display".to_string(),
+                display_x: 0,
+                display_y: 0,
                 display_width: 1,
                 display_height: 1,
+                frame_origin_x: 0,
+                frame_origin_y: 0,
                 width: 1,
                 height: 1,
                 scale_factor: 1.0,

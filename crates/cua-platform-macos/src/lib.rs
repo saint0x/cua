@@ -301,6 +301,7 @@ fn capture_main_display_screencapture(
     let sha256 = format!("{:x}", Sha256::digest(&bytes));
     let byte_len = bytes.len();
     let display_id = unsafe { CGMainDisplayID() };
+    let bounds = unsafe { CGDisplayBounds(display_id) };
     Ok(CapturedFrame {
         envelope: FrameEnvelope {
             schema_version: SCHEMA_VERSION.to_string(),
@@ -308,8 +309,12 @@ fn capture_main_display_screencapture(
             timestamp_mono_ns: started.elapsed().as_nanos(),
             timestamp_wall_ms: now_wall_ms(),
             display_id: display_id.to_string(),
+            display_x: bounds.origin.x.round() as i32,
+            display_y: bounds.origin.y.round() as i32,
             display_width: unsafe { CGDisplayPixelsWide(display_id) } as u32,
             display_height: unsafe { CGDisplayPixelsHigh(display_id) } as u32,
+            frame_origin_x: 0,
+            frame_origin_y: 0,
             width: buffer.width(),
             height: buffer.height(),
             scale_factor: 1.0,
@@ -397,6 +402,7 @@ unsafe fn image_to_frame(
     let frame_id = started.elapsed().as_millis() as u64;
     let width = buffer.width();
     let height = buffer.height();
+    let bounds = unsafe { CGDisplayBounds(display_id) };
     let display_width = unsafe { CGDisplayPixelsWide(display_id) } as u32;
     let display_height = unsafe { CGDisplayPixelsHigh(display_id) } as u32;
     Ok(CapturedFrame {
@@ -406,8 +412,12 @@ unsafe fn image_to_frame(
             timestamp_mono_ns: started.elapsed().as_nanos(),
             timestamp_wall_ms: now_wall_ms(),
             display_id: display_id.to_string(),
+            display_x: bounds.origin.x.round() as i32,
+            display_y: bounds.origin.y.round() as i32,
             display_width,
             display_height,
+            frame_origin_x: 0,
+            frame_origin_y: 0,
             width,
             height,
             scale_factor: 1.0,

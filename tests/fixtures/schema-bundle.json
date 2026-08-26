@@ -361,12 +361,32 @@
               "minimum": 0.0,
               "type": "integer"
             },
+            "display_x": {
+              "default": 0,
+              "format": "int32",
+              "type": "integer"
+            },
+            "display_y": {
+              "default": 0,
+              "format": "int32",
+              "type": "integer"
+            },
             "encoding": {
               "$ref": "#/definitions/FrameEncoding"
             },
             "frame_id": {
               "format": "uint64",
               "minimum": 0.0,
+              "type": "integer"
+            },
+            "frame_origin_x": {
+              "default": 0,
+              "format": "int32",
+              "type": "integer"
+            },
+            "frame_origin_y": {
+              "default": 0,
+              "format": "int32",
               "type": "integer"
             },
             "height": {
@@ -685,12 +705,32 @@
               "minimum": 0.0,
               "type": "integer"
             },
+            "display_x": {
+              "default": 0,
+              "format": "int32",
+              "type": "integer"
+            },
+            "display_y": {
+              "default": 0,
+              "format": "int32",
+              "type": "integer"
+            },
             "encoding": {
               "$ref": "#/definitions/FrameEncoding"
             },
             "frame_id": {
               "format": "uint64",
               "minimum": 0.0,
+              "type": "integer"
+            },
+            "frame_origin_x": {
+              "default": 0,
+              "format": "int32",
+              "type": "integer"
+            },
+            "frame_origin_y": {
+              "default": 0,
+              "format": "int32",
               "type": "integer"
             },
             "height": {
@@ -970,12 +1010,32 @@
               "minimum": 0.0,
               "type": "integer"
             },
+            "display_x": {
+              "default": 0,
+              "format": "int32",
+              "type": "integer"
+            },
+            "display_y": {
+              "default": 0,
+              "format": "int32",
+              "type": "integer"
+            },
             "encoding": {
               "$ref": "#/definitions/FrameEncoding"
             },
             "frame_id": {
               "format": "uint64",
               "minimum": 0.0,
+              "type": "integer"
+            },
+            "frame_origin_x": {
+              "default": 0,
+              "format": "int32",
+              "type": "integer"
+            },
+            "frame_origin_y": {
+              "default": 0,
+              "format": "int32",
               "type": "integer"
             },
             "height": {
@@ -1422,12 +1482,32 @@
           "minimum": 0.0,
           "type": "integer"
         },
+        "display_x": {
+          "default": 0,
+          "format": "int32",
+          "type": "integer"
+        },
+        "display_y": {
+          "default": 0,
+          "format": "int32",
+          "type": "integer"
+        },
         "encoding": {
           "$ref": "#/definitions/FrameEncoding"
         },
         "frame_id": {
           "format": "uint64",
           "minimum": 0.0,
+          "type": "integer"
+        },
+        "frame_origin_x": {
+          "default": 0,
+          "format": "int32",
+          "type": "integer"
+        },
+        "frame_origin_y": {
+          "default": 0,
+          "format": "int32",
           "type": "integer"
         },
         "height": {
@@ -1549,12 +1629,32 @@
               "minimum": 0.0,
               "type": "integer"
             },
+            "display_x": {
+              "default": 0,
+              "format": "int32",
+              "type": "integer"
+            },
+            "display_y": {
+              "default": 0,
+              "format": "int32",
+              "type": "integer"
+            },
             "encoding": {
               "$ref": "#/definitions/FrameEncoding"
             },
             "frame_id": {
               "format": "uint64",
               "minimum": 0.0,
+              "type": "integer"
+            },
+            "frame_origin_x": {
+              "default": 0,
+              "format": "int32",
+              "type": "integer"
+            },
+            "frame_origin_y": {
+              "default": 0,
+              "format": "int32",
               "type": "integer"
             },
             "height": {
@@ -1732,12 +1832,32 @@
               "minimum": 0.0,
               "type": "integer"
             },
+            "display_x": {
+              "default": 0,
+              "format": "int32",
+              "type": "integer"
+            },
+            "display_y": {
+              "default": 0,
+              "format": "int32",
+              "type": "integer"
+            },
             "encoding": {
               "$ref": "#/definitions/FrameEncoding"
             },
             "frame_id": {
               "format": "uint64",
               "minimum": 0.0,
+              "type": "integer"
+            },
+            "frame_origin_x": {
+              "default": 0,
+              "format": "int32",
+              "type": "integer"
+            },
+            "frame_origin_y": {
+              "default": 0,
+              "format": "int32",
               "type": "integer"
             },
             "height": {

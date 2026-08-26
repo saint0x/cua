@@ -104,8 +104,16 @@ pub struct FrameEnvelope {
     pub timestamp_mono_ns: u128,
     pub timestamp_wall_ms: i64,
     pub display_id: String,
+    #[serde(default)]
+    pub display_x: i32,
+    #[serde(default)]
+    pub display_y: i32,
     pub display_width: u32,
     pub display_height: u32,
+    #[serde(default)]
+    pub frame_origin_x: i32,
+    #[serde(default)]
+    pub frame_origin_y: i32,
     pub width: u32,
     pub height: u32,
     pub scale_factor: f64,
@@ -125,11 +133,19 @@ pub struct FramePayload {
 
 impl FrameEnvelope {
     pub fn frame_to_display_x(&self, x: i32) -> i32 {
-        remap_axis(x, self.width, self.display_width)
+        self.display_x.saturating_add(remap_axis(
+            x.saturating_sub(self.frame_origin_x),
+            self.width,
+            self.display_width,
+        ))
     }
 
     pub fn frame_to_display_y(&self, y: i32) -> i32 {
-        remap_axis(y, self.height, self.display_height)
+        self.display_y.saturating_add(remap_axis(
+            y.saturating_sub(self.frame_origin_y),
+            self.height,
+            self.display_height,
+        ))
     }
 }
 
@@ -639,8 +655,12 @@ mod tests {
             timestamp_mono_ns: 0,
             timestamp_wall_ms: 0,
             display_id: "main".to_string(),
+            display_x: 0,
+            display_y: 0,
             display_width: 1512,
             display_height: 982,
+            frame_origin_x: 0,
+            frame_origin_y: 0,
             width: 1280,
             height: 831,
             scale_factor: 1.0,
@@ -670,6 +690,55 @@ mod tests {
         assert!(matches!(
             action,
             InputAction::MouseClick { x: 118, y: 118, .. }
+        ));
+    }
+
+    #[test]
+    fn frame_action_respects_display_and_frame_origins() {
+        let frame = FrameEnvelope {
+            schema_version: SCHEMA_VERSION.to_string(),
+            frame_id: 8,
+            timestamp_mono_ns: 0,
+            timestamp_wall_ms: 0,
+            display_id: "secondary".to_string(),
+            display_x: -1512,
+            display_y: 25,
+            display_width: 1512,
+            display_height: 982,
+            frame_origin_x: 20,
+            frame_origin_y: 10,
+            width: 1280,
+            height: 831,
+            scale_factor: 1.0,
+            pixel_format: "rgba8".to_string(),
+            encoding: FrameEncoding::Jpeg,
+            byte_len: 0,
+            sha256: String::new(),
+            cursor: CursorState {
+                x: 0.0,
+                y: 0.0,
+                visible: true,
+                included_in_frame: false,
+            },
+            damage_rects: Vec::new(),
+        };
+
+        let action = remap_action_from_frame(
+            InputAction::MouseMove {
+                x: 120,
+                y: 110,
+                duration_ms: 0,
+            },
+            &frame,
+        );
+
+        assert!(matches!(
+            action,
+            InputAction::MouseMove {
+                x: -1394,
+                y: 143,
+                ..
+            }
         ));
     }
 }

@@ -22,6 +22,7 @@ pub fn agent_ui_event_from_daemon_event(
 ) -> Option<(u64, VoiceUiEvent)> {
     agent_step_from_daemon_event(event, last_sequence)
         .or_else(|| agent_reply_from_daemon_event(event, last_sequence))
+        .or_else(|| agent_visual_session_from_daemon_event(event, last_sequence))
         .or_else(|| agent_input_from_daemon_event(event, last_sequence))
 }
 
@@ -94,6 +95,36 @@ pub fn agent_reply_from_daemon_event(
         return None;
     }
     Some((sequence, VoiceUiEvent::Reply(text.to_string())))
+}
+
+pub fn agent_visual_session_from_daemon_event(
+    event: &Value,
+    last_sequence: u64,
+) -> Option<(u64, VoiceUiEvent)> {
+    let sequence = event.get("sequence").and_then(|value| value.as_u64())?;
+    if sequence <= last_sequence {
+        return None;
+    }
+    if event.get("kind").and_then(|value| value.as_str()) != Some("visual_session_started") {
+        return None;
+    }
+    let fps = event
+        .get("data")
+        .and_then(|data| data.get("fps"))
+        .and_then(|value| value.as_u64())
+        .unwrap_or(10);
+    Some((
+        sequence,
+        VoiceUiEvent::AgentStep {
+            label: format!("Streaming desktop frames at {fps} fps"),
+            source: Some("remote".to_string()),
+            task: Some("Computer control".to_string()),
+            tool: Some("Unix socket".to_string()),
+            step_index: Some(1),
+            step_total: Some(2),
+            ttl_ms: Some(5_000),
+        },
+    ))
 }
 
 pub fn agent_input_from_daemon_event(
@@ -272,5 +303,43 @@ mod tests {
 
         assert!(agent_input_from_daemon_event(&event, 45).is_none());
         assert!(agent_input_from_daemon_event(&event, 46).is_none());
+    }
+
+    #[test]
+    fn visual_session_event_maps_to_visible_stream_activity() {
+        let event = serde_json::json!({
+            "sequence": 47,
+            "kind": "visual_session_started",
+            "data": {
+                "fps": 12,
+                "max_width": 1280,
+                "include_bytes": false
+            }
+        });
+
+        let Some((
+            sequence,
+            VoiceUiEvent::AgentStep {
+                label,
+                source,
+                task,
+                tool,
+                step_index,
+                step_total,
+                ttl_ms,
+            },
+        )) = agent_visual_session_from_daemon_event(&event, 46)
+        else {
+            panic!("expected visual stream activity");
+        };
+
+        assert_eq!(sequence, 47);
+        assert_eq!(label, "Streaming desktop frames at 12 fps");
+        assert_eq!(source.as_deref(), Some("remote"));
+        assert_eq!(task.as_deref(), Some("Computer control"));
+        assert_eq!(tool.as_deref(), Some("Unix socket"));
+        assert_eq!(step_index, Some(1));
+        assert_eq!(step_total, Some(2));
+        assert_eq!(ttl_ms, Some(5_000));
     }
 }
