@@ -90,7 +90,9 @@ fn action_rows(snapshot: &HudSnapshot) -> [HudRow; 2] {
         HudRow {
             label: transcript,
             tool: match snapshot.phase {
-                crate::ui_state::HudPhase::Listening => "Mic".to_string(),
+                crate::ui_state::HudPhase::Listening | crate::ui_state::HudPhase::Accepted => {
+                    "Mic".to_string()
+                }
                 crate::ui_state::HudPhase::Transcribing => "STT".to_string(),
                 _ => short_tool(&snapshot.tool),
             },

@@ -50,7 +50,7 @@ impl OrbPalette {
                 palette.core.a = 0.70;
                 palette.accent.a = 0.58;
             }
-            HudPhase::Transcribing | HudPhase::Planning => {
+            HudPhase::Accepted | HudPhase::Transcribing | HudPhase::Planning => {
                 palette.glow.h = 286.0 / 360.0;
                 palette.shell_mid.a = 0.30;
                 palette.spec.a = 0.72;
@@ -302,7 +302,7 @@ fn voice_wave_ribbon_path(
 fn phase_energy(phase: &HudPhase) -> f32 {
     match phase {
         HudPhase::Listening => 0.55,
-        HudPhase::Transcribing | HudPhase::Planning => 0.38,
+        HudPhase::Accepted | HudPhase::Transcribing | HudPhase::Planning => 0.38,
         HudPhase::Dispatching => 0.46,
         HudPhase::Error => 0.22,
         _ => 0.16,

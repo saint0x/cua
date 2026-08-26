@@ -1,7 +1,10 @@
 use anyhow::{bail, Context};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::io::Cursor;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone)]
@@ -107,10 +110,23 @@ pub fn encode_wav_mono(sample_rate: u32, samples: &[i16]) -> anyhow::Result<Vec<
 }
 
 pub fn record_default_input(max_duration: Duration) -> anyhow::Result<RecordedAudio> {
-    record_default_input_with_policy(RecordingPolicy::from_max_duration(max_duration))
+    record_default_input_until(max_duration, Arc::new(AtomicBool::new(false)))
 }
 
-fn record_default_input_with_policy(policy: RecordingPolicy) -> anyhow::Result<RecordedAudio> {
+pub fn record_default_input_until(
+    max_duration: Duration,
+    stop_requested: Arc<AtomicBool>,
+) -> anyhow::Result<RecordedAudio> {
+    record_default_input_with_policy(
+        RecordingPolicy::from_max_duration(max_duration),
+        stop_requested,
+    )
+}
+
+fn record_default_input_with_policy(
+    policy: RecordingPolicy,
+    stop_requested: Arc<AtomicBool>,
+) -> anyhow::Result<RecordedAudio> {
     let host = cpal::default_host();
     let device = host
         .default_input_device()
@@ -153,7 +169,11 @@ fn record_default_input_with_policy(policy: RecordingPolicy) -> anyhow::Result<R
     stream.play().context("start input stream")?;
     loop {
         std::thread::sleep(Duration::from_millis(20));
-        if state.lock().unwrap().should_stop(Instant::now(), policy) {
+        let should_stop = {
+            let state = state.lock().unwrap();
+            should_stop_recording(&state, Instant::now(), policy, &stop_requested)
+        };
+        if should_stop {
             break;
         }
     }
@@ -166,6 +186,15 @@ fn record_default_input_with_policy(policy: RecordingPolicy) -> anyhow::Result<R
         sample_rate,
         wav_bytes: encode_wav_mono(sample_rate, &samples)?,
     })
+}
+
+fn should_stop_recording(
+    state: &RecordingState,
+    now: Instant,
+    policy: RecordingPolicy,
+    stop_requested: &AtomicBool,
+) -> bool {
+    stop_requested.load(Ordering::Acquire) || state.should_stop(now, policy)
 }
 
 fn push_interleaved<T>(
@@ -240,6 +269,26 @@ mod tests {
 
         assert!(!state.should_stop(start + Duration::from_millis(1999), policy));
         assert!(state.should_stop(start + Duration::from_secs(2), policy));
+    }
+
+    #[test]
+    fn recorder_stops_immediately_when_requested() {
+        let start = Instant::now();
+        let policy = RecordingPolicy {
+            max_duration: Duration::from_secs(5),
+            min_duration: Duration::from_millis(200),
+            silence_duration: Duration::from_millis(300),
+            speech_threshold: 100,
+        };
+        let state = RecordingState::new(start);
+        let stop_requested = AtomicBool::new(true);
+
+        assert!(should_stop_recording(
+            &state,
+            start + Duration::from_millis(20),
+            policy,
+            &stop_requested
+        ));
     }
 
     #[test]

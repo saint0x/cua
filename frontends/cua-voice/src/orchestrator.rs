@@ -1,4 +1,4 @@
-use crate::audio::record_default_input;
+use crate::audio::record_default_input_until;
 use crate::client::{CuaClient, CuaSession};
 use crate::daemon::{spawn_profile_daemon, wait_until_ready};
 use crate::planner::{parse_fast_command, PlannedTurn, Planner};
@@ -56,6 +56,17 @@ pub async fn run_voice_turn(config: VoiceConfig, tx: Sender<VoiceUiEvent>) {
     }
 }
 
+pub async fn run_voice_turn_until(
+    config: VoiceConfig,
+    tx: Sender<VoiceUiEvent>,
+    stop_requested: Arc<AtomicBool>,
+) {
+    if let Err(error) = run_voice_turn_checked_until(config, tx.clone(), stop_requested).await {
+        eprintln!("cua voice turn failed: {error:#}");
+        let _ = tx.send(VoiceUiEvent::Error(error.to_string()));
+    }
+}
+
 pub async fn run_text_turn(config: VoiceConfig, transcript: String, tx: Sender<VoiceUiEvent>) {
     if let Err(error) = run_text_turn_checked(config, transcript, tx.clone()).await {
         eprintln!("cua voice scripted turn failed: {error:#}");
@@ -82,7 +93,15 @@ pub async fn run_voice_turn_checked(
     config: VoiceConfig,
     tx: Sender<VoiceUiEvent>,
 ) -> anyhow::Result<()> {
-    record_and_run_turn(config, tx).await
+    run_voice_turn_checked_until(config, tx, Arc::new(AtomicBool::new(false))).await
+}
+
+pub async fn run_voice_turn_checked_until(
+    config: VoiceConfig,
+    tx: Sender<VoiceUiEvent>,
+    stop_requested: Arc<AtomicBool>,
+) -> anyhow::Result<()> {
+    record_and_run_turn(config, tx, stop_requested).await
 }
 
 pub async fn run_wav_turn_checked(
@@ -94,19 +113,25 @@ pub async fn run_wav_turn_checked(
     transcribe_and_run_turn_after_local(config, wav_bytes, local_task, tx).await
 }
 
-async fn record_and_run_turn(config: VoiceConfig, tx: Sender<VoiceUiEvent>) -> anyhow::Result<()> {
+async fn record_and_run_turn(
+    config: VoiceConfig,
+    tx: Sender<VoiceUiEvent>,
+    stop_requested: Arc<AtomicBool>,
+) -> anyhow::Result<()> {
     tx.send(VoiceUiEvent::Armed).ok();
     tx.send(VoiceUiEvent::Listening { ms: 0 }).ok();
     let record_ms = config.record_ms;
     let local_task = spawn_local_preflight(config.profile.clone());
     let progress_flag = Arc::new(AtomicBool::new(true));
     let progress_task = spawn_recording_progress(tx.clone(), progress_flag.clone());
-    let record_task =
-        tokio::task::spawn_blocking(move || record_default_input(Duration::from_millis(record_ms)));
+    let record_task = tokio::task::spawn_blocking(move || {
+        record_default_input_until(Duration::from_millis(record_ms), stop_requested)
+    });
     let record_result = record_task.await.context("join audio recorder");
     progress_flag.store(false, Ordering::Release);
     progress_task.abort();
     let audio = record_result??;
+    tx.send(VoiceUiEvent::Accepted).ok();
     transcribe_and_run_turn_after_local(config, audio.wav_bytes, local_task, tx).await
 }
 

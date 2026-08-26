@@ -14,7 +14,7 @@ use cua_voice::hud::{
 use cua_voice::orb::paint_orb;
 use cua_voice::ui_state::{HudPhase, HudSnapshot, VoiceUiEvent};
 use cua_voice::{
-    run_text_turn_checked, run_voice_turn, run_voice_turn_checked, run_wav_turn_checked,
+    run_text_turn_checked, run_voice_turn_checked, run_voice_turn_until, run_wav_turn_checked,
     VoiceConfig,
 };
 use gpui::{
@@ -29,7 +29,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const CENTER_LABEL_WIDTH: f32 = 270.0;
@@ -242,7 +242,7 @@ fn dots_are_active(snapshot: &HudSnapshot) -> bool {
 fn dot_pulse_speed(phase: &HudPhase) -> f32 {
     match phase {
         HudPhase::Listening | HudPhase::Dispatching => 8.0,
-        HudPhase::Planning | HudPhase::Transcribing => 6.0,
+        HudPhase::Accepted | HudPhase::Planning | HudPhase::Transcribing => 6.0,
         HudPhase::Reply => 5.0,
         HudPhase::Error => 10.0,
         HudPhase::Armed => 7.0,
@@ -377,6 +377,12 @@ fn step_label(index: usize, total: usize, label: &str) -> String {
 fn center_status_text(snapshot: &HudSnapshot) -> String {
     if snapshot.phase == HudPhase::Idle && snapshot.step.index == 0 {
         return snapshot.step.label.clone();
+    }
+    if snapshot.phase == HudPhase::Listening {
+        return "Listening".to_string();
+    }
+    if snapshot.phase == HudPhase::Accepted || snapshot.phase == HudPhase::Transcribing {
+        return "Accepted".to_string();
     }
     step_label(
         snapshot.step.index,
@@ -546,6 +552,7 @@ fn print_headless_events(rx: Receiver<VoiceUiEvent>) {
         let value = match event {
             VoiceUiEvent::Armed => serde_json::json!({"event": "armed"}),
             VoiceUiEvent::Listening { ms } => serde_json::json!({"event": "listening", "ms": ms}),
+            VoiceUiEvent::Accepted => serde_json::json!({"event": "accepted"}),
             VoiceUiEvent::Transcribing => serde_json::json!({"event": "transcribing"}),
             VoiceUiEvent::Transcript(text) => {
                 serde_json::json!({"event": "transcript", "text": text})
@@ -768,6 +775,7 @@ fn start_demo_cycle(tx: Sender<VoiceUiEvent>) {
         let sequence = [
             VoiceUiEvent::Armed,
             VoiceUiEvent::Listening { ms: 1200 },
+            VoiceUiEvent::Accepted,
             VoiceUiEvent::Transcribing,
             VoiceUiEvent::Transcript("Click 640 360".to_string()),
             VoiceUiEvent::Planning {
@@ -802,24 +810,47 @@ fn start_control_shortcut_controller(
     let (shortcut_tx, shortcut_rx) = channel::<()>();
     start_double_control_listener(shortcut_tx);
     std::thread::spawn(move || {
-        let busy = Arc::new(AtomicBool::new(false));
+        let active_stop = Arc::new(Mutex::new(None::<Arc<AtomicBool>>));
         while shortcut_rx.recv().is_ok() {
-            if !shortcut_trigger_claims_idle(&busy) {
+            let Some(stop_requested) = shortcut_trigger_requests_start(&active_stop) else {
                 continue;
-            }
+            };
             let run_config = config.clone();
             let run_tx = tx.clone();
-            let run_busy = busy.clone();
+            let run_active_stop = active_stop.clone();
+            let run_stop_requested = stop_requested.clone();
             runtime.spawn(async move {
-                run_voice_turn(run_config, run_tx).await;
-                run_busy.store(false, Ordering::Release);
+                run_voice_turn_until(run_config, run_tx, run_stop_requested.clone()).await;
+                shortcut_turn_finished(&run_active_stop, &run_stop_requested);
             });
         }
     });
 }
 
-fn shortcut_trigger_claims_idle(busy: &AtomicBool) -> bool {
-    !busy.swap(true, Ordering::AcqRel)
+fn shortcut_trigger_requests_start(
+    active_stop: &Mutex<Option<Arc<AtomicBool>>>,
+) -> Option<Arc<AtomicBool>> {
+    let mut guard = active_stop.lock().unwrap();
+    if let Some(stop_requested) = guard.as_ref() {
+        stop_requested.store(true, Ordering::Release);
+        return None;
+    }
+    let stop_requested = Arc::new(AtomicBool::new(false));
+    *guard = Some(stop_requested.clone());
+    Some(stop_requested)
+}
+
+fn shortcut_turn_finished(
+    active_stop: &Mutex<Option<Arc<AtomicBool>>>,
+    stop_requested: &Arc<AtomicBool>,
+) {
+    let mut guard = active_stop.lock().unwrap();
+    if guard
+        .as_ref()
+        .is_some_and(|active| Arc::ptr_eq(active, stop_requested))
+    {
+        *guard = None;
+    }
 }
 
 fn start_double_control_listener(tx: Sender<()>) {
@@ -967,14 +998,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn shortcut_controller_claims_only_one_active_voice_turn() {
-        let busy = AtomicBool::new(false);
+    fn shortcut_controller_toggles_active_voice_turn_stop() {
+        let active_stop = Mutex::new(None::<Arc<AtomicBool>>);
 
-        assert!(shortcut_trigger_claims_idle(&busy));
-        assert!(!shortcut_trigger_claims_idle(&busy));
+        let first = shortcut_trigger_requests_start(&active_stop).unwrap();
+        assert!(!first.load(Ordering::Acquire));
 
-        busy.store(false, Ordering::Release);
-        assert!(shortcut_trigger_claims_idle(&busy));
+        assert!(shortcut_trigger_requests_start(&active_stop).is_none());
+        assert!(first.load(Ordering::Acquire));
+
+        shortcut_turn_finished(&active_stop, &first);
+        let second = shortcut_trigger_requests_start(&active_stop).unwrap();
+        assert!(!second.load(Ordering::Acquire));
     }
 
     #[test]
@@ -1042,6 +1077,30 @@ mod tests {
         let snapshot = HudSnapshot::default();
 
         assert_eq!(center_status_text(&snapshot), "Ready");
+    }
+
+    #[test]
+    fn recording_center_text_is_plain_listening() {
+        let mut snapshot = HudSnapshot::default();
+        snapshot.apply(VoiceUiEvent::Listening { ms: 1_250 });
+
+        assert_eq!(center_status_text(&snapshot), "Listening");
+    }
+
+    #[test]
+    fn accepted_center_text_is_plain_accepted() {
+        let mut snapshot = HudSnapshot::default();
+        snapshot.apply(VoiceUiEvent::Accepted);
+
+        assert_eq!(center_status_text(&snapshot), "Accepted");
+    }
+
+    #[test]
+    fn transcribing_center_text_stays_plain_accepted() {
+        let mut snapshot = HudSnapshot::default();
+        snapshot.apply(VoiceUiEvent::Transcribing);
+
+        assert_eq!(center_status_text(&snapshot), "Accepted");
     }
 
     #[test]

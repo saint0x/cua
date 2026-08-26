@@ -6,6 +6,7 @@ pub enum HudPhase {
     Idle,
     Armed,
     Listening,
+    Accepted,
     Transcribing,
     Planning,
     Dispatching,
@@ -19,6 +20,7 @@ impl HudPhase {
             Self::Idle => "Ready",
             Self::Armed => "Armed",
             Self::Listening => "Listening",
+            Self::Accepted => "Accepted",
             Self::Transcribing => "Transcribing",
             Self::Planning => "Planning",
             Self::Dispatching => "Dispatching",
@@ -86,10 +88,18 @@ impl HudSnapshot {
                 self.programmed_step_expires_at = None;
                 self.programmed_step_restore = None;
             }
-            VoiceUiEvent::Listening { ms } => {
+            VoiceUiEvent::Listening { .. } => {
                 self.phase = HudPhase::Listening;
                 self.mark_voice_control();
-                self.step = HudStep::new(1, 4, format!("Recording {ms} ms"));
+                self.step = HudStep::new(1, 4, "Listening");
+                self.tool = "Microphone".to_string();
+                self.programmed_step_expires_at = None;
+                self.programmed_step_restore = None;
+            }
+            VoiceUiEvent::Accepted => {
+                self.phase = HudPhase::Accepted;
+                self.mark_voice_control();
+                self.step = HudStep::new(2, 4, "Accepted");
                 self.tool = "Microphone".to_string();
                 self.programmed_step_expires_at = None;
                 self.programmed_step_restore = None;
@@ -97,7 +107,7 @@ impl HudSnapshot {
             VoiceUiEvent::Transcribing => {
                 self.phase = HudPhase::Transcribing;
                 self.mark_voice_control();
-                self.step = HudStep::new(2, 4, "Speech to text");
+                self.step = HudStep::new(2, 4, "Accepted");
                 self.tool = "OpenRouter STT".to_string();
                 self.programmed_step_expires_at = None;
                 self.programmed_step_restore = None;
@@ -280,6 +290,7 @@ pub enum VoiceUiEvent {
     Listening {
         ms: u64,
     },
+    Accepted,
     Transcribing,
     Transcript(String),
     Planning {
