@@ -127,11 +127,16 @@ CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" \
 
 jq -s -e '
   def optional_contains($needle): (($needle | length) == 0) or contains($needle);
+  def idx($name): map(.event) | index($name);
   any(.event == "transcribing") and
   any(.event == "transcript" and (.text | ascii_downcase | contains($expect_transcript))) and
   any(.event == "planning" and .tool == $expect_tool) and
   any(.event == "dispatching" and (.action | optional_contains($expect_dispatch))) and
   any(.event == "reply" and (.text | ascii_downcase | optional_contains($expect_reply)) and (.text | ascii_downcase | optional_contains($expect_reply_2))) and
+  (idx("transcribing") < idx("transcript")) and
+  (idx("transcript") < idx("planning")) and
+  (idx("planning") < idx("dispatching")) and
+  (idx("dispatching") < idx("reply")) and
   any(.event == "metric" and .name == "stt_preflight_overlap_ms") and
   any(.event == "metric" and .name == "context_stt_overlap_ms") and
   any(.event == "metric" and .name == "context_prefetch_aborted_ms") and

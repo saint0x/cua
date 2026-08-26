@@ -68,6 +68,8 @@ jq -n \
     action: {
       dir: $action_dir,
       elapsed_ms: $action[0].elapsed_ms,
+      events: $action[0].events,
+      daemon_voice_steps: $action[0].daemon_voice_steps,
       transcript: $action[0].transcript,
       dispatch: $action[0].dispatch,
       reply: $action[0].reply,
@@ -77,6 +79,8 @@ jq -n \
     planner: {
       dir: $planner_dir,
       elapsed_ms: $planner[0].elapsed_ms,
+      events: $planner[0].events,
+      daemon_voice_steps: $planner[0].daemon_voice_steps,
       transcript: $planner[0].transcript,
       reply: $planner[0].reply,
       metrics: $planner[0].metrics,
