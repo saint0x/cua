@@ -14,8 +14,6 @@ use cua_core::{
 };
 use cua_input::{InputBackend, RefusingInputBackend};
 use image::{ImageBuffer, Rgba};
-#[cfg(target_os = "macos")]
-use objc2::AnyThread;
 use sha2::{Digest, Sha256};
 #[cfg(target_os = "macos")]
 use std::ffi::CStr;
@@ -177,7 +175,18 @@ fn capture_main_display(
     started: Instant,
     request: CaptureRequest,
 ) -> anyhow::Result<CapturedFrame> {
-    capture_main_display_sck(started, request)
+    let mut errors = Vec::new();
+    match capture_main_display_sck(started, request.clone()) {
+        Ok(frame) => return Ok(frame),
+        Err(error) => errors.push(format!("sck: {error}")),
+    }
+    match capture_main_display_core_graphics(started, request) {
+        Ok(frame) => Ok(frame),
+        Err(error) => {
+            errors.push(format!("core_graphics: {error}"));
+            anyhow::bail!("macOS capture failed: {}", errors.join("; "))
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -187,37 +196,17 @@ fn capture_main_display_sck(
 ) -> anyhow::Result<CapturedFrame> {
     let capture_started = Instant::now();
     let display_id = unsafe { CGMainDisplayID() };
-    let content = shareable_content_sck()?;
-    let displays = unsafe { content.displays() };
-    let display = displays
-        .iter()
-        .find(|display| unsafe { display.displayID() } == display_id)
-        .or_else(|| displays.iter().next())
-        .ok_or_else(|| anyhow::anyhow!("ScreenCaptureKit returned no displays"))?;
-    let excluded = objc2_foundation::NSArray::<objc2_screen_capture_kit::SCWindow>::new();
-    let filter = unsafe {
-        objc2_screen_capture_kit::SCContentFilter::initWithDisplay_excludingWindows(
-            objc2_screen_capture_kit::SCContentFilter::alloc(),
-            &display,
-            &excluded,
-        )
+    let display_bounds = unsafe { CGDisplayBounds(display_id) };
+    let rect = objc2_core_foundation::CGRect {
+        origin: objc2_core_foundation::CGPoint {
+            x: display_bounds.origin.x,
+            y: display_bounds.origin.y,
+        },
+        size: objc2_core_foundation::CGSize {
+            width: display_bounds.size.width,
+            height: display_bounds.size.height,
+        },
     };
-    unsafe {
-        filter.setIncludeMenuBar(true);
-    }
-    let config = unsafe {
-        objc2_screen_capture_kit::SCStreamConfiguration::streamConfigurationWithPreset(
-            objc2_screen_capture_kit::SCStreamConfigurationPreset::CaptureHDRScreenshotCanonicalDisplay,
-        )
-    };
-    let width = unsafe { display.width() }.max(1) as usize;
-    let height = unsafe { display.height() }.max(1) as usize;
-    unsafe {
-        config.setWidth(width);
-        config.setHeight(height);
-        config.setPixelFormat(0x4247_5241);
-        config.setShowsCursor(true);
-    }
     let (sender, receiver) = std::sync::mpsc::channel();
     let sender = Arc::new(Mutex::new(Some(sender)));
     let callback_sender = sender.clone();
@@ -236,7 +225,11 @@ fn capture_main_display_sck(
                         display_id,
                         image.cast(),
                         callback_request.clone(),
-                        FrameGeometry::display(display_id),
+                        FrameGeometry {
+                            display_bounds,
+                            frame_origin_x: display_bounds.origin.x.round() as i32,
+                            frame_origin_y: display_bounds.origin.y.round() as i32,
+                        },
                     )
                 }
             };
@@ -250,67 +243,49 @@ fn capture_main_display_sck(
         },
     );
     unsafe {
-        objc2_screen_capture_kit::SCScreenshotManager::captureImageWithFilter_configuration_completionHandler(
-            &filter,
-            &config,
+        objc2_screen_capture_kit::SCScreenshotManager::captureImageInRect_completionHandler(
+            rect,
             Some(&block),
         );
     }
-    recv_sck_result(receiver, Duration::from_secs(2), "ScreenCaptureKit capture")?
+    recv_sck_result(receiver, sck_capture_timeout(), "ScreenCaptureKit capture")?
 }
 
 #[cfg(target_os = "macos")]
-fn shareable_content_sck(
-) -> anyhow::Result<objc2::rc::Retained<objc2_screen_capture_kit::SCShareableContent>> {
-    let (sender, receiver) = std::sync::mpsc::channel();
-    let sender = Arc::new(Mutex::new(Some(sender)));
-    let callback_sender = sender.clone();
-    let block = block2::RcBlock::new(
-        move |content: *mut objc2_screen_capture_kit::SCShareableContent,
-              error: *mut objc2_foundation::NSError| {
-            let result = if !error.is_null() {
-                Err(anyhow::anyhow!(
-                    "ScreenCaptureKit shareable content returned an error"
-                ))
-            } else if content.is_null() {
-                Err(anyhow::anyhow!(
-                    "ScreenCaptureKit returned null shareable content"
-                ))
-            } else {
-                unsafe {
-                    objc2::rc::Retained::retain(content)
-                        .map(objc2::rc::Retained::into_raw)
-                        .map(|ptr| ptr as usize)
-                        .ok_or_else(|| {
-                            anyhow::anyhow!("ScreenCaptureKit shareable content retain failed")
-                        })
-                }
-            };
-            if let Some(sender) = callback_sender
-                .lock()
-                .ok()
-                .and_then(|mut sender| sender.take())
-            {
-                let _ = sender.send(result);
-            }
-        },
-    );
-    unsafe {
-        objc2_screen_capture_kit::SCShareableContent::getShareableContentExcludingDesktopWindows_onScreenWindowsOnly_completionHandler(
-            false,
-            true,
-            &block,
-        );
+fn sck_capture_timeout() -> Duration {
+    let millis = std::env::var("CUA_SCK_CAPTURE_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(1_500)
+        .clamp(250, 30_000);
+    Duration::from_millis(millis)
+}
+
+#[cfg(target_os = "macos")]
+fn capture_main_display_core_graphics(
+    started: Instant,
+    request: CaptureRequest,
+) -> anyhow::Result<CapturedFrame> {
+    let capture_started = Instant::now();
+    let display_id = unsafe { CGMainDisplayID() };
+    let image = unsafe { CGDisplayCreateImage(display_id) };
+    if image.is_null() {
+        anyhow::bail!("CGDisplayCreateImage returned null");
     }
-    let ptr = recv_sck_result(
-        receiver,
-        Duration::from_secs(2),
-        "ScreenCaptureKit shareable content",
-    )??;
+    let result = unsafe {
+        image_to_frame(
+            started,
+            capture_started,
+            display_id,
+            image,
+            request,
+            FrameGeometry::display(display_id),
+        )
+    };
     unsafe {
-        objc2::rc::Retained::from_raw(ptr as *mut objc2_screen_capture_kit::SCShareableContent)
+        CFRelease(image.cast());
     }
-    .ok_or_else(|| anyhow::anyhow!("ScreenCaptureKit shareable content pointer was null"))
+    result
 }
 
 #[cfg(target_os = "macos")]
@@ -361,8 +336,8 @@ impl FrameGeometry {
         let bounds = unsafe { CGDisplayBounds(display_id) };
         Self {
             display_bounds: bounds,
-            frame_origin_x: 0,
-            frame_origin_y: 0,
+            frame_origin_x: bounds.origin.x.round() as i32,
+            frame_origin_y: bounds.origin.y.round() as i32,
         }
     }
 }
@@ -982,6 +957,7 @@ unsafe extern "C" {
     fn CGMainDisplayID() -> u32;
     fn CGEventCreate(source: *const std::ffi::c_void) -> *const std::ffi::c_void;
     fn CGEventGetLocation(event: *const std::ffi::c_void) -> CGPoint;
+    fn CGDisplayCreateImage(display: u32) -> *const std::ffi::c_void;
     fn CGWindowListCopyWindowInfo(option: u32, relative_to_window: u32) -> *const std::ffi::c_void;
     fn CGRectMakeWithDictionaryRepresentation(
         dict: *const std::ffi::c_void,
@@ -1170,7 +1146,7 @@ mod tests {
             let _ = sender.send(result);
         });
         let envelope = receiver
-            .recv_timeout(Duration::from_secs(3))
+            .recv_timeout(sck_capture_timeout() + Duration::from_secs(1))
             .expect("native display capture timed out")
             .expect("native display capture failed");
         assert!(envelope.width > 0);

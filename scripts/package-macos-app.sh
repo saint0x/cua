@@ -80,6 +80,8 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
   <string>cua needs local automation permission when a supervised profile grants desktop actions.</string>
   <key>NSMicrophoneUsageDescription</key>
   <string>cua uses microphone input only when the voice HUD records a requested command.</string>
+  <key>NSScreenCaptureUsageDescription</key>
+  <string>cua captures the local screen only when a supervised profile requests desktop observation.</string>
   <key>NSInputMonitoringUsageDescription</key>
   <string>cua listens for a local double-Control shortcut to start voice recording.</string>
 </dict>
@@ -87,6 +89,7 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
 PLIST
 
 plutil -extract NSMicrophoneUsageDescription raw -o - "$CONTENTS_DIR/Info.plist" >/dev/null
+plutil -extract NSScreenCaptureUsageDescription raw -o - "$CONTENTS_DIR/Info.plist" >/dev/null
 plutil -extract NSInputMonitoringUsageDescription raw -o - "$CONTENTS_DIR/Info.plist" >/dev/null
 
 cat > "$ENTITLEMENTS" <<PLIST
@@ -107,6 +110,7 @@ fi
 /usr/bin/codesign \
   --force \
   --sign "$SIGN_IDENTITY" \
+  --identifier "$BUNDLE_ID" \
   --options runtime \
   --timestamp=none \
   "$MACOS_DIR/cua"
@@ -114,6 +118,7 @@ fi
 /usr/bin/codesign \
   --force \
   --sign "$SIGN_IDENTITY" \
+  --identifier "$BUNDLE_ID" \
   --options runtime \
   --timestamp=none \
   "$MACOS_DIR/cua-voice"

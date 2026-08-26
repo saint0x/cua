@@ -276,7 +276,7 @@ fn capture_timeout_from_env() -> Duration {
     let millis = std::env::var("CUA_CAPTURE_TIMEOUT_MS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(2_500)
+        .unwrap_or(10_000)
         .clamp(250, 30_000);
     Duration::from_millis(millis)
 }

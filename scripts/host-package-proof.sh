@@ -27,11 +27,14 @@ test ! -e "$MACOS_DIR/cua-app"
 /usr/bin/codesign --verify --deep --strict "$APP_PATH" >/dev/null
 SIGNATURE="$(/usr/bin/codesign --display --verbose=2 "$APP_PATH" 2>&1)"
 DESIGNATED_REQUIREMENT="$(/usr/bin/codesign -d -r- "$APP_PATH" 2>&1)"
+DAEMON_SIGNATURE="$(/usr/bin/codesign --display --verbose=2 "$MACOS_DIR/cua" 2>&1)"
+VOICE_SIGNATURE="$(/usr/bin/codesign --display --verbose=2 "$MACOS_DIR/cua-voice" 2>&1)"
 
 BUNDLE_ID="$(plutil -extract CFBundleIdentifier raw -o - "$INFO_PLIST")"
 EXECUTABLE="$(plutil -extract CFBundleExecutable raw -o - "$INFO_PLIST")"
 LSUI_ELEMENT="$(plutil -extract LSUIElement raw -o - "$INFO_PLIST")"
 MIC_USAGE="$(plutil -extract NSMicrophoneUsageDescription raw -o - "$INFO_PLIST")"
+SCREEN_USAGE="$(plutil -extract NSScreenCaptureUsageDescription raw -o - "$INFO_PLIST")"
 INPUT_USAGE="$(plutil -extract NSInputMonitoringUsageDescription raw -o - "$INFO_PLIST")"
 AUTOMATION_USAGE="$(plutil -extract NSAppleEventsUsageDescription raw -o - "$INFO_PLIST")"
 
@@ -41,10 +44,13 @@ jq -n \
   --arg executable "$EXECUTABLE" \
   --arg lsui_element "$LSUI_ELEMENT" \
   --arg microphone_usage "$MIC_USAGE" \
+  --arg screen_capture_usage "$SCREEN_USAGE" \
   --arg input_monitoring_usage "$INPUT_USAGE" \
   --arg automation_usage "$AUTOMATION_USAGE" \
   --arg signature "$SIGNATURE" \
   --arg designated_requirement "$DESIGNATED_REQUIREMENT" \
+  --arg daemon_signature "$DAEMON_SIGNATURE" \
+  --arg voice_signature "$VOICE_SIGNATURE" \
   '{
     schema_version: "cua.package_proof.v1",
     ok: (
@@ -53,10 +59,13 @@ jq -n \
       $executable == "cua-voice" and
       ($lsui_element == "1" or $lsui_element == "true") and
       ($microphone_usage | length) > 0 and
+      ($screen_capture_usage | length) > 0 and
       ($input_monitoring_usage | length) > 0 and
       ($automation_usage | length) > 0 and
       ($signature | contains("Signature=adhoc") | not) and
       ($signature | contains("Authority=")) and
+      ($daemon_signature | contains("Identifier=io.saint0x.cua")) and
+      ($voice_signature | contains("Identifier=io.saint0x.cua")) and
       ($designated_requirement | contains("identifier \"io.saint0x.cua\"")) and
       ($designated_requirement | contains("cdhash") | not)
     ),
@@ -66,10 +75,13 @@ jq -n \
     lsui_element: $lsui_element,
     usage_descriptions: {
       microphone: $microphone_usage,
+      screen_capture: $screen_capture_usage,
       input_monitoring: $input_monitoring_usage,
       automation: $automation_usage
     },
     signature: $signature,
+    daemon_signature: $daemon_signature,
+    voice_signature: $voice_signature,
     designated_requirement: $designated_requirement,
     binaries: ["cua", "cua-voice"]
   }' > "$PROOF"

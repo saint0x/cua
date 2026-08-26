@@ -512,6 +512,7 @@ fn main() -> anyhow::Result<()> {
     if demo {
         start_demo_cycle(tx.clone());
     } else {
+        request_screen_recording_access_if_packaged_app();
         if let Err(error) = spawn_profile_daemon(&config.profile) {
             tx.send(VoiceUiEvent::Error(format!("Daemon start failed: {error}")))
                 .ok();
@@ -876,6 +877,12 @@ fn start_double_control_listener_if_allowed(tx: Sender<VoiceUiEvent>) {
             "Input Monitoring permission is required for the double-Control shortcut.".to_string(),
         ))
         .ok();
+    }
+}
+
+fn request_screen_recording_access_if_packaged_app() {
+    if launched_from_app_bundle() {
+        let _ = cua_platform_macos::request_screen_recording_access();
     }
 }
 
