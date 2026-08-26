@@ -16,16 +16,16 @@ use cua_capture::{CaptureRequest, CapturedFrame, FrameBus, FrameLookup};
 use cua_core::{
     now_wall_ms, schema_bundle, ApiErrorBody, CapabilityManifest, CapabilityState,
     ClipboardReadRequest, ClipboardResult, ClipboardWriteRequest, DeliveryMode,
-    DesktopContextSnapshot, DesktopState, Effect, Evidence, EvidenceKind, FrameEncoding,
-    FramePayload, HealthReport, InputAction, InputRequest, InputResult, InputRoute, Manifest,
-    MetricBucket, MetricHistogram, MetricsSnapshot, PermissionReport, ProfilePolicy,
+    DesktopContextSnapshot, DesktopState, Effect, Evidence, EvidenceKind, FrameActionRequest,
+    FrameEncoding, FramePayload, HealthReport, InputAction, InputRequest, InputResult, InputRoute,
+    Manifest, MetricBucket, MetricHistogram, MetricsSnapshot, PermissionReport, ProfilePolicy,
     RuntimeControlState, RuntimeMode, SafetyState, UiReplyRequest, UiReplyResult, UiStepRequest,
-    UiStepResult, SCHEMA_VERSION,
+    UiStepResult, VisualSessionRequest, SCHEMA_VERSION,
 };
 use cua_input::InputBackend;
 use cua_model::{run_eval_report, EvalConfig, EvalReport};
 use cua_trace::{ActionTurnRecord, TraceRecord, TraceWriter};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
 use std::convert::Infallible;
 use std::net::SocketAddr;
@@ -764,6 +764,7 @@ pub fn router(state: DaemonState) -> Router {
         .route("/input/mouse", post(input_action))
         .route("/input/keyboard", post(input_action))
         .route("/input/clipboard", post(input_action))
+        .route("/input/frame", post(input_frame_action))
         .route("/clipboard/read", post(clipboard_read))
         .route("/clipboard/write", post(clipboard_write))
         .route("/model/eval", post(model_eval))
@@ -883,12 +884,172 @@ async fn handle_unix_stream(
             continue;
         }
         let response = match serde_json::from_str::<UnixRequest>(&line) {
+            Ok(request) if request.method == "visual.session" => {
+                return handle_visual_session(&state, request, lines, write).await;
+            }
             Ok(request) => handle_unix_request(&state, request).await,
             Err(error) => unix_error(None, "bad_request", error.to_string(), None),
         };
         write.write_all(response.to_string().as_bytes()).await?;
         write.write_all(b"\n").await?;
     }
+    Ok(())
+}
+
+async fn handle_visual_session(
+    state: &DaemonState,
+    request: UnixRequest,
+    mut lines: tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>,
+    mut write: tokio::net::unix::OwnedWriteHalf,
+) -> anyhow::Result<()> {
+    let id = request.id.clone();
+    if request.token.as_deref() != Some(state.bearer_token.as_str()) {
+        let response = unix_error(
+            id,
+            "unauthorized",
+            "missing or invalid token",
+            Some(StatusCode::UNAUTHORIZED),
+        );
+        write.write_all(response.to_string().as_bytes()).await?;
+        write.write_all(b"\n").await?;
+        return Ok(());
+    }
+    let params = request.params.unwrap_or_else(|| serde_json::json!({}));
+    let visual = match serde_json::from_value::<VisualSessionRequest>(params) {
+        Ok(request) if request.schema_version == SCHEMA_VERSION => request,
+        Ok(_) => {
+            let response = unix_error(
+                id,
+                "bad_request",
+                format!("expected schema_version {SCHEMA_VERSION}"),
+                Some(StatusCode::BAD_REQUEST),
+            );
+            write.write_all(response.to_string().as_bytes()).await?;
+            write.write_all(b"\n").await?;
+            return Ok(());
+        }
+        Err(error) => {
+            let response = unix_error(
+                id,
+                "bad_request",
+                error.to_string(),
+                Some(StatusCode::BAD_REQUEST),
+            );
+            write.write_all(response.to_string().as_bytes()).await?;
+            write.write_all(b"\n").await?;
+            return Ok(());
+        }
+    };
+    let fps = visual.fps.unwrap_or(10).clamp(1, 30);
+    let mut interval = tokio::time::interval(Duration::from_millis(1_000 / u64::from(fps)));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let _guard = StreamGuard::new(state.active_streams.clone());
+    let _ = ui_step_state(
+        state,
+        UiStepRequest {
+            schema_version: SCHEMA_VERSION.to_string(),
+            label: "Remote visual session".to_string(),
+            source: Some("remote".to_string()),
+            task: Some("Computer control".to_string()),
+            tool: Some("Unix socket".to_string()),
+            step_index: Some(1),
+            step_total: Some(1),
+            ttl_ms: Some(3_000),
+        },
+    );
+    write_json_line(
+        &mut write,
+        &VisualSessionMessage::Started {
+            schema_version: SCHEMA_VERSION.to_string(),
+            fps,
+        },
+    )
+    .await?;
+    loop {
+        tokio::select! {
+            maybe_line = lines.next_line() => {
+                let Some(line) = maybe_line? else {
+                    return Ok(());
+                };
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let response = match serde_json::from_str::<UnixRequest>(&line) {
+                    Ok(request) if request.method == "visual.close" => {
+                        write_json_line(
+                            &mut write,
+                            &VisualSessionMessage::Closed {
+                                schema_version: SCHEMA_VERSION.to_string(),
+                            },
+                        ).await?;
+                        return Ok(());
+                    }
+                    Ok(request) => handle_unix_request(state, request).await,
+                    Err(error) => unix_error(None, "bad_request", error.to_string(), None),
+                };
+                write.write_all(response.to_string().as_bytes()).await?;
+                write.write_all(b"\n").await?;
+            }
+            _ = interval.tick() => {
+                let started = Instant::now();
+                let message = match state
+                    .frame_bus
+                    .latest_or_capture_timed(CaptureRequest {
+                        max_width: visual.max_width.or(Some(1280)),
+                        encoding: FrameEncoding::Jpeg,
+                        force_fresh: true,
+                    })
+                    .await
+                {
+                    Ok(lookup) => {
+                        observe_frame_lookup(&state.metrics, &lookup);
+                        state.metrics.observe(MetricKind::StreamUnixTick, started.elapsed());
+                        state.metrics.increment(CounterKind::UnixFrames);
+                        VisualSessionMessage::Frame {
+                            schema_version: SCHEMA_VERSION.to_string(),
+                            frame: lookup.frame.as_payload(visual.include_bytes),
+                        }
+                    }
+                    Err(error) => VisualSessionMessage::Error {
+                        schema_version: SCHEMA_VERSION.to_string(),
+                        error: error.to_string(),
+                    },
+                };
+                write_json_line(&mut write, &message).await?;
+            }
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum VisualSessionMessage {
+    Started {
+        schema_version: String,
+        fps: u32,
+    },
+    Frame {
+        schema_version: String,
+        frame: FramePayload,
+    },
+    Error {
+        schema_version: String,
+        error: String,
+    },
+    Closed {
+        schema_version: String,
+    },
+}
+
+async fn write_json_line<T: Serialize>(
+    write: &mut tokio::net::unix::OwnedWriteHalf,
+    value: &T,
+) -> anyhow::Result<()> {
+    write
+        .write_all(serde_json::to_string(value)?.as_bytes())
+        .await?;
+    write.write_all(b"\n").await?;
+    write.flush().await?;
     Ok(())
 }
 
@@ -1030,6 +1191,25 @@ async fn handle_unix_request(state: &DaemonState, request: UnixRequest) -> serde
                 }
             }
         }
+        "input.dispatch_frame" => {
+            let params = request.params.unwrap_or_else(|| serde_json::json!({}));
+            match serde_json::from_value::<FrameActionRequest>(params) {
+                Ok(request) => match serde_json::to_value(
+                    dispatch_input_action(state, request.into_display_action()).await,
+                ) {
+                    Ok(value) => Ok(Ok(value)),
+                    Err(error) => Ok(Err(error)),
+                },
+                Err(error) => {
+                    return unix_error(
+                        id,
+                        "bad_request",
+                        error.to_string(),
+                        Some(StatusCode::BAD_REQUEST),
+                    )
+                }
+            }
+        }
         method => {
             return unix_error(
                 id,
@@ -1146,6 +1326,7 @@ fn manifest_payload() -> Manifest {
             "POST /context/snapshot".to_string(),
             "GET /capture/stream.mjpeg".to_string(),
             "GET /capture/stream.ws".to_string(),
+            "UNIX visual.session".to_string(),
             "GET /observe/desktop".to_string(),
             "GET /events".to_string(),
             "GET /events?after=<sequence>".to_string(),
@@ -1161,6 +1342,7 @@ fn manifest_payload() -> Manifest {
             "POST /input/mouse".to_string(),
             "POST /input/keyboard".to_string(),
             "POST /input/clipboard".to_string(),
+            "POST /input/frame".to_string(),
             "POST /clipboard/read".to_string(),
             "POST /clipboard/write".to_string(),
             "POST /model/eval".to_string(),
@@ -1173,6 +1355,7 @@ fn manifest_payload() -> Manifest {
             "cua events --json [--after <sequence>]".to_string(),
             "cua ui step <label> --step-index <n> --step-total <n> --json".to_string(),
             "cua ui reply <text> --json".to_string(),
+            "cua stream --unix --json".to_string(),
             "cua perf live --json".to_string(),
             "cua screenshot --out <path>".to_string(),
             "cua context --json".to_string(),
@@ -1331,7 +1514,7 @@ async fn stream_mjpeg(State(state): State<DaemonState>) -> Result<Response, ApiE
                 .latest_or_capture_timed(CaptureRequest {
                     max_width: Some(1280),
                     encoding: FrameEncoding::Jpeg,
-                    force_fresh: false,
+                    force_fresh: true,
                 })
                 .await
             {
@@ -1381,7 +1564,7 @@ async fn stream_ws(ws: WebSocketUpgrade, State(state): State<DaemonState>) -> im
                 .latest_or_capture_timed(CaptureRequest {
                     max_width: Some(1280),
                     encoding: FrameEncoding::Jpeg,
-                    force_fresh: false,
+                    force_fresh: true,
                 })
                 .await
             {
@@ -1878,6 +2061,13 @@ async fn input_action(
     Json(dispatch_input_action(&state, action).await)
 }
 
+async fn input_frame_action(
+    State(state): State<DaemonState>,
+    Json(request): Json<FrameActionRequest>,
+) -> Json<cua_core::InputResult> {
+    Json(dispatch_input_action(&state, request.into_display_action()).await)
+}
+
 async fn dispatch_input_action(state: &DaemonState, action: InputAction) -> cua_core::InputResult {
     let started = Instant::now();
     let turn_id = Uuid::new_v4().to_string();
@@ -2294,6 +2484,7 @@ enum MetricKind {
     EncodeDispatch,
     StreamMjpegTick,
     StreamWsTick,
+    StreamUnixTick,
     InputQueueWait,
     InputDispatch,
     ClipboardRead,
@@ -2311,7 +2502,7 @@ enum MetricKind {
 }
 
 impl MetricKind {
-    const ALL: [Self; 21] = [
+    const ALL: [Self; 22] = [
         Self::CaptureScreenshot,
         Self::CaptureQueueWait,
         Self::CaptureEncode,
@@ -2319,6 +2510,7 @@ impl MetricKind {
         Self::EncodeDispatch,
         Self::StreamMjpegTick,
         Self::StreamWsTick,
+        Self::StreamUnixTick,
         Self::InputQueueWait,
         Self::InputDispatch,
         Self::ClipboardRead,
@@ -2344,20 +2536,21 @@ impl MetricKind {
             Self::EncodeDispatch => 4,
             Self::StreamMjpegTick => 5,
             Self::StreamWsTick => 6,
-            Self::InputQueueWait => 7,
-            Self::InputDispatch => 8,
-            Self::ClipboardRead => 9,
-            Self::ClipboardWrite => 10,
-            Self::ModelSend => 11,
-            Self::ModelResponse => 12,
-            Self::ModelParse => 13,
-            Self::ModelQueueWait => 14,
-            Self::PolicyCheck => 15,
-            Self::PermissionQueueWait => 16,
-            Self::PermissionProbe => 17,
-            Self::Verification => 18,
-            Self::TraceWrite => 19,
-            Self::KillSwitchPropagation => 20,
+            Self::StreamUnixTick => 7,
+            Self::InputQueueWait => 8,
+            Self::InputDispatch => 9,
+            Self::ClipboardRead => 10,
+            Self::ClipboardWrite => 11,
+            Self::ModelSend => 12,
+            Self::ModelResponse => 13,
+            Self::ModelParse => 14,
+            Self::ModelQueueWait => 15,
+            Self::PolicyCheck => 16,
+            Self::PermissionQueueWait => 17,
+            Self::PermissionProbe => 18,
+            Self::Verification => 19,
+            Self::TraceWrite => 20,
+            Self::KillSwitchPropagation => 21,
         }
     }
 
@@ -2370,6 +2563,7 @@ impl MetricKind {
             Self::EncodeDispatch => "encode.dispatch",
             Self::StreamMjpegTick => "stream.mjpeg.tick",
             Self::StreamWsTick => "stream.ws.tick",
+            Self::StreamUnixTick => "stream.unix.tick",
             Self::InputQueueWait => "input.queue_wait",
             Self::InputDispatch => "input.dispatch",
             Self::ClipboardRead => "clipboard.read",
@@ -2392,6 +2586,7 @@ impl MetricKind {
 enum CounterKind {
     MjpegFrames,
     WsFrames,
+    UnixFrames,
     InputRefusals,
     ClipboardRefusals,
     EventDrops,
@@ -2402,9 +2597,10 @@ enum CounterKind {
 }
 
 impl CounterKind {
-    const ALL: [Self; 9] = [
+    const ALL: [Self; 10] = [
         Self::MjpegFrames,
         Self::WsFrames,
+        Self::UnixFrames,
         Self::InputRefusals,
         Self::ClipboardRefusals,
         Self::EventDrops,
@@ -2418,13 +2614,14 @@ impl CounterKind {
         match self {
             Self::MjpegFrames => 0,
             Self::WsFrames => 1,
-            Self::InputRefusals => 2,
-            Self::ClipboardRefusals => 3,
-            Self::EventDrops => 4,
-            Self::PermissionFallbacks => 5,
-            Self::TraceDrops => 6,
-            Self::ModelDrops => 7,
-            Self::EncodeDrops => 8,
+            Self::UnixFrames => 2,
+            Self::InputRefusals => 3,
+            Self::ClipboardRefusals => 4,
+            Self::EventDrops => 5,
+            Self::PermissionFallbacks => 6,
+            Self::TraceDrops => 7,
+            Self::ModelDrops => 8,
+            Self::EncodeDrops => 9,
         }
     }
 
@@ -2432,6 +2629,7 @@ impl CounterKind {
         match self {
             Self::MjpegFrames => "stream.mjpeg.frames",
             Self::WsFrames => "stream.ws.frames",
+            Self::UnixFrames => "stream.unix.frames",
             Self::InputRefusals => "input.refusals",
             Self::ClipboardRefusals => "clipboard.refusals",
             Self::EventDrops => "events.dropped",
@@ -3337,6 +3535,8 @@ mod tests {
                 timestamp_mono_ns: 0,
                 timestamp_wall_ms: now_wall_ms(),
                 display_id: "test-display".to_string(),
+                display_width: 1,
+                display_height: 1,
                 width: 1,
                 height: 1,
                 scale_factor: 1.0,

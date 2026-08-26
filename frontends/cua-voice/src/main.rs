@@ -6,7 +6,7 @@ use cua_voice::hud::{
     WINDOW_HEIGHT, WINDOW_WIDTH,
 };
 use cua_voice::orb::paint_orb;
-use cua_voice::ui_state::{HudSnapshot, VoiceUiEvent};
+use cua_voice::ui_state::{HudPhase, HudSnapshot, VoiceUiEvent};
 use cua_voice::{
     run_text_turn_checked, run_voice_turn, run_voice_turn_checked, run_wav_turn_checked,
     VoiceConfig,
@@ -140,17 +140,40 @@ impl VoiceHud {
         div().w(px(1.0)).h(px(14.0)).bg(hsla(0.0, 0.0, 1.0, 0.16))
     }
 
-    fn activity_dots() -> impl IntoElement {
-        div()
-            .flex()
-            .items_center()
-            .gap_1()
-            .child(dot(1.0))
-            .child(dot(0.88))
-            .child(dot(0.76))
-            .child(dot(0.64))
-            .child(dot(0.52))
-            .child(dot(0.40))
+    fn activity_dots(&self) -> impl IntoElement {
+        let elapsed = self.started.elapsed().as_secs_f32();
+        let active = !matches!(self.snapshot.phase, HudPhase::Idle);
+        let speed = match self.snapshot.phase {
+            HudPhase::Listening | HudPhase::Dispatching => 5.8,
+            HudPhase::Planning | HudPhase::Transcribing => 4.2,
+            HudPhase::Reply => 3.4,
+            HudPhase::Error => 7.0,
+            HudPhase::Armed => 4.8,
+            HudPhase::Idle => 1.2,
+        };
+        let hue = match self.snapshot.phase {
+            HudPhase::Listening => 150.0,
+            HudPhase::Transcribing | HudPhase::Planning => 214.0,
+            HudPhase::Dispatching => 268.0,
+            HudPhase::Reply => 142.0,
+            HudPhase::Error => 4.0,
+            HudPhase::Armed => 190.0,
+            HudPhase::Idle => 244.0,
+        };
+        let mut row = div().flex().items_center().gap_1();
+        for index in 0..6 {
+            let phase = elapsed * speed + index as f32 * 0.72;
+            let wave = if active {
+                0.5 + 0.5 * phase.sin()
+            } else {
+                0.25 + 0.15 * phase.sin()
+            };
+            row = row.child(dot(
+                hue + index as f32 * 7.0 + wave * 16.0,
+                0.36 + wave * 0.64,
+            ));
+        }
+        row
     }
 
     fn tick_animation(&mut self) {
@@ -241,16 +264,17 @@ impl VoiceHud {
             .child(Self::chip(tool))
             .child(Self::chip(app))
             .child(div().flex_1())
-            .child(Self::activity_dots())
+            .child(self.activity_dots())
     }
 }
 
-fn dot(alpha: f32) -> impl IntoElement {
-    div()
-        .w(px(4.0))
-        .h(px(4.0))
-        .rounded_full()
-        .bg(hsla(244.0 / 360.0, 0.92, 0.70, alpha))
+fn dot(hue_degrees: f32, alpha: f32) -> impl IntoElement {
+    div().w(px(4.0)).h(px(4.0)).rounded_full().bg(hsla(
+        (hue_degrees % 360.0) / 360.0,
+        0.92,
+        0.70,
+        alpha,
+    ))
 }
 
 fn compact_bar_width(_: HudMetrics) -> f32 {
@@ -567,6 +591,7 @@ fn agent_ui_event_from_daemon_event(
 ) -> Option<(u64, VoiceUiEvent)> {
     agent_step_from_daemon_event(event, last_sequence)
         .or_else(|| agent_reply_from_daemon_event(event, last_sequence))
+        .or_else(|| agent_input_from_daemon_event(event, last_sequence))
 }
 
 fn agent_step_from_daemon_event(event: &Value, last_sequence: u64) -> Option<(u64, VoiceUiEvent)> {
@@ -632,6 +657,33 @@ fn agent_reply_from_daemon_event(event: &Value, last_sequence: u64) -> Option<(u
         return None;
     }
     Some((sequence, VoiceUiEvent::Reply(text.to_string())))
+}
+
+fn agent_input_from_daemon_event(event: &Value, last_sequence: u64) -> Option<(u64, VoiceUiEvent)> {
+    let sequence = event.get("sequence").and_then(|value| value.as_u64())?;
+    if sequence <= last_sequence {
+        return None;
+    }
+    let kind = event.get("kind").and_then(|value| value.as_str())?;
+    match kind {
+        "input_completed" => Some((
+            sequence,
+            VoiceUiEvent::AgentStep {
+                label: "Applied remote action".to_string(),
+                source: Some("remote".to_string()),
+                task: Some("Computer control".to_string()),
+                tool: Some("Unix socket".to_string()),
+                step_index: Some(1),
+                step_total: Some(1),
+                ttl_ms: Some(1_500),
+            },
+        )),
+        "input_refused" => Some((
+            sequence,
+            VoiceUiEvent::Error("Remote action refused".to_string()),
+        )),
+        _ => None,
+    }
 }
 
 fn single_instance_socket_path(profile: &str) -> PathBuf {
@@ -917,6 +969,38 @@ mod tests {
         });
 
         assert!(agent_reply_from_daemon_event(&event, 44).is_none());
+    }
+
+    #[test]
+    fn daemon_input_event_maps_to_visible_remote_activity() {
+        let event = serde_json::json!({
+            "sequence": 46,
+            "kind": "input_completed",
+            "data": {
+                "effect": "confirmed",
+                "route": "accessibility",
+                "evidence_kind": "cursor_readback"
+            }
+        });
+
+        let Some((
+            sequence,
+            VoiceUiEvent::AgentStep {
+                label,
+                tool,
+                ttl_ms,
+                ..
+            },
+        )) = agent_input_from_daemon_event(&event, 45)
+        else {
+            panic!("expected input activity event");
+        };
+
+        assert_eq!(sequence, 46);
+        assert_eq!(label, "Applied remote action");
+        assert_eq!(tool.as_deref(), Some("Unix socket"));
+        assert_eq!(ttl_ms, Some(1500));
+        assert!(agent_input_from_daemon_event(&event, 46).is_none());
     }
 
     #[test]

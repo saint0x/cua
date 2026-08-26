@@ -44,7 +44,7 @@ impl Planner {
         let mut content = vec![serde_json::json!({
             "type": "text",
             "text": format!(
-                "You control a macOS desktop through a local Unix socket. Transcript: {transcript}\n{desktop_context}\nReturn strict JSON only: {{\"response\":\"short user-facing status\",\"action\":null}} or {{\"response\":\"short status\",\"action\":{{...InputAction JSON...}}}}. Supported action kinds: mouse_move, mouse_click, mouse_drag, key_press, key_type, key_paste, pause, resume, kill_switch. Use integer screen coordinates. Prefer actions that directly satisfy the transcript; use null only when no safe desktop action is implied."
+                "You control a macOS desktop through a local Unix socket. Transcript: {transcript}\n{desktop_context}\nReturn strict JSON only: {{\"response\":\"short user-facing status\",\"action\":null}} or {{\"response\":\"short status\",\"action\":{{...InputAction JSON...}}}}. Supported action kinds: mouse_move, mouse_click, mouse_drag, key_press, key_type, key_paste, pause, resume, kill_switch. For mouse actions, use integer coordinates in the attached frame image, not physical display coordinates. Prefer actions that directly satisfy the transcript; use null only when no safe desktop action is implied."
             )
         })];
         if let Some(bytes) = frame.and_then(|frame| frame.bytes_base64.as_ref()) {

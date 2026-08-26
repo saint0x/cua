@@ -244,6 +244,8 @@ impl EvalCase {
                 timestamp_mono_ns: 0,
                 timestamp_wall_ms: now_wall_ms(),
                 display_id: format!("eval-fixture-{}", fixture.kind),
+                display_width: fixture.width,
+                display_height: fixture.height,
                 width: fixture.width,
                 height: fixture.height,
                 scale_factor: 1.0,

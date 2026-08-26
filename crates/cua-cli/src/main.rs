@@ -13,6 +13,8 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::UnixStream;
 
 #[derive(Debug, Parser)]
 #[command(name = "cua", version, about = "CLI-first local computer-use runtime")]
@@ -42,6 +44,7 @@ enum Command {
     Manifest(JsonFlag),
     Metrics(JsonFlag),
     Events(EventsArgs),
+    Stream(StreamArgs),
     Ui {
         #[command(subcommand)]
         command: UiCommand,
@@ -101,6 +104,22 @@ struct EventsArgs {
     json: bool,
     #[arg(long)]
     after: Option<u64>,
+}
+
+#[derive(Debug, Args)]
+struct StreamArgs {
+    #[arg(long)]
+    unix: bool,
+    #[arg(long, default_value_t = 3)]
+    frames: usize,
+    #[arg(long, default_value_t = 10)]
+    fps: u32,
+    #[arg(long, default_value_t = 1280)]
+    max_width: u32,
+    #[arg(long)]
+    include_bytes: bool,
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -347,6 +366,7 @@ async fn main() -> anyhow::Result<()> {
             };
             get_json(cli.server_addr, &cli.profile, &path, args.json).await
         }
+        Some(Command::Stream(args)) => stream(&cli.profile, args).await,
         Some(Command::Ui { command }) => ui(cli.server_addr, &cli.profile, command).await,
         Some(Command::Screenshot(args)) => screenshot(cli.server_addr, &cli.profile, args).await,
         Some(Command::Observe(flag)) => {
@@ -439,6 +459,7 @@ async fn print_usage_and_status(server_addr: SocketAddr) -> anyhow::Result<()> {
     println!("       cua manifest --json");
     println!("       cua metrics --json");
     println!("       cua events --json [--after <sequence>]");
+    println!("       cua stream --unix --frames 3 --json");
     println!("       cua ui step <label> --step-index 2 --step-total 5 --json");
     println!("       cua ui reply <text> --json");
     println!("       cua perf live --json");
@@ -568,6 +589,97 @@ async fn doctor(json: bool) -> anyhow::Result<()> {
         println!("{report}");
     }
     Ok(())
+}
+
+async fn stream(profile: &str, args: StreamArgs) -> anyhow::Result<()> {
+    if !args.unix {
+        anyhow::bail!("stream currently uses the local Unix visual session; pass --unix");
+    }
+    let token = load_profile_token(profile).await?;
+    let socket_path = profile_socket_path(profile)?;
+    let stream = UnixStream::connect(&socket_path)
+        .await
+        .with_context(|| format!("connect {}", socket_path.display()))?;
+    let (read, mut write) = stream.into_split();
+    let mut lines = BufReader::new(read).lines();
+    let request = serde_json::json!({
+        "id": uuid::Uuid::new_v4().to_string(),
+        "token": token,
+        "method": "visual.session",
+        "params": {
+            "schema_version": SCHEMA_VERSION,
+            "max_width": args.max_width,
+            "fps": args.fps,
+            "include_bytes": args.include_bytes
+        }
+    });
+    write.write_all(request.to_string().as_bytes()).await?;
+    write.write_all(b"\n").await?;
+    write.flush().await?;
+    let mut frames = 0usize;
+    while let Some(line) = lines.next_line().await? {
+        let value: serde_json::Value = serde_json::from_str(&line)?;
+        if args.json {
+            println!("{line}");
+        } else if value.get("type").and_then(|kind| kind.as_str()) == Some("frame") {
+            let frame = &value["frame"]["envelope"];
+            println!(
+                "frame {} {}x{} display={}x{}",
+                frame["frame_id"],
+                frame["width"],
+                frame["height"],
+                frame["display_width"],
+                frame["display_height"]
+            );
+        } else {
+            println!("{value}");
+        }
+        if value.get("type").and_then(|kind| kind.as_str()) == Some("frame") {
+            frames += 1;
+            if frames >= args.frames {
+                let close = serde_json::json!({
+                    "id": uuid::Uuid::new_v4().to_string(),
+                    "token": token,
+                    "method": "visual.close",
+                    "params": {}
+                });
+                write.write_all(close.to_string().as_bytes()).await?;
+                write.write_all(b"\n").await?;
+                write.flush().await?;
+                break;
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn load_profile_token(profile: &str) -> anyhow::Result<String> {
+    if let Ok(token) = std::env::var("CUA_HTTP_TOKEN") {
+        if !token.trim().is_empty() {
+            return Ok(token);
+        }
+    }
+    let path = profile_token_path(profile)?;
+    let token = tokio::fs::read_to_string(&path)
+        .await
+        .with_context(|| format!("read profile token {}", path.display()))?;
+    Ok(token.trim().to_string())
+}
+
+fn profile_token_path(profile: &str) -> anyhow::Result<PathBuf> {
+    Ok(PathBuf::from(std::env::var("HOME")?)
+        .join(".cua")
+        .join("profiles")
+        .join(profile)
+        .join("http.token"))
+}
+
+fn profile_socket_path(profile: &str) -> anyhow::Result<PathBuf> {
+    Ok(PathBuf::from(std::env::var("HOME")?)
+        .join(".cua")
+        .join("profiles")
+        .join(profile)
+        .join("daemon.sock"))
 }
 
 async fn permissions(command: PermissionCommand) -> anyhow::Result<()> {

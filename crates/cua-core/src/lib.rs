@@ -104,6 +104,8 @@ pub struct FrameEnvelope {
     pub timestamp_mono_ns: u128,
     pub timestamp_wall_ms: i64,
     pub display_id: String,
+    pub display_width: u32,
+    pub display_height: u32,
     pub width: u32,
     pub height: u32,
     pub scale_factor: f64,
@@ -119,6 +121,23 @@ pub struct FrameEnvelope {
 pub struct FramePayload {
     pub envelope: FrameEnvelope,
     pub bytes_base64: Option<String>,
+}
+
+impl FrameEnvelope {
+    pub fn frame_to_display_x(&self, x: i32) -> i32 {
+        remap_axis(x, self.width, self.display_width)
+    }
+
+    pub fn frame_to_display_y(&self, y: i32) -> i32 {
+        remap_axis(y, self.height, self.display_height)
+    }
+}
+
+fn remap_axis(value: i32, from: u32, to: u32) -> i32 {
+    if from == 0 || to == 0 {
+        return value;
+    }
+    ((value as f64) * (to as f64 / from as f64)).round() as i32
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -371,6 +390,62 @@ pub struct InputRequest {
     pub action: InputAction,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct FrameActionRequest {
+    pub schema_version: String,
+    pub source_frame: FrameEnvelope,
+    pub action: InputAction,
+}
+
+impl FrameActionRequest {
+    pub fn into_display_action(self) -> InputAction {
+        remap_action_from_frame(self.action, &self.source_frame)
+    }
+}
+
+pub fn remap_action_from_frame(action: InputAction, frame: &FrameEnvelope) -> InputAction {
+    match action {
+        InputAction::MouseMove { x, y, duration_ms } => InputAction::MouseMove {
+            x: frame.frame_to_display_x(x),
+            y: frame.frame_to_display_y(y),
+            duration_ms,
+        },
+        InputAction::MouseClick {
+            x,
+            y,
+            button,
+            count,
+        } => InputAction::MouseClick {
+            x: frame.frame_to_display_x(x),
+            y: frame.frame_to_display_y(y),
+            button,
+            count,
+        },
+        InputAction::MouseDrag {
+            from_x,
+            from_y,
+            to_x,
+            to_y,
+            duration_ms,
+        } => InputAction::MouseDrag {
+            from_x: frame.frame_to_display_x(from_x),
+            from_y: frame.frame_to_display_y(from_y),
+            to_x: frame.frame_to_display_x(to_x),
+            to_y: frame.frame_to_display_y(to_y),
+            duration_ms,
+        },
+        action => action,
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct VisualSessionRequest {
+    pub schema_version: String,
+    pub max_width: Option<u32>,
+    pub fps: Option<u32>,
+    pub include_bytes: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct InputResult {
     pub schema_version: String,
@@ -507,6 +582,14 @@ pub fn schema_bundle() -> SchemaBundle {
         serde_json::json!(schema_for!(InputRequest)),
     );
     schemas.insert(
+        "FrameActionRequest".to_string(),
+        serde_json::json!(schema_for!(FrameActionRequest)),
+    );
+    schemas.insert(
+        "VisualSessionRequest".to_string(),
+        serde_json::json!(schema_for!(VisualSessionRequest)),
+    );
+    schemas.insert(
         "InputResult".to_string(),
         serde_json::json!(schema_for!(InputResult)),
     );
@@ -542,4 +625,51 @@ pub enum CuaError {
 
 pub fn now_wall_ms() -> i64 {
     Utc::now().timestamp_millis()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frame_action_remaps_mouse_coordinates_to_display_space() {
+        let frame = FrameEnvelope {
+            schema_version: SCHEMA_VERSION.to_string(),
+            frame_id: 7,
+            timestamp_mono_ns: 0,
+            timestamp_wall_ms: 0,
+            display_id: "main".to_string(),
+            display_width: 1512,
+            display_height: 982,
+            width: 1280,
+            height: 831,
+            scale_factor: 1.0,
+            pixel_format: "rgba8".to_string(),
+            encoding: FrameEncoding::Jpeg,
+            byte_len: 0,
+            sha256: String::new(),
+            cursor: CursorState {
+                x: 0.0,
+                y: 0.0,
+                visible: true,
+                included_in_frame: false,
+            },
+            damage_rects: Vec::new(),
+        };
+
+        let action = remap_action_from_frame(
+            InputAction::MouseClick {
+                x: 100,
+                y: 100,
+                button: MouseButton::Left,
+                count: 1,
+            },
+            &frame,
+        );
+
+        assert!(matches!(
+            action,
+            InputAction::MouseClick { x: 118, y: 118, .. }
+        ));
+    }
 }

@@ -1,7 +1,7 @@
 use anyhow::{bail, Context};
 use cua_core::{
-    DesktopContextSnapshot, DesktopState, FrameEncoding, FramePayload, InputAction, UiReplyRequest,
-    UiStepRequest, SCHEMA_VERSION,
+    DesktopContextSnapshot, DesktopState, FrameActionRequest, FrameEncoding, FrameEnvelope,
+    FramePayload, InputAction, UiReplyRequest, UiStepRequest, SCHEMA_VERSION,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -141,6 +141,23 @@ impl CuaClient {
             .await
     }
 
+    pub async fn dispatch_frame(
+        &self,
+        source_frame: FrameEnvelope,
+        action: &InputAction,
+    ) -> anyhow::Result<Value> {
+        ensure_dispatchable(action)?;
+        self.request(
+            "input.dispatch_frame",
+            Some(serde_json::to_value(FrameActionRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                source_frame,
+                action: action.clone(),
+            })?),
+        )
+        .await
+    }
+
     pub async fn session(&self) -> anyhow::Result<CuaSession> {
         CuaSession::connect(self).await
     }
@@ -195,6 +212,23 @@ impl CuaSession {
         ensure_dispatchable(action)?;
         self.request("input.dispatch", Some(serde_json::to_value(action)?))
             .await
+    }
+
+    pub async fn dispatch_frame(
+        &mut self,
+        source_frame: FrameEnvelope,
+        action: &InputAction,
+    ) -> anyhow::Result<Value> {
+        ensure_dispatchable(action)?;
+        self.request(
+            "input.dispatch_frame",
+            Some(serde_json::to_value(FrameActionRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                source_frame,
+                action: action.clone(),
+            })?),
+        )
+        .await
     }
 
     pub async fn events_after(&mut self, sequence: u64) -> anyhow::Result<Vec<Value>> {

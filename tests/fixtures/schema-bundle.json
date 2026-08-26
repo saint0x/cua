@@ -348,8 +348,18 @@
               },
               "type": "array"
             },
+            "display_height": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            },
             "display_id": {
               "type": "string"
+            },
+            "display_width": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
             },
             "encoding": {
               "$ref": "#/definitions/FrameEncoding"
@@ -396,7 +406,9 @@
             "byte_len",
             "cursor",
             "damage_rects",
+            "display_height",
             "display_id",
+            "display_width",
             "encoding",
             "frame_id",
             "height",
@@ -660,8 +672,18 @@
               },
               "type": "array"
             },
+            "display_height": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            },
             "display_id": {
               "type": "string"
+            },
+            "display_width": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
             },
             "encoding": {
               "$ref": "#/definitions/FrameEncoding"
@@ -708,7 +730,9 @@
             "byte_len",
             "cursor",
             "damage_rects",
+            "display_height",
             "display_id",
+            "display_width",
             "encoding",
             "frame_id",
             "height",
@@ -881,6 +905,429 @@
       "title": "DesktopState",
       "type": "object"
     },
+    "FrameActionRequest": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "CursorState": {
+          "properties": {
+            "included_in_frame": {
+              "type": "boolean"
+            },
+            "visible": {
+              "type": "boolean"
+            },
+            "x": {
+              "format": "double",
+              "type": "number"
+            },
+            "y": {
+              "format": "double",
+              "type": "number"
+            }
+          },
+          "required": [
+            "included_in_frame",
+            "visible",
+            "x",
+            "y"
+          ],
+          "type": "object"
+        },
+        "FrameEncoding": {
+          "enum": [
+            "png",
+            "jpeg",
+            "raw_bgra"
+          ],
+          "type": "string"
+        },
+        "FrameEnvelope": {
+          "properties": {
+            "byte_len": {
+              "format": "uint",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "cursor": {
+              "$ref": "#/definitions/CursorState"
+            },
+            "damage_rects": {
+              "items": {
+                "$ref": "#/definitions/Rect"
+              },
+              "type": "array"
+            },
+            "display_height": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "display_id": {
+              "type": "string"
+            },
+            "display_width": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "encoding": {
+              "$ref": "#/definitions/FrameEncoding"
+            },
+            "frame_id": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "height": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "pixel_format": {
+              "type": "string"
+            },
+            "scale_factor": {
+              "format": "double",
+              "type": "number"
+            },
+            "schema_version": {
+              "type": "string"
+            },
+            "sha256": {
+              "type": "string"
+            },
+            "timestamp_mono_ns": {
+              "format": "uint128",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "timestamp_wall_ms": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "width": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "byte_len",
+            "cursor",
+            "damage_rects",
+            "display_height",
+            "display_id",
+            "display_width",
+            "encoding",
+            "frame_id",
+            "height",
+            "pixel_format",
+            "scale_factor",
+            "schema_version",
+            "sha256",
+            "timestamp_mono_ns",
+            "timestamp_wall_ms",
+            "width"
+          ],
+          "type": "object"
+        },
+        "InputAction": {
+          "oneOf": [
+            {
+              "properties": {
+                "duration_ms": {
+                  "format": "uint64",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "mouse_move"
+                  ],
+                  "type": "string"
+                },
+                "x": {
+                  "format": "int32",
+                  "type": "integer"
+                },
+                "y": {
+                  "format": "int32",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "duration_ms",
+                "kind",
+                "x",
+                "y"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "button": {
+                  "$ref": "#/definitions/MouseButton"
+                },
+                "count": {
+                  "format": "uint8",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "mouse_click"
+                  ],
+                  "type": "string"
+                },
+                "x": {
+                  "format": "int32",
+                  "type": "integer"
+                },
+                "y": {
+                  "format": "int32",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "button",
+                "count",
+                "kind",
+                "x",
+                "y"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "duration_ms": {
+                  "format": "uint64",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "from_x": {
+                  "format": "int32",
+                  "type": "integer"
+                },
+                "from_y": {
+                  "format": "int32",
+                  "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "mouse_drag"
+                  ],
+                  "type": "string"
+                },
+                "to_x": {
+                  "format": "int32",
+                  "type": "integer"
+                },
+                "to_y": {
+                  "format": "int32",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "duration_ms",
+                "from_x",
+                "from_y",
+                "kind",
+                "to_x",
+                "to_y"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "combo": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "key_press"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "combo",
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "key_type"
+                  ],
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "text"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "key_paste"
+                  ],
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "text"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "allow_sensitive": {
+                  "type": "boolean"
+                },
+                "kind": {
+                  "enum": [
+                    "clipboard_read"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "allow_sensitive",
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "clipboard_write"
+                  ],
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "text"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "pause"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "resume"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "kill_switch"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "MouseButton": {
+          "enum": [
+            "left",
+            "right",
+            "middle"
+          ],
+          "type": "string"
+        },
+        "Rect": {
+          "properties": {
+            "height": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "width": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "x": {
+              "format": "int32",
+              "type": "integer"
+            },
+            "y": {
+              "format": "int32",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "height",
+            "width",
+            "x",
+            "y"
+          ],
+          "type": "object"
+        }
+      },
+      "properties": {
+        "action": {
+          "$ref": "#/definitions/InputAction"
+        },
+        "schema_version": {
+          "type": "string"
+        },
+        "source_frame": {
+          "$ref": "#/definitions/FrameEnvelope"
+        }
+      },
+      "required": [
+        "action",
+        "schema_version",
+        "source_frame"
+      ],
+      "title": "FrameActionRequest",
+      "type": "object"
+    },
     "FrameEnvelope": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "definitions": {
@@ -962,8 +1409,18 @@
           },
           "type": "array"
         },
+        "display_height": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
         "display_id": {
           "type": "string"
+        },
+        "display_width": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
         },
         "encoding": {
           "$ref": "#/definitions/FrameEncoding"
@@ -1010,7 +1467,9 @@
         "byte_len",
         "cursor",
         "damage_rects",
+        "display_height",
         "display_id",
+        "display_width",
         "encoding",
         "frame_id",
         "height",
@@ -1077,8 +1536,18 @@
               },
               "type": "array"
             },
+            "display_height": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            },
             "display_id": {
               "type": "string"
+            },
+            "display_width": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
             },
             "encoding": {
               "$ref": "#/definitions/FrameEncoding"
@@ -1125,7 +1594,9 @@
             "byte_len",
             "cursor",
             "damage_rects",
+            "display_height",
             "display_id",
+            "display_width",
             "encoding",
             "frame_id",
             "height",
@@ -1248,8 +1719,18 @@
               },
               "type": "array"
             },
+            "display_height": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            },
             "display_id": {
               "type": "string"
+            },
+            "display_width": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
             },
             "encoding": {
               "$ref": "#/definitions/FrameEncoding"
@@ -1296,7 +1777,9 @@
             "byte_len",
             "cursor",
             "damage_rects",
+            "display_height",
             "display_id",
+            "display_width",
             "encoding",
             "frame_id",
             "height",
@@ -2636,6 +3119,39 @@
         "schema_version"
       ],
       "title": "UiStepResult",
+      "type": "object"
+    },
+    "VisualSessionRequest": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "fps": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "include_bytes": {
+          "type": "boolean"
+        },
+        "max_width": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "schema_version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "include_bytes",
+        "schema_version"
+      ],
+      "title": "VisualSessionRequest",
       "type": "object"
     }
   }

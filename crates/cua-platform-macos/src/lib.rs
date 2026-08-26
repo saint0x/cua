@@ -310,6 +310,8 @@ unsafe fn image_to_frame(
     let frame_id = started.elapsed().as_millis() as u64;
     let width = buffer.width();
     let height = buffer.height();
+    let display_width = unsafe { CGDisplayPixelsWide(display_id) } as u32;
+    let display_height = unsafe { CGDisplayPixelsHigh(display_id) } as u32;
     Ok(CapturedFrame {
         envelope: FrameEnvelope {
             schema_version: SCHEMA_VERSION.to_string(),
@@ -317,6 +319,8 @@ unsafe fn image_to_frame(
             timestamp_mono_ns: started.elapsed().as_nanos(),
             timestamp_wall_ms: now_wall_ms(),
             display_id: display_id.to_string(),
+            display_width,
+            display_height,
             width,
             height,
             scale_factor: 1.0,

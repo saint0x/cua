@@ -23,6 +23,8 @@ HTTP_UI_REPLY="$OUT_DIR/http-ui-reply.json"
 HTTP_OBSERVE="$OUT_DIR/http-observe.json"
 HTTP_CONTEXT="$OUT_DIR/http-context.json"
 HTTP_SCREENSHOT="$OUT_DIR/http-screenshot.json"
+HTTP_FRAME_ACTION="$OUT_DIR/http-frame-action.json"
+HTTP_CURSOR_AFTER_FRAME_ACTION="$OUT_DIR/http-cursor-after-frame-action.json"
 CLI_STATUS="$OUT_DIR/cli-status.json"
 CLI_MANIFEST="$OUT_DIR/cli-manifest.json"
 CLI_METRICS="$OUT_DIR/cli-metrics.json"
@@ -37,6 +39,7 @@ CLI_PAUSE="$OUT_DIR/cli-pause.json"
 CLI_RESUME="$OUT_DIR/cli-resume.json"
 CLI_SCREENSHOT_JSON="$OUT_DIR/cli-screenshot.json"
 CLI_SCREENSHOT_PNG="$OUT_DIR/cli-screenshot.png"
+CLI_STREAM="$OUT_DIR/cli-stream.jsonl"
 UNIX_STATUS="$OUT_DIR/unix-status.json"
 UNIX_MANIFEST="$OUT_DIR/unix-manifest.json"
 UNIX_METRICS="$OUT_DIR/unix-metrics.json"
@@ -162,6 +165,13 @@ curl -fsS \
   -H "content-type: application/json" \
   -d '{"max_width":640,"encoding":"png","force_fresh":true,"include_bytes":false}' \
   "http://$ADDR/capture/screenshot" > "$HTTP_SCREENSHOT"
+curl -fsS \
+  -H "authorization: Bearer $TOKEN" \
+  -H "content-type: application/json" \
+  -d "$(jq -c '{schema_version:"cua.v1",source_frame:.envelope,action:{kind:"mouse_move",x:100,y:100,duration_ms:0}}' "$HTTP_SCREENSHOT")" \
+  "http://$ADDR/input/frame" > "$HTTP_FRAME_ACTION"
+sleep 0.2
+curl -fsS -H "authorization: Bearer $TOKEN" "http://$ADDR/observe/cursor" > "$HTTP_CURSOR_AFTER_FRAME_ACTION"
 
 CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFILE" status --json > "$CLI_STATUS"
 CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFILE" manifest --json > "$CLI_MANIFEST"
@@ -191,6 +201,11 @@ CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFIL
   --max-width 640 \
   --force-fresh \
   --json > "$CLI_SCREENSHOT_JSON"
+CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFILE" stream \
+  --unix \
+  --frames 2 \
+  --fps 5 \
+  --json > "$CLI_STREAM"
 
 unix_call "status" '{}' "$UNIX_STATUS"
 unix_call "manifest" '{}' "$UNIX_MANIFEST"
@@ -219,7 +234,7 @@ unix_call "control.resume" '{}' "$UNIX_RESUME"
 
 jq -e '.schema_version == "cua.v1" and .active_profile == $profile' \
   --arg profile "$PROFILE" "$HTTP_STATUS" >/dev/null
-jq -e '(.public_surfaces | index("cli")) and (.public_surfaces | index("local_http")) and (.endpoints | index("POST /context/snapshot"))' \
+jq -e '(.public_surfaces | index("cli")) and (.public_surfaces | index("local_http")) and (.endpoints | index("POST /context/snapshot")) and (.endpoints | index("POST /input/frame")) and (.endpoints | index("UNIX visual.session"))' \
   "$HTTP_MANIFEST" >/dev/null
 jq -e '.schema_version == "cua.v1" and (.histograms | type) == "array" and (.counters | type) == "object"' \
   "$HTTP_METRICS" >/dev/null
@@ -237,9 +252,13 @@ jq -e '.frame.envelope.encoding == "png" and .frame.envelope.width > 0 and (.des
   "$HTTP_CONTEXT" >/dev/null
 jq -e '.envelope.encoding == "png" and .envelope.width > 0 and .envelope.height > 0 and (.envelope.sha256 | length) > 0' \
   "$HTTP_SCREENSHOT" >/dev/null
+EXPECTED_FRAME_X="$(jq '((100 * (.envelope.display_width / .envelope.width)) | round)' "$HTTP_SCREENSHOT")"
+EXPECTED_FRAME_Y="$(jq '((100 * (.envelope.display_height / .envelope.height)) | round)' "$HTTP_SCREENSHOT")"
+jq -e '.effect == "confirmed" and .route == "accessibility"' "$HTTP_FRAME_ACTION" >/dev/null
+jq -e '.x == '"$EXPECTED_FRAME_X"' and .y == '"$EXPECTED_FRAME_Y" "$HTTP_CURSOR_AFTER_FRAME_ACTION" >/dev/null
 jq -e '.schema_version == "cua.v1" and .active_profile == $profile' \
   --arg profile "$PROFILE" "$CLI_STATUS" >/dev/null
-jq -e '(.public_surfaces | index("cli")) and (.public_surfaces | index("local_http")) and (.commands | index("cua context --json"))' \
+jq -e '(.public_surfaces | index("cli")) and (.public_surfaces | index("local_http")) and (.commands | index("cua context --json")) and (.commands | index("cua stream --unix --json"))' \
   "$CLI_MANIFEST" >/dev/null
 jq -e '.schema_version == "cua.v1" and (.histograms | type) == "array" and (.counters | type) == "object"' \
   "$CLI_METRICS" >/dev/null
@@ -261,9 +280,11 @@ jq -e '.safety_state == "running"' "$CLI_RESUME" >/dev/null
 jq -e '.encoding == "png" and .width > 0 and .height > 0 and (.sha256 | length) > 0' \
   "$CLI_SCREENSHOT_JSON" >/dev/null
 test -s "$CLI_SCREENSHOT_PNG"
+jq -s -e 'map(select(.type == "frame")) | length == 2 and all(.[]; .frame.envelope.width > 0 and .frame.envelope.display_width > 0 and .frame.bytes_base64 == null)' \
+  "$CLI_STREAM" >/dev/null
 jq -e '.schema_version == "cua.v1" and .active_profile == $profile' \
   --arg profile "$PROFILE" "$UNIX_STATUS" >/dev/null
-jq -e '(.public_surfaces | index("local_unix_socket")) and (.endpoints | index("POST /context/snapshot"))' \
+jq -e '(.public_surfaces | index("local_unix_socket")) and (.endpoints | index("POST /context/snapshot")) and (.endpoints | index("UNIX visual.session"))' \
   "$UNIX_MANIFEST" >/dev/null
 jq -e '.schema_version == "cua.v1" and (.histograms | type) == "array" and (.counters | type) == "object"' \
   "$UNIX_METRICS" >/dev/null
@@ -300,6 +321,8 @@ jq -n \
   --slurpfile http_observe "$HTTP_OBSERVE" \
   --slurpfile http_context "$HTTP_CONTEXT" \
   --slurpfile http_screenshot "$HTTP_SCREENSHOT" \
+  --slurpfile http_frame_action "$HTTP_FRAME_ACTION" \
+  --slurpfile http_cursor_after_frame_action "$HTTP_CURSOR_AFTER_FRAME_ACTION" \
   --slurpfile cli_status "$CLI_STATUS" \
   --slurpfile cli_manifest "$CLI_MANIFEST" \
   --slurpfile cli_metrics "$CLI_METRICS" \
@@ -313,6 +336,7 @@ jq -n \
   --slurpfile cli_pause "$CLI_PAUSE" \
   --slurpfile cli_resume "$CLI_RESUME" \
   --slurpfile cli_screenshot_json "$CLI_SCREENSHOT_JSON" \
+  --slurpfile cli_stream "$CLI_STREAM" \
   --slurpfile unix_status "$UNIX_STATUS" \
   --slurpfile unix_manifest "$UNIX_MANIFEST" \
   --slurpfile unix_metrics "$UNIX_METRICS" \
@@ -356,7 +380,15 @@ jq -n \
       screenshot: {
         width: $http_screenshot[0].envelope.width,
         height: $http_screenshot[0].envelope.height,
+        display_width: $http_screenshot[0].envelope.display_width,
+        display_height: $http_screenshot[0].envelope.display_height,
         sha256: $http_screenshot[0].envelope.sha256
+      },
+      frame_action: {
+        effect: $http_frame_action[0].effect,
+        route: $http_frame_action[0].route,
+        cursor_x: $http_cursor_after_frame_action[0].x,
+        cursor_y: $http_cursor_after_frame_action[0].y
       }
     },
     cli: {
@@ -389,6 +421,11 @@ jq -n \
         width: $cli_screenshot_json[0].width,
         height: $cli_screenshot_json[0].height,
         sha256: $cli_screenshot_json[0].sha256
+      },
+      stream: {
+        frames: ($cli_stream | map(select(.type == "frame")) | length),
+        width: ($cli_stream | map(select(.type == "frame")) | .[0].frame.envelope.width),
+        display_width: ($cli_stream | map(select(.type == "frame")) | .[0].frame.envelope.display_width)
       }
     },
     unix: {

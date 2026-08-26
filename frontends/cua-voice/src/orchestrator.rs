@@ -5,7 +5,7 @@ use crate::planner::{parse_fast_command, PlannedTurn, Planner};
 use crate::stt::SttClient;
 use crate::ui_state::VoiceUiEvent;
 use anyhow::Context;
-use cua_core::{DesktopState, FramePayload};
+use cua_core::{DesktopState, FrameEnvelope, FramePayload};
 use std::sync::mpsc::Sender;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -223,10 +223,19 @@ async fn plan_and_dispatch(
             )
             .await?;
         send_metric(&tx, "plan_ms", plan_started.elapsed());
-        return dispatch_plan(local, context.session, plan, step_publisher, tx).await;
+        let source_frame = context.frame.as_ref().map(|frame| frame.envelope.clone());
+        return dispatch_plan(
+            local,
+            context.session,
+            plan,
+            source_frame,
+            step_publisher,
+            tx,
+        )
+        .await;
     };
     send_metric(&tx, "plan_ms", plan_started.elapsed());
-    dispatch_plan(local, None, plan, step_publisher, tx).await
+    dispatch_plan(local, None, plan, None, step_publisher, tx).await
 }
 
 async fn prefetch_context(
@@ -251,6 +260,7 @@ async fn dispatch_plan(
     local: CuaClient,
     mut session: Option<CuaSession>,
     plan: PlannedTurn,
+    source_frame: Option<FrameEnvelope>,
     step_publisher: VoiceStepPublisher,
     tx: Sender<VoiceUiEvent>,
 ) -> anyhow::Result<()> {
@@ -260,8 +270,14 @@ async fn dispatch_plan(
         step_publisher.publish(voice_step_label("dispatch", &format!("{action:?}")));
         let dispatch_started = Instant::now();
         let result = match session.as_mut() {
-            Some(session) => session.dispatch(action).await?,
-            None => local.dispatch(action).await?,
+            Some(session) => match source_frame.clone() {
+                Some(frame) => session.dispatch_frame(frame, action).await?,
+                None => session.dispatch(action).await?,
+            },
+            None => match source_frame {
+                Some(frame) => local.dispatch_frame(frame, action).await?,
+                None => local.dispatch(action).await?,
+            },
         };
         send_metric(&tx, "dispatch_ms", dispatch_started.elapsed());
         tx.send(VoiceUiEvent::Reply(format!(

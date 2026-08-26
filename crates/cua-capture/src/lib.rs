@@ -93,7 +93,19 @@ impl FrameBus {
                 });
             }
         }
-        let frame = self.backend.capture_latest(request).await?;
+        let frame = match self.backend.capture_latest(request).await {
+            Ok(frame) => frame,
+            Err(error) => {
+                if let Some(frame) = self.latest.read().await.clone() {
+                    return Ok(FrameLookup {
+                        frame,
+                        cache_hit: true,
+                        wait_ns: elapsed_ns(started),
+                    });
+                }
+                return Err(error);
+            }
+        };
         *self.latest.write().await = Some(frame.clone());
         Ok(FrameLookup {
             frame,
@@ -193,6 +205,8 @@ impl CaptureBackend for SyntheticCaptureBackend {
             timestamp_mono_ns: self.started.elapsed().as_nanos(),
             timestamp_wall_ms: now_wall_ms(),
             display_id: "synthetic-primary".to_string(),
+            display_width: width,
+            display_height: height,
             width,
             height,
             scale_factor: 1.0,
@@ -282,6 +296,7 @@ pub fn monotonic_seed() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     #[tokio::test]
     async fn synthetic_capture_returns_nonblank_png() {
@@ -314,5 +329,61 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(30)).await;
         let envelope = bus.latest_envelope().await;
         assert!(envelope.is_some());
+    }
+
+    #[tokio::test]
+    async fn fresh_capture_failure_uses_last_good_frame() {
+        let backend = Arc::new(FlakyCaptureBackend {
+            fail: AtomicBool::new(false),
+        });
+        let bus = FrameBus::new(backend.clone());
+        let first = bus
+            .latest_or_capture_timed(CaptureRequest {
+                max_width: Some(320),
+                encoding: FrameEncoding::Jpeg,
+                force_fresh: true,
+            })
+            .await
+            .unwrap();
+
+        backend.fail.store(true, Ordering::SeqCst);
+        let second = bus
+            .latest_or_capture_timed(CaptureRequest {
+                max_width: Some(320),
+                encoding: FrameEncoding::Jpeg,
+                force_fresh: true,
+            })
+            .await
+            .unwrap();
+
+        assert!(second.cache_hit);
+        assert_eq!(
+            first.frame.envelope.frame_id,
+            second.frame.envelope.frame_id
+        );
+    }
+
+    struct FlakyCaptureBackend {
+        fail: AtomicBool,
+    }
+
+    #[async_trait]
+    impl CaptureBackend for FlakyCaptureBackend {
+        async fn capture_latest(&self, request: CaptureRequest) -> anyhow::Result<CapturedFrame> {
+            if self.fail.load(Ordering::SeqCst) {
+                anyhow::bail!("capture failed");
+            }
+            SyntheticCaptureBackend::default()
+                .capture_latest(request)
+                .await
+        }
+
+        async fn displays(&self) -> anyhow::Result<Vec<DisplayInfo>> {
+            SyntheticCaptureBackend::default().displays().await
+        }
+
+        fn name(&self) -> &'static str {
+            "flaky"
+        }
     }
 }
