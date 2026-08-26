@@ -448,6 +448,7 @@ mod tests {
                 id: "1".to_string(),
                 app_name: Some("Terminal".to_string()),
                 title: Some("cua".to_string()),
+                layer: 0,
                 x: 10,
                 y: 20,
                 width: 900,

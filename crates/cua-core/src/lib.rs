@@ -74,6 +74,8 @@ pub struct WindowInfo {
     pub id: String,
     pub app_name: Option<String>,
     pub title: Option<String>,
+    #[serde(default)]
+    pub layer: i32,
     pub x: i32,
     pub y: i32,
     pub width: u32,

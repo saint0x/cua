@@ -217,10 +217,15 @@ impl FrameBus {
             request.force_fresh = true;
             loop {
                 ticker.tick().await;
-                if let Ok(frame) =
-                    capture_latest_timed(&self.backend, request.clone(), self.capture_timeout).await
+                match capture_latest_timed(&self.backend, request.clone(), self.capture_timeout)
+                    .await
                 {
-                    *self.latest.write().await = Some(frame);
+                    Ok(frame) => {
+                        *self.latest.write().await = Some(frame);
+                    }
+                    Err(_) => {
+                        tokio::time::sleep(capture_failure_backoff()).await;
+                    }
                 }
             }
         })
@@ -272,6 +277,15 @@ fn capture_timeout_from_env() -> Duration {
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(2_500)
+        .clamp(250, 30_000);
+    Duration::from_millis(millis)
+}
+
+fn capture_failure_backoff() -> Duration {
+    let millis = std::env::var("CUA_CAPTURE_FAILURE_BACKOFF_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(2_000)
         .clamp(250, 30_000);
     Duration::from_millis(millis)
 }

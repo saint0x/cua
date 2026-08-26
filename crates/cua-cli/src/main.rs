@@ -55,6 +55,7 @@ enum Command {
         command: UiCommand,
     },
     Screenshot(ScreenshotArgs),
+    WindowCapture(WindowCaptureArgs),
     Observe(JsonFlag),
     Mouse {
         #[command(subcommand)]
@@ -224,6 +225,17 @@ struct ScreenshotArgs {
     json: bool,
     #[arg(long)]
     force_fresh: bool,
+    #[arg(long, default_value_t = 1280)]
+    max_width: u32,
+}
+
+#[derive(Debug, Args)]
+struct WindowCaptureArgs {
+    window_id: u32,
+    #[arg(long)]
+    out: PathBuf,
+    #[arg(long)]
+    json: bool,
     #[arg(long, default_value_t = 1280)]
     max_width: u32,
 }
@@ -447,6 +459,9 @@ async fn main() -> anyhow::Result<()> {
         Some(Command::Stream(args)) => stream(&cli.profile, args).await,
         Some(Command::Ui { command }) => ui(cli.server_addr, &cli.profile, command).await,
         Some(Command::Screenshot(args)) => screenshot(cli.server_addr, &cli.profile, args).await,
+        Some(Command::WindowCapture(args)) => {
+            window_capture(cli.server_addr, &cli.profile, args).await
+        }
         Some(Command::Observe(flag)) => {
             get_json(cli.server_addr, &cli.profile, "/observe/desktop", flag.json).await
         }
@@ -1013,29 +1028,65 @@ async fn screenshot(addr: SocketAddr, profile: &str, args: ScreenshotArgs) -> an
         }))
         .send()
         .await?
+        .error_for_status()
+        .context("screenshot request failed")?
         .json()
         .await?;
+    write_frame_payload(&frame, &args.out, args.json, "screenshot").await
+}
+
+async fn window_capture(
+    addr: SocketAddr,
+    profile: &str,
+    args: WindowCaptureArgs,
+) -> anyhow::Result<()> {
+    let url = format!("http://{addr}/capture/window");
+    let token = cua_daemon::load_or_create_profile_token(profile).await?;
+    let frame: FramePayload = reqwest::Client::new()
+        .post(url)
+        .bearer_auth(token)
+        .json(&serde_json::json!({
+            "window_id": args.window_id,
+            "max_width": args.max_width,
+            "encoding": FrameEncoding::Png,
+            "include_bytes": true
+        }))
+        .send()
+        .await?
+        .error_for_status()
+        .context("window capture request failed")?
+        .json()
+        .await?;
+    write_frame_payload(&frame, &args.out, args.json, "window").await
+}
+
+async fn write_frame_payload(
+    frame: &FramePayload,
+    out: &Path,
+    json: bool,
+    label: &str,
+) -> anyhow::Result<()> {
     let bytes_base64 = frame
         .bytes_base64
         .as_deref()
-        .context("screenshot response did not include bytes")?;
+        .context("capture response did not include bytes")?;
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(bytes_base64)
-        .context("decode screenshot bytes")?;
-    if let Some(parent) = args.out.parent() {
+        .context("decode capture bytes")?;
+    if let Some(parent) = out.parent() {
         tokio::fs::create_dir_all(parent)
             .await
-            .with_context(|| format!("create screenshot directory {}", parent.display()))?;
+            .with_context(|| format!("create capture directory {}", parent.display()))?;
     }
-    tokio::fs::write(&args.out, bytes)
+    tokio::fs::write(out, bytes)
         .await
-        .with_context(|| format!("write screenshot {}", args.out.display()))?;
-    if args.json {
+        .with_context(|| format!("write capture {}", out.display()))?;
+    if json {
         println!("{}", serde_json::to_string_pretty(&frame.envelope)?);
     } else {
         println!(
-            "wrote {} frame_id={}",
-            args.out.display(),
+            "wrote {label} {} frame_id={}",
+            out.display(),
             frame.envelope.frame_id
         );
     }

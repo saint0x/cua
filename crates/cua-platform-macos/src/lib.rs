@@ -9,7 +9,7 @@ use cua_capture::{
 };
 use cua_core::{
     now_wall_ms, CursorState, DeliveryMode, DisplayInfo, Effect, Evidence, EvidenceKind,
-    FrameEnvelope, InputAction, InputRequest, InputResult, InputRoute, MouseButton,
+    FrameEncoding, FrameEnvelope, InputAction, InputRequest, InputResult, InputRoute, MouseButton,
     PermissionReport, PermissionState, Rect, WindowInfo, SCHEMA_VERSION,
 };
 use cua_input::{InputBackend, RefusingInputBackend};
@@ -157,6 +157,10 @@ pub fn window_list() -> anyhow::Result<Vec<WindowInfo>> {
     native_window_list()
 }
 
+pub fn capture_window(window_id: u32, request: CaptureRequest) -> anyhow::Result<CapturedFrame> {
+    native_capture_window(window_id, request)
+}
+
 #[cfg(target_os = "macos")]
 fn capture_main_display(
     started: Instant,
@@ -169,13 +173,13 @@ fn capture_main_display(
             Err(error) => errors.push(format!("sck: {error}")),
         }
     }
-    match capture_main_display_window_list(started, request.clone()) {
-        Ok(frame) => return Ok(frame),
-        Err(error) => errors.push(format!("window_list_image: {error}")),
-    }
     match capture_main_display_core_graphics(started, request.clone()) {
         Ok(frame) => return Ok(frame),
         Err(error) => errors.push(format!("display_image: {error}")),
+    }
+    match capture_main_display_window_list(started, request.clone()) {
+        Ok(frame) => return Ok(frame),
+        Err(error) => errors.push(format!("window_list_image: {error}")),
     }
     match capture_main_display_screencapture(started, request) {
         Ok(frame) => Ok(frame),
@@ -219,6 +223,7 @@ fn capture_main_display_sck(
                         display_id,
                         image.cast(),
                         callback_request.clone(),
+                        FrameGeometry::display(display_id),
                     )
                 }
             };
@@ -255,7 +260,16 @@ fn capture_main_display_core_graphics(
             "CGDisplayCreateImage returned null; Screen Recording permission may be missing"
         );
     }
-    let result = unsafe { image_to_frame(started, capture_started, display_id, image, request) };
+    let result = unsafe {
+        image_to_frame(
+            started,
+            capture_started,
+            display_id,
+            image,
+            request,
+            FrameGeometry::display(display_id),
+        )
+    };
     unsafe { CFRelease(image.cast()) };
     result
 }
@@ -279,9 +293,168 @@ fn capture_main_display_window_list(
     if image.is_null() {
         anyhow::bail!("CGWindowListCreateImage returned null");
     }
-    let result = unsafe { image_to_frame(started, capture_started, display_id, image, request) };
+    let result = unsafe {
+        image_to_frame(
+            started,
+            capture_started,
+            display_id,
+            image,
+            request,
+            FrameGeometry::display(display_id),
+        )
+    };
     unsafe { CFRelease(image.cast()) };
     result
+}
+
+#[cfg(target_os = "macos")]
+fn native_capture_window(window_id: u32, request: CaptureRequest) -> anyhow::Result<CapturedFrame> {
+    let started = Instant::now();
+    if let Ok(frame) = capture_window_from_display(started, window_id, request.clone()) {
+        return Ok(frame);
+    }
+    if let Ok(frame) = capture_window_screencapture(started, window_id, request.clone()) {
+        return Ok(frame);
+    }
+    capture_window_core_graphics(started, window_id, request)
+}
+
+#[cfg(target_os = "macos")]
+fn capture_window_from_display(
+    started: Instant,
+    window_id: u32,
+    request: CaptureRequest,
+) -> anyhow::Result<CapturedFrame> {
+    let capture_started = Instant::now();
+    let display_id = unsafe { CGMainDisplayID() };
+    let geometry = window_geometry(window_id)?
+        .ok_or_else(|| anyhow::anyhow!("window {window_id} was not found"))?;
+    let full_frame = capture_main_display(
+        started,
+        CaptureRequest {
+            max_width: None,
+            encoding: FrameEncoding::Png,
+            force_fresh: true,
+        },
+    )?;
+    let image = image::load_from_memory(full_frame.bytes.as_ref())
+        .map_err(|error| anyhow::anyhow!("decode display frame for window crop: {error}"))?
+        .to_rgba8();
+    let crop_x = geometry
+        .frame_origin_x
+        .saturating_sub(full_frame.envelope.display_x)
+        .max(0) as u32;
+    let crop_y = geometry
+        .frame_origin_y
+        .saturating_sub(full_frame.envelope.display_y)
+        .max(0) as u32;
+    if crop_x >= image.width() || crop_y >= image.height() {
+        anyhow::bail!("window {window_id} is outside the captured display frame");
+    }
+    let crop_width = (geometry.capture_bounds.size.width.round().max(1.0) as u32)
+        .min(image.width().saturating_sub(crop_x));
+    let crop_height = (geometry.capture_bounds.size.height.round().max(1.0) as u32)
+        .min(image.height().saturating_sub(crop_y));
+    if crop_width == 0 || crop_height == 0 {
+        anyhow::bail!("window {window_id} crop is empty");
+    }
+    let crop =
+        image::imageops::crop_imm(&image, crop_x, crop_y, crop_width, crop_height).to_image();
+    rgba_image_to_frame(
+        started,
+        capture_started,
+        display_id,
+        crop,
+        request,
+        geometry,
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn capture_window_core_graphics(
+    started: Instant,
+    window_id: u32,
+    request: CaptureRequest,
+) -> anyhow::Result<CapturedFrame> {
+    let capture_started = Instant::now();
+    let display_id = unsafe { CGMainDisplayID() };
+    let geometry =
+        window_geometry(window_id)?.unwrap_or_else(|| FrameGeometry::display(display_id));
+    let image = unsafe {
+        CGWindowListCreateImage(
+            geometry.capture_bounds,
+            CG_WINDOW_LIST_OPTION_INCLUDING_WINDOW,
+            window_id,
+            CG_WINDOW_IMAGE_DEFAULT,
+        )
+    };
+    if image.is_null() {
+        anyhow::bail!("CGWindowListCreateImage returned null for window {window_id}");
+    }
+    let result = unsafe {
+        image_to_frame(
+            started,
+            capture_started,
+            display_id,
+            image,
+            request,
+            geometry,
+        )
+    };
+    unsafe { CFRelease(image.cast()) };
+    result
+}
+
+#[cfg(target_os = "macos")]
+fn capture_window_screencapture(
+    started: Instant,
+    window_id: u32,
+    request: CaptureRequest,
+) -> anyhow::Result<CapturedFrame> {
+    let capture_started = Instant::now();
+    let path = std::env::temp_dir().join(format!(
+        "cua-window-screencapture-{}-{}-{}.png",
+        std::process::id(),
+        window_id,
+        monotonic_capture_id(started)
+    ));
+    let window_id_arg = window_id.to_string();
+    let output = std::process::Command::new("/usr/sbin/screencapture")
+        .args(["-x", "-l", window_id_arg.as_str(), "-t", "png"])
+        .arg(&path)
+        .output()
+        .map_err(|error| anyhow::anyhow!("launch window screencapture: {error}"))?;
+    if !output.status.success() {
+        let _ = std::fs::remove_file(&path);
+        anyhow::bail!(
+            "window screencapture failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let image = image::open(&path)
+        .map_err(|error| anyhow::anyhow!("decode window screencapture output: {error}"))?
+        .to_rgba8();
+    let _ = std::fs::remove_file(&path);
+    let display_id = unsafe { CGMainDisplayID() };
+    let geometry =
+        window_geometry(window_id)?.unwrap_or_else(|| FrameGeometry::display(display_id));
+    rgba_image_to_frame(
+        started,
+        capture_started,
+        display_id,
+        image,
+        request,
+        geometry,
+    )
+}
+
+#[cfg(not(target_os = "macos"))]
+fn native_capture_window(
+    _window_id: u32,
+    _request: CaptureRequest,
+) -> anyhow::Result<CapturedFrame> {
+    anyhow::bail!("macOS window capture backend is only available on macOS")
 }
 
 #[cfg(target_os = "macos")]
@@ -312,6 +485,26 @@ fn capture_main_display_screencapture(
         .map_err(|error| anyhow::anyhow!("decode screencapture output: {error}"))?
         .to_rgba8();
     let _ = std::fs::remove_file(&path);
+    let display_id = unsafe { CGMainDisplayID() };
+    rgba_image_to_frame(
+        started,
+        capture_started,
+        display_id,
+        image,
+        request,
+        FrameGeometry::display(display_id),
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn rgba_image_to_frame(
+    started: Instant,
+    capture_started: Instant,
+    display_id: u32,
+    image: ImageBuffer<Rgba<u8>, Vec<u8>>,
+    request: CaptureRequest,
+    geometry: FrameGeometry,
+) -> anyhow::Result<CapturedFrame> {
     let source_width = image.width();
     let source_height = image.height();
     let target_width = request
@@ -342,8 +535,6 @@ fn capture_main_display_screencapture(
     let encode_ns = elapsed_ns(encode_started);
     let sha256 = format!("{:x}", Sha256::digest(&bytes));
     let byte_len = bytes.len();
-    let display_id = unsafe { CGMainDisplayID() };
-    let bounds = unsafe { CGDisplayBounds(display_id) };
     Ok(CapturedFrame {
         envelope: FrameEnvelope {
             schema_version: SCHEMA_VERSION.to_string(),
@@ -351,12 +542,12 @@ fn capture_main_display_screencapture(
             timestamp_mono_ns: started.elapsed().as_nanos(),
             timestamp_wall_ms: now_wall_ms(),
             display_id: display_id.to_string(),
-            display_x: bounds.origin.x.round() as i32,
-            display_y: bounds.origin.y.round() as i32,
+            display_x: geometry.display_bounds.origin.x.round() as i32,
+            display_y: geometry.display_bounds.origin.y.round() as i32,
             display_width: unsafe { CGDisplayPixelsWide(display_id) } as u32,
             display_height: unsafe { CGDisplayPixelsHigh(display_id) } as u32,
-            frame_origin_x: 0,
-            frame_origin_y: 0,
+            frame_origin_x: geometry.frame_origin_x,
+            frame_origin_y: geometry.frame_origin_y,
             width: buffer.width(),
             height: buffer.height(),
             scale_factor: 1.0,
@@ -389,12 +580,35 @@ fn capture_main_display(
 }
 
 #[cfg(target_os = "macos")]
+#[derive(Clone, Copy)]
+struct FrameGeometry {
+    capture_bounds: CGRect,
+    display_bounds: CGRect,
+    frame_origin_x: i32,
+    frame_origin_y: i32,
+}
+
+#[cfg(target_os = "macos")]
+impl FrameGeometry {
+    fn display(display_id: u32) -> Self {
+        let bounds = unsafe { CGDisplayBounds(display_id) };
+        Self {
+            capture_bounds: bounds,
+            display_bounds: bounds,
+            frame_origin_x: 0,
+            frame_origin_y: 0,
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
 unsafe fn image_to_frame(
     started: Instant,
     capture_started: Instant,
     display_id: u32,
     image: *const std::ffi::c_void,
     request: CaptureRequest,
+    geometry: FrameGeometry,
 ) -> anyhow::Result<CapturedFrame> {
     let source_width = CGImageGetWidth(image) as u32;
     let source_height = CGImageGetHeight(image) as u32;
@@ -444,7 +658,6 @@ unsafe fn image_to_frame(
     let frame_id = started.elapsed().as_millis() as u64;
     let width = buffer.width();
     let height = buffer.height();
-    let bounds = unsafe { CGDisplayBounds(display_id) };
     let display_width = unsafe { CGDisplayPixelsWide(display_id) } as u32;
     let display_height = unsafe { CGDisplayPixelsHigh(display_id) } as u32;
     Ok(CapturedFrame {
@@ -454,12 +667,12 @@ unsafe fn image_to_frame(
             timestamp_mono_ns: started.elapsed().as_nanos(),
             timestamp_wall_ms: now_wall_ms(),
             display_id: display_id.to_string(),
-            display_x: bounds.origin.x.round() as i32,
-            display_y: bounds.origin.y.round() as i32,
+            display_x: geometry.display_bounds.origin.x.round() as i32,
+            display_y: geometry.display_bounds.origin.y.round() as i32,
             display_width,
             display_height,
-            frame_origin_x: 0,
-            frame_origin_y: 0,
+            frame_origin_x: geometry.frame_origin_x,
+            frame_origin_y: geometry.frame_origin_y,
             width,
             height,
             scale_factor: 1.0,
@@ -602,9 +815,6 @@ fn native_window_list() -> anyhow::Result<Vec<WindowInfo>> {
             continue;
         }
         let layer = cf_i64(dict, unsafe { kCGWindowLayer }.cast()).unwrap_or_default();
-        if layer != 0 {
-            continue;
-        }
         let Some(bounds_dict) = cf_value(dict, unsafe { kCGWindowBounds }.cast()) else {
             continue;
         };
@@ -630,6 +840,7 @@ fn native_window_list() -> anyhow::Result<Vec<WindowInfo>> {
             id,
             app_name: cf_string(dict, unsafe { kCGWindowOwnerName }.cast()),
             title: cf_string(dict, unsafe { kCGWindowName }.cast()),
+            layer: layer.clamp(i32::MIN as i64, i32::MAX as i64) as i32,
             x: rect.origin.x.round() as i32,
             y: rect.origin.y.round() as i32,
             width: rect.size.width.round().max(0.0) as u32,
@@ -639,6 +850,52 @@ fn native_window_list() -> anyhow::Result<Vec<WindowInfo>> {
     }
     unsafe { CFRelease(array.cast()) };
     Ok(windows)
+}
+
+#[cfg(target_os = "macos")]
+fn window_geometry(window_id: u32) -> anyhow::Result<Option<FrameGeometry>> {
+    let array =
+        unsafe { CGWindowListCopyWindowInfo(CG_WINDOW_LIST_OPTION_INCLUDING_WINDOW, window_id) };
+    if array.is_null() {
+        return Ok(None);
+    }
+    let display_id = unsafe { CGMainDisplayID() };
+    let display_bounds = unsafe { CGDisplayBounds(display_id) };
+    let count = unsafe { CFArrayGetCount(array) };
+    let mut geometry = None;
+    for index in 0..count {
+        let dict = unsafe { CFArrayGetValueAtIndex(array, index) };
+        if dict.is_null() {
+            continue;
+        }
+        let Some(number) = cf_i64(dict, unsafe { kCGWindowNumber }.cast()) else {
+            continue;
+        };
+        if number != i64::from(window_id) {
+            continue;
+        }
+        let Some(bounds_dict) = cf_value(dict, unsafe { kCGWindowBounds }.cast()) else {
+            continue;
+        };
+        let mut rect = CGRect {
+            origin: CGPoint { x: 0.0, y: 0.0 },
+            size: CGSize {
+                width: 0.0,
+                height: 0.0,
+            },
+        };
+        if unsafe { CGRectMakeWithDictionaryRepresentation(bounds_dict.cast(), &mut rect) } {
+            geometry = Some(FrameGeometry {
+                capture_bounds: rect,
+                display_bounds,
+                frame_origin_x: rect.origin.x.round() as i32,
+                frame_origin_y: rect.origin.y.round() as i32,
+            });
+            break;
+        }
+    }
+    unsafe { CFRelease(array.cast()) };
+    Ok(geometry)
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -1089,6 +1346,8 @@ const CG_HID_EVENT_TAP: u32 = 0;
 #[cfg(target_os = "macos")]
 const CG_WINDOW_LIST_OPTION_ON_SCREEN_ONLY: u32 = 1;
 #[cfg(target_os = "macos")]
+const CG_WINDOW_LIST_OPTION_INCLUDING_WINDOW: u32 = 8;
+#[cfg(target_os = "macos")]
 const CG_NULL_WINDOW_ID: u32 = 0;
 #[cfg(target_os = "macos")]
 const CG_WINDOW_IMAGE_DEFAULT: u32 = 0;
@@ -1143,6 +1402,32 @@ mod tests {
     fn capture_backend_selection_is_available() {
         let backend = capture_backend_or_synthetic();
         assert!(matches!(backend.name(), "macos" | "synthetic"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore]
+    fn native_display_capture_smoke() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = capture_main_display(
+                Instant::now(),
+                CaptureRequest {
+                    max_width: Some(640),
+                    encoding: FrameEncoding::Png,
+                    force_fresh: true,
+                },
+            )
+            .map(|frame| frame.envelope);
+            let _ = sender.send(result);
+        });
+        let envelope = receiver
+            .recv_timeout(Duration::from_secs(3))
+            .expect("native display capture timed out")
+            .expect("native display capture failed");
+        assert!(envelope.width > 0);
+        assert!(envelope.height > 0);
+        assert!(envelope.byte_len > 0);
     }
 
     #[cfg(target_os = "macos")]

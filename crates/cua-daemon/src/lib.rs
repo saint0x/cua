@@ -14,7 +14,9 @@ use bytes::Bytes;
 use chrono::Utc;
 #[cfg(test)]
 use cua_capture::SyntheticCaptureBackend;
-use cua_capture::{CaptureRequest, CapturedFrame, FrameBus, FrameLookup};
+use cua_capture::{
+    encode_image, CaptureRequest, CapturedFrame, CapturedFrameTimings, FrameBus, FrameLookup,
+};
 use cua_core::{
     now_wall_ms, schema_bundle, ApiErrorBody, CapabilityManifest, CapabilityState,
     ClipboardReadRequest, ClipboardResult, ClipboardWriteRequest, DeliveryMode,
@@ -24,12 +26,13 @@ use cua_core::{
     RuntimeControlState, RuntimeInventory, RuntimeMode, RuntimeSessionInfo, RuntimeSessionRole,
     SafetyState, SessionCancelRequest, SessionLeaseRequest, SessionLeaseResult, UiMode,
     UiModeRequest, UiModeResult, UiReplyRequest, UiReplyResult, UiStepRequest, UiStepResult,
-    VisualSessionRequest, SCHEMA_VERSION,
+    VisualSessionRequest, WindowInfo, SCHEMA_VERSION,
 };
 use cua_input::InputBackend;
 use cua_model::{run_eval_report, EvalConfig, EvalReport};
 use cua_trace::{ActionTurnRecord, TraceRecord, TraceWriter};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, VecDeque};
 use std::convert::Infallible;
 use std::net::SocketAddr;
@@ -1142,6 +1145,7 @@ pub fn router(state: DaemonState) -> Router {
         .route("/metrics", get(metrics))
         .route("/healthz", get(healthz))
         .route("/capture/screenshot", post(screenshot))
+        .route("/capture/window", post(capture_window))
         .route("/context/snapshot", post(context_snapshot))
         .route("/capture/stream.mjpeg", get(stream_mjpeg))
         .route("/capture/stream.ws", get(stream_ws))
@@ -1881,6 +1885,7 @@ fn manifest_payload() -> Manifest {
             "GET /status".to_string(),
             "GET /metrics".to_string(),
             "POST /capture/screenshot".to_string(),
+            "POST /capture/window".to_string(),
             "POST /context/snapshot".to_string(),
             "GET /capture/stream.mjpeg".to_string(),
             "GET /capture/stream.ws".to_string(),
@@ -1927,6 +1932,7 @@ fn manifest_payload() -> Manifest {
             "cua ui mode headless|headful --json".to_string(),
             "cua perf live --json".to_string(),
             "cua screenshot --out <path>".to_string(),
+            "cua window-capture <window-id> --out <path>".to_string(),
             "cua context --json".to_string(),
             "cua observe --json".to_string(),
             "cua profile status --json".to_string(),
@@ -1994,11 +2000,170 @@ struct ScreenshotRequest {
     encoding: Option<FrameEncoding>,
 }
 
+#[derive(Debug, Deserialize)]
+struct WindowCaptureRequest {
+    window_id: u32,
+    max_width: Option<u32>,
+    include_bytes: Option<bool>,
+    encoding: Option<FrameEncoding>,
+}
+
 async fn screenshot(
     State(state): State<DaemonState>,
     Json(request): Json<ScreenshotRequest>,
 ) -> Result<Json<FramePayload>, ApiError> {
     Ok(Json(screenshot_payload(&state, request).await?))
+}
+
+async fn capture_window(
+    State(state): State<DaemonState>,
+    Json(request): Json<WindowCaptureRequest>,
+) -> Result<Json<FramePayload>, ApiError> {
+    let started = Instant::now();
+    publish_protocol_step(
+        &state,
+        1,
+        1,
+        format!("Capturing window {}", request.window_id),
+        "HTTP API",
+        2_500,
+    );
+    let capture_request = CaptureRequest {
+        max_width: None,
+        encoding: FrameEncoding::Png,
+        force_fresh: true,
+    };
+    let window_id = request.window_id;
+    let timeout = window_capture_timeout();
+    let window = cua_platform_macos::window_list()
+        .map_err(ApiError::internal)?
+        .into_iter()
+        .find(|window| window.id == window_id.to_string())
+        .ok_or_else(|| {
+            ApiError::bad_request("window_id", format!("window {window_id} not found"))
+        })?;
+    let lookup = tokio::time::timeout(
+        timeout,
+        state.frame_bus.latest_or_capture_timed(capture_request),
+    )
+    .await
+    .map_err(|_| {
+        ApiError::busy(format!(
+            "window capture timed out after {} ms",
+            timeout.as_millis()
+        ))
+    })?
+    .map_err(ApiError::internal)?;
+    observe_frame_lookup(&state.metrics, &lookup);
+    let frame = crop_window_frame(
+        lookup.frame,
+        &window,
+        request.max_width,
+        request.encoding.unwrap_or(FrameEncoding::Png),
+    )
+    .map_err(ApiError::internal)?;
+    state
+        .metrics
+        .observe(MetricKind::CaptureScreenshot, started.elapsed());
+    let encoded = state
+        .encode_lane
+        .payload(frame, request.include_bytes.unwrap_or(true))
+        .await
+        .map_err(|error| {
+            state.metrics.increment(CounterKind::EncodeDrops);
+            ApiError::busy(format!("encode lane unavailable: {error:?}"))
+        })?;
+    observe_encode_result(&state.metrics, &encoded);
+    Ok(Json(encoded.value))
+}
+
+fn window_capture_timeout() -> Duration {
+    env_duration_ms("CUA_WINDOW_CAPTURE_TIMEOUT_MS", 2_500, 250, 30_000)
+}
+
+fn crop_window_frame(
+    frame: CapturedFrame,
+    window: &WindowInfo,
+    max_width: Option<u32>,
+    encoding: FrameEncoding,
+) -> anyhow::Result<CapturedFrame> {
+    let crop_started = Instant::now();
+    let image = image::load_from_memory(frame.bytes.as_ref())
+        .map_err(|error| anyhow::anyhow!("decode display frame for window crop: {error}"))?
+        .to_rgba8();
+    let display_width = frame.envelope.display_width.max(1);
+    let display_height = frame.envelope.display_height.max(1);
+    let scale_x = image.width() as f64 / f64::from(display_width);
+    let scale_y = image.height() as f64 / f64::from(display_height);
+    let origin_x = window.x.saturating_sub(frame.envelope.display_x);
+    let origin_y = window.y.saturating_sub(frame.envelope.display_y);
+    let crop_x = (f64::from(origin_x) * scale_x).round().max(0.0) as u32;
+    let crop_y = (f64::from(origin_y) * scale_y).round().max(0.0) as u32;
+    let source_width = (f64::from(window.width) * scale_x).round().max(1.0) as u32;
+    let source_height = (f64::from(window.height) * scale_y).round().max(1.0) as u32;
+    if crop_x >= image.width() || crop_y >= image.height() {
+        anyhow::bail!("window {} is outside the captured display frame", window.id);
+    }
+    let source_width = source_width.min(image.width().saturating_sub(crop_x));
+    let source_height = source_height.min(image.height().saturating_sub(crop_y));
+    if source_width == 0 || source_height == 0 {
+        anyhow::bail!("window {} crop is empty", window.id);
+    }
+    let crop =
+        image::imageops::crop_imm(&image, crop_x, crop_y, source_width, source_height).to_image();
+    let target_width = max_width
+        .filter(|max_width| *max_width < crop.width())
+        .map(|max_width| max_width.max(64))
+        .unwrap_or_else(|| crop.width());
+    let target_height = if target_width == crop.width() {
+        crop.height()
+    } else {
+        ((crop.height() as f64) * (target_width as f64 / crop.width() as f64)).round() as u32
+    }
+    .max(1);
+    let buffer = if target_width == crop.width() && target_height == crop.height() {
+        crop
+    } else {
+        image::imageops::resize(
+            &crop,
+            target_width,
+            target_height,
+            image::imageops::FilterType::Triangle,
+        )
+    };
+    let encode_started = Instant::now();
+    let bytes = encode_image(&buffer, encoding.clone())?;
+    let encode_ns = elapsed_ns(encode_started);
+    let sha256 = format!("{:x}", Sha256::digest(&bytes));
+    let byte_len = bytes.len();
+    let width = buffer.width();
+    let height = buffer.height();
+    let mut envelope = frame.envelope.clone();
+    envelope.frame_origin_x = window.x;
+    envelope.frame_origin_y = window.y;
+    envelope.width = width;
+    envelope.height = height;
+    envelope.pixel_format = "rgba8".to_string();
+    envelope.encoding = encoding;
+    envelope.byte_len = byte_len;
+    envelope.sha256 = sha256;
+    envelope.damage_rects = vec![cua_core::Rect {
+        x: 0,
+        y: 0,
+        width,
+        height,
+    }];
+    Ok(CapturedFrame {
+        envelope,
+        bytes: Arc::new(bytes),
+        timings: CapturedFrameTimings {
+            capture_ns: frame
+                .timings
+                .capture_ns
+                .saturating_add(elapsed_ns(crop_started)),
+            encode_ns,
+        },
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -2106,12 +2271,20 @@ async fn screenshot_payload(
 }
 
 fn resident_frame_freshness() -> Duration {
-    let ms = std::env::var("CUA_RESIDENT_FRAME_FRESH_MS")
+    env_duration_ms("CUA_RESIDENT_FRAME_FRESH_MS", 1_000, 50, 30_000)
+}
+
+fn env_duration_ms(key: &str, default_ms: u64, min_ms: u64, max_ms: u64) -> Duration {
+    let ms = std::env::var(key)
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(1_000)
-        .clamp(50, 30_000);
+        .unwrap_or(default_ms)
+        .clamp(min_ms, max_ms);
     Duration::from_millis(ms)
+}
+
+fn elapsed_ns(started: Instant) -> u64 {
+    started.elapsed().as_nanos().min(u64::MAX as u128) as u64
 }
 
 async fn stream_mjpeg(State(state): State<DaemonState>) -> Result<Response, ApiError> {
