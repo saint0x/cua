@@ -202,11 +202,7 @@ impl VoiceHud {
         let center = if reply_visible {
             display.result.clone()
         } else {
-            step_label(
-                self.snapshot.step.index,
-                self.snapshot.step.total,
-                &display.rows[1].label,
-            )
+            center_status_text(&self.snapshot)
         };
         let tool = if reply_visible {
             "CUA".to_string()
@@ -295,6 +291,17 @@ fn response_flash_visible(metrics: HudMetrics) -> bool {
 
 fn step_label(index: usize, total: usize, label: &str) -> String {
     format!("Step {index}/{total}   {label}")
+}
+
+fn center_status_text(snapshot: &HudSnapshot) -> String {
+    if snapshot.phase == HudPhase::Idle && snapshot.step.index == 0 {
+        return snapshot.step.label.clone();
+    }
+    step_label(
+        snapshot.step.index,
+        snapshot.step.total,
+        &snapshot.step.label,
+    )
 }
 
 fn should_reset_after_reply_collapse(reply_window_expired: bool, response_progress: f32) -> bool {
@@ -666,18 +673,7 @@ fn agent_input_from_daemon_event(event: &Value, last_sequence: u64) -> Option<(u
     }
     let kind = event.get("kind").and_then(|value| value.as_str())?;
     match kind {
-        "input_completed" => Some((
-            sequence,
-            VoiceUiEvent::AgentStep {
-                label: "Applied remote action".to_string(),
-                source: Some("remote".to_string()),
-                task: Some("Computer control".to_string()),
-                tool: Some("Unix socket".to_string()),
-                step_index: Some(1),
-                step_total: Some(1),
-                ttl_ms: Some(1_500),
-            },
-        )),
+        "input_completed" => None,
         "input_refused" => Some((
             sequence,
             VoiceUiEvent::Error("Remote action refused".to_string()),
@@ -879,6 +875,32 @@ mod tests {
     }
 
     #[test]
+    fn idle_center_text_does_not_show_zero_step_counter() {
+        let snapshot = HudSnapshot::default();
+
+        assert_eq!(center_status_text(&snapshot), "Ready");
+    }
+
+    #[test]
+    fn active_center_text_uses_protocol_step_label() {
+        let mut snapshot = HudSnapshot::default();
+        snapshot.apply(VoiceUiEvent::AgentStep {
+            label: "Opening Safari with CUA".to_string(),
+            source: Some("remote".to_string()),
+            task: Some("Web browsing".to_string()),
+            tool: Some("Unix socket".to_string()),
+            step_index: Some(2),
+            step_total: Some(5),
+            ttl_ms: Some(2_000),
+        });
+
+        assert_eq!(
+            center_status_text(&snapshot),
+            "Step 2/5   Opening Safari with CUA"
+        );
+    }
+
+    #[test]
     fn daemon_ui_step_event_maps_to_visible_agent_step() {
         let event = serde_json::json!({
             "sequence": 42,
@@ -972,7 +994,7 @@ mod tests {
     }
 
     #[test]
-    fn daemon_input_event_maps_to_visible_remote_activity() {
+    fn daemon_input_completed_event_does_not_override_protocol_steps() {
         let event = serde_json::json!({
             "sequence": 46,
             "kind": "input_completed",
@@ -983,23 +1005,7 @@ mod tests {
             }
         });
 
-        let Some((
-            sequence,
-            VoiceUiEvent::AgentStep {
-                label,
-                tool,
-                ttl_ms,
-                ..
-            },
-        )) = agent_input_from_daemon_event(&event, 45)
-        else {
-            panic!("expected input activity event");
-        };
-
-        assert_eq!(sequence, 46);
-        assert_eq!(label, "Applied remote action");
-        assert_eq!(tool.as_deref(), Some("Unix socket"));
-        assert_eq!(ttl_ms, Some(1500));
+        assert!(agent_input_from_daemon_event(&event, 45).is_none());
         assert!(agent_input_from_daemon_event(&event, 46).is_none());
     }
 

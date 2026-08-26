@@ -944,18 +944,13 @@ async fn handle_visual_session(
     let mut interval = tokio::time::interval(Duration::from_millis(1_000 / u64::from(fps)));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let _guard = StreamGuard::new(state.active_streams.clone());
-    let _ = ui_step_state(
+    publish_protocol_step(
         state,
-        UiStepRequest {
-            schema_version: SCHEMA_VERSION.to_string(),
-            label: "Remote visual session".to_string(),
-            source: Some("remote".to_string()),
-            task: Some("Computer control".to_string()),
-            tool: Some("Unix socket".to_string()),
-            step_index: Some(1),
-            step_total: Some(1),
-            ttl_ms: Some(3_000),
-        },
+        1,
+        2,
+        "Opening visual stream".to_string(),
+        "Unix socket",
+        5_000,
     );
     write_json_line(
         &mut write,
@@ -965,6 +960,7 @@ async fn handle_visual_session(
         },
     )
     .await?;
+    let mut announced_first_frame = false;
     loop {
         tokio::select! {
             maybe_line = lines.next_line() => {
@@ -1005,6 +1001,20 @@ async fn handle_visual_session(
                         observe_frame_lookup(&state.metrics, &lookup);
                         state.metrics.observe(MetricKind::StreamUnixTick, started.elapsed());
                         state.metrics.increment(CounterKind::UnixFrames);
+                        if !announced_first_frame {
+                            announced_first_frame = true;
+                            publish_protocol_step(
+                                state,
+                                2,
+                                2,
+                                format!(
+                                    "Streaming desktop frames at {} fps",
+                                    fps
+                                ),
+                                "Unix socket",
+                                5_000,
+                            );
+                        }
                         VisualSessionMessage::Frame {
                             schema_version: SCHEMA_VERSION.to_string(),
                             frame: lookup.frame.as_payload(visual.include_bytes),
@@ -1451,6 +1461,14 @@ async fn context_snapshot_payload(
     state: &DaemonState,
     request: ContextSnapshotRequest,
 ) -> Result<DesktopContextSnapshot, ApiError> {
+    publish_protocol_step(
+        state,
+        1,
+        1,
+        "Capturing desktop context".to_string(),
+        "HTTP API",
+        2_500,
+    );
     let screenshot_request = ScreenshotRequest {
         max_width: request.max_width,
         include_bytes: request.include_bytes,
@@ -1472,6 +1490,14 @@ async fn screenshot_payload(
     state: &DaemonState,
     request: ScreenshotRequest,
 ) -> Result<FramePayload, ApiError> {
+    publish_protocol_step(
+        state,
+        1,
+        1,
+        "Capturing screenshot".to_string(),
+        "HTTP API",
+        2_500,
+    );
     let started = Instant::now();
     let lookup = state
         .frame_bus
@@ -1765,6 +1791,65 @@ fn ui_step_state(state: &DaemonState, request: UiStepRequest) -> Result<UiStepRe
         }),
     );
     Ok(result)
+}
+
+fn publish_protocol_step(
+    state: &DaemonState,
+    step_index: u16,
+    step_total: u16,
+    label: String,
+    tool: impl Into<String>,
+    ttl_ms: u64,
+) {
+    let _ = ui_step_state(
+        state,
+        UiStepRequest {
+            schema_version: SCHEMA_VERSION.to_string(),
+            label,
+            source: Some("remote".to_string()),
+            task: Some("Computer control".to_string()),
+            tool: Some(tool.into()),
+            step_index: Some(step_index),
+            step_total: Some(step_total),
+            ttl_ms: Some(ttl_ms),
+        },
+    );
+}
+
+fn input_action_label(action: &InputAction) -> String {
+    match action {
+        InputAction::MouseMove { x, y, .. } => format!("mouse move to {x},{y}"),
+        InputAction::MouseClick {
+            x,
+            y,
+            button,
+            count,
+        } => {
+            let repeat = if *count > 1 {
+                format!(" x{count}")
+            } else {
+                String::new()
+            };
+            format!("{button:?} mouse click at {x},{y}{repeat}")
+        }
+        InputAction::MouseDrag {
+            from_x,
+            from_y,
+            to_x,
+            to_y,
+            ..
+        } => format!("mouse drag from {from_x},{from_y} to {to_x},{to_y}"),
+        InputAction::KeyPress { combo } => format!("key press {combo}"),
+        InputAction::KeyType { text } => format!("typing {} chars", text.chars().count()),
+        InputAction::KeyPaste { text } => format!("pasting {} chars", text.chars().count()),
+        InputAction::ClipboardRead { .. } => "clipboard read".to_string(),
+        InputAction::ClipboardWrite { text } => {
+            format!("clipboard write {} chars", text.chars().count())
+        }
+        InputAction::Pause => "pause control".to_string(),
+        InputAction::Resume => "resume control".to_string(),
+        InputAction::KillSwitch => "kill switch".to_string(),
+    }
 }
 
 fn ui_reply_state(state: &DaemonState, request: UiReplyRequest) -> Result<UiReplyResult, ApiError> {
@@ -2071,6 +2156,15 @@ async fn input_frame_action(
 async fn dispatch_input_action(state: &DaemonState, action: InputAction) -> cua_core::InputResult {
     let started = Instant::now();
     let turn_id = Uuid::new_v4().to_string();
+    let action_label = input_action_label(&action);
+    publish_protocol_step(
+        state,
+        1,
+        3,
+        format!("Preparing {action_label}"),
+        "Unix socket",
+        5_000,
+    );
     let action_json = serde_json::to_value(&action).unwrap_or_else(|_| serde_json::json!(null));
     let capture_trace_snapshots = captures_trace_snapshots(&action);
     let before = if capture_trace_snapshots {
@@ -2088,6 +2182,14 @@ async fn dispatch_input_action(state: &DaemonState, action: InputAction) -> cua_
         action,
         InputAction::ClipboardRead { .. } | InputAction::ClipboardWrite { .. }
     ) {
+        publish_protocol_step(
+            state,
+            3,
+            3,
+            format!("Refused {action_label}"),
+            "Unix socket",
+            3_500,
+        );
         state.metrics.increment(CounterKind::InputRefusals);
         state
             .metrics
@@ -2113,6 +2215,14 @@ async fn dispatch_input_action(state: &DaemonState, action: InputAction) -> cua_
         return result;
     }
     let dispatch_started = Instant::now();
+    publish_protocol_step(
+        state,
+        2,
+        3,
+        format!("Dispatching {action_label}"),
+        "Unix socket",
+        5_000,
+    );
     let (queue_wait, result) = state
         .input_lane
         .execute(InputRequest {
@@ -2145,6 +2255,19 @@ async fn dispatch_input_action(state: &DaemonState, action: InputAction) -> cua_
         after,
     )
     .await;
+    let final_prefix = if result.effect == Effect::Refused {
+        "Refused"
+    } else {
+        "Confirmed"
+    };
+    publish_protocol_step(
+        state,
+        3,
+        3,
+        format!("{final_prefix} {action_label}"),
+        "Unix socket",
+        3_500,
+    );
     publish_input_event(state, "input_completed", &result);
     result
 }
@@ -2156,6 +2279,15 @@ async fn dispatch_control_action(
     action_json: serde_json::Value,
     started: Instant,
 ) -> cua_core::InputResult {
+    let action_label = input_action_label(&action);
+    publish_protocol_step(
+        state,
+        2,
+        3,
+        format!("Dispatching {action_label}"),
+        "Unix socket",
+        5_000,
+    );
     let mut event_kind = "input_completed";
     let mut evidence_message = "safety action accepted by local coordinator";
     {
@@ -2216,6 +2348,14 @@ async fn dispatch_control_action(
         None,
     )
     .await;
+    publish_protocol_step(
+        state,
+        3,
+        3,
+        format!("Confirmed {action_label}"),
+        "Unix socket",
+        3_500,
+    );
     publish_input_event(state, "input_completed", &result);
     result
 }
@@ -3491,6 +3631,55 @@ mod tests {
         assert_eq!(kill.effect, Effect::Confirmed);
         assert_eq!(kill.route, InputRoute::SystemApi);
         assert_eq!(state.control.read().await.safety_state, SafetyState::Killed);
+    }
+
+    #[tokio::test]
+    async fn dispatched_actions_emit_live_protocol_steps() {
+        let state = DaemonState::synthetic("test", "token");
+
+        let pause = dispatch_input_action(&state, InputAction::Pause).await;
+        assert_eq!(pause.effect, Effect::Confirmed);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        let events = state.events.snapshot().await;
+        let steps = events
+            .iter()
+            .filter(|event| event["kind"] == "ui_step")
+            .collect::<Vec<_>>();
+
+        assert_eq!(steps.len(), 3);
+        assert_eq!(steps[0]["data"]["step_index"], 1);
+        assert_eq!(steps[0]["data"]["step_total"], 3);
+        assert_eq!(steps[0]["data"]["label"], "Preparing pause control");
+        assert_eq!(steps[1]["data"]["step_index"], 2);
+        assert_eq!(steps[1]["data"]["label"], "Dispatching pause control");
+        assert_eq!(steps[2]["data"]["step_index"], 3);
+        assert_eq!(steps[2]["data"]["label"], "Confirmed pause control");
+    }
+
+    #[test]
+    fn input_action_labels_include_live_action_details() {
+        assert_eq!(
+            input_action_label(&InputAction::MouseClick {
+                x: 425,
+                y: 405,
+                button: cua_core::MouseButton::Left,
+                count: 2,
+            }),
+            "Left mouse click at 425,405 x2"
+        );
+        assert_eq!(
+            input_action_label(&InputAction::KeyPress {
+                combo: "cmd+l".to_string()
+            }),
+            "key press cmd+l"
+        );
+        assert_eq!(
+            input_action_label(&InputAction::KeyType {
+                text: "hello".to_string()
+            }),
+            "typing 5 chars"
+        );
     }
 
     async fn clipboard_enabled_state() -> DaemonState {
