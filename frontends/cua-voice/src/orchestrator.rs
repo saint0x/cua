@@ -44,7 +44,7 @@ impl Default for VoiceConfig {
             profile: "default".to_string(),
             record_ms: 4_500,
             stt_model: "openai/whisper-1".to_string(),
-            planner_model: "openai/gpt-5.4-mini".to_string(),
+            planner_model: "google/gemini-2.5-flash".to_string(),
         }
     }
 }

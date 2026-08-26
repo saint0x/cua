@@ -7,6 +7,26 @@ use std::time::Duration;
 const DEFAULT_PLANNER_TIMEOUT_MS: u64 = 12_000;
 const DEFAULT_PLANNER_ATTEMPTS: usize = 3;
 const DEFAULT_PLANNER_RETRY_BACKOFF_MS: u64 = 220;
+const PLANNER_SYSTEM_PROMPT: &str = r#"You are the action planner for cua, a local macOS computer-use runtime.
+
+Convert the user's spoken command and the current screenshot into exactly one safe desktop action.
+Return only valid JSON. Do not use Markdown, comments, natural-language prefixes, or extra keys.
+
+Schema:
+{"response":"short user-facing status","action":null}
+{"response":"short user-facing status","action":{"kind":"mouse_move","x":0,"y":0,"duration_ms":80}}
+{"response":"short user-facing status","action":{"kind":"mouse_click","x":0,"y":0,"button":"left","count":1}}
+{"response":"short user-facing status","action":{"kind":"mouse_drag","from_x":0,"from_y":0,"to_x":0,"to_y":0,"duration_ms":220}}
+{"response":"short user-facing status","action":{"kind":"key_press","key":"enter"}}
+{"response":"short user-facing status","action":{"kind":"key_type","text":"text to type"}}
+{"response":"short user-facing status","action":{"kind":"key_paste","text":"text to paste"}}
+{"response":"short user-facing status","action":{"kind":"pause"}}
+{"response":"short user-facing status","action":{"kind":"resume"}}
+{"response":"short user-facing status","action":{"kind":"kill_switch"}}
+
+Use screenshot pixel coordinates for all pointer actions, not physical display coordinates.
+Prefer direct actions. If a command names a visible UI target, identify its center and click it.
+Use action:null only when the request is informational, unsafe, impossible from the screen, or needs clarification."#;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlannedTurn {
@@ -44,7 +64,7 @@ impl Planner {
         let mut content = vec![serde_json::json!({
             "type": "text",
             "text": format!(
-                "You control a macOS desktop through a local Unix socket. Transcript: {transcript}\n{desktop_context}\nReturn strict JSON only: {{\"response\":\"short user-facing status\",\"action\":null}} or {{\"response\":\"short status\",\"action\":{{...InputAction JSON...}}}}. Supported action kinds: mouse_move, mouse_click, mouse_drag, key_press, key_type, key_paste, pause, resume, kill_switch. For mouse actions, use integer coordinates in the attached frame image, not physical display coordinates. Prefer actions that directly satisfy the transcript; use null only when no safe desktop action is implied."
+                "Transcript: {transcript}\n{desktop_context}"
             )
         })];
         if let Some(bytes) = frame.and_then(|frame| frame.bytes_base64.as_ref()) {
@@ -55,9 +75,12 @@ impl Planner {
         }
         let body = serde_json::json!({
             "model": self.model,
-            "messages": [{"role": "user", "content": content}],
-            "max_tokens": 160,
-            "temperature": 0,
+            "messages": [
+                {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
+                {"role": "user", "content": content}
+            ],
+            "max_tokens": 180,
+            "response_format": {"type": "json_object"},
         });
         let response = self.send_planning_request(api_key, &body).await?;
         let status = response.status();
@@ -216,7 +239,13 @@ pub fn parse_model_plan(raw: &str) -> anyhow::Result<PlannedTurn> {
         })
         .unwrap_or(trimmed)
         .trim();
-    let value: serde_json::Value = serde_json::from_str(json).context("parse plan JSON")?;
+    let value: serde_json::Value = serde_json::from_str(json)
+        .or_else(|_| {
+            extract_first_json_object(json)
+                .map(serde_json::from_str)
+                .unwrap_or_else(|| serde_json::from_str(json))
+        })
+        .context("parse plan JSON")?;
     let response = value["response"].as_str().unwrap_or("Ready.").to_string();
     let action = if value.get("action").map(|v| v.is_null()).unwrap_or(true) {
         None
@@ -224,6 +253,46 @@ pub fn parse_model_plan(raw: &str) -> anyhow::Result<PlannedTurn> {
         Some(parse_action_value(value["action"].clone())?)
     };
     Ok(PlannedTurn { response, action })
+}
+
+fn extract_first_json_object(raw: &str) -> Option<&str> {
+    let mut depth = 0usize;
+    let mut start = None;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (index, character) in raw.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if character == '\\' && in_string {
+            escaped = true;
+            continue;
+        }
+        if character == '"' {
+            in_string = !in_string;
+            continue;
+        }
+        if in_string {
+            continue;
+        }
+        match character {
+            '{' => {
+                if depth == 0 {
+                    start = Some(index);
+                }
+                depth += 1;
+            }
+            '}' if depth > 0 => {
+                depth -= 1;
+                if depth == 0 {
+                    return start.map(|start| &raw[start..=index]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn parse_action_value(mut value: serde_json::Value) -> anyhow::Result<InputAction> {
@@ -427,6 +496,17 @@ mod tests {
                 button: MouseButton::Left,
                 count: 1
             })
+        ));
+    }
+
+    #[test]
+    fn parses_model_action_inside_provider_text_wrapper() {
+        let raw = r#"Here is the action: {"response":"Clicking.","action":{"kind":"mouse_click","x":10,"y":20}}"#;
+        let plan = parse_model_plan(raw).unwrap();
+
+        assert!(matches!(
+            plan.action,
+            Some(InputAction::MouseClick { x: 10, y: 20, .. })
         ));
     }
 
