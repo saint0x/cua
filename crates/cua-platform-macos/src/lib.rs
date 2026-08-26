@@ -151,6 +151,10 @@ pub fn permission_report() -> PermissionReport {
     }
 }
 
+pub fn request_screen_recording_access() -> PermissionState {
+    native_request_screen_recording_access()
+}
+
 pub fn cursor_state() -> CursorState {
     native_cursor_state()
 }
@@ -896,6 +900,20 @@ fn screen_recording_permission() -> PermissionState {
 }
 
 #[cfg(target_os = "macos")]
+fn native_request_screen_recording_access() -> PermissionState {
+    if unsafe { CGRequestScreenCaptureAccess() } {
+        PermissionState::Granted
+    } else {
+        PermissionState::Missing
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn native_request_screen_recording_access() -> PermissionState {
+    PermissionState::NotApplicable
+}
+
+#[cfg(target_os = "macos")]
 fn accessibility_permission() -> PermissionState {
     if unsafe { AXIsProcessTrusted() } {
         PermissionState::Granted
@@ -921,6 +939,7 @@ fn clipboard_permission() -> PermissionState {
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
     fn CGPreflightScreenCaptureAccess() -> bool;
+    fn CGRequestScreenCaptureAccess() -> bool;
     fn AXIsProcessTrusted() -> bool;
     fn CGMainDisplayID() -> u32;
     fn CGEventCreate(source: *const std::ffi::c_void) -> *const std::ffi::c_void;

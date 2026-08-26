@@ -839,9 +839,13 @@ fn profile_socket_path(profile: &str) -> anyhow::Result<PathBuf> {
 }
 
 async fn permissions(command: PermissionCommand) -> anyhow::Result<()> {
+    let preflight = matches!(command, PermissionCommand::Preflight(_));
     let json = match command {
         PermissionCommand::Status(flag) | PermissionCommand::Preflight(flag) => flag.json,
     };
+    if preflight {
+        let _ = cua_platform_macos::request_screen_recording_access();
+    }
     let permission_report = cua_platform_macos::permission_report();
     let report = serde_json::json!({
         "schema_version": SCHEMA_VERSION,
