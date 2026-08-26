@@ -21,6 +21,34 @@ pub trait CaptureBackend: Send + Sync {
 }
 
 #[derive(Debug, Clone)]
+pub struct UnavailableCaptureBackend {
+    reason: String,
+}
+
+impl UnavailableCaptureBackend {
+    pub fn new(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+        }
+    }
+}
+
+#[async_trait]
+impl CaptureBackend for UnavailableCaptureBackend {
+    async fn capture_latest(&self, _request: CaptureRequest) -> anyhow::Result<CapturedFrame> {
+        anyhow::bail!("{}", self.reason)
+    }
+
+    async fn displays(&self) -> anyhow::Result<Vec<DisplayInfo>> {
+        Ok(Vec::new())
+    }
+
+    fn name(&self) -> &'static str {
+        "unavailable"
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct CaptureRequest {
     pub max_width: Option<u32>,
     pub encoding: FrameEncoding,
@@ -454,6 +482,24 @@ mod tests {
         assert_eq!(frame.envelope.width, 320);
         assert!(frame.envelope.byte_len > 1024);
         assert_eq!(frame.bytes.len(), frame.envelope.byte_len);
+    }
+
+    #[tokio::test]
+    async fn unavailable_capture_backend_refuses_instead_of_fabricating_frames() {
+        let backend = UnavailableCaptureBackend::new("native capture unavailable");
+        let error = backend
+            .capture_latest(CaptureRequest {
+                max_width: Some(320),
+                encoding: FrameEncoding::Png,
+                force_fresh: true,
+            })
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert_eq!(backend.name(), "unavailable");
+        assert_eq!(backend.displays().await.unwrap(), Vec::<DisplayInfo>::new());
+        assert!(error.contains("native capture unavailable"));
     }
 
     #[tokio::test]

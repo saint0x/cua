@@ -172,7 +172,7 @@ fn default_capture_backend() -> Arc<dyn cua_capture::CaptureBackend> {
 
 #[cfg(not(test))]
 fn default_capture_backend() -> Arc<dyn cua_capture::CaptureBackend> {
-    cua_platform_macos::capture_backend_or_synthetic()
+    cua_platform_macos::capture_backend_or_unavailable()
 }
 
 impl DaemonState {

@@ -5,7 +5,7 @@
 use async_trait::async_trait;
 use cua_capture::{
     encode_image, CaptureBackend, CaptureRequest, CapturedFrame, CapturedFrameTimings,
-    SyntheticCaptureBackend,
+    UnavailableCaptureBackend,
 };
 use cua_core::{
     now_wall_ms, CursorState, DeliveryMode, DisplayInfo, Effect, Evidence, EvidenceKind,
@@ -30,11 +30,13 @@ pub fn support_status() -> &'static str {
     "macos_native_capture_and_input_enabled"
 }
 
-pub fn capture_backend_or_synthetic() -> Arc<dyn CaptureBackend> {
+pub fn capture_backend_or_unavailable() -> Arc<dyn CaptureBackend> {
     if permission_report().screen_recording == PermissionState::Granted {
         Arc::new(MacosCaptureBackend::default())
     } else {
-        Arc::new(SyntheticCaptureBackend::default())
+        Arc::new(UnavailableCaptureBackend::new(
+            "macOS Screen Recording permission is required for native capture",
+        ))
     }
 }
 
@@ -1123,9 +1125,9 @@ mod tests {
     }
 
     #[test]
-    fn capture_backend_selection_is_available() {
-        let backend = capture_backend_or_synthetic();
-        assert!(matches!(backend.name(), "macos" | "synthetic"));
+    fn capture_backend_selection_never_fabricates_macos_frames() {
+        let backend = capture_backend_or_unavailable();
+        assert!(matches!(backend.name(), "macos" | "unavailable"));
     }
 
     #[cfg(target_os = "macos")]
