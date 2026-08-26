@@ -27,6 +27,7 @@ use std::hash::{Hash, Hasher};
 use std::io::ErrorKind;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -74,12 +75,7 @@ struct Args {
 
 struct VoiceHud {
     rx: Receiver<VoiceUiEvent>,
-    tx: Sender<VoiceUiEvent>,
-    config: VoiceConfig,
-    runtime: Arc<tokio::runtime::Runtime>,
     snapshot: HudSnapshot,
-    busy: bool,
-    execute_turns: bool,
     started: Instant,
     last_frame: Instant,
     center_text_key: String,
@@ -88,14 +84,7 @@ struct VoiceHud {
 }
 
 impl VoiceHud {
-    fn new(
-        rx: Receiver<VoiceUiEvent>,
-        tx: Sender<VoiceUiEvent>,
-        config: VoiceConfig,
-        runtime: Arc<tokio::runtime::Runtime>,
-        execute_turns: bool,
-        mode: UiMode,
-    ) -> Self {
+    fn new(rx: Receiver<VoiceUiEvent>, mode: UiMode) -> Self {
         let mut snapshot = HudSnapshot::default();
         let source = initial_ui_source(&mode).to_string();
         snapshot.apply(VoiceUiEvent::UiMode {
@@ -104,12 +93,7 @@ impl VoiceHud {
         });
         Self {
             rx,
-            tx,
-            config,
-            runtime,
             snapshot,
-            busy: false,
-            execute_turns,
             started: Instant::now(),
             last_frame: Instant::now(),
             center_text_key: String::new(),
@@ -120,25 +104,7 @@ impl VoiceHud {
 
     fn drain_events(&mut self) {
         while let Ok(event) = self.rx.try_recv() {
-            match event {
-                VoiceUiEvent::Armed if self.execute_turns => {
-                    if self.busy {
-                        continue;
-                    }
-                    self.busy = true;
-                    self.snapshot.apply(VoiceUiEvent::Armed);
-                    let tx = self.tx.clone();
-                    let config = self.config.clone();
-                    self.runtime.spawn(run_voice_turn(config, tx));
-                }
-                VoiceUiEvent::Reply(_)
-                | VoiceUiEvent::AutomationReply(_)
-                | VoiceUiEvent::Error(_) => {
-                    self.busy = false;
-                    self.snapshot.apply(event);
-                }
-                event => self.snapshot.apply(event),
-            }
+            self.snapshot.apply(event);
         }
     }
 
@@ -515,7 +481,7 @@ fn main() -> anyhow::Result<()> {
     } else {
         request_desktop_access_once_if_packaged_app(&config.profile);
         start_embedded_daemon_if_needed(config.profile.clone(), runtime.clone(), tx.clone());
-        start_double_control_listener(tx.clone());
+        start_control_shortcut_controller(config.clone(), runtime.clone(), tx.clone());
         start_agent_step_poll(config.profile.clone(), runtime.clone(), tx.clone());
     }
     Application::new().run(move |cx: &mut App| {
@@ -532,17 +498,7 @@ fn main() -> anyhow::Result<()> {
                 window_background: WindowBackgroundAppearance::Transparent,
                 ..Default::default()
             },
-            {
-                let runtime = runtime.clone();
-                let tx = tx.clone();
-                let config = config.clone();
-                let execute_turns = !demo;
-                move |_, cx| {
-                    cx.new(|_| {
-                        VoiceHud::new(rx, tx, config, runtime, execute_turns, ui_mode.clone())
-                    })
-                }
-            },
+            move |_, cx| cx.new(|_| VoiceHud::new(rx, ui_mode.clone())),
         )
         .unwrap();
     });
@@ -838,7 +794,35 @@ fn start_demo_cycle(tx: Sender<VoiceUiEvent>) {
     });
 }
 
-fn start_double_control_listener(tx: Sender<VoiceUiEvent>) {
+fn start_control_shortcut_controller(
+    config: VoiceConfig,
+    runtime: Arc<tokio::runtime::Runtime>,
+    tx: Sender<VoiceUiEvent>,
+) {
+    let (shortcut_tx, shortcut_rx) = channel::<()>();
+    start_double_control_listener(shortcut_tx);
+    std::thread::spawn(move || {
+        let busy = Arc::new(AtomicBool::new(false));
+        while shortcut_rx.recv().is_ok() {
+            if !shortcut_trigger_claims_idle(&busy) {
+                continue;
+            }
+            let run_config = config.clone();
+            let run_tx = tx.clone();
+            let run_busy = busy.clone();
+            runtime.spawn(async move {
+                run_voice_turn(run_config, run_tx).await;
+                run_busy.store(false, Ordering::Release);
+            });
+        }
+    });
+}
+
+fn shortcut_trigger_claims_idle(busy: &AtomicBool) -> bool {
+    !busy.swap(true, Ordering::AcqRel)
+}
+
+fn start_double_control_listener(tx: Sender<()>) {
     std::thread::spawn(move || {
         let mut detector = ControlDoubleTap::default();
         let mut was_down = false;
@@ -849,7 +833,7 @@ fn start_double_control_listener(tx: Sender<VoiceUiEvent>) {
                 cua_platform_macos::control_key_is_down(),
                 Instant::now(),
             ) {
-                tx.send(VoiceUiEvent::Armed).ok();
+                tx.send(()).ok();
             }
             std::thread::sleep(CONTROL_SHORTCUT_POLL_INTERVAL);
         }
@@ -983,27 +967,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn busy_voice_turn_ignores_duplicate_arm_event() {
-        let (tx, rx) = channel::<VoiceUiEvent>();
-        let runtime = Arc::new(tokio::runtime::Runtime::new().unwrap());
-        let mut hud = VoiceHud::new(
-            rx,
-            tx.clone(),
-            VoiceConfig::default(),
-            runtime,
-            true,
-            UiMode::Headful,
-        );
-        hud.busy = true;
-        hud.snapshot
-            .apply(VoiceUiEvent::Dispatching("mouse_move".to_string()));
+    fn shortcut_controller_claims_only_one_active_voice_turn() {
+        let busy = AtomicBool::new(false);
 
-        tx.send(VoiceUiEvent::Armed).unwrap();
-        hud.drain_events();
+        assert!(shortcut_trigger_claims_idle(&busy));
+        assert!(!shortcut_trigger_claims_idle(&busy));
 
-        assert!(hud.busy);
-        assert_eq!(hud.snapshot.step.label, "mouse_move");
-        assert_eq!(hud.snapshot.tool, "Unix socket");
+        busy.store(false, Ordering::Release);
+        assert!(shortcut_trigger_claims_idle(&busy));
     }
 
     #[test]
@@ -1083,15 +1054,7 @@ mod tests {
     #[test]
     fn hud_constructor_applies_initial_ui_mode() {
         let (_tx, rx) = channel::<VoiceUiEvent>();
-        let runtime = Arc::new(tokio::runtime::Runtime::new().unwrap());
-        let hud = VoiceHud::new(
-            rx,
-            channel::<VoiceUiEvent>().0,
-            VoiceConfig::default(),
-            runtime,
-            true,
-            UiMode::Headless,
-        );
+        let hud = VoiceHud::new(rx, UiMode::Headless);
 
         assert_eq!(hud.snapshot.mode, UiMode::Headless);
         assert_eq!(hud.snapshot.input_label, "Automation");
