@@ -9,11 +9,13 @@ use cua_capture::{
 };
 use cua_core::{
     now_wall_ms, CursorState, DeliveryMode, DisplayInfo, Effect, Evidence, EvidenceKind,
-    FrameEncoding, FrameEnvelope, InputAction, InputRequest, InputResult, InputRoute, MouseButton,
+    FrameEnvelope, InputAction, InputRequest, InputResult, InputRoute, MouseButton,
     PermissionReport, PermissionState, Rect, WindowInfo, SCHEMA_VERSION,
 };
 use cua_input::{InputBackend, RefusingInputBackend};
 use image::{ImageBuffer, Rgba};
+#[cfg(target_os = "macos")]
+use objc2::AnyThread;
 use sha2::{Digest, Sha256};
 #[cfg(target_os = "macos")]
 use std::ffi::CStr;
@@ -157,40 +159,12 @@ pub fn window_list() -> anyhow::Result<Vec<WindowInfo>> {
     native_window_list()
 }
 
-pub fn capture_window(window_id: u32, request: CaptureRequest) -> anyhow::Result<CapturedFrame> {
-    native_capture_window(window_id, request)
-}
-
 #[cfg(target_os = "macos")]
 fn capture_main_display(
     started: Instant,
     request: CaptureRequest,
 ) -> anyhow::Result<CapturedFrame> {
-    let mut errors = Vec::new();
-    if std::env::var("CUA_CAPTURE_USE_SCK").ok().as_deref() == Some("1") {
-        match capture_main_display_sck(started, request.clone()) {
-            Ok(frame) => return Ok(frame),
-            Err(error) => errors.push(format!("sck: {error}")),
-        }
-    }
-    match capture_main_display_core_graphics(started, request.clone()) {
-        Ok(frame) => return Ok(frame),
-        Err(error) => errors.push(format!("display_image: {error}")),
-    }
-    match capture_main_display_window_list(started, request.clone()) {
-        Ok(frame) => return Ok(frame),
-        Err(error) => errors.push(format!("window_list_image: {error}")),
-    }
-    match capture_main_display_screencapture(started, request) {
-        Ok(frame) => Ok(frame),
-        Err(error) => {
-            errors.push(format!("screencapture: {error}"));
-            anyhow::bail!(
-                "macOS capture failed through all native routes: {}",
-                errors.join("; ")
-            )
-        }
-    }
+    capture_main_display_sck(started, request)
 }
 
 #[cfg(target_os = "macos")]
@@ -200,11 +174,37 @@ fn capture_main_display_sck(
 ) -> anyhow::Result<CapturedFrame> {
     let capture_started = Instant::now();
     let display_id = unsafe { CGMainDisplayID() };
-    let bounds = unsafe { CGDisplayBounds(display_id) };
-    let rect = objc2_core_foundation::CGRect::new(
-        objc2_core_foundation::CGPoint::new(bounds.origin.x, bounds.origin.y),
-        objc2_core_foundation::CGSize::new(bounds.size.width, bounds.size.height),
-    );
+    let content = shareable_content_sck()?;
+    let displays = unsafe { content.displays() };
+    let display = displays
+        .iter()
+        .find(|display| unsafe { display.displayID() } == display_id)
+        .or_else(|| displays.iter().next())
+        .ok_or_else(|| anyhow::anyhow!("ScreenCaptureKit returned no displays"))?;
+    let excluded = objc2_foundation::NSArray::<objc2_screen_capture_kit::SCWindow>::new();
+    let filter = unsafe {
+        objc2_screen_capture_kit::SCContentFilter::initWithDisplay_excludingWindows(
+            objc2_screen_capture_kit::SCContentFilter::alloc(),
+            &display,
+            &excluded,
+        )
+    };
+    unsafe {
+        filter.setIncludeMenuBar(true);
+    }
+    let config = unsafe {
+        objc2_screen_capture_kit::SCStreamConfiguration::streamConfigurationWithPreset(
+            objc2_screen_capture_kit::SCStreamConfigurationPreset::CaptureHDRScreenshotCanonicalDisplay,
+        )
+    };
+    let width = unsafe { display.width() }.max(1) as usize;
+    let height = unsafe { display.height() }.max(1) as usize;
+    unsafe {
+        config.setWidth(width);
+        config.setHeight(height);
+        config.setPixelFormat(0x4247_5241);
+        config.setShowsCursor(true);
+    }
     let (sender, receiver) = std::sync::mpsc::channel();
     let sender = Arc::new(Mutex::new(Some(sender)));
     let callback_sender = sender.clone();
@@ -237,338 +237,93 @@ fn capture_main_display_sck(
         },
     );
     unsafe {
-        objc2_screen_capture_kit::SCScreenshotManager::captureImageInRect_completionHandler(
-            rect,
+        objc2_screen_capture_kit::SCScreenshotManager::captureImageWithFilter_configuration_completionHandler(
+            &filter,
+            &config,
             Some(&block),
         );
     }
-    receiver
-        .recv_timeout(Duration::from_secs(2))
-        .map_err(|_| anyhow::anyhow!("ScreenCaptureKit capture timed out"))?
+    recv_sck_result(receiver, Duration::from_secs(2), "ScreenCaptureKit capture")?
 }
 
 #[cfg(target_os = "macos")]
-fn capture_main_display_core_graphics(
-    started: Instant,
-    request: CaptureRequest,
-) -> anyhow::Result<CapturedFrame> {
-    let capture_started = Instant::now();
-    let display_id = unsafe { CGMainDisplayID() };
-    let image = unsafe { CGDisplayCreateImage(display_id) };
-    if image.is_null() {
-        anyhow::bail!(
-            "CGDisplayCreateImage returned null; Screen Recording permission may be missing"
+fn shareable_content_sck(
+) -> anyhow::Result<objc2::rc::Retained<objc2_screen_capture_kit::SCShareableContent>> {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let sender = Arc::new(Mutex::new(Some(sender)));
+    let callback_sender = sender.clone();
+    let block = block2::RcBlock::new(
+        move |content: *mut objc2_screen_capture_kit::SCShareableContent,
+              error: *mut objc2_foundation::NSError| {
+            let result = if !error.is_null() {
+                Err(anyhow::anyhow!(
+                    "ScreenCaptureKit shareable content returned an error"
+                ))
+            } else if content.is_null() {
+                Err(anyhow::anyhow!(
+                    "ScreenCaptureKit returned null shareable content"
+                ))
+            } else {
+                unsafe {
+                    objc2::rc::Retained::retain(content)
+                        .map(objc2::rc::Retained::into_raw)
+                        .map(|ptr| ptr as usize)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("ScreenCaptureKit shareable content retain failed")
+                        })
+                }
+            };
+            if let Some(sender) = callback_sender
+                .lock()
+                .ok()
+                .and_then(|mut sender| sender.take())
+            {
+                let _ = sender.send(result);
+            }
+        },
+    );
+    unsafe {
+        objc2_screen_capture_kit::SCShareableContent::getShareableContentExcludingDesktopWindows_onScreenWindowsOnly_completionHandler(
+            false,
+            true,
+            &block,
         );
     }
-    let result = unsafe {
-        image_to_frame(
-            started,
-            capture_started,
-            display_id,
-            image,
-            request,
-            FrameGeometry::display(display_id),
-        )
-    };
-    unsafe { CFRelease(image.cast()) };
-    result
-}
-
-#[cfg(target_os = "macos")]
-fn capture_main_display_window_list(
-    started: Instant,
-    request: CaptureRequest,
-) -> anyhow::Result<CapturedFrame> {
-    let capture_started = Instant::now();
-    let display_id = unsafe { CGMainDisplayID() };
-    let bounds = unsafe { CGDisplayBounds(display_id) };
-    let image = unsafe {
-        CGWindowListCreateImage(
-            bounds,
-            CG_WINDOW_LIST_OPTION_ON_SCREEN_ONLY,
-            CG_NULL_WINDOW_ID,
-            CG_WINDOW_IMAGE_DEFAULT,
-        )
-    };
-    if image.is_null() {
-        anyhow::bail!("CGWindowListCreateImage returned null");
+    let ptr = recv_sck_result(
+        receiver,
+        Duration::from_secs(2),
+        "ScreenCaptureKit shareable content",
+    )??;
+    unsafe {
+        objc2::rc::Retained::from_raw(ptr as *mut objc2_screen_capture_kit::SCShareableContent)
     }
-    let result = unsafe {
-        image_to_frame(
-            started,
-            capture_started,
-            display_id,
-            image,
-            request,
-            FrameGeometry::display(display_id),
-        )
-    };
-    unsafe { CFRelease(image.cast()) };
-    result
+    .ok_or_else(|| anyhow::anyhow!("ScreenCaptureKit shareable content pointer was null"))
 }
 
 #[cfg(target_os = "macos")]
-fn native_capture_window(window_id: u32, request: CaptureRequest) -> anyhow::Result<CapturedFrame> {
+fn recv_sck_result<T>(
+    receiver: std::sync::mpsc::Receiver<T>,
+    timeout: Duration,
+    label: &str,
+) -> anyhow::Result<T> {
     let started = Instant::now();
-    if let Ok(frame) = capture_window_from_display(started, window_id, request.clone()) {
-        return Ok(frame);
+    loop {
+        match receiver.try_recv() {
+            Ok(value) => return Ok(value),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                anyhow::bail!("{label} channel disconnected");
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                if started.elapsed() >= timeout {
+                    anyhow::bail!("{label} timed out");
+                }
+                unsafe {
+                    CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.01, true);
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
     }
-    if let Ok(frame) = capture_window_screencapture(started, window_id, request.clone()) {
-        return Ok(frame);
-    }
-    capture_window_core_graphics(started, window_id, request)
-}
-
-#[cfg(target_os = "macos")]
-fn capture_window_from_display(
-    started: Instant,
-    window_id: u32,
-    request: CaptureRequest,
-) -> anyhow::Result<CapturedFrame> {
-    let capture_started = Instant::now();
-    let display_id = unsafe { CGMainDisplayID() };
-    let geometry = window_geometry(window_id)?
-        .ok_or_else(|| anyhow::anyhow!("window {window_id} was not found"))?;
-    let full_frame = capture_main_display(
-        started,
-        CaptureRequest {
-            max_width: None,
-            encoding: FrameEncoding::Png,
-            force_fresh: true,
-        },
-    )?;
-    let image = image::load_from_memory(full_frame.bytes.as_ref())
-        .map_err(|error| anyhow::anyhow!("decode display frame for window crop: {error}"))?
-        .to_rgba8();
-    let crop_x = geometry
-        .frame_origin_x
-        .saturating_sub(full_frame.envelope.display_x)
-        .max(0) as u32;
-    let crop_y = geometry
-        .frame_origin_y
-        .saturating_sub(full_frame.envelope.display_y)
-        .max(0) as u32;
-    if crop_x >= image.width() || crop_y >= image.height() {
-        anyhow::bail!("window {window_id} is outside the captured display frame");
-    }
-    let crop_width = (geometry.capture_bounds.size.width.round().max(1.0) as u32)
-        .min(image.width().saturating_sub(crop_x));
-    let crop_height = (geometry.capture_bounds.size.height.round().max(1.0) as u32)
-        .min(image.height().saturating_sub(crop_y));
-    if crop_width == 0 || crop_height == 0 {
-        anyhow::bail!("window {window_id} crop is empty");
-    }
-    let crop =
-        image::imageops::crop_imm(&image, crop_x, crop_y, crop_width, crop_height).to_image();
-    rgba_image_to_frame(
-        started,
-        capture_started,
-        display_id,
-        crop,
-        request,
-        geometry,
-    )
-}
-
-#[cfg(target_os = "macos")]
-fn capture_window_core_graphics(
-    started: Instant,
-    window_id: u32,
-    request: CaptureRequest,
-) -> anyhow::Result<CapturedFrame> {
-    let capture_started = Instant::now();
-    let display_id = unsafe { CGMainDisplayID() };
-    let geometry =
-        window_geometry(window_id)?.unwrap_or_else(|| FrameGeometry::display(display_id));
-    let image = unsafe {
-        CGWindowListCreateImage(
-            geometry.capture_bounds,
-            CG_WINDOW_LIST_OPTION_INCLUDING_WINDOW,
-            window_id,
-            CG_WINDOW_IMAGE_DEFAULT,
-        )
-    };
-    if image.is_null() {
-        anyhow::bail!("CGWindowListCreateImage returned null for window {window_id}");
-    }
-    let result = unsafe {
-        image_to_frame(
-            started,
-            capture_started,
-            display_id,
-            image,
-            request,
-            geometry,
-        )
-    };
-    unsafe { CFRelease(image.cast()) };
-    result
-}
-
-#[cfg(target_os = "macos")]
-fn capture_window_screencapture(
-    started: Instant,
-    window_id: u32,
-    request: CaptureRequest,
-) -> anyhow::Result<CapturedFrame> {
-    let capture_started = Instant::now();
-    let path = std::env::temp_dir().join(format!(
-        "cua-window-screencapture-{}-{}-{}.png",
-        std::process::id(),
-        window_id,
-        monotonic_capture_id(started)
-    ));
-    let window_id_arg = window_id.to_string();
-    let output = std::process::Command::new("/usr/sbin/screencapture")
-        .args(["-x", "-l", window_id_arg.as_str(), "-t", "png"])
-        .arg(&path)
-        .output()
-        .map_err(|error| anyhow::anyhow!("launch window screencapture: {error}"))?;
-    if !output.status.success() {
-        let _ = std::fs::remove_file(&path);
-        anyhow::bail!(
-            "window screencapture failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
-    let image = image::open(&path)
-        .map_err(|error| anyhow::anyhow!("decode window screencapture output: {error}"))?
-        .to_rgba8();
-    let _ = std::fs::remove_file(&path);
-    let display_id = unsafe { CGMainDisplayID() };
-    let geometry =
-        window_geometry(window_id)?.unwrap_or_else(|| FrameGeometry::display(display_id));
-    rgba_image_to_frame(
-        started,
-        capture_started,
-        display_id,
-        image,
-        request,
-        geometry,
-    )
-}
-
-#[cfg(not(target_os = "macos"))]
-fn native_capture_window(
-    _window_id: u32,
-    _request: CaptureRequest,
-) -> anyhow::Result<CapturedFrame> {
-    anyhow::bail!("macOS window capture backend is only available on macOS")
-}
-
-#[cfg(target_os = "macos")]
-fn capture_main_display_screencapture(
-    started: Instant,
-    request: CaptureRequest,
-) -> anyhow::Result<CapturedFrame> {
-    let capture_started = Instant::now();
-    let path = std::env::temp_dir().join(format!(
-        "cua-screencapture-{}-{}.png",
-        std::process::id(),
-        monotonic_capture_id(started)
-    ));
-    let output = std::process::Command::new("/usr/sbin/screencapture")
-        .args(["-x", "-t", "png"])
-        .arg(&path)
-        .output()
-        .map_err(|error| anyhow::anyhow!("launch screencapture: {error}"))?;
-    if !output.status.success() {
-        let _ = std::fs::remove_file(&path);
-        anyhow::bail!(
-            "screencapture failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
-    let image = image::open(&path)
-        .map_err(|error| anyhow::anyhow!("decode screencapture output: {error}"))?
-        .to_rgba8();
-    let _ = std::fs::remove_file(&path);
-    let display_id = unsafe { CGMainDisplayID() };
-    rgba_image_to_frame(
-        started,
-        capture_started,
-        display_id,
-        image,
-        request,
-        FrameGeometry::display(display_id),
-    )
-}
-
-#[cfg(target_os = "macos")]
-fn rgba_image_to_frame(
-    started: Instant,
-    capture_started: Instant,
-    display_id: u32,
-    image: ImageBuffer<Rgba<u8>, Vec<u8>>,
-    request: CaptureRequest,
-    geometry: FrameGeometry,
-) -> anyhow::Result<CapturedFrame> {
-    let source_width = image.width();
-    let source_height = image.height();
-    let target_width = request
-        .max_width
-        .filter(|max_width| *max_width < source_width)
-        .map(|max_width| max_width.max(64))
-        .unwrap_or(source_width);
-    let target_height = if target_width == source_width {
-        source_height
-    } else {
-        ((source_height as f64) * (target_width as f64 / source_width as f64)).round() as u32
-    }
-    .max(1);
-    let buffer = if target_width == source_width && target_height == source_height {
-        image
-    } else {
-        scale_rgba_source_to_rgba(
-            image.as_raw(),
-            source_width,
-            source_height,
-            target_width,
-            target_height,
-        )?
-    };
-
-    let encode_started = Instant::now();
-    let bytes = encode_image(&buffer, request.encoding.clone())?;
-    let encode_ns = elapsed_ns(encode_started);
-    let sha256 = format!("{:x}", Sha256::digest(&bytes));
-    let byte_len = bytes.len();
-    Ok(CapturedFrame {
-        envelope: FrameEnvelope {
-            schema_version: SCHEMA_VERSION.to_string(),
-            frame_id: monotonic_capture_id(started),
-            timestamp_mono_ns: started.elapsed().as_nanos(),
-            timestamp_wall_ms: now_wall_ms(),
-            display_id: display_id.to_string(),
-            display_x: geometry.display_bounds.origin.x.round() as i32,
-            display_y: geometry.display_bounds.origin.y.round() as i32,
-            display_width: unsafe { CGDisplayPixelsWide(display_id) } as u32,
-            display_height: unsafe { CGDisplayPixelsHigh(display_id) } as u32,
-            frame_origin_x: geometry.frame_origin_x,
-            frame_origin_y: geometry.frame_origin_y,
-            width: buffer.width(),
-            height: buffer.height(),
-            scale_factor: 1.0,
-            pixel_format: "rgba8".to_string(),
-            encoding: request.encoding,
-            byte_len,
-            sha256,
-            cursor: native_cursor_state(),
-            damage_rects: vec![Rect {
-                x: 0,
-                y: 0,
-                width: buffer.width(),
-                height: buffer.height(),
-            }],
-        },
-        bytes: Arc::new(bytes),
-        timings: CapturedFrameTimings {
-            capture_ns: elapsed_ns(capture_started),
-            encode_ns,
-        },
-    })
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -582,7 +337,6 @@ fn capture_main_display(
 #[cfg(target_os = "macos")]
 #[derive(Clone, Copy)]
 struct FrameGeometry {
-    capture_bounds: CGRect,
     display_bounds: CGRect,
     frame_origin_x: i32,
     frame_origin_y: i32,
@@ -593,7 +347,6 @@ impl FrameGeometry {
     fn display(display_id: u32) -> Self {
         let bounds = unsafe { CGDisplayBounds(display_id) };
         Self {
-            capture_bounds: bounds,
             display_bounds: bounds,
             frame_origin_x: 0,
             frame_origin_y: 0,
@@ -723,34 +476,8 @@ fn scaled_bgra_source_to_rgba(
         .ok_or_else(|| anyhow::anyhow!("failed to build macOS capture image buffer"))
 }
 
-#[cfg(target_os = "macos")]
-fn scale_rgba_source_to_rgba(
-    source: &[u8],
-    source_width: u32,
-    source_height: u32,
-    target_width: u32,
-    target_height: u32,
-) -> anyhow::Result<ImageBuffer<Rgba<u8>, Vec<u8>>> {
-    let mut rgba = Vec::with_capacity((target_width * target_height * 4) as usize);
-    for y in 0..target_height as usize {
-        let source_y = y * source_height as usize / target_height as usize;
-        for x in 0..target_width as usize {
-            let source_x = x * source_width as usize / target_width as usize;
-            let offset = (source_y * source_width as usize + source_x) * 4;
-            rgba.extend_from_slice(&source[offset..offset + 4]);
-        }
-    }
-    ImageBuffer::<Rgba<u8>, Vec<u8>>::from_raw(target_width, target_height, rgba)
-        .ok_or_else(|| anyhow::anyhow!("failed to build screencapture image buffer"))
-}
-
 fn elapsed_ns(started: Instant) -> u64 {
     started.elapsed().as_nanos().min(u64::MAX as u128) as u64
-}
-
-#[cfg(target_os = "macos")]
-fn monotonic_capture_id(started: Instant) -> u64 {
-    started.elapsed().as_millis().min(u64::MAX as u128) as u64
 }
 
 #[cfg(target_os = "macos")]
@@ -850,52 +577,6 @@ fn native_window_list() -> anyhow::Result<Vec<WindowInfo>> {
     }
     unsafe { CFRelease(array.cast()) };
     Ok(windows)
-}
-
-#[cfg(target_os = "macos")]
-fn window_geometry(window_id: u32) -> anyhow::Result<Option<FrameGeometry>> {
-    let array =
-        unsafe { CGWindowListCopyWindowInfo(CG_WINDOW_LIST_OPTION_INCLUDING_WINDOW, window_id) };
-    if array.is_null() {
-        return Ok(None);
-    }
-    let display_id = unsafe { CGMainDisplayID() };
-    let display_bounds = unsafe { CGDisplayBounds(display_id) };
-    let count = unsafe { CFArrayGetCount(array) };
-    let mut geometry = None;
-    for index in 0..count {
-        let dict = unsafe { CFArrayGetValueAtIndex(array, index) };
-        if dict.is_null() {
-            continue;
-        }
-        let Some(number) = cf_i64(dict, unsafe { kCGWindowNumber }.cast()) else {
-            continue;
-        };
-        if number != i64::from(window_id) {
-            continue;
-        }
-        let Some(bounds_dict) = cf_value(dict, unsafe { kCGWindowBounds }.cast()) else {
-            continue;
-        };
-        let mut rect = CGRect {
-            origin: CGPoint { x: 0.0, y: 0.0 },
-            size: CGSize {
-                width: 0.0,
-                height: 0.0,
-            },
-        };
-        if unsafe { CGRectMakeWithDictionaryRepresentation(bounds_dict.cast(), &mut rect) } {
-            geometry = Some(FrameGeometry {
-                capture_bounds: rect,
-                display_bounds,
-                frame_origin_x: rect.origin.x.round() as i32,
-                frame_origin_y: rect.origin.y.round() as i32,
-            });
-            break;
-        }
-    }
-    unsafe { CFRelease(array.cast()) };
-    Ok(geometry)
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -1244,13 +925,6 @@ unsafe extern "C" {
     fn CGMainDisplayID() -> u32;
     fn CGEventCreate(source: *const std::ffi::c_void) -> *const std::ffi::c_void;
     fn CGEventGetLocation(event: *const std::ffi::c_void) -> CGPoint;
-    fn CGDisplayCreateImage(display: u32) -> *const std::ffi::c_void;
-    fn CGWindowListCreateImage(
-        screen_bounds: CGRect,
-        list_option: u32,
-        window_id: u32,
-        image_option: u32,
-    ) -> *const std::ffi::c_void;
     fn CGWindowListCopyWindowInfo(option: u32, relative_to_window: u32) -> *const std::ffi::c_void;
     fn CGRectMakeWithDictionaryRepresentation(
         dict: *const std::ffi::c_void,
@@ -1308,8 +982,14 @@ unsafe extern "C" {
     fn CGDisplayPixelsWide(display: u32) -> usize;
     fn CGDisplayPixelsHigh(display: u32) -> usize;
     fn CGDisplayBounds(display: u32) -> CGRect;
+    fn CFRunLoopRunInMode(
+        mode: *const std::ffi::c_void,
+        seconds: f64,
+        return_after_source_handled: bool,
+    ) -> i32;
     fn CFRelease(cf: *const std::ffi::c_void);
 
+    static kCFRunLoopDefaultMode: *const std::ffi::c_void;
     static kCGWindowNumber: *const std::ffi::c_void;
     static kCGWindowOwnerName: *const std::ffi::c_void;
     static kCGWindowName: *const std::ffi::c_void;
@@ -1345,12 +1025,6 @@ struct CGRect {
 const CG_HID_EVENT_TAP: u32 = 0;
 #[cfg(target_os = "macos")]
 const CG_WINDOW_LIST_OPTION_ON_SCREEN_ONLY: u32 = 1;
-#[cfg(target_os = "macos")]
-const CG_WINDOW_LIST_OPTION_INCLUDING_WINDOW: u32 = 8;
-#[cfg(target_os = "macos")]
-const CG_NULL_WINDOW_ID: u32 = 0;
-#[cfg(target_os = "macos")]
-const CG_WINDOW_IMAGE_DEFAULT: u32 = 0;
 #[cfg(target_os = "macos")]
 const K_CF_NUMBER_SINT64_TYPE: i32 = 4;
 #[cfg(target_os = "macos")]
@@ -1414,7 +1088,7 @@ mod tests {
                 Instant::now(),
                 CaptureRequest {
                     max_width: Some(640),
-                    encoding: FrameEncoding::Png,
+                    encoding: cua_core::FrameEncoding::Png,
                     force_fresh: true,
                 },
             )
