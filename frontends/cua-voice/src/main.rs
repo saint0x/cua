@@ -8,7 +8,7 @@ use cua_voice::agent_events::{
 use cua_voice::client::CuaClient;
 use cua_voice::daemon::profile_daemon_is_alive;
 use cua_voice::hud::{
-    HudDisplay, HudMetrics, COMPACT_HEIGHT, COMPACT_RADIUS, COMPACT_WIDTH, TOP_MARGIN,
+    compact_label, HudDisplay, HudMetrics, COMPACT_HEIGHT, EXPANDED_HEIGHT, TOP_MARGIN,
     WINDOW_HEIGHT, WINDOW_WIDTH,
 };
 use cua_voice::orb::paint_orb;
@@ -18,10 +18,10 @@ use cua_voice::{
     VoiceConfig,
 };
 use gpui::{
-    canvas, div, hsla, point, prelude::*, px, rgb, size, App, Application, Bounds, BoxShadow,
-    Context, IntoElement, MouseButton as GpuiMouseButton, MouseMoveEvent, ParentElement, Pixels,
-    Point, Render, Styled, Window, WindowBackgroundAppearance, WindowBounds, WindowKind,
-    WindowOptions,
+    canvas, div, hsla, point, prelude::*, px, rgb, size, AnyElement, App, Application, Bounds,
+    BoxShadow, Context, Div, IntoElement, MouseButton as GpuiMouseButton, MouseMoveEvent,
+    ParentElement, Pixels, Point, Render, Styled, Window, WindowBackgroundAppearance, WindowBounds,
+    WindowKind, WindowOptions,
 };
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -41,6 +41,10 @@ const MARQUEE_CHAR_WIDTH_PX: f32 = 6.2;
 const ACTIVITY_DOT_COUNT: usize = 6;
 const CONTROL_SHORTCUT_POLL_INTERVAL: Duration = Duration::from_millis(4);
 const EDGE_SNAP_MARGIN_PX: f32 = 96.0;
+const MINIMIZED_WIDTH: f32 = 38.0;
+const MINIMIZED_HEIGHT: f32 = 28.0;
+const MINIMIZED_RADIUS: f32 = 14.0;
+const MINIMIZED_RIGHT_OFFSET: f32 = 220.0;
 
 #[derive(Debug, Parser)]
 #[command(name = "cua-voice", version, about = "Rust voice HUD for cua")]
@@ -83,7 +87,12 @@ struct VoiceHud {
     center_text_key: String,
     center_text_since: Instant,
     response_progress: f32,
+    expansion_progress: f32,
+    minimized_progress: f32,
+    expanded: bool,
+    minimized: bool,
     drag: Option<IslandDrag>,
+    model_label: String,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -93,7 +102,7 @@ struct IslandDrag {
 }
 
 impl VoiceHud {
-    fn new(rx: Receiver<VoiceUiEvent>, mode: UiMode) -> Self {
+    fn new(rx: Receiver<VoiceUiEvent>, mode: UiMode, model_label: String) -> Self {
         let mut snapshot = HudSnapshot::default();
         let source = initial_ui_source(&mode).to_string();
         snapshot.apply(VoiceUiEvent::UiMode {
@@ -108,7 +117,12 @@ impl VoiceHud {
             center_text_key: String::new(),
             center_text_since: Instant::now(),
             response_progress: 0.0,
+            expansion_progress: 0.0,
+            minimized_progress: 0.0,
+            expanded: false,
+            minimized: false,
             drag: None,
+            model_label,
         }
     }
 
@@ -128,6 +142,21 @@ impl VoiceHud {
             },
         )
         .size(px(13.0))
+    }
+
+    fn render_surface(
+        &self,
+        display: &HudDisplay,
+        metrics: HudMetrics,
+        center_text: String,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        if minimized_content_visible(self.minimized_progress) {
+            self.minimized_icon(cx).into_any_element()
+        } else {
+            self.island_surface(display, metrics, center_text, cx)
+                .into_any_element()
+        }
     }
 
     fn chip(label: impl Into<String>) -> impl IntoElement {
@@ -171,6 +200,22 @@ impl VoiceHud {
         if (self.response_progress - target).abs() < 0.01 {
             self.response_progress = target;
         }
+        let expansion_target = if self.expanded && !self.minimized {
+            1.0
+        } else {
+            0.0
+        };
+        let expansion_step = (dt * 13.0).clamp(0.0, 1.0);
+        self.expansion_progress += (expansion_target - self.expansion_progress) * expansion_step;
+        if (self.expansion_progress - expansion_target).abs() < 0.006 {
+            self.expansion_progress = expansion_target;
+        }
+        let minimized_target = if self.minimized { 1.0 } else { 0.0 };
+        let minimized_step = (dt * 14.0).clamp(0.0, 1.0);
+        self.minimized_progress += (minimized_target - self.minimized_progress) * minimized_step;
+        if (self.minimized_progress - minimized_target).abs() < 0.006 {
+            self.minimized_progress = minimized_target;
+        }
     }
 
     fn sync_center_text(&mut self, center_text: &str) {
@@ -180,7 +225,7 @@ impl VoiceHud {
         }
     }
 
-    fn compact_bar(
+    fn island_surface(
         &self,
         display: &HudDisplay,
         metrics: HudMetrics,
@@ -205,9 +250,9 @@ impl VoiceHud {
         };
 
         div()
-            .w(px(compact_bar_width(metrics)))
-            .h(px(compact_bar_height(metrics)))
-            .rounded(px(compact_bar_radius(metrics)))
+            .w(px(island_width(metrics)))
+            .h(px(island_height(metrics)))
+            .rounded(px(island_radius(metrics)))
             .overflow_hidden()
             .opacity(metrics.bar_opacity)
             .bg(hsla(0.0, 0.0, 0.0, 0.92))
@@ -226,6 +271,7 @@ impl VoiceHud {
                         start_cursor: current_cursor_point(),
                         start_bounds: window.bounds(),
                     });
+                    cx.notify();
                     cx.stop_propagation();
                 }),
             )
@@ -239,6 +285,7 @@ impl VoiceHud {
                         bounds.origin.x = drag.start_bounds.origin.x + dx;
                         bounds.origin.y = drag.start_bounds.origin.y + dy;
                         window.set_bounds(bounds);
+                        cx.notify();
                         cx.stop_propagation();
                     }
                 }
@@ -259,28 +306,289 @@ impl VoiceHud {
             )
             .px_3()
             .flex()
-            .items_center()
-            .gap_3()
-            .child(self.orb())
+            .flex_col()
             .child(
                 div()
-                    .w(px(190.0))
-                    .truncate()
-                    .text_color(rgb(0x9f9fa6))
-                    .text_xs()
-                    .child(title),
+                    .h(px(COMPACT_HEIGHT))
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(self.stoplights(cx))
+                    .child(self.orb())
+                    .child(
+                        div()
+                            .w(px(190.0))
+                            .truncate()
+                            .text_color(rgb(0x9f9fa6))
+                            .text_xs()
+                            .child(title),
+                    )
+                    .child(Self::divider())
+                    .child(center_text_slot(
+                        center,
+                        reply_visible,
+                        self.center_text_since.elapsed().as_secs_f32(),
+                    ))
+                    .child(Self::divider())
+                    .child(Self::chip(tool))
+                    .child(Self::chip(app))
+                    .child(div().flex_1())
+                    .child(self.activity_dots()),
             )
-            .child(Self::divider())
-            .child(center_text_slot(
-                center,
-                reply_visible,
-                self.center_text_since.elapsed().as_secs_f32(),
+            .child(self.expanded_body(display, metrics))
+    }
+
+    fn stoplights(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .items_center()
+            .gap_1()
+            .opacity(0.18)
+            .hover(|style| style.opacity(1.0))
+            .child(
+                stoplight(0xff5f57)
+                    .id("cua-island-close")
+                    .hover(|style| style.opacity(1.0))
+                    .on_click(cx.listener(|_, _, _, cx| {
+                        cx.quit();
+                    })),
+            )
+            .child(
+                stoplight(0xffbd2e)
+                    .id("cua-island-minimize")
+                    .hover(|style| style.opacity(1.0))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.minimized = true;
+                        this.expanded = false;
+                        this.drag = None;
+                        cx.notify();
+                        cx.stop_propagation();
+                    })),
+            )
+            .child(
+                stoplight(0x28c840)
+                    .id("cua-island-expand")
+                    .hover(|style| style.opacity(1.0))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.expanded = !this.expanded;
+                        this.minimized = false;
+                        this.drag = None;
+                        cx.notify();
+                        if let Some(display) = window.display(cx) {
+                            let bounds = animated_island_bounds(
+                                window.bounds(),
+                                HudMetrics::with_expansion(
+                                    this.response_progress,
+                                    this.expansion_progress,
+                                ),
+                                this.minimized_progress,
+                                display.bounds(),
+                            );
+                            window.set_bounds(bounds);
+                        }
+                        cx.stop_propagation();
+                    })),
+            )
+    }
+
+    fn minimized_icon(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .w(px(MINIMIZED_WIDTH))
+            .h(px(MINIMIZED_HEIGHT))
+            .rounded(px(MINIMIZED_RADIUS))
+            .overflow_hidden()
+            .bg(hsla(0.0, 0.0, 0.0, 0.90))
+            .border_1()
+            .border_color(hsla(0.0, 0.0, 1.0, 0.16))
+            .shadow(vec![BoxShadow {
+                color: hsla(0.0, 0.0, 0.0, 0.48),
+                blur_radius: px(14.0),
+                spread_radius: px(0.0),
+                offset: point(px(0.0), px(4.0)),
+            }])
+            .flex()
+            .items_center()
+            .justify_center()
+            .id("cua-island-restore")
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.minimized = false;
+                this.expanded = false;
+                this.drag = None;
+                cx.notify();
+                if let Some(display) = window.display(cx) {
+                    let bounds = animated_island_bounds(
+                        window.bounds(),
+                        HudMetrics::with_expansion(this.response_progress, this.expansion_progress),
+                        this.minimized_progress,
+                        display.bounds(),
+                    );
+                    window.set_bounds(bounds);
+                }
+                cx.stop_propagation();
+            }))
+            .child(self.orb())
+    }
+
+    fn expanded_body(&self, display: &HudDisplay, metrics: HudMetrics) -> impl IntoElement {
+        let step_total = self.snapshot.step.total.max(1);
+        let step_index = self.snapshot.step.index.min(step_total);
+        let response = expanded_response_text(display);
+        div()
+            .opacity(metrics.expansion_opacity)
+            .h(px((EXPANDED_HEIGHT - COMPACT_HEIGHT).max(0.0)))
+            .border_1()
+            .border_color(hsla(0.0, 0.0, 1.0, 0.12))
+            .px_5()
+            .pb_5()
+            .pt_4()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(Self::section_label("TASK"))
+                            .child(
+                                div()
+                                    .w(px(520.0))
+                                    .truncate()
+                                    .text_color(rgb(0xe9e9ee))
+                                    .text_sm()
+                                    .child(display.prompt.clone()),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_color(rgb(0xd9d9df))
+                                    .text_xs()
+                                    .child(format!("{step_index}/{step_total}")),
+                            )
+                            .child(step_segments(step_index, step_total)),
+                    ),
+            )
+            .child(
+                div()
+                    .h(px(190.0))
+                    .rounded(px(8.0))
+                    .border_1()
+                    .border_color(hsla(0.0, 0.0, 1.0, 0.10))
+                    .bg(hsla(0.0, 0.0, 1.0, 0.035))
+                    .px_4()
+                    .py_3()
+                    .overflow_hidden()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(Self::section_label("RESPONSE"))
+                    .child(
+                        div()
+                            .whitespace_normal()
+                            .line_height(px(18.0))
+                            .text_color(rgb(0xd6d6dc))
+                            .text_sm()
+                            .child(response),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap_3()
+                    .child(self.current_action_panel(display))
+                    .child(self.tools_panel(display)),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .text_xs()
+                    .text_color(rgb(0x74747d))
+                    .child(format!("Elapsed {}", elapsed_label(self.started.elapsed())))
+                    .child(format!("Model {}", compact_label(&self.model_label, 30)))
+                    .child(format!("Transport {}", display.tool)),
+            )
+    }
+
+    fn section_label(label: &'static str) -> impl IntoElement {
+        div().text_xs().text_color(rgb(0x74747d)).child(label)
+    }
+
+    fn current_action_panel(&self, display: &HudDisplay) -> impl IntoElement {
+        div()
+            .flex_1()
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(hsla(0.0, 0.0, 1.0, 0.10))
+            .bg(hsla(0.0, 0.0, 1.0, 0.04))
+            .p_3()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(Self::section_label("CURRENT ACTION"))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(action_glyph())
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_sm()
+                                    .text_color(rgb(0xf0f0f4))
+                                    .child(compact_label(&self.snapshot.step.label, 56)),
+                            )
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_xs()
+                                    .text_color(rgb(0x8f8f98))
+                                    .child(display.phase.to_string()),
+                            ),
+                    ),
+            )
+            .child(div().flex().items_center().gap_2().child(live_dot()).child(
+                div().text_xs().text_color(rgb(0x45e683)).child(
+                    if dots_are_active(&self.snapshot) {
+                        "LIVE"
+                    } else {
+                        "IDLE"
+                    },
+                ),
             ))
-            .child(Self::divider())
-            .child(Self::chip(tool))
-            .child(Self::chip(app))
-            .child(div().flex_1())
-            .child(self.activity_dots())
+    }
+
+    fn tools_panel(&self, display: &HudDisplay) -> impl IntoElement {
+        div()
+            .flex_1()
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(hsla(0.0, 0.0, 1.0, 0.10))
+            .bg(hsla(0.0, 0.0, 1.0, 0.04))
+            .p_3()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(Self::section_label("TOOLS"))
+            .child(tool_row(&display.rows[0]))
+            .child(tool_row(&display.rows[1]))
     }
 
     fn finish_drag(&mut self, window: &mut Window, cx: &mut App) {
@@ -411,16 +719,141 @@ fn dot(style: ActivityDotStyle) -> impl IntoElement {
     ))
 }
 
-fn compact_bar_width(_: HudMetrics) -> f32 {
-    COMPACT_WIDTH
+fn stoplight(color: u32) -> Div {
+    div()
+        .w(px(8.0))
+        .h(px(8.0))
+        .rounded_full()
+        .opacity(0.72)
+        .bg(rgb(color))
+        .border_1()
+        .border_color(hsla(0.0, 0.0, 0.0, 0.35))
 }
 
+fn action_glyph() -> impl IntoElement {
+    div()
+        .w(px(24.0))
+        .h(px(24.0))
+        .rounded(px(6.0))
+        .bg(hsla(210.0 / 360.0, 1.0, 0.50, 0.16))
+        .border_1()
+        .border_color(hsla(210.0 / 360.0, 1.0, 0.65, 0.30))
+        .flex()
+        .items_center()
+        .justify_center()
+        .text_color(rgb(0x6ec7ff))
+        .text_xs()
+        .child(">")
+}
+
+fn live_dot() -> impl IntoElement {
+    div()
+        .w(px(6.0))
+        .h(px(6.0))
+        .rounded_full()
+        .bg(hsla(142.0 / 360.0, 0.95, 0.58, 0.95))
+}
+
+fn tool_row(row: &cua_voice::hud::HudRow) -> impl IntoElement {
+    div()
+        .flex()
+        .items_center()
+        .gap_3()
+        .child(action_glyph())
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .flex_1()
+                .child(
+                    div()
+                        .truncate()
+                        .text_color(rgb(0xe1e1e6))
+                        .text_sm()
+                        .child(row.label.clone()),
+                )
+                .child(
+                    div()
+                        .truncate()
+                        .text_color(rgb(0x85858d))
+                        .text_xs()
+                        .child(format!("{}  {}", row.tool, row.app)),
+                ),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_color(rgb(0x74747d))
+                .child(row.age.clone()),
+        )
+}
+
+fn step_segments(index: usize, total: usize) -> impl IntoElement {
+    let total = total.clamp(1, 24);
+    let complete = index.min(total);
+    let mut row = div().flex().items_center().gap_1();
+    for segment in 0..total {
+        row = row.child(
+            div()
+                .w(px(12.0))
+                .h(px(3.0))
+                .rounded_full()
+                .bg(if segment < complete {
+                    hsla(210.0 / 360.0, 1.0, 0.58, 0.90)
+                } else {
+                    hsla(0.0, 0.0, 1.0, 0.12)
+                }),
+        );
+    }
+    row
+}
+
+fn expanded_response_text(display: &HudDisplay) -> String {
+    let text = if display.result.trim().is_empty() {
+        display.prompt.as_str()
+    } else {
+        display.result.as_str()
+    };
+    compact_label(text, 460)
+}
+
+fn elapsed_label(duration: Duration) -> String {
+    let secs = duration.as_secs();
+    let minutes = secs / 60;
+    let seconds = secs % 60;
+    format!("{minutes:02}:{seconds:02}")
+}
+
+fn island_width(metrics: HudMetrics) -> f32 {
+    metrics.width
+}
+
+fn island_height(metrics: HudMetrics) -> f32 {
+    metrics.height
+}
+
+fn island_radius(metrics: HudMetrics) -> f32 {
+    metrics.radius
+}
+
+fn minimized_content_visible(progress: f32) -> bool {
+    progress >= 0.55
+}
+
+#[cfg(test)]
+fn compact_bar_width(_: HudMetrics) -> f32 {
+    cua_voice::hud::COMPACT_WIDTH
+}
+
+#[cfg(test)]
 fn compact_bar_height(_: HudMetrics) -> f32 {
     COMPACT_HEIGHT
 }
 
+#[cfg(test)]
 fn compact_bar_radius(_: HudMetrics) -> f32 {
-    COMPACT_RADIUS
+    cua_voice::hud::COMPACT_RADIUS
 }
 
 fn response_flash_visible(metrics: HudMetrics) -> bool {
@@ -464,17 +897,24 @@ impl Render for VoiceHud {
         self.snapshot.expire_programmed_step(Instant::now());
         window.request_animation_frame();
         let display = HudDisplay::from_snapshot(&self.snapshot);
-        let metrics = HudMetrics::interpolate(self.response_progress);
+        let metrics = HudMetrics::with_expansion(self.response_progress, self.expansion_progress);
         let center_text = center_text_for(&display, &self.snapshot, metrics);
         self.sync_center_text(&center_text);
-        window.resize(size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT)));
+        if self.drag.is_none() {
+            if let Some(display) = window.display(cx) {
+                let bounds = animated_island_bounds(
+                    window.bounds(),
+                    metrics,
+                    self.minimized_progress,
+                    display.bounds(),
+                );
+                window.set_bounds(bounds);
+            }
+        }
         div()
             .size_full()
             .relative()
-            .child(
-                self.compact_bar(&display, metrics, center_text, cx)
-                    .into_any_element(),
-            )
+            .child(self.render_surface(&display, metrics, center_text, cx))
             .into_any_element()
     }
 }
@@ -497,6 +937,7 @@ fn main() -> anyhow::Result<()> {
         stt_model: args.stt_model,
         planner_model: args.planner_model,
     };
+    let model_label = config.planner_model.clone();
     let runtime = Arc::new(tokio::runtime::Runtime::new()?);
     let (tx, rx) = channel::<VoiceUiEvent>();
     if let Some(transcript) = once_transcript {
@@ -561,7 +1002,7 @@ fn main() -> anyhow::Result<()> {
                 window_background: WindowBackgroundAppearance::Transparent,
                 ..Default::default()
             },
-            move |_, cx| cx.new(|_| VoiceHud::new(rx, ui_mode.clone())),
+            move |_, cx| cx.new(|_| VoiceHud::new(rx, ui_mode.clone(), model_label.clone())),
         )
         .unwrap();
     });
@@ -826,6 +1267,34 @@ fn top_centered_bounds(cx: &App) -> Bounds<gpui::Pixels> {
     }
 }
 
+fn animated_island_bounds(
+    current: Bounds<Pixels>,
+    metrics: HudMetrics,
+    minimized_progress: f32,
+    display_bounds: Bounds<Pixels>,
+) -> Bounds<Pixels> {
+    let minimized_progress = cua_voice::hud::ease_out_cubic(minimized_progress.clamp(0.0, 1.0));
+    let display_left = display_bounds.origin.x.to_f64() as f32;
+    let display_right =
+        display_bounds.origin.x.to_f64() as f32 + display_bounds.size.width.to_f64() as f32;
+    let width = cua_voice::hud::lerp(metrics.width, MINIMIZED_WIDTH, minimized_progress);
+    let height = cua_voice::hud::lerp(metrics.height, MINIMIZED_HEIGHT, minimized_progress);
+    let current_x = current.origin.x.to_f64() as f32;
+    let current_width = current.size.width.to_f64() as f32;
+    let current_center = current_x + current_width / 2.0;
+    let max_x = (display_right - width).max(display_left);
+    let normal_x = (current_center - width / 2.0).clamp(display_left, max_x);
+    let minimized_x = (display_right - MINIMIZED_RIGHT_OFFSET - width).clamp(display_left, max_x);
+    let x = cua_voice::hud::lerp(normal_x, minimized_x, minimized_progress);
+    Bounds {
+        origin: point(
+            px(x),
+            px(display_bounds.origin.y.to_f64() as f32 + TOP_MARGIN),
+        ),
+        size: size(px(width), px(height)),
+    }
+}
+
 fn current_cursor_point() -> Point<Pixels> {
     let cursor = cua_platform_macos::cursor_state();
     point(px(cursor.x as f32), px(cursor.y as f32))
@@ -1077,6 +1546,7 @@ fn legacy_desktop_permission_prompt_marker_path_under(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cua_voice::hud::{COMPACT_RADIUS, COMPACT_WIDTH};
 
     #[test]
     fn shortcut_controller_toggles_active_voice_turn_stop() {
@@ -1175,6 +1645,51 @@ mod tests {
     }
 
     #[test]
+    fn animated_island_bounds_preserves_center_and_top_attachment() {
+        let display = Bounds {
+            origin: point(px(0.0), px(0.0)),
+            size: size(px(1512.0), px(982.0)),
+        };
+        let compact = Bounds {
+            origin: point(px(348.5), px(0.0)),
+            size: size(px(COMPACT_WIDTH), px(COMPACT_HEIGHT)),
+        };
+        let expanded_metrics = HudMetrics::with_expansion(0.0, 1.0);
+
+        let expanded = animated_island_bounds(compact, expanded_metrics, 0.0, display);
+
+        assert_eq!(expanded.origin.y, px(TOP_MARGIN));
+        assert_eq!(expanded.size, size(px(930.0), px(520.0)));
+        assert_eq!(expanded.origin.x, px(291.0));
+    }
+
+    #[test]
+    fn minimized_island_moves_to_top_right_status_icon() {
+        let display = Bounds {
+            origin: point(px(0.0), px(0.0)),
+            size: size(px(1512.0), px(982.0)),
+        };
+        let compact = Bounds {
+            origin: point(px(348.5), px(0.0)),
+            size: size(px(COMPACT_WIDTH), px(COMPACT_HEIGHT)),
+        };
+
+        let minimized = animated_island_bounds(compact, HudMetrics::interpolate(0.0), 1.0, display);
+
+        assert_eq!(minimized.origin.y, px(TOP_MARGIN));
+        assert_eq!(
+            minimized.size,
+            size(px(MINIMIZED_WIDTH), px(MINIMIZED_HEIGHT))
+        );
+        assert_eq!(
+            minimized.origin.x,
+            px(1512.0 - MINIMIZED_RIGHT_OFFSET - MINIMIZED_WIDTH)
+        );
+        assert!(!minimized_content_visible(0.54));
+        assert!(minimized_content_visible(0.55));
+    }
+
+    #[test]
     fn step_label_stays_compact_and_structured() {
         assert_eq!(
             step_label(2, 5, "checking target"),
@@ -1231,7 +1746,11 @@ mod tests {
     #[test]
     fn hud_constructor_applies_initial_ui_mode() {
         let (_tx, rx) = channel::<VoiceUiEvent>();
-        let hud = VoiceHud::new(rx, UiMode::Headless);
+        let hud = VoiceHud::new(
+            rx,
+            UiMode::Headless,
+            "anthropic/claude-sonnet-5".to_string(),
+        );
 
         assert_eq!(hud.snapshot.mode, UiMode::Headless);
         assert_eq!(hud.snapshot.input_label, "Automation");

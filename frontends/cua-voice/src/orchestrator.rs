@@ -1,4 +1,4 @@
-use crate::audio::record_default_input_until;
+use crate::audio::{record_default_input_until, RecordedAudio};
 use crate::client::{CuaClient, CuaSession};
 use crate::daemon::{spawn_profile_daemon, wait_until_ready};
 use crate::planner::{parse_fast_command, PlannedTurn, Planner};
@@ -22,6 +22,9 @@ const VOICE_STEP_LABEL_MAX: usize = 96;
 const VOICE_STEP_TIMEOUT_MS: u64 = 500;
 const VOICE_STEP_FLUSH_TIMEOUT_MS: u64 = 2_000;
 const DEFAULT_CONTEXT_PREFETCH_TIMEOUT_MS: u64 = 2_500;
+const MIN_RECORDING_DURATION: Duration = Duration::from_millis(250);
+const MIN_RECORDING_RMS: f32 = 0.0025;
+const MIN_RECORDING_PEAK: i16 = 420;
 
 struct PrefetchedContext {
     session: Option<CuaSession>,
@@ -131,6 +134,7 @@ async fn record_and_run_turn(
     progress_flag.store(false, Ordering::Release);
     progress_task.abort();
     let audio = record_result??;
+    validate_recorded_audio(&audio)?;
     tx.send(VoiceUiEvent::Accepted).ok();
     transcribe_and_run_turn_after_local(config, audio.wav_bytes, local_task, tx).await
 }
@@ -160,6 +164,7 @@ async fn transcribe_and_run_turn_after_local(
     let context_task = spawn_context_prefetch(local.clone());
     step_publisher.publish("prefetching screen context");
     let transcript = stt_task.await.context("join speech to text")??;
+    validate_transcript(&transcript)?;
     send_metric(
         &tx,
         "context_stt_overlap_ms",
@@ -204,6 +209,46 @@ async fn run_transcript_turn(
     .await?;
     send_metric(&tx, "turn_total_ms", turn_started.elapsed());
     Ok(())
+}
+
+fn validate_recorded_audio(audio: &RecordedAudio) -> anyhow::Result<()> {
+    if audio.duration < MIN_RECORDING_DURATION {
+        anyhow::bail!("recording was too short to contain a clear command");
+    }
+    if audio.peak_amplitude < MIN_RECORDING_PEAK || audio.rms_amplitude < MIN_RECORDING_RMS {
+        anyhow::bail!("no clear speech detected from the microphone");
+    }
+    Ok(())
+}
+
+fn validate_transcript(transcript: &str) -> anyhow::Result<()> {
+    let normalized = normalized_transcript(transcript);
+    if normalized.split_whitespace().count() < 2 || is_common_silence_hallucination(&normalized) {
+        anyhow::bail!("transcript was not a clear command: {transcript}");
+    }
+    Ok(())
+}
+
+fn normalized_transcript(transcript: &str) -> String {
+    transcript
+        .trim()
+        .trim_matches(|ch: char| ch.is_ascii_punctuation())
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
+}
+
+fn is_common_silence_hallucination(transcript: &str) -> bool {
+    matches!(
+        transcript,
+        "" | "you"
+            | "thank you"
+            | "thanks"
+            | "thanks for watching"
+            | "thank you for watching"
+            | "subscribe"
+    )
 }
 
 async fn plan_and_dispatch(
@@ -529,6 +574,42 @@ mod tests {
         let label = voice_step_label("reply", &"done ".repeat(40));
         assert!(label.chars().count() <= VOICE_STEP_LABEL_MAX);
         assert!(label.ends_with("..."));
+    }
+
+    #[test]
+    fn recorded_audio_validation_rejects_short_or_silent_audio() {
+        let short = RecordedAudio {
+            sample_rate: 16_000,
+            wav_bytes: vec![0; 44],
+            duration: Duration::from_millis(120),
+            peak_amplitude: 2_000,
+            rms_amplitude: 0.05,
+        };
+        let silent = RecordedAudio {
+            sample_rate: 16_000,
+            wav_bytes: vec![0; 44],
+            duration: Duration::from_millis(800),
+            peak_amplitude: 12,
+            rms_amplitude: 0.0001,
+        };
+        let speech = RecordedAudio {
+            sample_rate: 16_000,
+            wav_bytes: vec![0; 44],
+            duration: Duration::from_millis(800),
+            peak_amplitude: 2_000,
+            rms_amplitude: 0.01,
+        };
+
+        assert!(validate_recorded_audio(&short).is_err());
+        assert!(validate_recorded_audio(&silent).is_err());
+        assert!(validate_recorded_audio(&speech).is_ok());
+    }
+
+    #[test]
+    fn transcript_validation_rejects_common_silence_hallucinations() {
+        assert!(validate_transcript("you").is_err());
+        assert!(validate_transcript("Thank you.").is_err());
+        assert!(validate_transcript("click the center target").is_ok());
     }
 
     #[tokio::test]

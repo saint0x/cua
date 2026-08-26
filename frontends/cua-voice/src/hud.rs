@@ -1,6 +1,9 @@
 pub const COMPACT_WIDTH: f32 = 815.0;
 pub const COMPACT_HEIGHT: f32 = 42.0;
 pub const COMPACT_RADIUS: f32 = 21.0;
+pub const EXPANDED_WIDTH: f32 = 930.0;
+pub const EXPANDED_HEIGHT: f32 = 520.0;
+pub const EXPANDED_RADIUS: f32 = 18.0;
 pub const WINDOW_WIDTH: f32 = COMPACT_WIDTH;
 pub const WINDOW_HEIGHT: f32 = COMPACT_HEIGHT;
 pub const TOP_MARGIN: f32 = 0.0;
@@ -14,17 +17,24 @@ pub struct HudMetrics {
     pub radius: f32,
     pub bar_opacity: f32,
     pub response_opacity: f32,
+    pub expansion_opacity: f32,
 }
 
 impl HudMetrics {
     pub fn interpolate(progress: f32) -> Self {
-        let progress = progress.clamp(0.0, 1.0);
+        Self::with_expansion(progress, 0.0)
+    }
+
+    pub fn with_expansion(response_progress: f32, expansion_progress: f32) -> Self {
+        let response_progress = response_progress.clamp(0.0, 1.0);
+        let expansion_progress = ease_out_cubic(expansion_progress.clamp(0.0, 1.0));
         Self {
-            width: COMPACT_WIDTH,
-            height: COMPACT_HEIGHT,
-            radius: COMPACT_RADIUS,
+            width: lerp(COMPACT_WIDTH, EXPANDED_WIDTH, expansion_progress),
+            height: lerp(COMPACT_HEIGHT, EXPANDED_HEIGHT, expansion_progress),
+            radius: lerp(COMPACT_RADIUS, EXPANDED_RADIUS, expansion_progress),
             bar_opacity: 1.0,
-            response_opacity: progress,
+            response_opacity: response_progress,
+            expansion_opacity: expansion_progress,
         }
     }
 }
@@ -231,5 +241,18 @@ mod tests {
         assert_eq!(compact.bar_opacity, reply.bar_opacity);
         assert_eq!(compact.response_opacity, 0.0);
         assert_eq!(reply.response_opacity, 1.0);
+        assert_eq!(compact.expansion_opacity, 0.0);
+        assert_eq!(reply.expansion_opacity, 0.0);
+    }
+
+    #[test]
+    fn metrics_expand_the_island_shell_separately_from_reply_flash() {
+        let expanded = HudMetrics::with_expansion(0.0, 1.0);
+
+        assert_eq!(expanded.width, EXPANDED_WIDTH);
+        assert_eq!(expanded.height, EXPANDED_HEIGHT);
+        assert_eq!(expanded.radius, EXPANDED_RADIUS);
+        assert_eq!(expanded.response_opacity, 0.0);
+        assert_eq!(expanded.expansion_opacity, 1.0);
     }
 }

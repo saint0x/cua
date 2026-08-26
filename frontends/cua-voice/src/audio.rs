@@ -11,6 +11,9 @@ use std::time::{Duration, Instant};
 pub struct RecordedAudio {
     pub sample_rate: u32,
     pub wav_bytes: Vec<u8>,
+    pub duration: Duration,
+    pub peak_amplitude: i16,
+    pub rms_amplitude: f32,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -182,9 +185,13 @@ fn record_default_input_with_policy(
     if samples.is_empty() {
         bail!("no samples captured from input device");
     }
+    let stats = audio_stats(sample_rate, &samples);
     Ok(RecordedAudio {
         sample_rate,
         wav_bytes: encode_wav_mono(sample_rate, &samples)?,
+        duration: stats.duration,
+        peak_amplitude: stats.peak_amplitude,
+        rms_amplitude: stats.rms_amplitude,
     })
 }
 
@@ -222,6 +229,37 @@ fn push_interleaved<T>(
         .lock()
         .unwrap()
         .observe_peak(Instant::now(), peak, policy.speech_threshold);
+}
+
+#[derive(Debug, Copy, Clone, PartialEq)]
+struct AudioStats {
+    duration: Duration,
+    peak_amplitude: i16,
+    rms_amplitude: f32,
+}
+
+fn audio_stats(sample_rate: u32, samples: &[i16]) -> AudioStats {
+    if sample_rate == 0 || samples.is_empty() {
+        return AudioStats {
+            duration: Duration::ZERO,
+            peak_amplitude: 0,
+            rms_amplitude: 0.0,
+        };
+    }
+    let mut peak = 0i16;
+    let mut sum_squares = 0.0f64;
+    for sample in samples {
+        let magnitude = sample.saturating_abs();
+        peak = peak.max(magnitude);
+        let normalized = f64::from(*sample) / f64::from(i16::MAX);
+        sum_squares += normalized * normalized;
+    }
+    let rms = (sum_squares / samples.len() as f64).sqrt() as f32;
+    AudioStats {
+        duration: Duration::from_secs_f64(samples.len() as f64 / f64::from(sample_rate)),
+        peak_amplitude: peak,
+        rms_amplitude: rms,
+    }
 }
 
 #[cfg(test)]
@@ -321,5 +359,14 @@ mod tests {
         std::env::set_var(threshold_name, "850");
         assert_eq!(i16_from_env(threshold_name, 520, 80..=6_000), 850);
         std::env::remove_var(threshold_name);
+    }
+
+    #[test]
+    fn audio_stats_reports_duration_peak_and_rms() {
+        let stats = audio_stats(1_000, &[0, 1_000, -2_000, 0]);
+
+        assert_eq!(stats.duration, Duration::from_millis(4));
+        assert_eq!(stats.peak_amplitude, 2_000);
+        assert!(stats.rms_amplitude > 0.03);
     }
 }
