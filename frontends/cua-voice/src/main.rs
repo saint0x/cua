@@ -869,16 +869,33 @@ fn start_double_control_poll_listener(tx: Sender<VoiceUiEvent>) {
         let mut detector = ControlDoubleTap::default();
         let mut was_down = false;
         loop {
-            let is_down = cua_platform_macos::control_key_is_down();
-            if is_down && !was_down {
-                detector.key_down();
-            } else if !is_down && was_down && detector.key_up(Instant::now()) {
+            if control_poll_sample_triggers_arm(
+                &mut detector,
+                &mut was_down,
+                cua_platform_macos::control_key_is_down(),
+                Instant::now(),
+            ) {
                 tx.send(VoiceUiEvent::Armed).ok();
             }
-            was_down = is_down;
             std::thread::sleep(Duration::from_millis(16));
         }
     });
+}
+
+fn control_poll_sample_triggers_arm(
+    detector: &mut ControlDoubleTap,
+    was_down: &mut bool,
+    is_down: bool,
+    now: Instant,
+) -> bool {
+    let triggered = if is_down && !*was_down {
+        detector.key_down();
+        false
+    } else {
+        !is_down && *was_down && detector.key_up(now)
+    };
+    *was_down = is_down;
+    triggered
 }
 
 fn start_embedded_daemon_if_needed(
@@ -900,22 +917,42 @@ fn start_embedded_daemon_if_needed(
 
 fn start_double_control_listener_if_allowed(profile: String, tx: Sender<VoiceUiEvent>) {
     let permission = cua_platform_macos::input_monitoring_permission();
-    let permission = if permission == PermissionState::Granted {
-        permission
-    } else if launched_from_app_bundle() {
+    let backend = select_control_shortcut_backend(permission, launched_from_app_bundle(), || {
         request_desktop_permission_once(
             &profile,
             "input-monitoring",
             cua_platform_macos::input_monitoring_permission,
             cua_platform_macos::request_input_monitoring_access,
         )
+    });
+    match backend {
+        ControlShortcutBackend::InputMonitoring => start_double_control_listener(tx),
+        ControlShortcutBackend::KeyStatePolling => start_double_control_poll_listener(tx),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ControlShortcutBackend {
+    InputMonitoring,
+    KeyStatePolling,
+}
+
+fn select_control_shortcut_backend(
+    permission: PermissionState,
+    launched_from_app_bundle: bool,
+    request_once: impl FnOnce() -> PermissionState,
+) -> ControlShortcutBackend {
+    let permission = if permission == PermissionState::Granted {
+        permission
+    } else if launched_from_app_bundle {
+        request_once()
     } else {
         permission
     };
     if permission == PermissionState::Granted {
-        start_double_control_listener(tx);
+        ControlShortcutBackend::InputMonitoring
     } else {
-        start_double_control_poll_listener(tx);
+        ControlShortcutBackend::KeyStatePolling
     }
 }
 
@@ -1125,6 +1162,66 @@ mod tests {
 
         assert_eq!(hud.snapshot.mode, UiMode::Headless);
         assert_eq!(hud.snapshot.input_label, "automation");
+    }
+
+    #[test]
+    fn control_shortcut_uses_input_monitoring_when_granted() {
+        let backend =
+            select_control_shortcut_backend(PermissionState::Granted, true, || unreachable!());
+
+        assert_eq!(backend, ControlShortcutBackend::InputMonitoring);
+    }
+
+    #[test]
+    fn control_shortcut_falls_back_to_polling_when_input_monitoring_is_denied() {
+        let backend = select_control_shortcut_backend(PermissionState::Denied, true, || {
+            PermissionState::Denied
+        });
+
+        assert_eq!(backend, ControlShortcutBackend::KeyStatePolling);
+    }
+
+    #[test]
+    fn control_shortcut_falls_back_to_polling_when_not_packaged_or_not_prompted() {
+        let backend =
+            select_control_shortcut_backend(PermissionState::Missing, false, || unreachable!());
+
+        assert_eq!(backend, ControlShortcutBackend::KeyStatePolling);
+    }
+
+    #[test]
+    fn control_shortcut_uses_input_monitoring_if_one_time_request_grants_it() {
+        let backend = select_control_shortcut_backend(PermissionState::Missing, true, || {
+            PermissionState::Granted
+        });
+
+        assert_eq!(backend, ControlShortcutBackend::InputMonitoring);
+    }
+
+    #[test]
+    fn control_polling_bridge_triggers_on_quick_double_control_release() {
+        let start = Instant::now();
+        let mut detector = ControlDoubleTap::default();
+        let mut was_down = false;
+        let samples = [
+            (true, 0, false),
+            (false, 40, false),
+            (true, 120, false),
+            (false, 160, true),
+            (false, 200, false),
+        ];
+
+        for (is_down, ms, expected) in samples {
+            assert_eq!(
+                control_poll_sample_triggers_arm(
+                    &mut detector,
+                    &mut was_down,
+                    is_down,
+                    start + Duration::from_millis(ms),
+                ),
+                expected
+            );
+        }
     }
 
     #[test]
