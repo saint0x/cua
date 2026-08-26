@@ -40,7 +40,7 @@ const MARQUEE_CHAR_WIDTH_PX: f32 = 6.2;
 const ACTIVITY_DOT_COUNT: usize = 6;
 
 #[derive(Debug, Parser)]
-#[command(name = "cua-voice", version, about = "Rust voice HUD for CUA")]
+#[command(name = "cua-voice", version, about = "Rust voice HUD for cua")]
 struct Args {
     #[arg(long, default_value = "default")]
     profile: String,
@@ -211,7 +211,7 @@ impl VoiceHud {
             display.title.clone()
         };
         let tool = if reply_visible {
-            "CUA".to_string()
+            "cua".to_string()
         } else {
             display.tool.clone()
         };
@@ -608,6 +608,16 @@ fn print_headless_events(rx: Receiver<VoiceUiEvent>) {
             VoiceUiEvent::UiMode { mode } => {
                 serde_json::json!({"event": "ui_mode", "mode": mode})
             }
+            VoiceUiEvent::AutomationActivity {
+                label,
+                source,
+                tool,
+            } => serde_json::json!({
+                "event": "automation_activity",
+                "label": label,
+                "source": source,
+                "tool": tool
+            }),
             VoiceUiEvent::Reply(text) => serde_json::json!({"event": "reply", "text": text}),
             VoiceUiEvent::Error(text) => serde_json::json!({"event": "error", "text": text}),
             VoiceUiEvent::Metric { name, ms } => {
@@ -907,11 +917,11 @@ mod tests {
     #[test]
     fn packaged_app_ignores_inherited_demo_arg() {
         assert!(path_looks_packaged_app(Path::new(
-            "/Applications/CUA.app/Contents/MacOS/cua-voice"
+            "/Applications/cua.app/Contents/MacOS/cua-voice"
         )));
         assert!(!demo_should_run_for_path(
             true,
-            Path::new("/Applications/CUA.app/Contents/MacOS/cua-voice")
+            Path::new("/Applications/cua.app/Contents/MacOS/cua-voice")
         ));
         assert!(demo_should_run_for_path(true, Path::new("/tmp/cua-voice")));
         assert!(!demo_should_run_for_path(
@@ -998,7 +1008,7 @@ mod tests {
     fn active_center_text_uses_protocol_step_label() {
         let mut snapshot = HudSnapshot::default();
         snapshot.apply(VoiceUiEvent::AgentStep {
-            label: "Opening Safari with CUA".to_string(),
+            label: "Opening Safari with cua".to_string(),
             source: Some("remote".to_string()),
             task: Some("Web browsing".to_string()),
             tool: Some("Unix socket".to_string()),
@@ -1009,7 +1019,7 @@ mod tests {
 
         assert_eq!(
             center_status_text(&snapshot),
-            "Step 2/5   Opening Safari with CUA"
+            "Step 2/5   Opening Safari with cua"
         );
     }
 

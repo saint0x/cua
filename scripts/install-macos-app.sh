@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_NAME="${CUA_APP_NAME:-CUA}"
+APP_NAME="${CUA_APP_NAME:-cua}"
 BUNDLE_ID="${CUA_BUNDLE_ID:-io.saint0x.cua}"
 SOURCE_APP="${CUA_APP_SOURCE:-$ROOT/artifacts/cua/macos/$APP_NAME.app}"
 INSTALL_DIR="${CUA_APP_INSTALL_DIR:-$HOME/Applications}"
@@ -19,6 +19,7 @@ if [[ ! -d "$SOURCE_APP" ]]; then
 fi
 
 mkdir -p "$INSTALL_DIR"
+find "$INSTALL_DIR" -maxdepth 1 -type d -iname "$APP_NAME.app" ! -name "$APP_NAME.app" -exec rm -rf {} +
 rm -rf "$INSTALL_APP"
 ditto "$SOURCE_APP" "$INSTALL_APP"
 

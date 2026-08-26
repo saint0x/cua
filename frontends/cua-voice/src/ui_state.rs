@@ -144,7 +144,7 @@ impl HudSnapshot {
                 self.input_label = if source.as_deref() == Some("voice") {
                     "Voice control".to_string()
                 } else {
-                    "Automated".to_string()
+                    "automation".to_string()
                 };
                 self.step = HudStep::new(
                     step_index.unwrap_or(3).into(),
@@ -161,7 +161,26 @@ impl HudSnapshot {
                     self.programmed_step_expires_at.map(|_| Box::new(restore));
             }
             VoiceUiEvent::UiMode { mode } => {
+                let headless = mode == UiMode::Headless;
                 self.mode = mode;
+                if headless {
+                    self.input_label = "automation".to_string();
+                    self.task = "Computer control".to_string();
+                }
+            }
+            VoiceUiEvent::AutomationActivity {
+                label,
+                source,
+                tool,
+            } => {
+                if self.programmed_step_expires_at.is_some() {
+                    return;
+                }
+                self.phase = HudPhase::Dispatching;
+                self.input_label = "automation".to_string();
+                self.task = source.unwrap_or_else(|| "Computer control".to_string());
+                self.step = HudStep::new(1, 1, label);
+                self.tool = tool.unwrap_or_else(|| "Unix socket".to_string());
             }
             VoiceUiEvent::Reply(text) => {
                 self.phase = HudPhase::Reply;
@@ -246,6 +265,11 @@ pub enum VoiceUiEvent {
     UiMode {
         mode: UiMode,
     },
+    AutomationActivity {
+        label: String,
+        source: Option<String>,
+        tool: Option<String>,
+    },
     Reply(String),
     Error(String),
     Metric {
@@ -313,7 +337,7 @@ mod tests {
         assert_eq!(state.step.index, 2);
         assert_eq!(state.step.total, 5);
         assert_eq!(state.tool, "vision");
-        assert_eq!(state.input_label, "Automated");
+        assert_eq!(state.input_label, "automation");
         assert_eq!(state.transcript.as_deref(), Some("find the red button"));
         assert!(state.programmed_step_expires_at.is_some());
     }
@@ -334,7 +358,7 @@ mod tests {
             step_total: Some(3),
             ttl_ms: None,
         });
-        assert_eq!(state.input_label, "Automated");
+        assert_eq!(state.input_label, "automation");
         assert_eq!(state.task, "Browser task");
     }
 
@@ -355,6 +379,49 @@ mod tests {
         assert_eq!(state.step.index, 37);
         assert_eq!(state.step.total, 120);
         assert_eq!(state.step.label, "validating candidate window");
+    }
+
+    #[test]
+    fn headless_mode_marks_hud_as_automation() {
+        let mut state = HudSnapshot::default();
+
+        state.apply(VoiceUiEvent::UiMode {
+            mode: UiMode::Headless,
+        });
+
+        assert_eq!(state.input_label, "automation");
+        assert_eq!(state.task, "Computer control");
+    }
+
+    #[test]
+    fn raw_automation_activity_sets_live_label_without_overriding_programmed_steps() {
+        let mut state = HudSnapshot::default();
+        state.apply(VoiceUiEvent::AutomationActivity {
+            label: "confirmed remote action".to_string(),
+            source: Some("Computer control".to_string()),
+            tool: Some("Unix socket".to_string()),
+        });
+
+        assert_eq!(state.input_label, "automation");
+        assert_eq!(state.phase, HudPhase::Dispatching);
+        assert_eq!(state.step.label, "confirmed remote action");
+
+        state.apply(VoiceUiEvent::AgentStep {
+            label: "custom visible step".to_string(),
+            source: Some("external agent".to_string()),
+            task: None,
+            tool: None,
+            step_index: Some(2),
+            step_total: Some(5),
+            ttl_ms: Some(1_500),
+        });
+        state.apply(VoiceUiEvent::AutomationActivity {
+            label: "late input completion".to_string(),
+            source: None,
+            tool: None,
+        });
+
+        assert_eq!(state.step.label, "custom visible step");
     }
 
     #[test]

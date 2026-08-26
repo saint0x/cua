@@ -1,4 +1,4 @@
-# CUA Eval Results
+# cua Eval Results
 
 Last bounded live run: 2026-08-25.
 

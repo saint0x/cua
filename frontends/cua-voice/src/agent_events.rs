@@ -162,7 +162,14 @@ pub fn agent_input_from_daemon_event(
     }
     let kind = event.get("kind").and_then(|value| value.as_str())?;
     match kind {
-        "input_completed" => None,
+        "input_completed" => Some((
+            sequence,
+            VoiceUiEvent::AutomationActivity {
+                label: "confirmed remote action".to_string(),
+                source: Some("Computer control".to_string()),
+                tool: Some("Unix socket".to_string()),
+            },
+        )),
         "input_refused" => Some((
             sequence,
             VoiceUiEvent::Error("Remote action refused".to_string()),
@@ -229,7 +236,7 @@ mod tests {
             "sequence": 2,
             "kind": "ui_step",
             "data": {
-                "label": "typing proof text through CUA",
+                "label": "typing proof text through cua",
                 "task": "Live E2E",
                 "tool": "CLI API",
                 "step_index": 3,
@@ -257,7 +264,7 @@ mod tests {
         };
 
         assert_eq!(last_sequence, 2);
-        assert_eq!(label, "typing proof text through CUA");
+        assert_eq!(label, "typing proof text through cua");
         assert_eq!(task.as_deref(), Some("Live E2E"));
         assert_eq!(tool.as_deref(), Some("CLI API"));
         assert_eq!(step_index, Some(3));
@@ -337,7 +344,7 @@ mod tests {
     }
 
     #[test]
-    fn daemon_input_completed_event_does_not_override_protocol_steps() {
+    fn daemon_input_completed_event_maps_to_automation_activity() {
         let event = serde_json::json!({
             "sequence": 46,
             "kind": "input_completed",
@@ -348,7 +355,21 @@ mod tests {
             }
         });
 
-        assert!(agent_input_from_daemon_event(&event, 45).is_none());
+        let Some((
+            sequence,
+            VoiceUiEvent::AutomationActivity {
+                label,
+                source,
+                tool,
+            },
+        )) = agent_input_from_daemon_event(&event, 45)
+        else {
+            panic!("expected automation activity");
+        };
+        assert_eq!(sequence, 46);
+        assert_eq!(label, "confirmed remote action");
+        assert_eq!(source.as_deref(), Some("Computer control"));
+        assert_eq!(tool.as_deref(), Some("Unix socket"));
         assert!(agent_input_from_daemon_event(&event, 46).is_none());
     }
 

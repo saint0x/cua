@@ -688,7 +688,7 @@ impl EncodeLane {
                         let mut body = Vec::new();
                         body.extend_from_slice(b"--cua-frame\r\nContent-Type: image/jpeg\r\n");
                         body.extend_from_slice(
-                            format!("X-CUA-Frame-Id: {}\r\n\r\n", frame.envelope.frame_id)
+                            format!("x-cua-frame-id: {}\r\n\r\n", frame.envelope.frame_id)
                                 .as_bytes(),
                         );
                         body.extend_from_slice(&frame.bytes);

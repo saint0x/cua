@@ -103,7 +103,7 @@ fn action_rows(snapshot: &HudSnapshot) -> [HudRow; 2] {
             app: if snapshot.tool.contains("Unix") || snapshot.tool.contains("socket") {
                 "macOS".to_string()
             } else {
-                "CUA".to_string()
+                "cua".to_string()
             },
             age: if snapshot.response.is_some() {
                 "done".to_string()
@@ -199,7 +199,7 @@ mod tests {
 
         let display = HudDisplay::from_snapshot(&snapshot);
 
-        assert_eq!(display.title, "Automated");
+        assert_eq!(display.title, "automation");
     }
 
     #[test]

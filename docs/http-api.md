@@ -1,6 +1,6 @@
 # Local HTTP API
 
-CUA exposes the CLI and local HTTP API for operator access. Latency-sensitive voice control uses the profile-local Unix socket at `~/.cua/profiles/<profile>/daemon.sock`.
+cua exposes the CLI and local HTTP API for operator access. Latency-sensitive voice control uses the profile-local Unix socket at `~/.cua/profiles/<profile>/daemon.sock`.
 
 Default bind: `127.0.0.1:8765`.
 

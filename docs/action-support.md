@@ -1,4 +1,4 @@
-# CUA Action Support Ledger
+# cua Action Support Ledger
 
 This ledger records proven behavior. Unknown cells must stay unknown until a host-backed oracle proves support.
 

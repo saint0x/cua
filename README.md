@@ -1,8 +1,8 @@
-# CUA
+# cua
 
-CUA is a CLI-first local computer-use runtime for agents. It provides one resident daemon, a local Unix socket protocol for hot control paths, a local HTTP API for operator access, typed desktop observation, action delivery results, trace artifacts, and bounded model evals for selecting vision/action models without turning the project into an agent framework.
+cua is a CLI-first local computer-use runtime for agents. It provides one resident daemon, a local Unix socket protocol for hot control paths, a local HTTP API for operator access, typed desktop observation, action delivery results, trace artifacts, and bounded model evals for selecting vision/action models without turning the project into an agent framework.
 
-On macOS, the shipped product is one menu-bar style app bundle: `CUA.app`. The app opens the compact dynamic-island HUD and starts the local runtime it needs; the CLI and HTTP surfaces remain available for agents and operators.
+On macOS, the shipped product is one menu-bar style app bundle: `cua.app`. The app opens the compact dynamic-island HUD and starts the local runtime it needs; the CLI and HTTP surfaces remain available for agents and operators.
 
 Public control surfaces are intentionally limited to:
 
@@ -59,11 +59,11 @@ Voice capture and OpenRouter calls can be tuned with `CUA_VOICE_RECORD_MIN_MS`, 
 ## Package
 
 ```sh
-CUA_CODESIGN_IDENTITY=- scripts/package-macos-app.sh
+scripts/package-macos-app.sh
 scripts/install-macos-app.sh
 ```
 
-The packager builds `cua`, creates `artifacts/cua/macos/CUA.app`, signs it with bundle identifier `io.saint0x.cua`, verifies the signature, and prints the app path. The installer copies that bundle to `~/Applications/CUA.app` and registers the stable app path with LaunchServices so macOS privacy prompts show `CUA` instead of transient build artifacts. Set `CUA_CODESIGN_IDENTITY` to a local signing identity for a non-ad-hoc signature.
+The packager builds `cua`, creates `artifacts/cua/macos/cua.app`, signs it with bundle identifier `io.saint0x.cua`, verifies the signature, and prints the app path. If no `CUA_CODESIGN_IDENTITY` is set, it creates and reuses a local `cua Local Developer` code-signing identity so macOS privacy prompts keep a stable app identity across rebuilds. The installer copies that bundle to `~/Applications/cua.app` and registers the stable app path with LaunchServices so macOS privacy prompts show `cua` instead of transient build artifacts.
 
 ## Evaluate Models
 

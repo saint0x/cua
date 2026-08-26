@@ -2,9 +2,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_NAME="${CUA_APP_NAME:-CUA}"
+APP_NAME="${CUA_APP_NAME:-cua}"
 BUNDLE_ID="${CUA_BUNDLE_ID:-io.saint0x.cua}"
-SIGN_IDENTITY="${CUA_CODESIGN_IDENTITY:--}"
+SIGN_IDENTITY="${CUA_CODESIGN_IDENTITY:-}"
 OUT_DIR="${CUA_APP_OUT_DIR:-$ROOT/artifacts/cua/macos}"
 APP_DIR="$OUT_DIR/$APP_NAME.app"
 CONTENTS_DIR="$APP_DIR/Contents"
@@ -77,11 +77,11 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
   <key>NSQuitAlwaysKeepsWindows</key>
   <false/>
   <key>NSAppleEventsUsageDescription</key>
-  <string>CUA needs local automation permission when a supervised profile grants desktop actions.</string>
+  <string>cua needs local automation permission when a supervised profile grants desktop actions.</string>
   <key>NSMicrophoneUsageDescription</key>
-  <string>CUA uses microphone input only when the voice HUD records a requested command.</string>
+  <string>cua uses microphone input only when the voice HUD records a requested command.</string>
   <key>NSInputMonitoringUsageDescription</key>
-  <string>CUA listens for a local double-Control shortcut to start voice recording.</string>
+  <string>cua listens for a local double-Control shortcut to start voice recording.</string>
 </dict>
 </plist>
 PLIST
@@ -100,11 +100,30 @@ cat > "$ENTITLEMENTS" <<PLIST
 </plist>
 PLIST
 
+if [[ -z "$SIGN_IDENTITY" ]]; then
+  SIGN_IDENTITY="$("$ROOT/scripts/ensure-macos-codesign-identity.sh")"
+fi
+
+/usr/bin/codesign \
+  --force \
+  --sign "$SIGN_IDENTITY" \
+  --options runtime \
+  --timestamp=none \
+  "$MACOS_DIR/cua"
+
+/usr/bin/codesign \
+  --force \
+  --sign "$SIGN_IDENTITY" \
+  --options runtime \
+  --timestamp=none \
+  "$MACOS_DIR/cua-voice"
+
 /usr/bin/codesign \
   --force \
   --sign "$SIGN_IDENTITY" \
   --entitlements "$ENTITLEMENTS" \
   --options runtime \
+  --timestamp=none \
   "$APP_DIR"
 
 /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP_DIR"
