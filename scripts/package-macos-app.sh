@@ -44,13 +44,6 @@ rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 install -m 0755 "$BIN" "$MACOS_DIR/cua"
 install -m 0755 "$VOICE_BIN" "$MACOS_DIR/cua-voice"
-cat > "$MACOS_DIR/cua-app" <<'SH'
-#!/usr/bin/env bash
-set -euo pipefail
-DIR="$(cd "$(dirname "$0")" && pwd)"
-exec "$DIR/cua-voice"
-SH
-chmod 0755 "$MACOS_DIR/cua-app"
 
 cat > "$CONTENTS_DIR/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -62,7 +55,7 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
   <key>CFBundleDisplayName</key>
   <string>$APP_NAME</string>
   <key>CFBundleExecutable</key>
-  <string>cua-app</string>
+  <string>cua-voice</string>
   <key>CFBundleIdentifier</key>
   <string>$BUNDLE_ID</string>
   <key>CFBundleInfoDictionaryVersion</key>

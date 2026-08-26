@@ -24,7 +24,7 @@ MACOS_DIR="$APP_PATH/Contents/MacOS"
 
 test -x "$MACOS_DIR/cua"
 test -x "$MACOS_DIR/cua-voice"
-test -x "$MACOS_DIR/cua-app"
+test ! -e "$MACOS_DIR/cua-app"
 /usr/bin/codesign --verify --deep --strict "$APP_PATH" >/dev/null
 
 BUNDLE_ID="$(plutil -extract CFBundleIdentifier raw -o - "$INFO_PLIST")"
@@ -46,7 +46,7 @@ jq -n \
     schema_version: "cua.package_proof.v1",
     ok: (
       $bundle_id == "io.saint0x.cua" and
-      $executable == "cua-app" and
+      $executable == "cua-voice" and
       ($lsui_element == "1" or $lsui_element == "true") and
       ($microphone_usage | length) > 0 and
       ($input_monitoring_usage | length) > 0 and
@@ -61,7 +61,7 @@ jq -n \
       input_monitoring: $input_monitoring_usage,
       automation: $automation_usage
     },
-    binaries: ["cua", "cua-voice", "cua-app"]
+    binaries: ["cua", "cua-voice"]
   }' > "$PROOF"
 
 jq -e '.ok == true' "$PROOF" >/dev/null

@@ -2,6 +2,8 @@
 
 CUA is a CLI-first local computer-use runtime for agents. It provides one resident daemon, a local Unix socket protocol for hot control paths, a local HTTP API for operator access, typed desktop observation, action delivery results, trace artifacts, and bounded model evals for selecting vision/action models without turning the project into an agent framework.
 
+On macOS, the shipped product is one menu-bar style app bundle: `CUA.app`. The app opens the compact dynamic-island HUD and starts the local runtime it needs; the CLI and HTTP surfaces remain available for agents and operators.
+
 Public control surfaces are intentionally limited to:
 
 - `cua` CLI
@@ -39,14 +41,14 @@ cargo run -p cua -- profile activate --json
 cargo run -p cua -- clipboard write "hello from cua" --json
 cargo run -p cua -- clipboard read --allow-sensitive --json
 cargo run -p cua -- pause --json
-
-`cua` and `cua-voice` automatically load environment values from the current directory `.env`, `CUA_ENV_FILE`, and `~/.cua/.env`. `OPENROUTER_API_KEY` can live in any of those locations.
 cargo run -p cua -- resume --json
 cargo run -p cua -- kill-switch --json
-cargo run -p cua-voice
+cargo run -p cua -- stream --unix --frames 3 --json
 ```
 
-`cua serve` refuses non-loopback binds unless `--allow-lan` is explicit. The daemon also opens a profile-local socket at `~/.cua/profiles/<profile>/daemon.sock`; `cua-voice` uses that socket for context snapshots and input dispatch. The local APIs use a per-profile bearer token stored at `~/.cua/profiles/<profile>/http.token`; CLI and voice client commands load it automatically.
+`cua` automatically loads environment values from the current directory `.env`, `CUA_ENV_FILE`, and `~/.cua/.env`. `OPENROUTER_API_KEY` can live in any of those locations.
+
+`cua serve` refuses non-loopback binds unless `--allow-lan` is explicit. The daemon also opens a profile-local socket at `~/.cua/profiles/<profile>/daemon.sock`; the app runtime uses that socket for context snapshots, visual sessions, and input dispatch. The local APIs use a per-profile bearer token stored at `~/.cua/profiles/<profile>/http.token`; CLI and app commands load it automatically.
 
 Voice capture and OpenRouter calls can be tuned with `CUA_VOICE_RECORD_MIN_MS`, `CUA_VOICE_RECORD_SILENCE_MS`, `CUA_VOICE_RECORD_THRESHOLD`, `CUA_VOICE_STT_TIMEOUT_MS`, `CUA_VOICE_STT_RETRY_ATTEMPTS`, `CUA_VOICE_STT_RETRY_BACKOFF_MS`, `CUA_VOICE_PLANNER_TIMEOUT_MS`, `CUA_VOICE_PLANNER_RETRY_ATTEMPTS`, and `CUA_VOICE_PLANNER_RETRY_BACKOFF_MS`.
 
@@ -56,7 +58,7 @@ Voice capture and OpenRouter calls can be tuned with `CUA_VOICE_RECORD_MIN_MS`, 
 CUA_CODESIGN_IDENTITY=- scripts/package-macos-app.sh
 ```
 
-The packager builds `cua`, creates `artifacts/cua/macos/CUA.app`, signs it with bundle identifier `com.saint0x.cua`, verifies the signature, and prints the app path. Set `CUA_CODESIGN_IDENTITY` to a local signing identity for a non-ad-hoc signature.
+The packager builds `cua`, creates `artifacts/cua/macos/CUA.app`, signs it with bundle identifier `io.saint0x.cua`, verifies the signature, and prints the app path. Set `CUA_CODESIGN_IDENTITY` to a local signing identity for a non-ad-hoc signature.
 
 ## Evaluate Models
 
@@ -112,4 +114,4 @@ fozzy replay artifacts/cua/macos/fozzy/cua-smoke.fozzy --json
 
 ## Status
 
-The current runtime has production-shaped contracts, daemon/CLI plumbing, Unix socket voice transport, macOS permission probes, profile policy state, pause/resume/kill-switch controls, profile-gated daemon clipboard, daemon-owned capture/encode/input/event/permission/trace/model lanes, ScreenCaptureKit-backed macOS capture with CoreGraphics fallback, native macOS display/cursor/window observation, CGEvent mouse/keyboard input with refusing fallback, signed macOS app packaging, continuous MJPEG/WebSocket streams, schema export, trace inspection, and bounded model evals.
+The current runtime has production-shaped contracts, daemon/CLI plumbing, Unix socket voice transport, persistent Unix visual-control sessions, frame-relative action dispatch, macOS permission probes, profile policy state, pause/resume/kill-switch controls, profile-gated daemon clipboard, daemon-owned capture/encode/input/event/permission/trace/model lanes, ScreenCaptureKit-backed macOS capture with CoreGraphics fallback, native macOS display/cursor/window observation, CGEvent mouse/keyboard input with refusing fallback, signed macOS app packaging, continuous MJPEG/WebSocket streams, schema export, trace inspection, and bounded model evals.
