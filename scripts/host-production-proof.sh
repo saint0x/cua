@@ -51,6 +51,8 @@ jq -n \
       dir: $voice_dir,
       action_elapsed_ms: $voice[0].action.elapsed_ms,
       planner_elapsed_ms: $voice[0].planner.elapsed_ms,
+      action_metrics: $voice[0].action.metrics,
+      planner_metrics: $voice[0].planner.metrics,
       compact_ok: $voice[0].ui.compact_ok,
       reply_ok: $voice[0].ui.reply_ok,
       collapsed_ok: $voice[0].ui.collapsed_ok,

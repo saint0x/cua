@@ -133,6 +133,8 @@ jq -s -e '
   any(.event == "dispatching" and (.action | optional_contains($expect_dispatch))) and
   any(.event == "reply" and (.text | ascii_downcase | optional_contains($expect_reply)) and (.text | ascii_downcase | optional_contains($expect_reply_2))) and
   any(.event == "metric" and .name == "stt_preflight_overlap_ms") and
+  any(.event == "metric" and .name == "context_stt_overlap_ms") and
+  any(.event == "metric" and .name == "context_prefetch_aborted_ms") and
   any(.event == "metric" and .name == "plan_ms") and
   any(.event == "metric" and .name == "dispatch_ms") and
   any(.event == "metric" and .name == "turn_total_ms")

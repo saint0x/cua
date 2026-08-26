@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 type LocalTask = tokio::task::JoinHandle<anyhow::Result<CuaClient>>;
+type ContextTask = tokio::task::JoinHandle<PrefetchedContext>;
 const VOICE_STEP_SOURCE: &str = "voice";
 const VOICE_STEP_TTL_MS: u64 = 5_000;
 const VOICE_STEP_LABEL_MAX: usize = 96;
@@ -129,7 +130,15 @@ async fn transcribe_and_run_turn_after_local(
     send_metric(&tx, "stt_preflight_overlap_ms", overlap_started.elapsed());
     let step_publisher = VoiceStepPublisher::start(local.clone());
     step_publisher.publish("transcribing audio");
+    let context_overlap_started = Instant::now();
+    let context_task = spawn_context_prefetch(local.clone());
+    step_publisher.publish("prefetching screen context");
     let transcript = stt_task.await.context("join speech to text")??;
+    send_metric(
+        &tx,
+        "context_stt_overlap_ms",
+        context_overlap_started.elapsed(),
+    );
     tx.send(VoiceUiEvent::Transcript(transcript.clone())).ok();
     step_publisher.publish(voice_step_label("transcript", &transcript));
     plan_and_dispatch(
@@ -137,6 +146,7 @@ async fn transcribe_and_run_turn_after_local(
         transcript,
         Some(api_key),
         local,
+        Some(context_task),
         step_publisher,
         tx.clone(),
     )
@@ -156,7 +166,16 @@ async fn run_transcript_turn(
     let step_publisher = VoiceStepPublisher::start(local.clone());
     tx.send(VoiceUiEvent::Transcript(transcript.clone())).ok();
     step_publisher.publish(voice_step_label("transcript", &transcript));
-    plan_and_dispatch(config, transcript, None, local, step_publisher, tx.clone()).await?;
+    plan_and_dispatch(
+        config,
+        transcript,
+        None,
+        local,
+        None,
+        step_publisher,
+        tx.clone(),
+    )
+    .await?;
     send_metric(&tx, "turn_total_ms", turn_started.elapsed());
     Ok(())
 }
@@ -166,6 +185,7 @@ async fn plan_and_dispatch(
     transcript: String,
     api_key: Option<String>,
     local: CuaClient,
+    context_task: Option<ContextTask>,
     step_publisher: VoiceStepPublisher,
     tx: Sender<VoiceUiEvent>,
 ) -> anyhow::Result<()> {
@@ -176,6 +196,10 @@ async fn plan_and_dispatch(
         })
         .ok();
         step_publisher.publish("planning fast command");
+        if let Some(context_task) = context_task {
+            context_task.abort();
+            send_metric(&tx, "context_prefetch_aborted_ms", plan_started.elapsed());
+        }
         plan
     } else {
         tx.send(VoiceUiEvent::Planning {
@@ -184,7 +208,7 @@ async fn plan_and_dispatch(
         .ok();
         step_publisher.publish("planning from screen context");
         let wait_started = Instant::now();
-        let context = prefetch_context_for_planning(local.clone()).await;
+        let context = resolve_context_for_planning(local.clone(), context_task).await;
         send_metric(&tx, "context_wait_ms", wait_started.elapsed());
         send_metric(&tx, "context_prefetch_ms", context.elapsed);
         let api_key = api_key
@@ -368,6 +392,22 @@ async fn prefetch_context_for_planning(local: CuaClient) -> PrefetchedContext {
     }
 }
 
+fn spawn_context_prefetch(local: CuaClient) -> ContextTask {
+    tokio::spawn(async move { prefetch_context_for_planning(local).await })
+}
+
+async fn resolve_context_for_planning(
+    local: CuaClient,
+    context_task: Option<ContextTask>,
+) -> PrefetchedContext {
+    if let Some(context_task) = context_task {
+        if let Ok(context) = context_task.await {
+            return context;
+        }
+    }
+    prefetch_context_for_planning(local).await
+}
+
 async fn preflight_local_client(profile: &str) -> anyhow::Result<CuaClient> {
     let local = CuaClient::new(profile.to_string()).await?;
     if local.preflight().await.is_ok() {
@@ -433,5 +473,28 @@ mod tests {
         let label = voice_step_label("reply", &"done ".repeat(40));
         assert!(label.chars().count() <= VOICE_STEP_LABEL_MAX);
         assert!(label.ends_with("..."));
+    }
+
+    #[tokio::test]
+    async fn planning_context_can_resolve_from_prefetch_task() {
+        let local = CuaClient::new(format!("prefetch-test-{}", uuid::Uuid::new_v4()))
+            .await
+            .unwrap();
+        let expected_elapsed = Duration::from_millis(7);
+        let task = tokio::spawn(async move {
+            PrefetchedContext {
+                session: None,
+                frame: None,
+                desktop: None,
+                elapsed: expected_elapsed,
+            }
+        });
+
+        let context = resolve_context_for_planning(local, Some(task)).await;
+
+        assert_eq!(context.elapsed, expected_elapsed);
+        assert!(context.session.is_none());
+        assert!(context.frame.is_none());
+        assert!(context.desktop.is_none());
     }
 }
