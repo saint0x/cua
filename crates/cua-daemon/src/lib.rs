@@ -32,7 +32,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicU32, AtomicU64, Ordering},
-    Arc,
+    Arc, Mutex as StdMutex,
 };
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -58,6 +58,12 @@ pub struct DaemonState {
     metrics: Arc<RuntimeMetrics>,
     events: EventLane,
     trace_lane: Option<TraceLane>,
+    ui_step_context: Arc<StdMutex<Option<UiStepContext>>>,
+}
+
+#[derive(Debug, Clone)]
+struct UiStepContext {
+    expires_at: Option<Instant>,
 }
 
 impl DaemonState {
@@ -85,6 +91,7 @@ impl DaemonState {
             trace_lane: trace_dir_from_env()
                 .and_then(|dir| TraceWriter::from_dir(dir).ok())
                 .map(|writer| TraceLane::spawn(writer, trace_lane_capacity())),
+            ui_step_context: Arc::new(StdMutex::new(None)),
         };
         state.publish_event("daemon_started", serde_json::json!({}));
         state
@@ -114,6 +121,33 @@ impl DaemonState {
     fn publish_event(&self, kind: &'static str, data: serde_json::Value) {
         if !self.events.publish(kind, data) {
             self.metrics.increment(CounterKind::EventDrops);
+        }
+    }
+
+    fn record_programmed_step(&self, result: &UiStepResult) {
+        if result.source.as_deref() == Some("cua-runtime") {
+            return;
+        }
+        if let Ok(mut context) = self.ui_step_context.lock() {
+            *context = Some(UiStepContext {
+                expires_at: result
+                    .ttl_ms
+                    .map(|ttl_ms| Instant::now() + Duration::from_millis(ttl_ms)),
+            });
+        }
+    }
+
+    fn has_active_programmed_step(&self) -> bool {
+        let Ok(mut context) = self.ui_step_context.lock() else {
+            return false;
+        };
+        match context.as_ref().and_then(|context| context.expires_at) {
+            Some(deadline) if Instant::now() >= deadline => {
+                *context = None;
+                false
+            }
+            Some(_) | None if context.is_some() => true,
+            _ => false,
         }
     }
 
@@ -1762,10 +1796,10 @@ fn ui_step_state(state: &DaemonState, request: UiStepRequest) -> Result<UiStepRe
     let source = normalize_optional_step_field(request.source, 48);
     let task = normalize_optional_step_field(request.task, 80);
     let tool = normalize_optional_step_field(request.tool, 48);
-    let step_total = request.step_total.map(|value| value.clamp(1, 99));
+    let step_total = request.step_total.map(|value| value.max(1));
     let step_index = request
         .step_index
-        .map(|value| value.clamp(0, step_total.unwrap_or(99)));
+        .map(|value| value.min(step_total.unwrap_or(u16::MAX)));
     let ttl_ms = request.ttl_ms.map(|value| value.clamp(250, 60_000));
     let result = UiStepResult {
         schema_version: SCHEMA_VERSION.to_string(),
@@ -1778,6 +1812,7 @@ fn ui_step_state(state: &DaemonState, request: UiStepRequest) -> Result<UiStepRe
         step_total,
         ttl_ms,
     };
+    state.record_programmed_step(&result);
     state.publish_event(
         "ui_step",
         serde_json::json!({
@@ -1801,12 +1836,15 @@ fn publish_protocol_step(
     tool: impl Into<String>,
     ttl_ms: u64,
 ) {
+    if state.has_active_programmed_step() {
+        return;
+    }
     let _ = ui_step_state(
         state,
         UiStepRequest {
             schema_version: SCHEMA_VERSION.to_string(),
             label,
-            source: Some("remote".to_string()),
+            source: Some("cua-runtime".to_string()),
             task: Some("Computer control".to_string()),
             tool: Some(tool.into()),
             step_index: Some(step_index),
@@ -3538,6 +3576,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ui_step_preserves_large_declarative_step_totals() {
+        let state = DaemonState::synthetic("test", "token");
+
+        let Json(result) = ui_step(
+            State(state.clone()),
+            Json(UiStepRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                label: "validate long plan".to_string(),
+                source: Some("agent".to_string()),
+                task: Some("computer use".to_string()),
+                tool: Some("unix".to_string()),
+                step_index: Some(37),
+                step_total: Some(120),
+                ttl_ms: Some(1_000),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.step_index, Some(37));
+        assert_eq!(result.step_total, Some(120));
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        let events = state.events.snapshot().await;
+        let step = events
+            .iter()
+            .find(|event| event["kind"] == "ui_step")
+            .expect("ui_step event");
+        assert_eq!(step["data"]["label"], "validate long plan");
+        assert_eq!(step["data"]["step_index"], 37);
+        assert_eq!(step["data"]["step_total"], 120);
+    }
+
+    #[tokio::test]
     async fn ui_reply_normalizes_and_emits_agent_visible_reply_event() {
         let state = DaemonState::synthetic("test", "token");
 
@@ -3655,6 +3727,41 @@ mod tests {
         assert_eq!(steps[1]["data"]["label"], "Dispatching pause control");
         assert_eq!(steps[2]["data"]["step_index"], 3);
         assert_eq!(steps[2]["data"]["label"], "Confirmed pause control");
+    }
+
+    #[tokio::test]
+    async fn active_programmed_step_suppresses_runtime_substeps() {
+        let state = DaemonState::synthetic("test", "token");
+        let Json(programmed) = ui_step(
+            State(state.clone()),
+            Json(UiStepRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                label: "step seven of a ten step demo".to_string(),
+                source: Some("agent".to_string()),
+                task: Some("TextEdit demo".to_string()),
+                tool: Some("Unix socket".to_string()),
+                step_index: Some(7),
+                step_total: Some(10),
+                ttl_ms: Some(5_000),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(programmed.step_index, Some(7));
+        assert_eq!(programmed.step_total, Some(10));
+
+        let pause = dispatch_input_action(&state, InputAction::Pause).await;
+        assert_eq!(pause.effect, Effect::Confirmed);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        let events = state.events.snapshot().await;
+        let step_labels = events
+            .iter()
+            .filter(|event| event["kind"] == "ui_step")
+            .map(|event| event["data"]["label"].as_str().unwrap_or_default())
+            .collect::<Vec<_>>();
+
+        assert_eq!(step_labels, vec!["step seven of a ten step demo"]);
     }
 
     #[test]

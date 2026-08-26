@@ -293,6 +293,25 @@ mod tests {
     }
 
     #[test]
+    fn agent_step_preserves_large_declarative_step_counts() {
+        let mut state = HudSnapshot::default();
+
+        state.apply(VoiceUiEvent::AgentStep {
+            label: "validating candidate window".to_string(),
+            source: Some("agent".to_string()),
+            task: Some("Desktop automation".to_string()),
+            tool: Some("Unix socket".to_string()),
+            step_index: Some(37),
+            step_total: Some(120),
+            ttl_ms: None,
+        });
+
+        assert_eq!(state.step.index, 37);
+        assert_eq!(state.step.total, 120);
+        assert_eq!(state.step.label, "validating candidate window");
+    }
+
+    #[test]
     fn programmed_agent_step_expires_back_to_prior_state() {
         let mut state = HudSnapshot::default();
         state.apply(VoiceUiEvent::Transcript("open settings".to_string()));

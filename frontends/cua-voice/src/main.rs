@@ -27,6 +27,13 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+const CENTER_LABEL_WIDTH: f32 = 270.0;
+const MARQUEE_START_DELAY_SECS: f32 = 1.6;
+const MARQUEE_END_HOLD_SECS: f32 = 0.9;
+const MARQUEE_SCROLL_SPEED_PX_PER_SEC: f32 = 24.0;
+const MARQUEE_CHAR_WIDTH_PX: f32 = 6.2;
+const ACTIVITY_DOT_COUNT: usize = 6;
+
 #[derive(Debug, Parser)]
 #[command(name = "cua-voice", version, about = "Rust voice HUD for CUA")]
 struct Args {
@@ -66,6 +73,8 @@ struct VoiceHud {
     execute_turns: bool,
     started: Instant,
     last_frame: Instant,
+    center_text_key: String,
+    center_text_since: Instant,
     response_progress: f32,
 }
 
@@ -87,6 +96,8 @@ impl VoiceHud {
             execute_turns,
             started: Instant::now(),
             last_frame: Instant::now(),
+            center_text_key: String::new(),
+            center_text_since: Instant::now(),
             response_progress: 0.0,
         }
     }
@@ -142,36 +153,12 @@ impl VoiceHud {
 
     fn activity_dots(&self) -> impl IntoElement {
         let elapsed = self.started.elapsed().as_secs_f32();
-        let active = !matches!(self.snapshot.phase, HudPhase::Idle);
-        let speed = match self.snapshot.phase {
-            HudPhase::Listening | HudPhase::Dispatching => 5.8,
-            HudPhase::Planning | HudPhase::Transcribing => 4.2,
-            HudPhase::Reply => 3.4,
-            HudPhase::Error => 7.0,
-            HudPhase::Armed => 4.8,
-            HudPhase::Idle => 1.2,
-        };
-        let hue = match self.snapshot.phase {
-            HudPhase::Listening => 150.0,
-            HudPhase::Transcribing | HudPhase::Planning => 214.0,
-            HudPhase::Dispatching => 268.0,
-            HudPhase::Reply => 142.0,
-            HudPhase::Error => 4.0,
-            HudPhase::Armed => 190.0,
-            HudPhase::Idle => 244.0,
-        };
+        let active = dots_are_active(&self.snapshot);
+        let speed = dot_pulse_speed(&self.snapshot.phase);
         let mut row = div().flex().items_center().gap_1();
-        for index in 0..6 {
-            let phase = elapsed * speed + index as f32 * 0.72;
-            let wave = if active {
-                0.5 + 0.5 * phase.sin()
-            } else {
-                0.25 + 0.15 * phase.sin()
-            };
-            row = row.child(dot(
-                hue + index as f32 * 7.0 + wave * 16.0,
-                0.36 + wave * 0.64,
-            ));
+        for index in 0..ACTIVITY_DOT_COUNT {
+            let style = activity_dot_style(index, elapsed, active, speed);
+            row = row.child(dot(style));
         }
         row
     }
@@ -192,17 +179,24 @@ impl VoiceHud {
         }
     }
 
-    fn compact_bar(&self, display: &HudDisplay, metrics: HudMetrics) -> impl IntoElement {
+    fn sync_center_text(&mut self, center_text: &str) {
+        if self.center_text_key != center_text {
+            self.center_text_key = center_text.to_string();
+            self.center_text_since = Instant::now();
+        }
+    }
+
+    fn compact_bar(
+        &self,
+        display: &HudDisplay,
+        metrics: HudMetrics,
+        center: String,
+    ) -> impl IntoElement {
         let reply_visible = response_flash_visible(metrics);
         let title = if reply_visible {
             "Reply".to_string()
         } else {
             display.title.clone()
-        };
-        let center = if reply_visible {
-            display.result.clone()
-        } else {
-            center_status_text(&self.snapshot)
         };
         let tool = if reply_visible {
             "CUA".to_string()
@@ -244,18 +238,11 @@ impl VoiceHud {
                     .child(title),
             )
             .child(Self::divider())
-            .child(
-                div()
-                    .w(px(270.0))
-                    .truncate()
-                    .text_color(if reply_visible {
-                        rgb(0xf1f1f4)
-                    } else {
-                        rgb(0xb9b9c0)
-                    })
-                    .text_xs()
-                    .child(center),
-            )
+            .child(center_text_slot(
+                center,
+                reply_visible,
+                self.center_text_since.elapsed().as_secs_f32(),
+            ))
             .child(Self::divider())
             .child(Self::chip(tool))
             .child(Self::chip(app))
@@ -264,12 +251,122 @@ impl VoiceHud {
     }
 }
 
-fn dot(hue_degrees: f32, alpha: f32) -> impl IntoElement {
+fn dots_are_active(snapshot: &HudSnapshot) -> bool {
+    !matches!(snapshot.phase, HudPhase::Idle)
+}
+
+fn dot_pulse_speed(phase: &HudPhase) -> f32 {
+    match phase {
+        HudPhase::Listening | HudPhase::Dispatching => 8.0,
+        HudPhase::Planning | HudPhase::Transcribing => 6.0,
+        HudPhase::Reply => 5.0,
+        HudPhase::Error => 10.0,
+        HudPhase::Armed => 7.0,
+        HudPhase::Idle => 0.0,
+    }
+}
+
+#[cfg(test)]
+fn activity_dot_alpha(index: usize, elapsed_secs: f32, active: bool, speed: f32) -> f32 {
+    activity_dot_style(index, elapsed_secs, active, speed).alpha
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ActivityDotStyle {
+    alpha: f32,
+    lightness: f32,
+}
+
+fn activity_dot_style(
+    index: usize,
+    elapsed_secs: f32,
+    active: bool,
+    steps_per_second: f32,
+) -> ActivityDotStyle {
+    if !active || steps_per_second <= 0.0 {
+        return ActivityDotStyle {
+            alpha: 0.24,
+            lightness: 0.46,
+        };
+    }
+
+    let head = ((elapsed_secs * steps_per_second).floor() as usize) % ACTIVITY_DOT_COUNT;
+    let distance_behind = (head + ACTIVITY_DOT_COUNT - index) % ACTIVITY_DOT_COUNT;
+    match distance_behind {
+        0 => ActivityDotStyle {
+            alpha: 1.0,
+            lightness: 0.50,
+        },
+        1 => ActivityDotStyle {
+            alpha: 0.72,
+            lightness: 0.58,
+        },
+        2 => ActivityDotStyle {
+            alpha: 0.44,
+            lightness: 0.66,
+        },
+        _ => ActivityDotStyle {
+            alpha: 0.18,
+            lightness: 0.74,
+        },
+    }
+}
+
+fn center_text_for(display: &HudDisplay, snapshot: &HudSnapshot, metrics: HudMetrics) -> String {
+    if response_flash_visible(metrics) {
+        display.result.clone()
+    } else {
+        center_status_text(snapshot)
+    }
+}
+
+fn center_text_slot(center: String, reply_visible: bool, visible_secs: f32) -> impl IntoElement {
+    let offset = marquee_offset_px(&center, CENTER_LABEL_WIDTH, visible_secs);
+    div()
+        .w(px(CENTER_LABEL_WIDTH))
+        .overflow_hidden()
+        .whitespace_nowrap()
+        .text_color(if reply_visible {
+            rgb(0xf1f1f4)
+        } else {
+            rgb(0xb9b9c0)
+        })
+        .text_xs()
+        .child(
+            div()
+                .flex_none()
+                .whitespace_nowrap()
+                .ml(px(-offset))
+                .child(center),
+        )
+}
+
+fn marquee_offset_px(text: &str, viewport_width_px: f32, visible_secs: f32) -> f32 {
+    let text_width = estimated_center_text_width_px(text);
+    let overflow = (text_width - viewport_width_px).max(0.0);
+    if overflow <= 0.0 || visible_secs < MARQUEE_START_DELAY_SECS {
+        return 0.0;
+    }
+    let scroll_duration = (overflow / MARQUEE_SCROLL_SPEED_PX_PER_SEC).max(0.5);
+    let cycle_duration = scroll_duration + MARQUEE_END_HOLD_SECS;
+    let cycle_pos = (visible_secs - MARQUEE_START_DELAY_SECS).rem_euclid(cycle_duration);
+    if cycle_pos >= scroll_duration {
+        overflow
+    } else {
+        (cycle_pos / scroll_duration) * overflow
+    }
+}
+
+fn estimated_center_text_width_px(text: &str) -> f32 {
+    text.chars().count() as f32 * MARQUEE_CHAR_WIDTH_PX
+}
+
+fn dot(style: ActivityDotStyle) -> impl IntoElement {
     div().w(px(4.0)).h(px(4.0)).rounded_full().bg(hsla(
-        (hue_degrees % 360.0) / 360.0,
-        0.92,
-        0.70,
-        alpha,
+        210.0 / 360.0,
+        1.0,
+        style.lightness,
+        style.alpha,
     ))
 }
 
@@ -321,11 +418,13 @@ impl Render for VoiceHud {
         window.request_animation_frame();
         let display = HudDisplay::from_snapshot(&self.snapshot);
         let metrics = HudMetrics::interpolate(self.response_progress);
+        let center_text = center_text_for(&display, &self.snapshot, metrics);
+        self.sync_center_text(&center_text);
         window.resize(size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT)));
-        div()
-            .size_full()
-            .relative()
-            .child(self.compact_bar(&display, metrics).into_any_element())
+        div().size_full().relative().child(
+            self.compact_bar(&display, metrics, center_text)
+                .into_any_element(),
+        )
     }
 }
 
@@ -875,6 +974,14 @@ mod tests {
     }
 
     #[test]
+    fn step_label_accepts_declarative_totals_beyond_voice_defaults() {
+        assert_eq!(
+            step_label(37, 120, "verifying the selected window"),
+            "Step 37/120   verifying the selected window"
+        );
+    }
+
+    #[test]
     fn idle_center_text_does_not_show_zero_step_counter() {
         let snapshot = HudSnapshot::default();
 
@@ -898,6 +1005,107 @@ mod tests {
             center_status_text(&snapshot),
             "Step 2/5   Opening Safari with CUA"
         );
+    }
+
+    #[test]
+    fn marquee_stays_still_for_short_center_text() {
+        assert_eq!(
+            marquee_offset_px("Step 1/4   Ready", CENTER_LABEL_WIDTH, 10.0),
+            0.0
+        );
+    }
+
+    #[test]
+    fn marquee_waits_then_scrolls_long_center_text() {
+        let text =
+            "Step 7/120   validating a long custom agent step that needs to reveal itself slowly";
+
+        assert_eq!(
+            marquee_offset_px(text, CENTER_LABEL_WIDTH, MARQUEE_START_DELAY_SECS - 0.1),
+            0.0
+        );
+        assert_eq!(
+            marquee_offset_px(text, CENTER_LABEL_WIDTH, MARQUEE_START_DELAY_SECS),
+            0.0
+        );
+        assert!(marquee_offset_px(text, CENTER_LABEL_WIDTH, MARQUEE_START_DELAY_SECS + 1.0) > 0.0);
+    }
+
+    #[test]
+    fn marquee_holds_at_end_before_looping() {
+        let text =
+            "Step 9/42   long custom step label for reviewing every visible change carefully";
+        let overflow = (estimated_center_text_width_px(text) - CENTER_LABEL_WIDTH).max(0.0);
+        let scroll_duration = overflow / MARQUEE_SCROLL_SPEED_PX_PER_SEC;
+        let end_hold_time = MARQUEE_START_DELAY_SECS + scroll_duration + 0.2;
+
+        assert_eq!(
+            marquee_offset_px(text, CENTER_LABEL_WIDTH, end_hold_time),
+            overflow
+        );
+    }
+
+    #[test]
+    fn activity_dots_are_static_when_idle() {
+        let snapshot = HudSnapshot::default();
+
+        assert!(!dots_are_active(&snapshot));
+        assert_eq!(activity_dot_alpha(0, 0.0, false, 0.0), 0.24);
+        assert_eq!(activity_dot_alpha(0, 10.0, false, 0.0), 0.24);
+        assert_eq!(activity_dot_alpha(5, 10.0, false, 0.0), 0.24);
+    }
+
+    #[test]
+    fn activity_dots_run_a_circular_trailing_chase_when_active() {
+        let speed = dot_pulse_speed(&HudPhase::Dispatching);
+        let start = (0..ACTIVITY_DOT_COUNT)
+            .map(|index| activity_dot_alpha(index, 0.0, true, speed))
+            .collect::<Vec<_>>();
+        let later = (0..ACTIVITY_DOT_COUNT)
+            .map(|index| activity_dot_alpha(index, 1.0 / speed, true, speed))
+            .collect::<Vec<_>>();
+        let wrapped = (0..ACTIVITY_DOT_COUNT)
+            .map(|index| {
+                activity_dot_alpha(
+                    index,
+                    ACTIVITY_DOT_COUNT as f32 / speed,
+                    true,
+                    speed,
+                )
+            })
+            .collect::<Vec<_>>();
+        let brightest_start = start
+            .iter()
+            .enumerate()
+            .max_by(|(_, left), (_, right)| left.partial_cmp(right).unwrap())
+            .map(|(index, _)| index);
+        let brightest_later = later
+            .iter()
+            .enumerate()
+            .max_by(|(_, left), (_, right)| left.partial_cmp(right).unwrap())
+            .map(|(index, _)| index);
+
+        assert_eq!(brightest_start, Some(0));
+        assert_eq!(brightest_later, Some(1));
+        assert_eq!(wrapped, start);
+        assert_eq!(start[0], 1.0);
+        assert_eq!(start[5], 0.72);
+        assert_eq!(start[4], 0.44);
+        assert!(start[0] > start[3]);
+    }
+
+    #[test]
+    fn activity_dots_keep_one_neon_blue_family() {
+        let head = activity_dot_style(0, 0.0, true, 8.0);
+        let immediate_trail = activity_dot_style(5, 0.0, true, 8.0);
+        let older_trail = activity_dot_style(4, 0.0, true, 8.0);
+        let dormant = activity_dot_style(3, 0.0, true, 8.0);
+
+        assert!(head.alpha > immediate_trail.alpha);
+        assert!(immediate_trail.alpha > older_trail.alpha);
+        assert!(older_trail.alpha > dormant.alpha);
+        assert!(head.lightness < immediate_trail.lightness);
+        assert!(immediate_trail.lightness < older_trail.lightness);
     }
 
     #[test]
