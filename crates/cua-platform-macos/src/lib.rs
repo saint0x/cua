@@ -516,6 +516,7 @@ fn native_control_key_is_down() -> bool {
     unsafe {
         CGEventSourceKeyState(K_CG_EVENT_SOURCE_STATE_HID_SYSTEM_STATE, K_VK_CONTROL)
             || CGEventSourceKeyState(K_CG_EVENT_SOURCE_STATE_HID_SYSTEM_STATE, K_VK_RIGHT_CONTROL)
+            || current_event_flags_include(CG_EVENT_FLAG_MASK_CONTROL)
     }
 }
 
@@ -1035,6 +1036,7 @@ unsafe extern "C" {
     fn CGMainDisplayID() -> u32;
     fn CGEventCreate(source: *const std::ffi::c_void) -> *const std::ffi::c_void;
     fn CGEventGetLocation(event: *const std::ffi::c_void) -> CGPoint;
+    fn CGEventGetFlags(event: *const std::ffi::c_void) -> u64;
     fn CGEventSourceKeyState(state_id: i32, virtual_key: u16) -> bool;
     fn CGDisplayCreateImage(display: u32) -> *const std::ffi::c_void;
     fn CGWindowListCopyWindowInfo(option: u32, relative_to_window: u32) -> *const std::ffi::c_void;
@@ -1137,6 +1139,17 @@ const K_IOHID_ACCESS_TYPE_UNKNOWN: i32 = 2;
 const K_CG_EVENT_SOURCE_STATE_HID_SYSTEM_STATE: i32 = 1;
 const K_VK_CONTROL: u16 = 0x3B;
 const K_VK_RIGHT_CONTROL: u16 = 0x3E;
+
+#[cfg(target_os = "macos")]
+fn current_event_flags_include(mask: u64) -> bool {
+    let event = unsafe { CGEventCreate(std::ptr::null()) };
+    if event.is_null() {
+        return false;
+    }
+    let flags = unsafe { CGEventGetFlags(event) };
+    unsafe { CFRelease(event.cast()) };
+    flags & mask != 0
+}
 
 #[cfg(target_os = "macos")]
 #[repr(C)]
@@ -1275,6 +1288,12 @@ mod tests {
     #[test]
     fn native_control_key_state_is_observable() {
         let _ = control_key_is_down();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn current_event_flag_query_is_observable() {
+        let _ = current_event_flags_include(CG_EVENT_FLAG_MASK_CONTROL);
     }
 
     #[test]
