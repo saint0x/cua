@@ -12,6 +12,8 @@ use axum::{
 };
 use bytes::Bytes;
 use chrono::Utc;
+#[cfg(test)]
+use cua_capture::SyntheticCaptureBackend;
 use cua_capture::{CaptureRequest, CapturedFrame, FrameBus, FrameLookup};
 use cua_core::{
     now_wall_ms, schema_bundle, ApiErrorBody, CapabilityManifest, CapabilityState,
@@ -19,8 +21,9 @@ use cua_core::{
     DesktopContextSnapshot, DesktopState, Effect, Evidence, EvidenceKind, FrameActionRequest,
     FrameEncoding, FramePayload, HealthReport, InputAction, InputRequest, InputResult, InputRoute,
     Manifest, MetricBucket, MetricHistogram, MetricsSnapshot, PermissionReport, ProfilePolicy,
-    RuntimeControlState, RuntimeMode, SafetyState, UiModeRequest, UiModeResult, UiReplyRequest,
-    UiReplyResult, UiStepRequest, UiStepResult, VisualSessionRequest, SCHEMA_VERSION,
+    RuntimeControlState, RuntimeMode, SafetyState, UiMode, UiModeRequest, UiModeResult,
+    UiReplyRequest, UiReplyResult, UiStepRequest, UiStepResult, VisualSessionRequest,
+    SCHEMA_VERSION,
 };
 use cua_input::InputBackend;
 use cua_model::{run_eval_report, EvalConfig, EvalReport};
@@ -35,7 +38,7 @@ use std::path::PathBuf;
 #[cfg(not(test))]
 use std::process::{Command, Stdio};
 use std::sync::{
-    atomic::{AtomicU32, AtomicU64, Ordering},
+    atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering},
     Arc, Mutex as StdMutex,
 };
 use std::time::{Duration, Instant};
@@ -64,6 +67,7 @@ pub struct DaemonState {
     trace_lane: Option<TraceLane>,
     ui_step_context: Arc<StdMutex<Option<UiStepContext>>>,
     hud_supervisor: HudSupervisor,
+    hud_mode: UiMode,
 }
 
 #[derive(Debug, Clone)]
@@ -73,15 +77,21 @@ struct UiStepContext {
 
 impl DaemonState {
     pub fn synthetic(profile: impl Into<String>, bearer_token: impl Into<String>) -> Self {
+        Self::synthetic_with_hud_mode(profile, bearer_token, UiMode::Headful)
+    }
+
+    pub fn synthetic_with_hud_mode(
+        profile: impl Into<String>,
+        bearer_token: impl Into<String>,
+        hud_mode: UiMode,
+    ) -> Self {
         let profile = profile.into();
         let input = cua_platform_macos::input_backend_or_refusing();
         let events = EventLane::spawn(event_lane_capacity(), event_lane_retention());
         let state = Self {
             profile: profile.clone(),
             started_at: Utc::now(),
-            frame_bus: Arc::new(FrameBus::new(
-                cua_platform_macos::capture_backend_or_synthetic(),
-            )),
+            frame_bus: Arc::new(FrameBus::new(default_capture_backend())),
             encode_lane: EncodeLane::spawn(encode_lane_capacity()),
             input_lane: InputLane::spawn(input.clone(), input_lane_capacity()),
             model_lane: ModelLane::spawn(model_lane_capacity()),
@@ -98,6 +108,7 @@ impl DaemonState {
                 .map(|writer| TraceLane::spawn(writer, trace_lane_capacity())),
             ui_step_context: Arc::new(StdMutex::new(None)),
             hud_supervisor: HudSupervisor::default(),
+            hud_mode,
         };
         state.publish_event("daemon_started", serde_json::json!({}));
         state
@@ -123,11 +134,22 @@ impl DaemonState {
     }
 }
 
+#[cfg(test)]
+fn default_capture_backend() -> Arc<dyn cua_capture::CaptureBackend> {
+    Arc::new(SyntheticCaptureBackend::default())
+}
+
+#[cfg(not(test))]
+fn default_capture_backend() -> Arc<dyn cua_capture::CaptureBackend> {
+    cua_platform_macos::capture_backend_or_synthetic()
+}
+
 impl DaemonState {
     fn publish_event(&self, kind: &'static str, data: serde_json::Value) {
         if hud_wake_event(kind) {
+            let hud_mode = hud_mode_for_event(kind, &data).unwrap_or_else(|| self.hud_mode.clone());
             self.hud_supervisor
-                .ensure_visible(&self.profile, &self.bearer_token);
+                .ensure_running(&self.profile, &self.bearer_token, hud_mode);
         }
         if !self.events.publish(kind, data) {
             self.metrics.increment(CounterKind::EventDrops);
@@ -176,46 +198,53 @@ impl DaemonState {
 
 #[derive(Clone, Default)]
 struct HudSupervisor {
-    last_attempt: Arc<StdMutex<Option<Instant>>>,
+    last_attempt_wall_ms: Arc<AtomicI64>,
 }
 
 impl HudSupervisor {
-    fn ensure_visible(&self, profile: &str, token: &str) {
+    fn ensure_running(&self, profile: &str, token: &str, mode: UiMode) {
         if std::env::var("CUA_HUD_AUTOSTART").ok().as_deref() == Some("0") {
             return;
         }
         #[cfg(test)]
         {
-            let _ = self.last_attempt.lock().ok();
-            let _ = (profile, token);
+            let _ = self.last_attempt_wall_ms.load(Ordering::Relaxed);
+            let _ = (profile, token, mode);
             return;
         }
         #[cfg(not(test))]
         {
-            let now = Instant::now();
-            let Ok(mut last_attempt) = self.last_attempt.lock() else {
+            let now = now_wall_ms();
+            let last = self.last_attempt_wall_ms.load(Ordering::Relaxed);
+            if last > 0 && now.saturating_sub(last) < 2_000 {
                 return;
-            };
-            if last_attempt
-                .map(|attempt| now.duration_since(attempt) < Duration::from_secs(2))
-                .unwrap_or(false)
+            }
+            if self
+                .last_attempt_wall_ms
+                .compare_exchange(last, now, Ordering::AcqRel, Ordering::Relaxed)
+                .is_err()
             {
                 return;
             }
-            *last_attempt = Some(now);
-            drop(last_attempt);
-
-            let Some(binary) = hud_binary_path() else {
-                return;
-            };
-            let mut command = Command::new(&binary);
-            command
-                .args(["--profile", profile])
-                .env("CUA_HTTP_TOKEN", token)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null());
-            let _ = command.spawn();
+            let profile = profile.to_string();
+            let token = token.to_string();
+            std::thread::spawn(move || {
+                let Some(binary) = hud_binary_path() else {
+                    return;
+                };
+                let mode_arg = match mode {
+                    UiMode::Headful => "--headful",
+                    UiMode::Headless => "--headless",
+                };
+                let mut command = Command::new(&binary);
+                command
+                    .args(["--profile", &profile, mode_arg])
+                    .env("CUA_HTTP_TOKEN", token)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null());
+                let _ = command.spawn();
+            });
         }
     }
 }
@@ -232,6 +261,17 @@ fn hud_wake_event(kind: &str) -> bool {
             | "kill_switch"
             | "visual_session_started"
     )
+}
+
+fn hud_mode_for_event(kind: &str, data: &serde_json::Value) -> Option<UiMode> {
+    if kind != "ui_mode" {
+        return None;
+    }
+    match data.get("mode").and_then(|value| value.as_str()) {
+        Some("headful") => Some(UiMode::Headful),
+        Some("headless") => Some(UiMode::Headless),
+        _ => None,
+    }
 }
 
 #[cfg(not(test))]
@@ -906,7 +946,12 @@ pub fn router(state: DaemonState) -> Router {
         .with_state(state)
 }
 
-pub async fn serve(addr: SocketAddr, profile: String, allow_lan: bool) -> anyhow::Result<()> {
+pub async fn serve(
+    addr: SocketAddr,
+    profile: String,
+    allow_lan: bool,
+    hud_mode: UiMode,
+) -> anyhow::Result<()> {
     if !allow_lan && !addr.ip().is_loopback() {
         anyhow::bail!(
             "refusing non-loopback bind {addr}; pass --allow-lan to expose the local HTTP API"
@@ -914,7 +959,7 @@ pub async fn serve(addr: SocketAddr, profile: String, allow_lan: bool) -> anyhow
     }
     let token = load_or_create_profile_token(&profile).await?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    let state = DaemonState::synthetic(profile, token);
+    let state = DaemonState::synthetic_with_hud_mode(profile, token, hud_mode);
     state.frame_bus.clone().spawn_capture_lane(
         CaptureRequest {
             max_width: Some(1280),
@@ -1656,15 +1701,37 @@ async fn screenshot_payload(
         2_500,
     );
     let started = Instant::now();
-    let lookup = state
-        .frame_bus
-        .latest_or_capture_timed(CaptureRequest {
-            max_width: request.max_width,
-            encoding: request.encoding.unwrap_or(FrameEncoding::Png),
-            force_fresh: request.force_fresh.unwrap_or(false),
-        })
-        .await
-        .map_err(ApiError::internal)?;
+    let capture_request = CaptureRequest {
+        max_width: request.max_width,
+        encoding: request.encoding.unwrap_or(FrameEncoding::Png),
+        force_fresh: request.force_fresh.unwrap_or(false),
+    };
+    let lookup = if capture_request.force_fresh {
+        match state
+            .frame_bus
+            .latest_within(resident_frame_freshness())
+            .await
+        {
+            Some(frame) => FrameLookup {
+                frame: frame
+                    .transformed(&capture_request)
+                    .map_err(ApiError::internal)?,
+                cache_hit: true,
+                wait_ns: started.elapsed().as_nanos().min(u64::MAX as u128) as u64,
+            },
+            None => state
+                .frame_bus
+                .latest_or_capture_timed(capture_request)
+                .await
+                .map_err(ApiError::internal)?,
+        }
+    } else {
+        state
+            .frame_bus
+            .latest_or_capture_timed(capture_request)
+            .await
+            .map_err(ApiError::internal)?
+    };
     observe_frame_lookup(&state.metrics, &lookup);
     state
         .metrics
@@ -1679,6 +1746,15 @@ async fn screenshot_payload(
         })?;
     observe_encode_result(&state.metrics, &encoded);
     Ok(encoded.value)
+}
+
+fn resident_frame_freshness() -> Duration {
+    let ms = std::env::var("CUA_RESIDENT_FRAME_FRESH_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(1_000)
+        .clamp(50, 30_000);
+    Duration::from_millis(ms)
 }
 
 async fn stream_mjpeg(State(state): State<DaemonState>) -> Result<Response, ApiError> {
@@ -3436,6 +3512,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn force_fresh_screenshot_reuses_recent_resident_frame_with_requested_encoding() {
+        let state = DaemonState::synthetic("test", "token");
+        let seeded = state
+            .frame_bus
+            .latest_or_capture_timed(CaptureRequest {
+                max_width: Some(640),
+                encoding: FrameEncoding::Jpeg,
+                force_fresh: true,
+            })
+            .await
+            .unwrap();
+
+        let payload = screenshot_payload(
+            &state,
+            ScreenshotRequest {
+                max_width: Some(320),
+                include_bytes: Some(false),
+                force_fresh: Some(true),
+                encoding: Some(FrameEncoding::Png),
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(payload.envelope.frame_id, seeded.frame.envelope.frame_id);
+        assert_eq!(payload.envelope.encoding, FrameEncoding::Png);
+        assert_eq!(payload.envelope.width, 320);
+        assert_eq!(payload.bytes_base64, None);
+    }
+
+    #[tokio::test]
     async fn unix_runtime_methods_share_daemon_state_contracts() {
         let state = DaemonState::synthetic("unix-methods", "token");
 
@@ -3840,6 +3947,25 @@ mod tests {
             .expect("ui_mode event");
         assert_eq!(mode["data"]["mode"], "headless");
         assert_eq!(mode["data"]["source"], "cli");
+    }
+
+    #[test]
+    fn ui_mode_events_select_hud_autostart_visibility() {
+        assert_eq!(
+            hud_mode_for_event("ui_mode", &serde_json::json!({ "mode": "headful" })),
+            Some(cua_core::UiMode::Headful)
+        );
+        assert_eq!(
+            hud_mode_for_event("ui_mode", &serde_json::json!({ "mode": "headless" })),
+            Some(cua_core::UiMode::Headless)
+        );
+        assert_eq!(
+            hud_mode_for_event(
+                "visual_session_started",
+                &serde_json::json!({ "mode": "headless" })
+            ),
+            None
+        );
     }
 
     #[tokio::test]

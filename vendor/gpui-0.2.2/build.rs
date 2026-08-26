@@ -199,9 +199,7 @@ mod macos {
         } else {
             emit_stitched_shaders(header_path);
             println!("cargo::rustc-cfg=gpui_runtime_shaders_fallback");
-            println!(
-                "cargo::warning=Apple Metal offline compiler not found; using runtime shader compilation fallback"
-            );
+            println!("cargo::metadata=metal_shader_mode=runtime");
         }
     }
 

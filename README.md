@@ -26,7 +26,7 @@ Public control surfaces are intentionally limited to:
 ## Run
 
 ```sh
-cargo run -p cua -- serve --addr 127.0.0.1:8765
+cargo run -p cua -- serve --addr 127.0.0.1:8765 --hud-mode headful
 cargo run -p cua -- status --json
 cargo run -p cua -- manifest --json
 cargo run -p cua -- metrics --json
@@ -52,7 +52,7 @@ cargo run -p cua -- stream --unix --frames 3 --json
 
 `cua serve` refuses non-loopback binds unless `--allow-lan` is explicit. The daemon also opens a profile-local socket at `~/.cua/profiles/<profile>/daemon.sock`; the app runtime uses that socket for context snapshots, visual sessions, and input dispatch. The local APIs use a per-profile bearer token stored at `~/.cua/profiles/<profile>/http.token`; CLI and app commands load it automatically.
 
-Run `cua-voice --headful` for the visible dynamic-island HUD or `cua-voice --headless` for the same resident voice/control event loop without a visible HUD. Agents can switch a running HUD with `cua ui mode headless|headful`.
+Run `cua serve --hud-mode headful` for the visible dynamic-island HUD or `cua serve --hud-mode headless` for the same resident voice/control event loop without a visible HUD. The HUD process also accepts `cua-voice --headful|--headless` directly. Agents can switch a running HUD with `cua ui mode headless|headful`.
 
 Voice capture and OpenRouter calls can be tuned with `CUA_VOICE_RECORD_MIN_MS`, `CUA_VOICE_RECORD_SILENCE_MS`, `CUA_VOICE_RECORD_THRESHOLD`, `CUA_VOICE_STT_TIMEOUT_MS`, `CUA_VOICE_STT_RETRY_ATTEMPTS`, `CUA_VOICE_STT_RETRY_BACKOFF_MS`, `CUA_VOICE_PLANNER_TIMEOUT_MS`, `CUA_VOICE_PLANNER_RETRY_ATTEMPTS`, and `CUA_VOICE_PLANNER_RETRY_BACKOFF_MS`.
 

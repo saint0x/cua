@@ -55,6 +55,89 @@ impl CapturedFrame {
                 .then(|| base64::engine::general_purpose::STANDARD.encode(&*self.bytes)),
         }
     }
+
+    pub fn transformed(&self, request: &CaptureRequest) -> anyhow::Result<CapturedFrame> {
+        let target_width = request
+            .max_width
+            .filter(|max_width| *max_width < self.envelope.width)
+            .map(|max_width| max_width.max(64))
+            .unwrap_or(self.envelope.width);
+        let target_height = if target_width == self.envelope.width {
+            self.envelope.height
+        } else {
+            ((self.envelope.height as f64) * (target_width as f64 / self.envelope.width as f64))
+                .round() as u32
+        }
+        .max(1);
+        let same_shape =
+            target_width == self.envelope.width && target_height == self.envelope.height;
+        if same_shape && request.encoding == self.envelope.encoding {
+            return Ok(self.clone());
+        }
+
+        let source = self.decode_rgba()?;
+        let buffer = if same_shape {
+            source
+        } else {
+            image::imageops::resize(
+                &source,
+                target_width,
+                target_height,
+                image::imageops::FilterType::Triangle,
+            )
+        };
+        let encode_started = Instant::now();
+        let bytes = encode_image(&buffer, request.encoding.clone())?;
+        let encode_ns = elapsed_ns(encode_started);
+        let sha256 = format!("{:x}", Sha256::digest(&bytes));
+        let mut envelope = self.envelope.clone();
+        envelope.width = buffer.width();
+        envelope.height = buffer.height();
+        envelope.encoding = request.encoding.clone();
+        envelope.byte_len = bytes.len();
+        envelope.sha256 = sha256;
+        envelope.damage_rects = vec![Rect {
+            x: 0,
+            y: 0,
+            width: buffer.width(),
+            height: buffer.height(),
+        }];
+        Ok(CapturedFrame {
+            envelope,
+            bytes: Arc::new(bytes),
+            timings: CapturedFrameTimings {
+                capture_ns: 0,
+                encode_ns,
+            },
+        })
+    }
+
+    fn decode_rgba(&self) -> anyhow::Result<ImageBuffer<Rgba<u8>, Vec<u8>>> {
+        if self.envelope.encoding == FrameEncoding::RawBgra {
+            let expected_len = self
+                .envelope
+                .width
+                .checked_mul(self.envelope.height)
+                .and_then(|pixels| pixels.checked_mul(4))
+                .map(|bytes| bytes as usize)
+                .context("raw BGRA frame dimensions overflow")?;
+            anyhow::ensure!(
+                self.bytes.len() == expected_len,
+                "raw BGRA byte length {} does not match expected {}",
+                self.bytes.len(),
+                expected_len
+            );
+            let mut rgba = Vec::with_capacity(self.bytes.len());
+            for pixel in self.bytes.chunks_exact(4) {
+                rgba.extend_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
+            }
+            return ImageBuffer::from_raw(self.envelope.width, self.envelope.height, rgba)
+                .context("decode raw BGRA frame");
+        }
+        Ok(image::load_from_memory(&self.bytes)
+            .context("decode resident frame")?
+            .to_rgba8())
+    }
 }
 
 pub struct FrameBus {
@@ -138,6 +221,16 @@ impl FrameBus {
             .await
             .as_ref()
             .map(|f| f.envelope.clone())
+    }
+
+    pub async fn latest_within(&self, max_age: Duration) -> Option<CapturedFrame> {
+        let frame = self.latest.read().await.clone()?;
+        let age_ms = now_wall_ms().saturating_sub(frame.envelope.timestamp_wall_ms);
+        if age_ms <= max_age.as_millis().min(i64::MAX as u128) as i64 {
+            Some(frame)
+        } else {
+            None
+        }
     }
 
     pub async fn displays(&self) -> anyhow::Result<Vec<DisplayInfo>> {
@@ -333,6 +426,34 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(30)).await;
         let envelope = bus.latest_envelope().await;
         assert!(envelope.is_some());
+    }
+
+    #[tokio::test]
+    async fn captured_frame_transforms_encoding_and_size_truthfully() {
+        let backend = SyntheticCaptureBackend::default();
+        let frame = backend
+            .capture_latest(CaptureRequest {
+                max_width: Some(640),
+                encoding: FrameEncoding::Jpeg,
+                force_fresh: true,
+            })
+            .await
+            .unwrap();
+
+        let transformed = frame
+            .transformed(&CaptureRequest {
+                max_width: Some(320),
+                encoding: FrameEncoding::Png,
+                force_fresh: true,
+            })
+            .unwrap();
+
+        assert_eq!(transformed.envelope.frame_id, frame.envelope.frame_id);
+        assert_eq!(transformed.envelope.encoding, FrameEncoding::Png);
+        assert_eq!(transformed.envelope.width, 320);
+        assert!(transformed.envelope.height < frame.envelope.height);
+        assert_eq!(transformed.envelope.byte_len, transformed.bytes.len());
+        assert_ne!(transformed.envelope.sha256, frame.envelope.sha256);
     }
 
     #[tokio::test]

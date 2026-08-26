@@ -90,6 +90,8 @@ struct ServeArgs {
     addr: SocketAddr,
     #[arg(long)]
     allow_lan: bool,
+    #[arg(long, value_enum, default_value_t = UiModeArg::Headful)]
+    hud_mode: UiModeArg,
 }
 
 #[derive(Debug, Args)]
@@ -258,18 +260,24 @@ enum UiCommand {
     },
 }
 
-#[derive(Debug, Clone, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
 enum UiModeArg {
     Headful,
     Headless,
 }
 
-impl From<UiModeArg> for UiMode {
-    fn from(value: UiModeArg) -> Self {
-        match value {
+impl From<&UiModeArg> for UiMode {
+    fn from(value: &UiModeArg) -> Self {
+        match *value {
             UiModeArg::Headful => UiMode::Headful,
             UiModeArg::Headless => UiMode::Headless,
         }
+    }
+}
+
+impl From<UiModeArg> for UiMode {
+    fn from(value: UiModeArg) -> Self {
+        UiMode::from(&value)
     }
 }
 
@@ -367,7 +375,7 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         None => print_usage_and_status(cli.server_addr).await,
         Some(Command::Serve(args)) => {
-            cua_daemon::serve(args.addr, cli.profile, args.allow_lan).await
+            cua_daemon::serve(args.addr, cli.profile, args.allow_lan, args.hud_mode.into()).await
         }
         Some(Command::Status(flag)) => {
             get_json(cli.server_addr, &cli.profile, "/status", flag.json).await
@@ -477,7 +485,7 @@ fn load_dotenv_path(path: &Path) {
 
 async fn print_usage_and_status(server_addr: SocketAddr) -> anyhow::Result<()> {
     println!("cua: CLI/local-HTTP computer-use runtime");
-    println!("usage: cua serve --addr {server_addr}");
+    println!("usage: cua serve --addr {server_addr} --hud-mode headful");
     println!("       cua status --json");
     println!("       cua manifest --json");
     println!("       cua metrics --json");
