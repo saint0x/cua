@@ -162,6 +162,32 @@ impl VoiceHud {
     }
 
     fn compact_bar(&self, display: &HudDisplay, metrics: HudMetrics) -> impl IntoElement {
+        let reply_visible = response_flash_visible(metrics);
+        let title = if reply_visible {
+            "Reply".to_string()
+        } else {
+            display.title.clone()
+        };
+        let center = if reply_visible {
+            display.result.clone()
+        } else {
+            step_label(
+                self.snapshot.step.index,
+                self.snapshot.step.total,
+                &display.rows[1].label,
+            )
+        };
+        let tool = if reply_visible {
+            "CUA".to_string()
+        } else {
+            display.tool.clone()
+        };
+        let app = if reply_visible {
+            display.phase.to_string()
+        } else {
+            display.rows[1].app.clone()
+        };
+
         div()
             .w(px(compact_bar_width(metrics)))
             .h(px(compact_bar_height(metrics)))
@@ -188,23 +214,24 @@ impl VoiceHud {
                     .truncate()
                     .text_color(rgb(0x9f9fa6))
                     .text_xs()
-                    .child(display.title.clone()),
+                    .child(title),
             )
             .child(Self::divider())
             .child(
                 div()
                     .w(px(270.0))
                     .truncate()
-                    .text_color(rgb(0xb9b9c0))
+                    .text_color(if reply_visible {
+                        rgb(0xf1f1f4)
+                    } else {
+                        rgb(0xb9b9c0)
+                    })
                     .text_xs()
-                    .child(format!(
-                        "Step {}/{}   {}",
-                        self.snapshot.step.index, self.snapshot.step.total, display.rows[1].label
-                    )),
+                    .child(center),
             )
             .child(Self::divider())
-            .child(Self::chip(display.tool.clone()))
-            .child(Self::chip(display.rows[1].app.clone()))
+            .child(Self::chip(tool))
+            .child(Self::chip(app))
             .child(div().flex_1())
             .child(Self::activity_dots())
     }
@@ -228,6 +255,14 @@ fn compact_bar_height(_: HudMetrics) -> f32 {
 
 fn compact_bar_radius(_: HudMetrics) -> f32 {
     COMPACT_RADIUS
+}
+
+fn response_flash_visible(metrics: HudMetrics) -> bool {
+    metrics.response_opacity >= 0.35
+}
+
+fn step_label(index: usize, total: usize, label: &str) -> String {
+    format!("Step {index}/{total}   {label}")
 }
 
 fn should_reset_after_reply_collapse(reply_window_expired: bool, response_progress: f32) -> bool {
@@ -646,6 +681,20 @@ mod tests {
         assert_eq!(compact_bar_width(transitioning), COMPACT_WIDTH);
         assert_eq!(compact_bar_height(transitioning), COMPACT_HEIGHT);
         assert_eq!(compact_bar_radius(transitioning), COMPACT_RADIUS);
+    }
+
+    #[test]
+    fn reply_progress_switches_bar_to_response_flash_mode() {
+        assert!(!response_flash_visible(HudMetrics::interpolate(0.20)));
+        assert!(response_flash_visible(HudMetrics::interpolate(0.35)));
+    }
+
+    #[test]
+    fn step_label_stays_compact_and_structured() {
+        assert_eq!(
+            step_label(2, 5, "checking target"),
+            "Step 2/5   checking target"
+        );
     }
 
     #[test]
