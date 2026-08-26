@@ -66,7 +66,13 @@ jq -n \
       dir: $control_dir,
       http: $control[0].http,
       cli: $control[0].cli,
-      unix: $control[0].unix
+      unix: $control[0].unix,
+      programmable_replies: {
+        http: $control[0].http.ui_reply,
+        cli: $control[0].cli.ui_reply,
+        unix: $control[0].unix.ui_reply,
+        voice_bridge: $control[0].unix.voice_bridge.reply_text
+      }
     },
     package: {
       dir: $package_dir,
