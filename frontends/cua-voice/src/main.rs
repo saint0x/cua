@@ -1094,7 +1094,7 @@ mod tests {
         );
 
         assert_eq!(hud.snapshot.mode, UiMode::Headless);
-        assert_eq!(hud.snapshot.input_label, "automation");
+        assert_eq!(hud.snapshot.input_label, "Automation");
     }
 
     #[test]

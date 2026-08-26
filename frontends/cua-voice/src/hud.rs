@@ -199,7 +199,7 @@ mod tests {
 
         let display = HudDisplay::from_snapshot(&snapshot);
 
-        assert_eq!(display.title, "automation");
+        assert_eq!(display.title, "Automation");
     }
 
     #[test]

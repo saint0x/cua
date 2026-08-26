@@ -147,7 +147,7 @@ impl HudSnapshot {
                 self.input_label = if source.as_deref() == Some("voice") {
                     "Voice control".to_string()
                 } else {
-                    "automation".to_string()
+                    "Automation".to_string()
                 };
                 self.step = HudStep::new(
                     step_index.unwrap_or(3).into(),
@@ -167,7 +167,7 @@ impl HudSnapshot {
                 let headless = mode == UiMode::Headless;
                 self.mode = mode;
                 if headless || source.as_deref() != Some("voice") {
-                    self.input_label = "automation".to_string();
+                    self.input_label = "Automation".to_string();
                     self.task = "Computer control".to_string();
                 } else {
                     self.input_label = "Voice control".to_string();
@@ -220,7 +220,7 @@ impl HudSnapshot {
                 let input_label = self.input_label.clone();
                 *self = Self::default();
                 self.mode = mode;
-                if input_label == "automation" || self.mode == UiMode::Headless {
+                if input_label == "Automation" || self.mode == UiMode::Headless {
                     self.mark_automation_control();
                 }
             }
@@ -259,7 +259,7 @@ impl HudSnapshot {
     }
 
     fn mark_automation_control(&mut self) {
-        self.input_label = "automation".to_string();
+        self.input_label = "Automation".to_string();
         self.task = "Computer control".to_string();
     }
 }
@@ -334,13 +334,13 @@ mod tests {
 
         assert!(state.is_expanded());
         assert_eq!(state.phase, HudPhase::Reply);
-        assert_eq!(state.input_label, "automation");
+        assert_eq!(state.input_label, "Automation");
 
         state.apply(VoiceUiEvent::Idle);
 
         assert_eq!(state.phase, HudPhase::Idle);
         assert_eq!(state.step.label, "Ready");
-        assert_eq!(state.input_label, "automation");
+        assert_eq!(state.input_label, "Automation");
     }
 
     #[test]
@@ -389,7 +389,7 @@ mod tests {
         assert_eq!(state.step.index, 2);
         assert_eq!(state.step.total, 5);
         assert_eq!(state.tool, "vision");
-        assert_eq!(state.input_label, "automation");
+        assert_eq!(state.input_label, "Automation");
         assert_eq!(state.transcript.as_deref(), Some("find the red button"));
         assert!(state.programmed_step_expires_at.is_some());
     }
@@ -410,7 +410,7 @@ mod tests {
             step_total: Some(3),
             ttl_ms: None,
         });
-        assert_eq!(state.input_label, "automation");
+        assert_eq!(state.input_label, "Automation");
         assert_eq!(state.task, "Browser task");
     }
 
@@ -442,7 +442,7 @@ mod tests {
             source: Some("cli".to_string()),
         });
 
-        assert_eq!(state.input_label, "automation");
+        assert_eq!(state.input_label, "Automation");
         assert_eq!(state.task, "Computer control");
     }
 
@@ -462,7 +462,7 @@ mod tests {
         state.apply(VoiceUiEvent::Idle);
 
         assert_eq!(state.mode, UiMode::Headless);
-        assert_eq!(state.input_label, "automation");
+        assert_eq!(state.input_label, "Automation");
         assert_eq!(state.task, "Computer control");
         assert_eq!(state.phase, HudPhase::Idle);
     }
@@ -476,7 +476,7 @@ mod tests {
             source: Some("remote".to_string()),
         });
 
-        assert_eq!(state.input_label, "automation");
+        assert_eq!(state.input_label, "Automation");
         assert_eq!(state.task, "Computer control");
 
         state.apply(VoiceUiEvent::UiMode {
@@ -497,7 +497,7 @@ mod tests {
             tool: Some("Unix socket".to_string()),
         });
 
-        assert_eq!(state.input_label, "automation");
+        assert_eq!(state.input_label, "Automation");
         assert_eq!(state.phase, HudPhase::Dispatching);
         assert_eq!(state.step.label, "confirmed remote action");
 
@@ -558,10 +558,10 @@ mod tests {
             ttl_ms: Some(250),
         });
 
-        assert_eq!(state.input_label, "automation");
+        assert_eq!(state.input_label, "Automation");
         assert!(state.expire_programmed_step(Instant::now() + Duration::from_millis(251)));
         assert_eq!(state.phase, HudPhase::Idle);
-        assert_eq!(state.input_label, "automation");
+        assert_eq!(state.input_label, "Automation");
         assert_eq!(state.task, "Computer control");
         assert_eq!(state.step.label, "Ready");
     }
