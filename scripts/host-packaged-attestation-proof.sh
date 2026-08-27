@@ -39,27 +39,37 @@ trap cleanup EXIT
 
 SOCKET="$CUA_HOME_DIR/profiles/$PROFILE/daemon.sock"
 for _ in $(seq 1 120); do
-  if [[ -S "$SOCKET" ]] && CUA_HOME="$CUA_HOME_DIR" CUA_HTTP_TOKEN="$TOKEN" \
+  RUNTIME_TOKEN="$TOKEN"
+  TOKEN_FILE="$CUA_HOME_DIR/profiles/$PROFILE/http.token"
+  if [[ -f "$TOKEN_FILE" ]]; then
+    RUNTIME_TOKEN="$(tr -d '\n' < "$TOKEN_FILE")"
+  fi
+  if [[ -S "$SOCKET" ]] && CUA_HOME="$CUA_HOME_DIR" CUA_HTTP_TOKEN="$RUNTIME_TOKEN" \
     "$CUA_BIN_PATH" --profile "$PROFILE" status --json > "$OUT_DIR/status.json" 2>/dev/null; then
     break
   fi
   sleep 0.05
 done
-CUA_HOME="$CUA_HOME_DIR" CUA_HTTP_TOKEN="$TOKEN" \
+RUNTIME_TOKEN="$TOKEN"
+TOKEN_FILE="$CUA_HOME_DIR/profiles/$PROFILE/http.token"
+if [[ -f "$TOKEN_FILE" ]]; then
+  RUNTIME_TOKEN="$(tr -d '\n' < "$TOKEN_FILE")"
+fi
+CUA_HOME="$CUA_HOME_DIR" CUA_HTTP_TOKEN="$RUNTIME_TOKEN" \
   "$CUA_BIN_PATH" --profile "$PROFILE" status --json > "$OUT_DIR/status.json"
 
-CUA_HOME="$CUA_HOME_DIR" CUA_HTTP_TOKEN="$TOKEN" \
+CUA_HOME="$CUA_HOME_DIR" CUA_HTTP_TOKEN="$RUNTIME_TOKEN" \
   "$CUA_BIN_PATH" --profile "$PROFILE" attestation challenge --audience quilt-cloud --json \
   > "$OUT_DIR/challenge.json"
 NONCE="$(jq -r '.nonce' "$OUT_DIR/challenge.json")"
 CHALLENGE_ID="$(jq -r '.challenge_id' "$OUT_DIR/challenge.json")"
-CUA_HOME="$CUA_HOME_DIR" CUA_HTTP_TOKEN="$TOKEN" \
+CUA_HOME="$CUA_HOME_DIR" CUA_HTTP_TOKEN="$RUNTIME_TOKEN" \
   "$CUA_BIN_PATH" --profile "$PROFILE" attestation sign \
     --audience quilt-cloud \
     --nonce "$NONCE" \
     --challenge-id "$CHALLENGE_ID" \
     --json > "$OUT_DIR/attestation.json"
-CUA_HOME="$CUA_HOME_DIR" CUA_HTTP_TOKEN="$TOKEN" \
+CUA_HOME="$CUA_HOME_DIR" CUA_HTTP_TOKEN="$RUNTIME_TOKEN" \
   "$CUA_BIN_PATH" --profile "$PROFILE" attestation verify "$OUT_DIR/attestation.json" \
     --audience quilt-cloud \
     --json > "$OUT_DIR/verify.json"

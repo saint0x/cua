@@ -49,6 +49,8 @@ const MINIMIZED_RADIUS: f32 = 14.0;
 const MINIMIZED_RIGHT_OFFSET: f32 = 220.0;
 const UI_TEXT_PX: f32 = 12.0;
 const UI_META_PX: f32 = 11.0;
+const STOPLIGHT_HITBOX_HEIGHT_PX: f32 = 9.0;
+const STOPLIGHT_TOP_PX: f32 = (COMPACT_HEIGHT - STOPLIGHT_HITBOX_HEIGHT_PX) / 2.0;
 
 #[derive(Debug, Parser)]
 #[command(name = "cua-voice", version, about = "Rust voice HUD for cua")]
@@ -411,7 +413,7 @@ impl VoiceHud {
         div()
             .absolute()
             .left(px(8.0))
-            .top(px(3.0))
+            .top(px(STOPLIGHT_TOP_PX))
             .flex()
             .items_center()
             .gap_0p5()
@@ -792,7 +794,7 @@ fn dot(style: ActivityDotStyle) -> impl IntoElement {
 fn stoplight(color: u32) -> Div {
     div()
         .w(px(12.0))
-        .h(px(9.0))
+        .h(px(STOPLIGHT_HITBOX_HEIGHT_PX))
         .rounded_full()
         .opacity(0.9)
         .hover(|style| style.opacity(1.0))
@@ -2090,6 +2092,14 @@ mod tests {
         assert_eq!(compact_bar_width(transitioning), COMPACT_WIDTH);
         assert_eq!(compact_bar_height(transitioning), COMPACT_HEIGHT);
         assert_eq!(compact_bar_radius(transitioning), COMPACT_RADIUS);
+    }
+
+    #[test]
+    fn hover_chrome_centers_on_compact_bar_axis() {
+        assert_eq!(
+            STOPLIGHT_TOP_PX + (STOPLIGHT_HITBOX_HEIGHT_PX / 2.0),
+            COMPACT_HEIGHT / 2.0
+        );
     }
 
     #[test]

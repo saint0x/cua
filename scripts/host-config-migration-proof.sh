@@ -49,7 +49,7 @@ PROOF="$OUT_DIR/proof.json"
 mkdir -p "$OUT_DIR"
 
 for state in missing current legacy conflict; do
-  home="$OUT_DIR/$state-home"
+  home="${CUA_CONFIG_MIGRATION_PROOF_CUA_HOME_BASE:-/tmp/cua-config-$RUN_ID}/$state"
   profile="proof-$state"
   addr="127.0.0.1:$((31000 + RUN_ID % 1000))"
   mkdir -p "$home"
@@ -79,13 +79,23 @@ for state in missing current legacy conflict; do
   }
   trap cleanup_state EXIT
   for _ in $(seq 1 100); do
-    if [[ -S "$socket" ]] && CUA_HOME="$home" CUA_HTTP_TOKEN="config-proof-$state" \
+    runtime_token="config-proof-$state"
+    token_file="$home/profiles/$profile/http.token"
+    if [[ -f "$token_file" ]]; then
+      runtime_token="$(tr -d '\n' < "$token_file")"
+    fi
+    if [[ -S "$socket" ]] && CUA_HOME="$home" CUA_HTTP_TOKEN="$runtime_token" \
       "$CUA_BIN_PATH" --profile "$profile" config status --json > "$OUT_DIR/$state.json" 2>/dev/null; then
       break
     fi
     sleep 0.05
-  done
-  CUA_HOME="$home" CUA_HTTP_TOKEN="config-proof-$state" \
+done
+  runtime_token="config-proof-$state"
+  token_file="$home/profiles/$profile/http.token"
+  if [[ -f "$token_file" ]]; then
+    runtime_token="$(tr -d '\n' < "$token_file")"
+  fi
+  CUA_HOME="$home" CUA_HTTP_TOKEN="$runtime_token" \
     "$CUA_BIN_PATH" --profile "$profile" config status --json > "$OUT_DIR/$state.json"
   cleanup_state
   trap - EXIT

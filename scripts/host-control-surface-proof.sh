@@ -34,6 +34,7 @@ PROFILE="${CUA_CONTROL_SURFACE_PROOF_PROFILE:-host-control-surface-proof-$RUN_ID
 ADDR="${CUA_CONTROL_SURFACE_PROOF_ADDR:-127.0.0.1:$((20000 + RUN_ID % 1000))}"
 TOKEN="${CUA_HTTP_TOKEN:-host-control-surface-proof-token-$RUN_ID}"
 OUT_DIR="${CUA_CONTROL_SURFACE_PROOF_OUT_DIR:-artifacts/cua/control-surface-proof-$RUN_ID}"
+CUA_HOME_DIR="${CUA_CONTROL_SURFACE_PROOF_CUA_HOME:-/tmp/cua-control-$RUN_ID}"
 TRACE_DIR="$OUT_DIR/trace"
 HTTP_STATUS="$OUT_DIR/http-status.json"
 HTTP_MANIFEST="$OUT_DIR/http-manifest.json"
@@ -120,7 +121,8 @@ if [[ -z "$CUA_VOICE_BIN_PATH" || ! -x "$CUA_VOICE_BIN_PATH" ]]; then
 fi
 
 mkdir -p "$OUT_DIR"
-SOCKET_PATH="$HOME/.cua/profiles/$PROFILE/daemon.sock"
+export CUA_HOME="$CUA_HOME_DIR"
+SOCKET_PATH="$CUA_HOME_DIR/profiles/$PROFILE/daemon.sock"
 CUA_HTTP_TOKEN="$TOKEN" CUA_TRACE_DIR="$TRACE_DIR" "$CUA_BIN_PATH" \
   --server-addr "$ADDR" \
   --profile "$PROFILE" \
@@ -140,6 +142,10 @@ for _ in $(seq 1 80); do
   sleep 0.1
 done
 curl -fsS "http://$ADDR/healthz" >/dev/null
+TOKEN_FILE="$CUA_HOME_DIR/profiles/$PROFILE/http.token"
+if [[ -f "$TOKEN_FILE" ]]; then
+  TOKEN="$(tr -d '\n' < "$TOKEN_FILE")"
+fi
 
 unix_call() {
   local method="$1"
@@ -232,6 +238,7 @@ curl -fsS \
   -d '{"schema_version":"cua.v1","session_id":"http-owner-proof","client_name":"host control surface http owner","role":"owner","ttl_ms":60000}' \
   "http://$ADDR/session/acquire" > "$HTTP_OWNER_SESSION"
 HTTP_OWNER_ID="$(jq -r '.session.session_id' "$HTTP_OWNER_SESSION")"
+sleep 0.05
 curl -fsS -H "authorization: Bearer $TOKEN" "http://$ADDR/events" > "$HTTP_EVENTS"
 HTTP_AFTER_SEQUENCE="$(jq -r '.[0].sequence' "$HTTP_EVENTS")"
 curl -fsS -H "authorization: Bearer $TOKEN" "http://$ADDR/events?after=$HTTP_AFTER_SEQUENCE" > "$HTTP_EVENTS_AFTER"
@@ -276,6 +283,7 @@ CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFIL
 CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFILE" ui mode headful \
   --source "cli proof" \
   --json > "$CLI_UI_MODE_HEADFUL"
+sleep 0.05
 CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFILE" events --json > "$CLI_EVENTS"
 CLI_AFTER_SEQUENCE="$(jq -r '.[0].sequence' "$CLI_EVENTS")"
 CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFILE" events --after "$CLI_AFTER_SEQUENCE" --json > "$CLI_EVENTS_AFTER"
@@ -302,6 +310,7 @@ unix_call "ui.step" '{"schema_version":"cua.v1","label":"unix programmable step"
 unix_call "ui.reply" '{"schema_version":"cua.v1","text":"unix programmable reply","source":"unix proof","ttl_ms":1750}' "$UNIX_UI_REPLY"
 unix_call "ui.mode" '{"schema_version":"cua.v1","mode":"headless","source":"unix proof"}' "$UNIX_UI_MODE_HEADLESS"
 unix_call "ui.mode" '{"schema_version":"cua.v1","mode":"headful","source":"unix proof"}' "$UNIX_UI_MODE_HEADFUL"
+sleep 0.05
 unix_call "events.snapshot" '{}' "$UNIX_EVENTS"
 UNIX_AFTER_SEQUENCE="$(jq -r '.[0].sequence' "$UNIX_EVENTS")"
 unix_call "events.after" "{\"after_sequence\":$UNIX_AFTER_SEQUENCE}" "$UNIX_EVENTS_AFTER"

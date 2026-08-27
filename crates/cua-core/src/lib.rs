@@ -586,192 +586,6 @@ pub struct MachineAttestation {
     pub signed_wall_ms: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum InboundDeliveryMethod {
-    LocalHttp,
-    UnixSocket,
-    Webhook,
-    Sdk,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum InboundReplyMode {
-    Ui,
-    Poll,
-    Webhook,
-}
-
-impl Default for InboundReplyMode {
-    fn default() -> Self {
-        Self::Ui
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum InboundMessageState {
-    Received,
-    Accepted,
-    Running,
-    Done,
-    Failed,
-    Expired,
-    Duplicate,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
-pub struct InboundMessageRequest {
-    pub schema_version: String,
-    pub idempotency_key: String,
-    pub source: String,
-    pub text: String,
-    #[serde(default)]
-    pub payload: serde_json::Value,
-    #[serde(default)]
-    pub reply_mode: InboundReplyMode,
-    pub reply_url: Option<String>,
-    pub ttl_ms: Option<i64>,
-    #[serde(default)]
-    pub attestation: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
-pub struct InboundMessage {
-    pub schema_version: String,
-    pub sequence: u64,
-    pub message_id: String,
-    pub idempotency_key: String,
-    pub source: String,
-    pub text: String,
-    pub payload: serde_json::Value,
-    pub reply_mode: InboundReplyMode,
-    pub reply_url: Option<String>,
-    pub delivery_method: InboundDeliveryMethod,
-    pub received_wall_ms: i64,
-    pub expires_wall_ms: Option<i64>,
-    pub attestation: Option<serde_json::Value>,
-    pub duplicate_of: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
-pub struct InboundStatus {
-    pub schema_version: String,
-    pub message_id: String,
-    pub state: InboundMessageState,
-    pub message: InboundMessage,
-    pub reply: Option<String>,
-    pub error: Option<String>,
-    pub updated_wall_ms: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
-pub struct WebhookSubscribeRequest {
-    pub schema_version: String,
-    pub source: String,
-    pub shared_secret: Option<String>,
-    pub reply_url: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
-pub struct WebhookSourceStatus {
-    pub schema_version: String,
-    pub source: String,
-    pub configured: bool,
-    pub requires_signature: bool,
-    pub reply_url: Option<String>,
-    pub updated_wall_ms: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ScratchpadKind {
-    Durable,
-    Ephemeral,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-pub struct ScratchpadEntry {
-    pub schema_version: String,
-    pub profile: String,
-    pub name: String,
-    pub kind: ScratchpadKind,
-    pub text: String,
-    pub created_wall_ms: i64,
-    pub updated_wall_ms: i64,
-    pub expires_wall_ms: Option<i64>,
-    pub bytes: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-pub struct ScratchpadSummary {
-    pub schema_version: String,
-    pub profile: String,
-    pub name: String,
-    pub kind: ScratchpadKind,
-    pub updated_wall_ms: i64,
-    pub expires_wall_ms: Option<i64>,
-    pub bytes: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-pub struct ScratchpadWriteRequest {
-    pub schema_version: String,
-    pub name: String,
-    pub text: String,
-    #[serde(default = "default_true")]
-    pub durable: bool,
-    #[serde(default)]
-    pub append: bool,
-    pub ttl_ms: Option<i64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-pub struct ScratchpadReadRequest {
-    pub schema_version: String,
-    pub name: String,
-    #[serde(default)]
-    pub durable: Option<bool>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-pub struct ScratchpadListRequest {
-    pub schema_version: String,
-    #[serde(default = "default_true")]
-    pub include_durable: bool,
-    #[serde(default = "default_true")]
-    pub include_ephemeral: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-pub struct ScratchpadListResult {
-    pub schema_version: String,
-    pub profile: String,
-    pub entries: Vec<ScratchpadSummary>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-pub struct ScratchpadDeleteRequest {
-    pub schema_version: String,
-    pub name: String,
-    #[serde(default = "default_true")]
-    pub durable: bool,
-    #[serde(default = "default_true")]
-    pub ephemeral: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-pub struct ScratchpadDeleteResult {
-    pub schema_version: String,
-    pub profile: String,
-    pub deleted: usize,
-}
-
-fn default_true() -> bool {
-    true
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct StoredMachineMetadata {
     schema_version: String,
@@ -1094,6 +908,192 @@ fn write_json_private<T: Serialize>(path: &Path, value: &T) -> anyhow::Result<()
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
     }
     Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InboundDeliveryMethod {
+    LocalHttp,
+    UnixSocket,
+    Webhook,
+    Sdk,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InboundReplyMode {
+    Ui,
+    Poll,
+    Webhook,
+}
+
+impl Default for InboundReplyMode {
+    fn default() -> Self {
+        Self::Ui
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InboundMessageState {
+    Received,
+    Accepted,
+    Running,
+    Done,
+    Failed,
+    Expired,
+    Duplicate,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct InboundMessageRequest {
+    pub schema_version: String,
+    pub idempotency_key: String,
+    pub source: String,
+    pub text: String,
+    #[serde(default)]
+    pub payload: serde_json::Value,
+    #[serde(default)]
+    pub reply_mode: InboundReplyMode,
+    pub reply_url: Option<String>,
+    pub ttl_ms: Option<i64>,
+    #[serde(default)]
+    pub attestation: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct InboundMessage {
+    pub schema_version: String,
+    pub sequence: u64,
+    pub message_id: String,
+    pub idempotency_key: String,
+    pub source: String,
+    pub text: String,
+    pub payload: serde_json::Value,
+    pub reply_mode: InboundReplyMode,
+    pub reply_url: Option<String>,
+    pub delivery_method: InboundDeliveryMethod,
+    pub received_wall_ms: i64,
+    pub expires_wall_ms: Option<i64>,
+    pub attestation: Option<serde_json::Value>,
+    pub duplicate_of: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct InboundStatus {
+    pub schema_version: String,
+    pub message_id: String,
+    pub state: InboundMessageState,
+    pub message: InboundMessage,
+    pub reply: Option<String>,
+    pub error: Option<String>,
+    pub updated_wall_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct WebhookSubscribeRequest {
+    pub schema_version: String,
+    pub source: String,
+    pub shared_secret: Option<String>,
+    pub reply_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct WebhookSourceStatus {
+    pub schema_version: String,
+    pub source: String,
+    pub configured: bool,
+    pub requires_signature: bool,
+    pub reply_url: Option<String>,
+    pub updated_wall_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ScratchpadKind {
+    Durable,
+    Ephemeral,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ScratchpadEntry {
+    pub schema_version: String,
+    pub profile: String,
+    pub name: String,
+    pub kind: ScratchpadKind,
+    pub text: String,
+    pub created_wall_ms: i64,
+    pub updated_wall_ms: i64,
+    pub expires_wall_ms: Option<i64>,
+    pub bytes: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ScratchpadSummary {
+    pub schema_version: String,
+    pub profile: String,
+    pub name: String,
+    pub kind: ScratchpadKind,
+    pub updated_wall_ms: i64,
+    pub expires_wall_ms: Option<i64>,
+    pub bytes: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ScratchpadWriteRequest {
+    pub schema_version: String,
+    pub name: String,
+    pub text: String,
+    #[serde(default = "default_true")]
+    pub durable: bool,
+    #[serde(default)]
+    pub append: bool,
+    pub ttl_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ScratchpadReadRequest {
+    pub schema_version: String,
+    pub name: String,
+    #[serde(default)]
+    pub durable: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ScratchpadListRequest {
+    pub schema_version: String,
+    #[serde(default = "default_true")]
+    pub include_durable: bool,
+    #[serde(default = "default_true")]
+    pub include_ephemeral: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ScratchpadListResult {
+    pub schema_version: String,
+    pub profile: String,
+    pub entries: Vec<ScratchpadSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ScratchpadDeleteRequest {
+    pub schema_version: String,
+    pub name: String,
+    #[serde(default = "default_true")]
+    pub durable: bool,
+    #[serde(default = "default_true")]
+    pub ephemeral: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ScratchpadDeleteResult {
+    pub schema_version: String,
+    pub profile: String,
+    pub deleted: usize,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]

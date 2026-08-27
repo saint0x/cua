@@ -49,7 +49,7 @@ PROFILE="${CUA_SDK_PROOF_PROFILE:-sdk-session-proof-$RUN_ID}"
 ADDR="${CUA_SDK_PROOF_ADDR:-127.0.0.1:$((32000 + RUN_ID % 1000))}"
 TOKEN="${CUA_SDK_PROOF_TOKEN:-sdk-session-proof-token-$RUN_ID}"
 OUT_DIR="${CUA_SDK_PROOF_OUT_DIR:-artifacts/cua/sdk-session-proof-$RUN_ID}"
-CUA_HOME_DIR="${CUA_SDK_PROOF_CUA_HOME:-$OUT_DIR/cua-home}"
+CUA_HOME_DIR="${CUA_SDK_PROOF_CUA_HOME:-/tmp/cua-sdk-$RUN_ID}"
 SOCKET="$CUA_HOME_DIR/profiles/$PROFILE/daemon.sock"
 PROOF="$OUT_DIR/proof.json"
 mkdir -p "$OUT_DIR"
@@ -66,16 +66,26 @@ cleanup() {
 trap cleanup EXIT
 
 for _ in $(seq 1 120); do
-  if [[ -S "$SOCKET" ]] && CUA_HOME="$CUA_HOME_DIR" CUA_HTTP_TOKEN="$TOKEN" \
+  RUNTIME_TOKEN="$TOKEN"
+  TOKEN_FILE="$CUA_HOME_DIR/profiles/$PROFILE/http.token"
+  if [[ -f "$TOKEN_FILE" ]]; then
+    RUNTIME_TOKEN="$(tr -d '\n' < "$TOKEN_FILE")"
+  fi
+  if [[ -S "$SOCKET" ]] && CUA_HOME="$CUA_HOME_DIR" CUA_HTTP_TOKEN="$RUNTIME_TOKEN" \
     "$CUA_BIN_PATH" --profile "$PROFILE" status --json > "$OUT_DIR/status-ready.json" 2>/dev/null; then
     break
   fi
   sleep 0.05
 done
-CUA_HOME="$CUA_HOME_DIR" CUA_HTTP_TOKEN="$TOKEN" \
+RUNTIME_TOKEN="$TOKEN"
+TOKEN_FILE="$CUA_HOME_DIR/profiles/$PROFILE/http.token"
+if [[ -f "$TOKEN_FILE" ]]; then
+  RUNTIME_TOKEN="$(tr -d '\n' < "$TOKEN_FILE")"
+fi
+CUA_HOME="$CUA_HOME_DIR" CUA_HTTP_TOKEN="$RUNTIME_TOKEN" \
   "$CUA_BIN_PATH" --profile "$PROFILE" status --json > "$OUT_DIR/status-ready.json"
 
-PYTHONPATH="$ROOT/sdks/python" CUA_BIN="$CUA_BIN_PATH" CUA_HOME="$CUA_HOME_DIR" CUA_HTTP_TOKEN="$TOKEN" \
+PYTHONPATH="$ROOT/sdks/python" CUA_BIN="$CUA_BIN_PATH" CUA_HOME="$CUA_HOME_DIR" CUA_HTTP_TOKEN="$RUNTIME_TOKEN" \
   python3 - "$PROFILE" "$CUA_BIN_PATH" "$PROOF" <<'PY'
 import json
 import os
