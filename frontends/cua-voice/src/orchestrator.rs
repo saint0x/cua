@@ -24,7 +24,7 @@ const VOICE_STEP_SOURCE: &str = "voice";
 const VOICE_STEP_TTL_MS: u64 = 5_000;
 const VOICE_STEP_LABEL_MAX: usize = 96;
 const VOICE_STEP_TIMEOUT_MS: u64 = 500;
-const VOICE_STEP_FLUSH_TIMEOUT_MS: u64 = 2_000;
+const VOICE_STEP_FLUSH_TIMEOUT_MS: u64 = 120;
 const DEFAULT_CONTEXT_PREFETCH_TIMEOUT_MS: u64 = 2_500;
 const MIN_RECORDING_DURATION: Duration = Duration::from_millis(650);
 
@@ -1307,5 +1307,10 @@ mod tests {
             context_prefetch_timeout(),
             Duration::from_millis(DEFAULT_CONTEXT_PREFETCH_TIMEOUT_MS)
         );
+    }
+
+    #[test]
+    fn voice_step_flush_does_not_hold_turn_completion() {
+        assert!(VOICE_STEP_FLUSH_TIMEOUT_MS <= 150);
     }
 }
