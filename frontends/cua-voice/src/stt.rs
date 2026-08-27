@@ -4,17 +4,19 @@ use reqwest::header::{HeaderMap, AUTHORIZATION, CONTENT_TYPE, REFERER};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
 use std::time::Duration;
 use uuid::Uuid;
 
 pub const DEFAULT_STT_BACKEND: &str = "local";
 pub const DEFAULT_STT_MODEL: &str = "tiny.en";
+pub const DEFAULT_LOCAL_STT_FALLBACK_MODEL: &str = "base.en";
 pub const DEFAULT_OPENROUTER_STT_MODEL: &str = "openai/gpt-4o-mini-transcribe";
 const DEFAULT_STT_TIMEOUT_MS: u64 = 15_000;
 const DEFAULT_STT_ATTEMPTS: usize = 3;
 const DEFAULT_STT_RETRY_BACKOFF_MS: u64 = 180;
 const DEFAULT_STT_LANGUAGE: &str = "en";
+const LOCAL_WHISPER_INITIAL_PROMPT: &str = "Short spoken macOS computer control command.";
 
 #[derive(Debug, Clone)]
 pub struct SttClient {
@@ -74,9 +76,11 @@ impl SttClient {
     async fn transcribe_wav_local(&self, wav_bytes: &[u8]) -> anyhow::Result<SttTranscript> {
         let model = self.model.clone();
         let wav_bytes = wav_bytes.to_vec();
-        tokio::task::spawn_blocking(move || transcribe_wav_with_local_whisper(&model, &wav_bytes))
-            .await
-            .context("join local speech-to-text")?
+        tokio::task::spawn_blocking(move || {
+            transcribe_wav_with_local_whisper_retry(&model, &wav_bytes)
+        })
+        .await
+        .context("join local speech-to-text")?
     }
 
     async fn transcribe_wav_openrouter(
@@ -144,6 +148,16 @@ fn transcribe_wav_with_local_whisper(
         .arg("False")
         .arg("--fp16")
         .arg("False")
+        .arg("--condition_on_previous_text")
+        .arg("False")
+        .arg("--no_speech_threshold")
+        .arg("1.0")
+        .arg("--logprob_threshold")
+        .arg("-2.0")
+        .arg("--compression_ratio_threshold")
+        .arg("3.5")
+        .arg("--initial_prompt")
+        .arg(LOCAL_WHISPER_INITIAL_PROMPT)
         .output()
         .with_context(|| format!("run local speech-to-text executable {whisper}"))?;
     if !output.status.success() {
@@ -157,20 +171,158 @@ fn transcribe_wav_with_local_whisper(
             stderr.trim()
         );
     }
-    let value = read_local_whisper_json(&temp_dir, &wav_path)?;
+    let value = read_local_whisper_json(&temp_dir, &wav_path, &output)?;
     let _ = fs::remove_dir_all(&temp_dir);
     parse_transcription_value(SttBackend::Local.as_str(), model, None, value)
 }
 
-fn read_local_whisper_json(temp_dir: &Path, wav_path: &Path) -> anyhow::Result<serde_json::Value> {
+fn transcribe_wav_with_local_whisper_retry(
+    model: &str,
+    wav_bytes: &[u8],
+) -> anyhow::Result<SttTranscript> {
+    let first = transcribe_wav_with_local_whisper(model, wav_bytes);
+    match first {
+        Ok(transcript) if !local_transcript_needs_retry(&transcript.text) => Ok(transcript),
+        Ok(transcript) => {
+            let Some(fallback_model) = local_whisper_fallback_model(model) else {
+                return Ok(transcript);
+            };
+            transcribe_wav_with_local_whisper(&fallback_model, wav_bytes)
+                .with_context(|| {
+                    format!(
+                        "local speech-to-text fallback after low-signal transcript {:?}",
+                        transcript.text
+                    )
+                })
+                .or(Ok(transcript))
+        }
+        Err(error) => {
+            let Some(fallback_model) = local_whisper_fallback_model(model) else {
+                return Err(error);
+            };
+            transcribe_wav_with_local_whisper(&fallback_model, wav_bytes).with_context(|| {
+                format!("local speech-to-text fallback after primary failure: {error:#}")
+            })
+        }
+    }
+}
+
+fn local_whisper_fallback_model(primary_model: &str) -> Option<String> {
+    let disabled = std::env::var("CUA_VOICE_LOCAL_WHISPER_DISABLE_FALLBACK")
+        .ok()
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .unwrap_or(false);
+    if disabled {
+        return None;
+    }
+    let fallback = std::env::var("CUA_VOICE_LOCAL_WHISPER_FALLBACK_MODEL")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| DEFAULT_LOCAL_STT_FALLBACK_MODEL.to_string());
+    if fallback == primary_model {
+        None
+    } else {
+        Some(fallback)
+    }
+}
+
+fn local_transcript_needs_retry(text: &str) -> bool {
+    let normalized = text
+        .trim()
+        .trim_matches(|ch: char| ch.is_ascii_punctuation())
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+    matches!(
+        normalized.as_str(),
+        "" | "you"
+            | "thank you"
+            | "thanks"
+            | "thanks for watching"
+            | "thank you for watching"
+            | "subscribe"
+    )
+}
+
+fn read_local_whisper_json(
+    temp_dir: &Path,
+    wav_path: &Path,
+    output: &Output,
+) -> anyhow::Result<serde_json::Value> {
     let stem = wav_path
         .file_stem()
         .and_then(|stem| stem.to_str())
         .context("local speech-to-text wav path has no stem")?;
     let json_path: PathBuf = temp_dir.join(format!("{stem}.json"));
+    let json_path = if json_path.exists() {
+        json_path
+    } else {
+        find_single_json_output(temp_dir).with_context(|| {
+            format!(
+                "local speech-to-text produced no JSON output at {}; files=[{}] stdout={} stderr={}",
+                json_path.display(),
+                temp_dir_listing(temp_dir),
+                concise_process_text(&output.stdout),
+                concise_process_text(&output.stderr)
+            )
+        })?
+    };
     let bytes = fs::read(&json_path)
         .with_context(|| format!("read local speech-to-text json {}", json_path.display()))?;
     serde_json::from_slice(&bytes).context("decode local speech-to-text json")
+}
+
+fn find_single_json_output(temp_dir: &Path) -> anyhow::Result<PathBuf> {
+    let mut json_paths = fs::read_dir(temp_dir)
+        .with_context(|| format!("list local speech-to-text temp dir {}", temp_dir.display()))?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("json"))
+        .collect::<Vec<_>>();
+    json_paths.sort();
+    match json_paths.as_slice() {
+        [path] => Ok(path.clone()),
+        [] => bail!("no json outputs found"),
+        _ => bail!(
+            "multiple json outputs found: {}",
+            json_paths
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
+fn temp_dir_listing(temp_dir: &Path) -> String {
+    fs::read_dir(temp_dir)
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .map(|entry| entry.file_name().to_string_lossy().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_else(|error| format!("unavailable: {error}"))
+}
+
+fn concise_process_text(bytes: &[u8]) -> String {
+    let text = String::from_utf8_lossy(bytes)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    const MAX_LEN: usize = 800;
+    if text.chars().count() <= MAX_LEN {
+        return text;
+    }
+    let mut truncated = text
+        .chars()
+        .take(MAX_LEN.saturating_sub(3))
+        .collect::<String>();
+    truncated.push_str("...");
+    truncated
 }
 
 fn generation_id(headers: &HeaderMap) -> Option<String> {
@@ -423,5 +575,70 @@ mod tests {
         assert_eq!(transcript.backend, "local");
         assert_eq!(transcript.model, DEFAULT_STT_MODEL);
         assert_eq!(transcript.text, "open safari");
+    }
+
+    #[test]
+    fn local_retry_only_targets_silence_hallucinations() {
+        assert!(local_transcript_needs_retry("You."));
+        assert!(local_transcript_needs_retry("thank you"));
+        assert!(!local_transcript_needs_retry("settings"));
+        assert!(!local_transcript_needs_retry("open safari"));
+    }
+
+    #[test]
+    fn local_fallback_model_is_distinct_and_disableable() {
+        let disable = "__CUA_VOICE_DISABLE_SHADOW";
+        std::env::remove_var("CUA_VOICE_LOCAL_WHISPER_DISABLE_FALLBACK");
+        std::env::remove_var("CUA_VOICE_LOCAL_WHISPER_FALLBACK_MODEL");
+        assert_eq!(
+            local_whisper_fallback_model("tiny.en").as_deref(),
+            Some(DEFAULT_LOCAL_STT_FALLBACK_MODEL)
+        );
+        assert_eq!(
+            local_whisper_fallback_model(DEFAULT_LOCAL_STT_FALLBACK_MODEL),
+            None
+        );
+
+        std::env::set_var("CUA_VOICE_LOCAL_WHISPER_DISABLE_FALLBACK", "1");
+        assert_eq!(local_whisper_fallback_model("tiny.en"), None);
+        std::env::remove_var("CUA_VOICE_LOCAL_WHISPER_DISABLE_FALLBACK");
+        std::env::set_var("CUA_VOICE_LOCAL_WHISPER_FALLBACK_MODEL", disable);
+        assert_eq!(local_whisper_fallback_model(disable), None);
+        std::env::remove_var("CUA_VOICE_LOCAL_WHISPER_FALLBACK_MODEL");
+    }
+
+    #[test]
+    fn finds_fallback_whisper_json_output() {
+        let temp_dir = std::env::temp_dir().join(format!("cua-stt-json-test-{}", Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+        let json_path = temp_dir.join("renamed.json");
+        fs::write(&json_path, br#"{"text":"open safari"}"#).unwrap();
+
+        assert_eq!(find_single_json_output(&temp_dir).unwrap(), json_path);
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn missing_whisper_json_error_includes_diagnostics() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("cua-stt-missing-json-test-{}", Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+        fs::write(temp_dir.join("input.wav"), b"wav").unwrap();
+        let output = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("printf stdout-text; printf stderr-text >&2")
+            .output()
+            .unwrap();
+        let error =
+            read_local_whisper_json(&temp_dir, &temp_dir.join("input.wav"), &output).unwrap_err();
+        let message = format!("{error:#}");
+
+        assert!(message.contains("produced no JSON output"));
+        assert!(message.contains("input.wav"));
+        assert!(message.contains("stdout-text"));
+        assert!(message.contains("stderr-text"));
+
+        let _ = fs::remove_dir_all(temp_dir);
     }
 }

@@ -406,8 +406,6 @@ fn transcript_class(transcript: &str) -> &'static str {
         "empty"
     } else if is_common_missed_speech(&normalized) {
         "missed_speech"
-    } else if normalized.split_whitespace().count() < 2 {
-        "too_short"
     } else {
         "command_candidate"
     }
@@ -1055,7 +1053,7 @@ mod tests {
     fn transcript_class_identifies_command_candidates_and_hallucinations() {
         assert_eq!(transcript_class("you"), "missed_speech");
         assert_eq!(transcript_class("Thank you."), "missed_speech");
-        assert_eq!(transcript_class("settings"), "too_short");
+        assert_eq!(transcript_class("settings"), "command_candidate");
         assert_eq!(
             transcript_class("click the center target"),
             "command_candidate"
