@@ -101,6 +101,8 @@ cat > "$ENTITLEMENTS" <<PLIST
 <dict>
   <key>com.apple.security.cs.disable-library-validation</key>
   <true/>
+  <key>com.apple.security.device.audio-input</key>
+  <true/>
 </dict>
 </plist>
 PLIST
@@ -113,6 +115,7 @@ fi
   --force \
   --sign "$SIGN_IDENTITY" \
   --identifier "$BUNDLE_ID" \
+  --entitlements "$ENTITLEMENTS" \
   --options runtime \
   --timestamp=none \
   "$MACOS_DIR/cua"
@@ -121,6 +124,7 @@ fi
   --force \
   --sign "$SIGN_IDENTITY" \
   --identifier "$BUNDLE_ID" \
+  --entitlements "$ENTITLEMENTS" \
   --options runtime \
   --timestamp=none \
   "$MACOS_DIR/cua-voice"

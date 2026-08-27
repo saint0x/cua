@@ -163,6 +163,14 @@ pub fn request_accessibility_input_access() -> PermissionState {
     native_request_accessibility_input_access()
 }
 
+pub fn microphone_permission() -> PermissionState {
+    native_microphone_permission()
+}
+
+pub fn request_microphone_access() -> PermissionState {
+    native_request_microphone_access()
+}
+
 pub fn cursor_state() -> CursorState {
     native_cursor_state()
 }
@@ -1137,6 +1145,61 @@ fn native_request_accessibility_input_access() -> PermissionState {
 
 #[cfg(not(target_os = "macos"))]
 fn native_request_accessibility_input_access() -> PermissionState {
+    PermissionState::NotApplicable
+}
+
+#[cfg(target_os = "macos")]
+fn native_microphone_permission() -> PermissionState {
+    use objc2_av_foundation::{AVAuthorizationStatus, AVCaptureDevice, AVMediaTypeAudio};
+
+    let Some(media_type) = (unsafe { AVMediaTypeAudio }) else {
+        return PermissionState::Unknown;
+    };
+    match unsafe { AVCaptureDevice::authorizationStatusForMediaType(media_type) } {
+        AVAuthorizationStatus::Authorized => PermissionState::Granted,
+        AVAuthorizationStatus::Denied | AVAuthorizationStatus::Restricted => {
+            PermissionState::Denied
+        }
+        AVAuthorizationStatus::NotDetermined => PermissionState::Missing,
+        _ => PermissionState::Unknown,
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn native_microphone_permission() -> PermissionState {
+    PermissionState::NotApplicable
+}
+
+#[cfg(target_os = "macos")]
+fn native_request_microphone_access() -> PermissionState {
+    use block2::RcBlock;
+    use objc2::runtime::Bool;
+    use objc2_av_foundation::{AVCaptureDevice, AVMediaTypeAudio};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    if native_microphone_permission() == PermissionState::Granted {
+        return PermissionState::Granted;
+    }
+    let Some(media_type) = (unsafe { AVMediaTypeAudio }) else {
+        return PermissionState::Unknown;
+    };
+    let (tx, rx) = mpsc::channel();
+    let block = RcBlock::new(move |granted: Bool| {
+        let _ = tx.send(granted.as_bool());
+    });
+    unsafe {
+        AVCaptureDevice::requestAccessForMediaType_completionHandler(media_type, &block);
+    }
+    match rx.recv_timeout(Duration::from_secs(30)) {
+        Ok(true) => PermissionState::Granted,
+        Ok(false) => native_microphone_permission(),
+        Err(_) => native_microphone_permission(),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn native_request_microphone_access() -> PermissionState {
     PermissionState::NotApplicable
 }
 

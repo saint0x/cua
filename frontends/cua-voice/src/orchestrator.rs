@@ -174,6 +174,7 @@ async fn record_and_run_turn(
     trace
         .append("audio_diagnostic", audio_trace_json(&audio))
         .await;
+    tx.send(VoiceUiEvent::RecordingStopped).ok();
     if let Err(error) = validate_recorded_audio(&audio) {
         trace
             .append(
@@ -184,7 +185,6 @@ async fn record_and_run_turn(
         return Err(error);
     }
     publish_audio_diagnostic(&tx, &audio);
-    tx.send(VoiceUiEvent::Accepted).ok();
     transcribe_and_run_turn_after_local(config, audio.wav_bytes, local_task, tx, trace).await
 }
 
@@ -282,6 +282,7 @@ async fn transcribe_and_run_turn_after_local(
         "context_stt_overlap_ms",
         context_overlap_started.elapsed(),
     );
+    tx.send(VoiceUiEvent::Accepted).ok();
     tx.send(VoiceUiEvent::Transcript(transcript.text.clone()))
         .ok();
     step_publisher.publish(voice_step_label("transcript", &transcript.text));

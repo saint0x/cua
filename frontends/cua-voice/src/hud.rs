@@ -89,9 +89,9 @@ impl HudDisplay {
 
 fn live_transport_label(snapshot: &HudSnapshot) -> String {
     match snapshot.phase {
-        crate::ui_state::HudPhase::Listening | crate::ui_state::HudPhase::Accepted => {
-            "Mic".to_string()
-        }
+        crate::ui_state::HudPhase::Listening
+        | crate::ui_state::HudPhase::RecordingStopped
+        | crate::ui_state::HudPhase::Accepted => "Mic".to_string(),
         crate::ui_state::HudPhase::Transcribing => short_tool(&snapshot.tool),
         crate::ui_state::HudPhase::Planning if snapshot.tool.contains("OpenRouter") => {
             "Router".to_string()
@@ -113,7 +113,9 @@ fn live_target_label(snapshot: &HudSnapshot) -> String {
     if snapshot.tool.contains("Microphone")
         || matches!(
             snapshot.phase,
-            crate::ui_state::HudPhase::Listening | crate::ui_state::HudPhase::Accepted
+            crate::ui_state::HudPhase::Listening
+                | crate::ui_state::HudPhase::RecordingStopped
+                | crate::ui_state::HudPhase::Accepted
         )
     {
         return "Microphone".to_string();
@@ -135,7 +137,9 @@ fn live_target_label(snapshot: &HudSnapshot) -> String {
         return "macOS".to_string();
     }
     match snapshot.phase {
-        crate::ui_state::HudPhase::Transcribing => "STT".to_string(),
+        crate::ui_state::HudPhase::RecordingStopped | crate::ui_state::HudPhase::Transcribing => {
+            "STT".to_string()
+        }
         crate::ui_state::HudPhase::Planning => "Model".to_string(),
         crate::ui_state::HudPhase::Dispatching => "macOS".to_string(),
         crate::ui_state::HudPhase::Reply => "Result".to_string(),
@@ -158,9 +162,9 @@ fn action_rows(snapshot: &HudSnapshot) -> [HudRow; 2] {
         HudRow {
             label: transcript,
             tool: match snapshot.phase {
-                crate::ui_state::HudPhase::Listening | crate::ui_state::HudPhase::Accepted => {
-                    "Mic".to_string()
-                }
+                crate::ui_state::HudPhase::Listening
+                | crate::ui_state::HudPhase::RecordingStopped
+                | crate::ui_state::HudPhase::Accepted => "Mic".to_string(),
                 crate::ui_state::HudPhase::Transcribing => "STT".to_string(),
                 _ => short_tool(&snapshot.tool),
             },

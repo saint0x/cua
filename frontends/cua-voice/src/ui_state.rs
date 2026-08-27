@@ -6,6 +6,7 @@ pub enum HudPhase {
     Idle,
     Armed,
     Listening,
+    RecordingStopped,
     Accepted,
     Transcribing,
     Planning,
@@ -20,6 +21,7 @@ impl HudPhase {
             Self::Idle => "Ready",
             Self::Armed => "Armed",
             Self::Listening => "Listening",
+            Self::RecordingStopped => "Recording Stopped",
             Self::Accepted => "Accepted",
             Self::Transcribing => "Transcribing",
             Self::Planning => "Planning",
@@ -96,6 +98,14 @@ impl HudSnapshot {
                 self.programmed_step_expires_at = None;
                 self.programmed_step_restore = None;
             }
+            VoiceUiEvent::RecordingStopped => {
+                self.phase = HudPhase::RecordingStopped;
+                self.mark_voice_control();
+                self.step = HudStep::new(2, 4, "Recording Stopped");
+                self.tool = "Microphone".to_string();
+                self.programmed_step_expires_at = None;
+                self.programmed_step_restore = None;
+            }
             VoiceUiEvent::Accepted => {
                 self.phase = HudPhase::Accepted;
                 self.mark_voice_control();
@@ -107,7 +117,7 @@ impl HudSnapshot {
             VoiceUiEvent::Transcribing => {
                 self.phase = HudPhase::Transcribing;
                 self.mark_voice_control();
-                self.step = HudStep::new(2, 4, "Accepted");
+                self.step = HudStep::new(2, 4, "Processing");
                 self.tool = "Whisper STT".to_string();
                 self.programmed_step_expires_at = None;
                 self.programmed_step_restore = None;
@@ -294,6 +304,7 @@ pub enum VoiceUiEvent {
     Listening {
         ms: u64,
     },
+    RecordingStopped,
     Accepted,
     Transcribing,
     Transcript(String),

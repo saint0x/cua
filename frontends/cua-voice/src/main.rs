@@ -675,7 +675,7 @@ fn dots_are_active(snapshot: &HudSnapshot) -> bool {
 
 fn dot_pulse_speed(phase: &HudPhase) -> f32 {
     match phase {
-        HudPhase::Listening | HudPhase::Dispatching => 8.0,
+        HudPhase::Listening | HudPhase::RecordingStopped | HudPhase::Dispatching => 8.0,
         HudPhase::Accepted | HudPhase::Planning | HudPhase::Transcribing => 6.0,
         HudPhase::Reply => 5.0,
         HudPhase::Error => 10.0,
@@ -1003,7 +1003,13 @@ fn center_status_text(snapshot: &HudSnapshot) -> String {
     if snapshot.phase == HudPhase::Listening {
         return "Listening".to_string();
     }
-    if snapshot.phase == HudPhase::Accepted || snapshot.phase == HudPhase::Transcribing {
+    if snapshot.phase == HudPhase::RecordingStopped {
+        return "Recording Stopped".to_string();
+    }
+    if snapshot.phase == HudPhase::Transcribing {
+        return "Processing".to_string();
+    }
+    if snapshot.phase == HudPhase::Accepted {
         return "Accepted".to_string();
     }
     step_label(
@@ -1130,16 +1136,20 @@ fn main() -> anyhow::Result<()> {
         None => return Ok(()),
     };
 
+    let should_request_desktop_access = !demo;
+    let desktop_access_profile = config.profile.clone();
     if demo {
         start_demo_cycle(tx.clone());
     } else {
-        request_desktop_access_once_if_packaged_app(&config.profile);
         start_embedded_daemon_if_needed(config.profile.clone(), runtime.clone(), tx.clone());
         start_control_shortcut_controller(config.clone(), runtime.clone(), tx.clone());
         start_island_double_tap_listener(tx.clone(), island_bounds.clone());
         start_agent_step_poll(config.profile.clone(), runtime.clone(), tx.clone());
     }
     Application::new().run(move |cx: &mut App| {
+        if should_request_desktop_access {
+            request_desktop_access_once_if_packaged_app(&desktop_access_profile);
+        }
         let bounds = top_centered_bounds(cx);
         cx.open_window(
             WindowOptions {
@@ -1239,6 +1249,7 @@ fn print_headless_events(rx: Receiver<VoiceUiEvent>) {
         let value = match event {
             VoiceUiEvent::Armed => serde_json::json!({"event": "armed"}),
             VoiceUiEvent::Listening { ms } => serde_json::json!({"event": "listening", "ms": ms}),
+            VoiceUiEvent::RecordingStopped => serde_json::json!({"event": "recording_stopped"}),
             VoiceUiEvent::Accepted => serde_json::json!({"event": "accepted"}),
             VoiceUiEvent::Transcribing => serde_json::json!({"event": "transcribing"}),
             VoiceUiEvent::Transcript(text) => {
@@ -1797,6 +1808,9 @@ fn request_desktop_access_once_if_packaged_app(profile: &str) {
             cua_platform_macos::request_accessibility_input_access,
         );
     }
+    if cua_platform_macos::microphone_permission() != PermissionState::Granted {
+        let _ = cua_platform_macos::request_microphone_access();
+    }
 }
 
 fn launched_from_app_bundle() -> bool {
@@ -2263,11 +2277,19 @@ mod tests {
     }
 
     #[test]
-    fn transcribing_center_text_stays_plain_accepted() {
+    fn recording_stopped_center_text_is_plain_stopped() {
+        let mut snapshot = HudSnapshot::default();
+        snapshot.apply(VoiceUiEvent::RecordingStopped);
+
+        assert_eq!(center_status_text(&snapshot), "Recording Stopped");
+    }
+
+    #[test]
+    fn transcribing_center_text_is_plain_processing() {
         let mut snapshot = HudSnapshot::default();
         snapshot.apply(VoiceUiEvent::Transcribing);
 
-        assert_eq!(center_status_text(&snapshot), "Accepted");
+        assert_eq!(center_status_text(&snapshot), "Processing");
     }
 
     #[test]
