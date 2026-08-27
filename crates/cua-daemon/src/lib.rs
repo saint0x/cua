@@ -2576,15 +2576,22 @@ async fn observe_desktop(State(state): State<DaemonState>) -> Result<Json<Deskto
 }
 
 async fn desktop_state(state: &DaemonState) -> Result<DesktopState, ApiError> {
-    let permissions = state.permission_report().await;
-    let displays = state
-        .frame_bus
-        .displays()
-        .await
+    let (permissions, displays, latest_frame, platform_state) = tokio::join!(
+        state.permission_report(),
+        state.frame_bus.displays(),
+        state.frame_bus.latest_envelope(),
+        tokio::task::spawn_blocking(|| {
+            let cursor = cua_platform_macos::cursor_state();
+            let windows = cua_platform_macos::window_list()?;
+            anyhow::Ok((cursor, windows))
+        })
+    );
+    let displays = displays.map_err(ApiError::internal)?;
+    let (cursor, windows) = platform_state
+        .map_err(|error| {
+            ApiError::internal(anyhow::anyhow!("desktop platform worker failed: {error}"))
+        })?
         .map_err(ApiError::internal)?;
-    let latest_frame = state.frame_bus.latest_envelope().await;
-    let cursor = cua_platform_macos::cursor_state();
-    let windows = cua_platform_macos::window_list().map_err(ApiError::internal)?;
     Ok(DesktopState {
         schema_version: SCHEMA_VERSION.to_string(),
         displays,
