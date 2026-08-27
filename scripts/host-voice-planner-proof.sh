@@ -131,7 +131,7 @@ jq -s -e '
   (idx("transcript") < idx("planning")) and
   (idx("planning") < idx("reply")) and
   any(.event == "metric" and .name == "stt_preflight_overlap_ms") and
-  any(.event == "metric" and .name == "context_stt_overlap_ms") and
+  any(.event == "metric" and .name == "stt_ms") and
   any(.event == "metric" and .name == "context_prefetch_ms") and
   any(.event == "metric" and .name == "context_wait_ms") and
   any(.event == "metric" and .name == "plan_ms" and .ms > 0) and
