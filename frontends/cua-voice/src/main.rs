@@ -7,7 +7,7 @@ use cua_voice::agent_events::{
     agent_ui_event_from_daemon_event_advancing_cursor, max_daemon_event_sequence,
 };
 use cua_voice::client::CuaClient;
-use cua_voice::daemon::{profile_daemon_is_alive, spawn_profile_daemon};
+use cua_voice::daemon::{profile_daemon_is_alive, spawn_profile_daemon, wait_until_ready};
 use cua_voice::hud::{
     compact_label, HudDisplay, HudMetrics, COMPACT_HEIGHT, EXPANDED_HEIGHT, TOP_MARGIN,
     WINDOW_HEIGHT, WINDOW_WIDTH,
@@ -1387,8 +1387,13 @@ fn start_agent_step_poll(
             return;
         };
         let mut last_sequence = 0_u64;
+        let mut last_start_attempt = Instant::now() - Duration::from_secs(5);
         loop {
             let Ok(mut session) = client.session().await else {
+                if last_start_attempt.elapsed() >= Duration::from_secs(1) {
+                    last_start_attempt = Instant::now();
+                    let _ = spawn_profile_daemon(client.profile());
+                }
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 continue;
             };
@@ -1787,7 +1792,7 @@ fn control_poll_sample_triggers_arm(
 
 fn start_embedded_daemon_if_needed(
     profile: String,
-    _runtime: Arc<tokio::runtime::Runtime>,
+    runtime: Arc<tokio::runtime::Runtime>,
     tx: Sender<VoiceUiEvent>,
 ) {
     if profile_daemon_is_alive(&profile) {
@@ -1796,7 +1801,27 @@ fn start_embedded_daemon_if_needed(
     if let Err(error) = spawn_profile_daemon(&profile) {
         tx.send(VoiceUiEvent::Error(format!("Daemon start failed: {error}")))
             .ok();
+        return;
     }
+    runtime.spawn(async move {
+        let result = wait_until_ready(Duration::from_secs(3), || {
+            let profile = profile.clone();
+            async move {
+                if profile_daemon_is_alive(&profile) {
+                    Ok(())
+                } else {
+                    anyhow::bail!("daemon socket is not accepting connections")
+                }
+            }
+        })
+        .await;
+        if let Err(error) = result {
+            tx.send(VoiceUiEvent::Error(format!(
+                "Daemon start failed: {error:#}"
+            )))
+            .ok();
+        }
+    });
 }
 
 fn request_desktop_access_once_if_packaged_app(profile: &str) {
