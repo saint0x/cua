@@ -17,7 +17,7 @@ use std::sync::{
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 
-type LocalTask = tokio::task::JoinHandle<anyhow::Result<CuaClient>>;
+type LocalTask = tokio::task::JoinHandle<anyhow::Result<LocalReady>>;
 type ContextTask = tokio::task::JoinHandle<PrefetchedContext>;
 type ChatContextTask = tokio::task::JoinHandle<anyhow::Result<String>>;
 type AgentContextTask = tokio::task::JoinHandle<anyhow::Result<crate::memory::AgentContext>>;
@@ -42,6 +42,11 @@ struct CompletedAssistantTurn {
     response: String,
     action: Option<serde_json::Value>,
     evidence: Option<serde_json::Value>,
+}
+
+struct LocalReady {
+    client: CuaClient,
+    session: Option<CuaSession>,
 }
 
 #[derive(Debug, Clone)]
@@ -236,7 +241,8 @@ async fn transcribe_and_run_turn_after_local(
             .await
     });
     let overlap_started = Instant::now();
-    let local = local_task.await.context("join local daemon preflight")??;
+    let local_ready = local_task.await.context("join local daemon preflight")??;
+    let local = local_ready.client;
     send_metric(&tx, "stt_preflight_overlap_ms", overlap_started.elapsed());
     trace
         .append(
@@ -247,7 +253,7 @@ async fn transcribe_and_run_turn_after_local(
     let step_publisher = VoiceStepPublisher::start(local.clone());
     step_publisher.publish("transcribing audio");
     let context_overlap_started = Instant::now();
-    let context_task = spawn_context_prefetch(local.clone());
+    let context_task = spawn_context_prefetch(local.clone(), local_ready.session);
     let chat_task = spawn_chat_context_prefetch(config.profile.clone());
     let transcript = match stt_task.await.context("join speech to text")? {
         Ok(transcript) => {
@@ -354,9 +360,11 @@ async fn run_transcript_turn(
         )
         .await;
     tx.send(VoiceUiEvent::Armed).ok();
-    let local = preflight_local_client(&config.profile).await?;
+    let local_ready = preflight_local_client(&config.profile).await?;
+    let local = local_ready.client;
     let step_publisher = VoiceStepPublisher::start(local.clone());
     let chat_task = spawn_chat_context_prefetch(config.profile.clone());
+    let context_task = spawn_context_prefetch(local.clone(), local_ready.session);
     tx.send(VoiceUiEvent::Transcript(transcript.clone())).ok();
     step_publisher.publish(voice_step_label("transcript", &transcript));
     plan_and_dispatch(
@@ -364,7 +372,7 @@ async fn run_transcript_turn(
         transcript,
         None,
         local,
-        None,
+        Some(context_task),
         Some(chat_task),
         step_publisher,
         tx.clone(),
@@ -625,14 +633,18 @@ async fn plan_and_dispatch(
 
 async fn prefetch_context(
     local: CuaClient,
+    warm_session: Option<CuaSession>,
 ) -> (
     Option<CuaSession>,
     Option<FramePayload>,
     Option<DesktopState>,
 ) {
-    let mut session = match local.session().await {
-        Ok(session) => session,
-        Err(_) => return (None, None, None),
+    let mut session = match warm_session {
+        Some(session) => session,
+        None => match local.session().await {
+            Ok(session) => session,
+            Err(_) => return (None, None, None),
+        },
     };
     let snapshot =
         match tokio::time::timeout(context_prefetch_timeout(), session.context(true)).await {
@@ -874,9 +886,12 @@ fn truncate_step_label(label: String) -> String {
     truncated
 }
 
-async fn prefetch_context_for_planning(local: CuaClient) -> PrefetchedContext {
+async fn prefetch_context_for_planning(
+    local: CuaClient,
+    warm_session: Option<CuaSession>,
+) -> PrefetchedContext {
     let started = Instant::now();
-    let (session, frame, desktop) = prefetch_context(local).await;
+    let (session, frame, desktop) = prefetch_context(local, warm_session).await;
     PrefetchedContext {
         session,
         frame,
@@ -885,8 +900,8 @@ async fn prefetch_context_for_planning(local: CuaClient) -> PrefetchedContext {
     }
 }
 
-fn spawn_context_prefetch(local: CuaClient) -> ContextTask {
-    tokio::spawn(async move { prefetch_context_for_planning(local).await })
+fn spawn_context_prefetch(local: CuaClient, warm_session: Option<CuaSession>) -> ContextTask {
+    tokio::spawn(async move { prefetch_context_for_planning(local, warm_session).await })
 }
 
 fn spawn_chat_context_prefetch(profile: String) -> ChatContextTask {
@@ -953,7 +968,7 @@ async fn resolve_context_for_planning(
             return context;
         }
     }
-    prefetch_context_for_planning(local).await
+    prefetch_context_for_planning(local, None).await
 }
 
 async fn persist_turn_memory(
@@ -985,19 +1000,26 @@ async fn persist_turn_memory(
     Ok(())
 }
 
-async fn preflight_local_client(profile: &str) -> anyhow::Result<CuaClient> {
+async fn preflight_local_client(profile: &str) -> anyhow::Result<LocalReady> {
     let local = CuaClient::new(profile.to_string()).await?;
-    if local.preflight().await.is_ok() {
-        return Ok(local);
+    if let Ok(session) = local.session().await {
+        return Ok(LocalReady {
+            client: local,
+            session: Some(session),
+        });
     }
     spawn_profile_daemon(profile).context("start bundled cua daemon")?;
     wait_until_ready(Duration::from_secs(2), || {
         let local = local.clone();
-        async move { local.preflight().await }
+        async move { local.session().await.map(|_| ()) }
     })
     .await
     .context("voice requires a running cua daemon on the profile Unix socket")?;
-    Ok(local)
+    let session = local.session().await.ok();
+    Ok(LocalReady {
+        client: local,
+        session,
+    })
 }
 
 fn spawn_local_preflight(profile: String) -> LocalTask {

@@ -57,13 +57,6 @@ impl CuaClient {
         .await
     }
 
-    pub async fn preflight(&self) -> anyhow::Result<()> {
-        let _stream = UnixStream::connect(&self.socket_path)
-            .await
-            .with_context(|| format!("connect {}", self.socket_path.display()))?;
-        Ok(())
-    }
-
     pub async fn events(&self) -> anyhow::Result<Vec<Value>> {
         self.request("events.snapshot", None).await
     }
@@ -430,16 +423,6 @@ fn profile_socket_path(profile: &str) -> anyhow::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[tokio::test]
-    async fn preflight_fails_when_profile_socket_is_absent() {
-        let profile = format!("missing-socket-{}", uuid::Uuid::new_v4());
-        let client = CuaClient::new(profile).await.unwrap();
-
-        let error = client.preflight().await.unwrap_err().to_string();
-
-        assert!(error.contains("daemon.sock"));
-    }
 
     #[test]
     fn context_request_uses_realtime_jpeg_frame() {
