@@ -250,6 +250,7 @@ async fn transcribe_and_run_turn_after_local(
             trace
                 .append("stt_missed_speech", json!({"error": format!("{error:#}")}))
                 .await;
+            abort_context_prefetch(&context_task, &trace, "stt_missed_speech").await;
             tx.send(VoiceUiEvent::Error(user_visible_turn_error(&error)))
                 .ok();
             return Ok(());
@@ -258,6 +259,7 @@ async fn transcribe_and_run_turn_after_local(
             trace
                 .append("stt_error", json!({"error": format!("{error:#}")}))
                 .await;
+            abort_context_prefetch(&context_task, &trace, "stt_error").await;
             return Err(error);
         }
     };
@@ -272,6 +274,7 @@ async fn transcribe_and_run_turn_after_local(
                 }),
             )
             .await;
+        abort_context_prefetch(&context_task, &trace, "transcript_validation_error").await;
         tx.send(VoiceUiEvent::Error(user_visible_turn_error(&error)))
             .ok();
         return Ok(());
@@ -799,6 +802,13 @@ fn spawn_context_prefetch(local: CuaClient) -> ContextTask {
     tokio::spawn(async move { prefetch_context_for_planning(local).await })
 }
 
+async fn abort_context_prefetch(context_task: &ContextTask, trace: &VoiceTurnTrace, reason: &str) {
+    context_task.abort();
+    trace
+        .append("context_prefetch_aborted", json!({ "reason": reason }))
+        .await;
+}
+
 async fn resolve_context_for_planning(
     local: CuaClient,
     context_task: Option<ContextTask>,
@@ -1292,6 +1302,29 @@ mod tests {
         assert!(context.session.is_none());
         assert!(context.frame.is_none());
         assert!(context.desktop.is_none());
+    }
+
+    #[tokio::test]
+    async fn aborting_context_prefetch_cancels_background_work() {
+        let task = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            PrefetchedContext {
+                session: None,
+                frame: None,
+                desktop: None,
+                elapsed: Duration::from_secs(60),
+            }
+        });
+        let trace = VoiceTurnTrace {
+            enabled: false,
+            path: None,
+            turn_id: "test-turn".to_string(),
+        };
+
+        abort_context_prefetch(&task, &trace, "test").await;
+        let result = task.await;
+
+        assert!(result.is_err_and(|error| error.is_cancelled()));
     }
 
     #[test]
