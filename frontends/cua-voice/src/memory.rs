@@ -189,7 +189,19 @@ impl CtxMemory {
 }
 
 pub async fn load_agent_context(profile: &str, request: &str) -> anyhow::Result<AgentContext> {
-    let chat = ChatStore::new(profile)?.recent_context().await?;
+    let chat = load_chat_context(profile).await?;
+    load_agent_context_with_chat(profile, request, chat).await
+}
+
+pub async fn load_chat_context(profile: &str) -> anyhow::Result<String> {
+    ChatStore::new(profile)?.recent_context().await
+}
+
+pub async fn load_agent_context_with_chat(
+    profile: &str,
+    request: &str,
+    chat: String,
+) -> anyhow::Result<AgentContext> {
     let ctx = CtxMemory::new(profile)?.frame(request, &chat).await?;
     Ok(AgentContext { chat, ctx })
 }
