@@ -3,10 +3,88 @@ use schemars::schema_for;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use thiserror::Error;
 use uuid::Uuid;
 
 pub const SCHEMA_VERSION: &str = "cua.v1";
+
+pub fn cua_home() -> anyhow::Result<PathBuf> {
+    if let Some(home) = std::env::var_os("CUA_HOME") {
+        if !home.is_empty() {
+            return Ok(PathBuf::from(home));
+        }
+    }
+    Ok(PathBuf::from(std::env::var("HOME")?).join(".cua"))
+}
+
+pub fn config_dir() -> anyhow::Result<PathBuf> {
+    Ok(cua_home()?.join("config"))
+}
+
+pub fn config_env_path() -> anyhow::Result<PathBuf> {
+    Ok(config_dir()?.join("env"))
+}
+
+pub fn profile_dir(profile: &str) -> anyhow::Result<PathBuf> {
+    Ok(cua_home()?.join("profiles").join(profile))
+}
+
+pub fn profile_token_path(profile: &str) -> anyhow::Result<PathBuf> {
+    Ok(profile_dir(profile)?.join("http.token"))
+}
+
+pub fn profile_socket_path(profile: &str) -> anyhow::Result<PathBuf> {
+    Ok(profile_dir(profile)?.join("daemon.sock"))
+}
+
+pub fn profile_chat_db_path(profile: &str) -> anyhow::Result<PathBuf> {
+    Ok(profile_dir(profile)?.join("chat.db"))
+}
+
+pub fn profile_ctx_dir(profile: &str) -> anyhow::Result<PathBuf> {
+    Ok(profile_dir(profile)?.join("ctx"))
+}
+
+pub fn profile_trace_dir(profile: &str) -> anyhow::Result<PathBuf> {
+    Ok(profile_dir(profile)?.join("traces"))
+}
+
+pub fn profile_voice_trace_path(profile: &str) -> anyhow::Result<PathBuf> {
+    Ok(profile_trace_dir(profile)?.join("voice.jsonl"))
+}
+
+pub fn profile_daemon_trace_dir(profile: &str) -> anyhow::Result<PathBuf> {
+    Ok(profile_trace_dir(profile)?.join("daemon"))
+}
+
+pub fn identity_dir() -> anyhow::Result<PathBuf> {
+    Ok(cua_home()?.join("identity"))
+}
+
+pub fn cloud_dir() -> anyhow::Result<PathBuf> {
+    Ok(cua_home()?.join("cloud"))
+}
+
+pub fn artifact_dir(concern: &str) -> anyhow::Result<PathBuf> {
+    Ok(cua_home()?.join("artifacts").join(concern))
+}
+
+pub fn cache_dir(concern: &str) -> anyhow::Result<PathBuf> {
+    Ok(cua_home()?.join("cache").join(concern))
+}
+
+pub fn log_dir(concern: &str) -> anyhow::Result<PathBuf> {
+    Ok(cua_home()?.join("logs").join(concern))
+}
+
+pub fn bin_dir() -> anyhow::Result<PathBuf> {
+    Ok(cua_home()?.join("bin"))
+}
+
+pub fn cua_bin_path(name: &str) -> anyhow::Result<PathBuf> {
+    Ok(bin_dir()?.join(name))
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -972,5 +1050,51 @@ mod tests {
                     ] if combo == "enter"
                 )
         ));
+    }
+
+    #[test]
+    fn cua_home_paths_respect_cua_home_override() {
+        let old = std::env::var_os("CUA_HOME");
+        std::env::set_var("CUA_HOME", "/tmp/cua-home-test");
+
+        assert_eq!(cua_home().unwrap(), PathBuf::from("/tmp/cua-home-test"));
+        assert_eq!(
+            config_env_path().unwrap(),
+            PathBuf::from("/tmp/cua-home-test/config/env")
+        );
+        assert_eq!(
+            profile_token_path("p").unwrap(),
+            PathBuf::from("/tmp/cua-home-test/profiles/p/http.token")
+        );
+        assert_eq!(
+            profile_socket_path("p").unwrap(),
+            PathBuf::from("/tmp/cua-home-test/profiles/p/daemon.sock")
+        );
+        assert_eq!(
+            profile_chat_db_path("p").unwrap(),
+            PathBuf::from("/tmp/cua-home-test/profiles/p/chat.db")
+        );
+        assert_eq!(
+            profile_ctx_dir("p").unwrap(),
+            PathBuf::from("/tmp/cua-home-test/profiles/p/ctx")
+        );
+        assert_eq!(
+            profile_voice_trace_path("p").unwrap(),
+            PathBuf::from("/tmp/cua-home-test/profiles/p/traces/voice.jsonl")
+        );
+        assert_eq!(
+            profile_daemon_trace_dir("p").unwrap(),
+            PathBuf::from("/tmp/cua-home-test/profiles/p/traces/daemon")
+        );
+        assert_eq!(
+            cua_bin_path("ctx").unwrap(),
+            PathBuf::from("/tmp/cua-home-test/bin/ctx")
+        );
+
+        if let Some(old) = old {
+            std::env::set_var("CUA_HOME", old);
+        } else {
+            std::env::remove_var("CUA_HOME");
+        }
     }
 }

@@ -3,10 +3,11 @@ use base64::Engine;
 use clap::{Args, Parser, Subcommand};
 use cua_capture::{CaptureRequest, FrameBus, SyntheticCaptureBackend};
 use cua_core::{
-    schema_bundle, CapabilityManifest, ClipboardReadRequest, ClipboardWriteRequest,
-    DesktopContextSnapshot, FrameEncoding, FramePayload, InputAction, MouseButton, RuntimeMode,
-    RuntimeSessionRole, SessionCancelRequest, SessionLeaseRequest, UiIslandRequest, UiIslandState,
-    UiMode, UiModeRequest, UiReplyRequest, UiStepRequest, SCHEMA_VERSION,
+    config_env_path, profile_ctx_dir, profile_socket_path, profile_token_path, schema_bundle,
+    CapabilityManifest, ClipboardReadRequest, ClipboardWriteRequest, DesktopContextSnapshot,
+    FrameEncoding, FramePayload, InputAction, MouseButton, RuntimeMode, RuntimeSessionRole,
+    SessionCancelRequest, SessionLeaseRequest, UiIslandRequest, UiIslandState, UiMode,
+    UiModeRequest, UiReplyRequest, UiStepRequest, SCHEMA_VERSION,
 };
 use cua_model::{run_eval_report, EvalConfig};
 use cua_trace::{ActionTurnRecord, TraceRecord, TraceWriter};
@@ -526,8 +527,8 @@ fn load_cua_dotenv() {
     if let Ok(path) = std::env::var("CUA_ENV_FILE") {
         load_dotenv_path(Path::new(&path));
     }
-    if let Ok(home) = std::env::var("HOME") {
-        load_dotenv_path(&PathBuf::from(home).join(".cua").join(".env"));
+    if let Ok(path) = config_env_path() {
+        load_dotenv_path(&path);
     }
 }
 
@@ -858,22 +859,6 @@ async fn load_profile_token(profile: &str) -> anyhow::Result<String> {
         .await
         .with_context(|| format!("read profile token {}", path.display()))?;
     Ok(token.trim().to_string())
-}
-
-fn profile_token_path(profile: &str) -> anyhow::Result<PathBuf> {
-    Ok(PathBuf::from(std::env::var("HOME")?)
-        .join(".cua")
-        .join("profiles")
-        .join(profile)
-        .join("http.token"))
-}
-
-fn profile_socket_path(profile: &str) -> anyhow::Result<PathBuf> {
-    Ok(PathBuf::from(std::env::var("HOME")?)
-        .join(".cua")
-        .join("profiles")
-        .join(profile)
-        .join("daemon.sock"))
 }
 
 async fn permissions(profile: &str, command: PermissionCommand) -> anyhow::Result<()> {
@@ -1222,8 +1207,8 @@ fn ctx_action(args: CtxArgs, profile: &str) -> InputAction {
 }
 
 fn ctx_workspace_root(profile: &str) -> String {
-    std::env::var("HOME")
-        .map(|home| format!("{home}/.cua/profiles/{profile}/ctx"))
+    profile_ctx_dir(profile)
+        .map(|path| path.display().to_string())
         .unwrap_or_else(|_| format!(".cua/profiles/{profile}/ctx"))
 }
 

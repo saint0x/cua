@@ -48,7 +48,7 @@ cargo run -p cua -- kill-switch --json
 cargo run -p cua -- stream --unix --frames 3 --json
 ```
 
-`cua` automatically loads environment values from the current directory `.env`, `CUA_ENV_FILE`, and `~/.cua/.env`. `OPENROUTER_API_KEY` can live in any of those locations.
+`cua` automatically loads environment values from the current directory `.env`, `CUA_ENV_FILE`, and `~/.cua/config/env`. `OPENROUTER_API_KEY` can live in any of those locations.
 
 `cua serve` refuses non-loopback binds unless `--allow-lan` is explicit. The daemon also opens a profile-local socket at `~/.cua/profiles/<profile>/daemon.sock`; the app runtime uses that socket for context snapshots, visual sessions, and input dispatch. The local APIs use a per-profile bearer token stored at `~/.cua/profiles/<profile>/http.token`; CLI and app commands load it automatically.
 

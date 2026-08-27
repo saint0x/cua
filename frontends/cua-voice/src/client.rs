@@ -1,8 +1,8 @@
 use anyhow::{bail, Context};
 use cua_core::{
-    DesktopContextSnapshot, DesktopState, FrameActionRequest, FrameEncoding, FrameEnvelope,
-    FramePayload, InputAction, UiMode, UiModeRequest, UiReplyRequest, UiStepRequest,
-    SCHEMA_VERSION,
+    profile_socket_path, profile_token_path, DesktopContextSnapshot, DesktopState,
+    FrameActionRequest, FrameEncoding, FrameEnvelope, FramePayload, InputAction, UiMode,
+    UiModeRequest, UiReplyRequest, UiStepRequest, SCHEMA_VERSION,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -406,22 +406,6 @@ async fn load_or_create_profile_token(profile: &str) -> anyhow::Result<String> {
     let token = format!("cua-{}", uuid::Uuid::new_v4());
     tokio::fs::write(path, format!("{token}\n")).await?;
     Ok(token)
-}
-
-fn profile_token_path(profile: &str) -> anyhow::Result<PathBuf> {
-    Ok(PathBuf::from(std::env::var("HOME")?)
-        .join(".cua")
-        .join("profiles")
-        .join(profile)
-        .join("http.token"))
-}
-
-fn profile_socket_path(profile: &str) -> anyhow::Result<PathBuf> {
-    Ok(PathBuf::from(std::env::var("HOME")?)
-        .join(".cua")
-        .join("profiles")
-        .join(profile)
-        .join("daemon.sock"))
 }
 
 #[cfg(test)]

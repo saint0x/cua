@@ -121,8 +121,7 @@ Current source reality and deduped implementation gaps:
    - `if`, `if_present`, result-based branching, sleeps, timers, delayed messages, and first-class waits are proposed only
 9. Config-home normalization is not complete:
    - durable state is partly under `~/.cua/profiles/<profile>/...`
-   - there is not yet a universal `~/.cua/{concern}/**/*` resolver or `CUA_HOME`-backed root
-   - docs and env loading still mention/use root-level `~/.cua/.env`
+   - scripts, proof artifacts, docs, and some tool discovery paths still need to consistently use the canonical `~/.cua/{concern}/**/*` layout
 10. HTTP write-session parity is not complete:
    - Unix RPC write paths enforce owner-session checks
    - HTTP write routes appear bearer-token-only today
@@ -508,33 +507,15 @@ Target layout:
 
 Required work:
 
-1. Add shared path helpers, probably in `cua-core` or a new `cua-paths` crate:
-   - `cua_home()`
-   - `config_dir()`
-   - `profile_dir(profile)`
-   - `profile_token_path(profile)`
-   - `profile_socket_path(profile)`
-   - `profile_chat_db_path(profile)`
-   - `profile_ctx_dir(profile)`
-   - `profile_trace_dir(profile)`
-   - `identity_dir()`
-   - `cloud_dir()`
-   - `artifact_dir(concern)`
-   - `cache_dir(concern)`
-   - `log_dir(concern)`
-2. Respect `CUA_HOME` as the only root override for tests/dev.
-3. Keep `HOME` as the fallback only for resolving default `~/.cua`.
-4. Stop duplicating `PathBuf::from(std::env::var("HOME")?).join(".cua")...` across crates.
-5. Update docs to say config loads from `~/.cua/config/env`, not root-level `~/.cua/.env`.
-6. Use profile-local environment loading only.
-7. Add migration from old paths to new paths:
+1. Use profile-local environment loading only.
+2. Add migration from old paths to new paths:
    - `~/.cua/.env` -> `~/.cua/config/env`
    - `~/.cua/profiles/<profile>/chat.db` stays valid
    - `~/.cua/profiles/<profile>/ctx` stays valid
    - `~/.cua/profiles/<profile>/http.token` stays valid
    - `~/.cua/profiles/<profile>/daemon.sock` stays valid
-8. Make scripts use `CUA_HOME` and concern-specific artifact paths.
-9. Add first-class agent-authored scratchpad docs:
+3. Make scripts use `CUA_HOME` and concern-specific artifact paths.
+4. Add first-class agent-authored scratchpad docs:
    - support ephemeral scratchpads for short-lived run/session reasoning
    - support durable scratchpads for longer-standing project/profile notes
    - keep the primitive intentionally lightweight for now: files the agent can write, read, and reference
@@ -542,7 +523,7 @@ Required work:
    - keep memory appends selective and work-relevant so scratchpads stay useful instead of becoming noisy transcripts
    - append and retrieve scratchpad memory in parallel with other runtime work whenever possible, so memory hygiene does not add avoidable turn latency
    - make blocking memory reads explicit only when the next action truly depends on that memory
-10. Keep scratchpads profile-scoped by default, with a path shape like:
+5. Keep scratchpads profile-scoped by default, with a path shape like:
    - `~/.cua/profiles/<profile>/scratchpads/ephemeral/`
    - `~/.cua/profiles/<profile>/scratchpads/durable/`
 
@@ -551,45 +532,24 @@ Required work:
 These are the concrete gaps found in the current source scan.
 
 1. `crates/cua-cli/src/main.rs`
-   - `load_cua_dotenv()` loads current directory `.env`, `CUA_ENV_FILE`, and `~/.cua/.env`.
-   - Replace with `~/.cua/config/env` as the canonical path.
    - Decide whether current directory `.env` should remain development-only.
-   - `profile_token_path()` and `profile_socket_path()` duplicate `~/.cua/profiles/<profile>/...`.
-   - `ctx_workspace_root()` manually formats `~/.cua/profiles/<profile>/ctx`.
-   - Move all of these to shared path helpers.
-2. `crates/cua-daemon/src/lib.rs`
-   - `profile_token_path()` and `profile_socket_path()` duplicate CLI logic.
-   - `trace_dir_from_env()` currently depends on `CUA_TRACE_DIR`; default daemon traces should live under `~/.cua/profiles/<profile>/traces/daemon/`.
-   - Add `CUA_HOME` support before reading/writing tokens, sockets, traces, or identity.
-3. `frontends/cua-voice/src/client.rs`
-   - Duplicates profile token/socket helpers.
-   - This should disappear when extracted into `crates/cua-client`.
-4. `frontends/cua-voice/src/memory.rs`
-   - `profile_root()` manually builds `~/.cua/profiles/<profile>`.
-   - `ChatStore` uses `chat.db` correctly under profile root, but should use shared helpers.
-   - `CtxMemory` uses profile-local `ctx/` correctly, but should use shared helpers.
-   - `ctx_binary()` falls back to repo-local `vendor/ctx/ctx`; production should prefer packaged sibling or `~/.cua/bin/ctx`.
-5. `frontends/cua-voice/src/orchestrator.rs`
-   - `ctx_workspace_root()` manually formats `~/.cua/profiles/<profile>/ctx`.
-   - `voice_trace_path()` writes `~/.cua/profiles/<profile>/<VOICE_TRACE_FILE>`; move this under `~/.cua/profiles/<profile>/traces/voice.jsonl`.
-6. `crates/cua-platform-macos/src/lib.rs`
+2. `crates/cua-platform-macos/src/lib.rs`
    - `aegis_binary()` searches `~/.local/bin/aegis`, Homebrew, and `/usr/local/bin`.
    - This is fine for external tool discovery, but any cua-owned tool should resolve under `~/.cua/bin/` or packaged sibling first.
    - `ctx_binary()` falls back to `vendor/ctx/ctx`; production should prefer packaged sibling or `~/.cua/bin/ctx`.
-7. `scripts/package-macos-app.sh`
+3. `scripts/package-macos-app.sh`
    - Defaults package output to repo-local `artifacts/cua/macos`.
    - Build output can remain repo-local, but installed/runtime config must not depend on repo paths.
    - Consider copying bundled tools into `~/.cua/bin/` or documenting packaged sibling resolution.
-8. `scripts/release.sh`
+4. `scripts/release.sh`
    - Defaults install target to `$HOME/Applications`.
    - Defaults release artifacts to repo-local `artifacts/cua/release/<run_id>`.
    - Release artifacts can stay repo-local, but runtime logs/proofs generated by the app should use `~/.cua/artifacts/...`.
-9. Host proof scripts
+5. Host proof scripts
    - Many scripts default outputs to `artifacts/cua/...`.
    - Keep repo-local outputs for development tests, but add `CUA_HOME` support and/or mirror final proof artifacts under `~/.cua/artifacts/proofs/...` for installed runtime flows.
-10. Documentation
-   - `README.md`, `docs/http-api.md`, and `cua.md` should document the canonical `~/.cua/{concern}/**/*` layout.
-   - Current docs mention `~/.cua/.env`; migrate to `~/.cua/config/env`.
+6. Documentation
+   - `docs/http-api.md` and `cua.md` should document the canonical `~/.cua/{concern}/**/*` layout.
 
 ## 11. Make config discoverable through the protocol
 

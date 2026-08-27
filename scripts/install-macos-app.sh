@@ -10,8 +10,8 @@ INSTALL_APP="$INSTALL_DIR/$APP_NAME.app"
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 
 sync_openrouter_env() {
-  local env_dir="$HOME/.cua"
-  local env_file="$env_dir/.env"
+  local env_dir="${CUA_HOME:-$HOME/.cua}/config"
+  local env_file="$env_dir/env"
   local value="${OPENROUTER_API_KEY:-}"
   if [[ -z "$value" && -f "$ROOT/.env" ]]; then
     value="$(awk '
@@ -32,7 +32,7 @@ sync_openrouter_env() {
   touch "$env_file"
   chmod 600 "$env_file"
   local tmp
-  tmp="$(mktemp "$env_dir/.env.XXXXXX")"
+  tmp="$(mktemp "$env_dir/env.XXXXXX")"
   grep -v '^[[:space:]]*\(export[[:space:]]\+\)\{0,1\}OPENROUTER_API_KEY=' "$env_file" > "$tmp" || true
   local escaped="$value"
   escaped="${escaped//\\/\\\\}"

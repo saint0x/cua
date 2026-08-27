@@ -1,6 +1,6 @@
 use clap::Parser;
 use cpal::traits::{DeviceTrait, HostTrait};
-use cua_core::{PermissionState, UiMode};
+use cua_core::{config_env_path, PermissionState, UiMode};
 use cua_voice::activation::ControlDoubleTap;
 use cua_voice::agent_events::{
     agent_reply_from_daemon_event, agent_step_from_daemon_event,
@@ -1230,8 +1230,8 @@ fn load_cua_dotenv() {
     if let Ok(path) = std::env::var("CUA_ENV_FILE") {
         load_dotenv_path(Path::new(&path));
     }
-    if let Ok(home) = std::env::var("HOME") {
-        load_dotenv_path(&PathBuf::from(home).join(".cua").join(".env"));
+    if let Ok(path) = config_env_path() {
+        load_dotenv_path(&path);
     }
 }
 

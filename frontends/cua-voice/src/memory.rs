@@ -1,4 +1,5 @@
 use anyhow::{bail, Context};
+use cua_core::{cua_bin_path, profile_chat_db_path, profile_ctx_dir};
 use serde_json::Value;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -29,7 +30,7 @@ pub struct AgentContext {
 impl ChatStore {
     pub fn new(profile: impl Into<String>) -> anyhow::Result<Self> {
         let profile = profile.into();
-        let db_path = profile_root(&profile)?.join("chat.db");
+        let db_path = profile_chat_db_path(&profile)?;
         Ok(Self { profile, db_path })
     }
 
@@ -109,7 +110,7 @@ impl CtxMemory {
     pub fn new(profile: impl Into<String>) -> anyhow::Result<Self> {
         let profile = profile.into();
         Ok(Self {
-            workspace_root: profile_root(&profile)?.join("ctx"),
+            workspace_root: profile_ctx_dir(&profile)?,
             binary: ctx_binary(),
             profile,
         })
@@ -259,13 +260,6 @@ fn sql_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
-fn profile_root(profile: &str) -> anyhow::Result<PathBuf> {
-    Ok(PathBuf::from(std::env::var("HOME")?)
-        .join(".cua")
-        .join("profiles")
-        .join(profile))
-}
-
 fn ctx_binary() -> PathBuf {
     if let Ok(path) = std::env::var("CUA_CTX_BIN") {
         if !path.trim().is_empty() {
@@ -278,6 +272,11 @@ fn ctx_binary() -> PathBuf {
             if sibling.is_file() {
                 return sibling;
             }
+        }
+    }
+    if let Ok(path) = cua_bin_path("ctx") {
+        if path.is_file() {
+            return path;
         }
     }
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

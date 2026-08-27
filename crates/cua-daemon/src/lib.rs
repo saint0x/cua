@@ -19,15 +19,16 @@ use cua_capture::{
     FrameLookup,
 };
 use cua_core::{
-    now_wall_ms, schema_bundle, ApiErrorBody, CapabilityManifest, CapabilityState,
-    ClipboardReadRequest, ClipboardResult, ClipboardWriteRequest, DeliveryMode,
-    DesktopContextSnapshot, DesktopState, Effect, Evidence, EvidenceKind, FrameActionRequest,
-    FrameEncoding, FramePayload, HealthReport, InputAction, InputRequest, InputResult, InputRoute,
-    Manifest, MetricBucket, MetricHistogram, MetricsSnapshot, PermissionReport, PermissionState,
-    ProfilePolicy, RuntimeControlState, RuntimeInventory, RuntimeMode, RuntimeSessionInfo,
-    RuntimeSessionRole, SafetyState, SessionCancelRequest, SessionLeaseRequest, SessionLeaseResult,
-    UiIslandRequest, UiIslandResult, UiMode, UiModeRequest, UiModeResult, UiReplyRequest,
-    UiReplyResult, UiStepRequest, UiStepResult, VisualSessionRequest, WindowInfo, SCHEMA_VERSION,
+    now_wall_ms, profile_daemon_trace_dir, profile_socket_path, profile_token_path, schema_bundle,
+    ApiErrorBody, CapabilityManifest, CapabilityState, ClipboardReadRequest, ClipboardResult,
+    ClipboardWriteRequest, DeliveryMode, DesktopContextSnapshot, DesktopState, Effect, Evidence,
+    EvidenceKind, FrameActionRequest, FrameEncoding, FramePayload, HealthReport, InputAction,
+    InputRequest, InputResult, InputRoute, Manifest, MetricBucket, MetricHistogram,
+    MetricsSnapshot, PermissionReport, PermissionState, ProfilePolicy, RuntimeControlState,
+    RuntimeInventory, RuntimeMode, RuntimeSessionInfo, RuntimeSessionRole, SafetyState,
+    SessionCancelRequest, SessionLeaseRequest, SessionLeaseResult, UiIslandRequest, UiIslandResult,
+    UiMode, UiModeRequest, UiModeResult, UiReplyRequest, UiReplyResult, UiStepRequest,
+    UiStepResult, VisualSessionRequest, WindowInfo, SCHEMA_VERSION,
 };
 use cua_input::InputBackend;
 use cua_model::{run_eval_report, EvalConfig, EvalReport};
@@ -109,7 +110,7 @@ impl DaemonState {
             clipboard: Arc::new(RwLock::new(None)),
             metrics: Arc::new(RuntimeMetrics::default()),
             events,
-            trace_lane: trace_dir_from_env()
+            trace_lane: trace_dir_from_env_or_profile(&profile)
                 .and_then(|dir| TraceWriter::from_dir(dir).ok())
                 .map(|writer| TraceLane::spawn(writer, trace_lane_capacity())),
             ui_step_context: Arc::new(StdMutex::new(None)),
@@ -1201,8 +1202,10 @@ fn trace_lane_capacity() -> usize {
         .unwrap_or(256)
 }
 
-fn trace_dir_from_env() -> Option<PathBuf> {
-    std::env::var_os("CUA_TRACE_DIR").map(platform_artifact_path)
+fn trace_dir_from_env_or_profile(profile: &str) -> Option<PathBuf> {
+    std::env::var_os("CUA_TRACE_DIR")
+        .map(platform_artifact_path)
+        .or_else(|| profile_daemon_trace_dir(profile).ok())
 }
 
 fn platform_artifact_path(path: impl Into<PathBuf>) -> PathBuf {
@@ -1321,24 +1324,6 @@ pub async fn load_or_create_profile_token(profile: &str) -> anyhow::Result<Strin
     let token = format!("cua-{}", Uuid::new_v4());
     tokio::fs::write(&path, format!("{token}\n")).await?;
     Ok(token)
-}
-
-fn profile_token_path(profile: &str) -> anyhow::Result<PathBuf> {
-    let home = std::env::var("HOME")?;
-    Ok(PathBuf::from(home)
-        .join(".cua")
-        .join("profiles")
-        .join(profile)
-        .join("http.token"))
-}
-
-pub fn profile_socket_path(profile: &str) -> anyhow::Result<PathBuf> {
-    let home = std::env::var("HOME")?;
-    Ok(PathBuf::from(home)
-        .join(".cua")
-        .join("profiles")
-        .join(profile)
-        .join("daemon.sock"))
 }
 
 async fn spawn_unix_socket(state: DaemonState) -> anyhow::Result<()> {

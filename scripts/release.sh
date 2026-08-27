@@ -73,7 +73,7 @@ run() {
 openrouter_key_available() {
   [[ -n "${OPENROUTER_API_KEY:-}" ]] && return 0
   grep -Eq '^[[:space:]]*(export[[:space:]]+)?OPENROUTER_API_KEY=' "$ROOT/.env" 2>/dev/null && return 0
-  grep -Eq '^[[:space:]]*(export[[:space:]]+)?OPENROUTER_API_KEY=' "$HOME/.cua/.env" 2>/dev/null && return 0
+  grep -Eq '^[[:space:]]*(export[[:space:]]+)?OPENROUTER_API_KEY=' "${CUA_HOME:-$HOME/.cua}/config/env" 2>/dev/null && return 0
   return 1
 }
 

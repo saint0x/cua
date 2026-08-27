@@ -9,7 +9,9 @@ use crate::planner::{
 use crate::stt::{SttClient, SttTranscript, DEFAULT_STT_BACKEND, DEFAULT_STT_MODEL};
 use crate::ui_state::VoiceUiEvent;
 use anyhow::Context;
-use cua_core::{DesktopState, FrameEnvelope, FramePayload};
+use cua_core::{
+    profile_ctx_dir, profile_voice_trace_path, DesktopState, FrameEnvelope, FramePayload,
+};
 use serde_json::json;
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
@@ -24,7 +26,6 @@ type LocalTask = tokio::task::JoinHandle<anyhow::Result<LocalReady>>;
 type ContextTask = tokio::task::JoinHandle<PrefetchedContext>;
 type ChatContextTask = tokio::task::JoinHandle<anyhow::Result<String>>;
 type AgentContextTask = tokio::task::JoinHandle<anyhow::Result<crate::memory::AgentContext>>;
-const VOICE_TRACE_FILE: &str = "voice-turns.jsonl";
 static VOICE_TRACE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 const VOICE_STEP_SOURCE: &str = "voice";
 const VOICE_STEP_TTL_MS: u64 = 5_000;
@@ -748,7 +749,7 @@ async fn plan_and_dispatch(
             .await?;
             let effect = turn_effect(&turn);
             let should_continue =
-                should_replan_after_effect(effect.as_deref(), attempt_index, max_attempts);
+                should_replan_after_turn(&turn, effect.as_deref(), attempt_index, max_attempts);
             trace
                 .append(
                     "agent_attempt_outcome",
@@ -988,8 +989,8 @@ fn stamp_ctx_workspace_root(action: &mut cua_core::InputAction, profile: &str) {
 }
 
 fn ctx_workspace_root(profile: &str) -> String {
-    std::env::var("HOME")
-        .map(|home| format!("{home}/.cua/profiles/{profile}/ctx"))
+    profile_ctx_dir(profile)
+        .map(|path| path.display().to_string())
         .unwrap_or_else(|_| format!(".cua/profiles/{profile}/ctx"))
 }
 
@@ -1011,6 +1012,17 @@ fn turn_effect(turn: &CompletedAssistantTurn) -> Option<String> {
 fn action_needs_fresh_verification(action: &serde_json::Value) -> bool {
     match action.get("kind").and_then(|kind| kind.as_str()) {
         Some("sequence" | "key_type" | "key_paste" | "shell_exec" | "aegis" | "ctx") => true,
+        _ => false,
+    }
+}
+
+fn action_is_text_entry(action: &serde_json::Value) -> bool {
+    match action.get("kind").and_then(|kind| kind.as_str()) {
+        Some("key_type" | "key_paste" | "clipboard_write") => true,
+        Some("sequence") => action
+            .get("actions")
+            .and_then(|actions| actions.as_array())
+            .is_some_and(|actions| actions.iter().any(action_is_text_entry)),
         _ => false,
     }
 }
@@ -1228,6 +1240,18 @@ fn should_replan_after_effect(
         effect,
         Some("partial" | "unverifiable" | "suspected_noop" | "refused")
     )
+}
+
+fn should_replan_after_turn(
+    turn: &CompletedAssistantTurn,
+    effect: Option<&str>,
+    attempt_index: usize,
+    max_attempts: usize,
+) -> bool {
+    if turn.action.as_ref().is_some_and(action_is_text_entry) {
+        return false;
+    }
+    should_replan_after_effect(effect, attempt_index, max_attempts)
 }
 
 fn spawn_recording_progress(
@@ -1570,14 +1594,7 @@ fn voice_trace_path(profile: &str) -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("CUA_VOICE_TRACE_PATH") {
         return Some(PathBuf::from(path));
     }
-    let home = std::env::var_os("HOME")?;
-    Some(
-        PathBuf::from(home)
-            .join(".cua")
-            .join("profiles")
-            .join(profile)
-            .join(VOICE_TRACE_FILE),
-    )
+    profile_voice_trace_path(profile).ok()
 }
 
 fn wall_ms() -> u128 {
@@ -2045,6 +2062,42 @@ mod tests {
     }
 
     #[test]
+    fn agent_loop_never_replays_text_entry_side_effects() {
+        let turn = CompletedAssistantTurn {
+            response: "Writing the note.".to_string(),
+            action: Some(json!({
+                "kind": "sequence",
+                "actions": [
+                    {"kind": "open_app", "app_name": "Notes"},
+                    {"kind": "key_press", "combo": "cmd+n"},
+                    {"kind": "key_paste", "text": "Once upon a time"}
+                ]
+            })),
+            evidence: Some(json!({"effect": "unverifiable"})),
+        };
+
+        for effect in ["partial", "unverifiable", "suspected_noop", "refused"] {
+            assert!(!should_replan_after_turn(&turn, Some(effect), 1, 3));
+        }
+    }
+
+    #[test]
+    fn agent_loop_still_replans_non_text_recoverable_effects() {
+        let turn = CompletedAssistantTurn {
+            response: "Opening Notes.".to_string(),
+            action: Some(json!({"kind": "open_app", "app_name": "Notes"})),
+            evidence: Some(json!({"effect": "suspected_noop"})),
+        };
+
+        assert!(should_replan_after_turn(
+            &turn,
+            Some("suspected_noop"),
+            1,
+            3
+        ));
+    }
+
+    #[test]
     fn edge_actions_require_fresh_verification_before_final_reply() {
         for action in [
             json!({"kind": "sequence", "actions": []}),
@@ -2062,6 +2115,28 @@ mod tests {
         assert!(!action_needs_fresh_verification(
             &json!({"kind": "mouse_click", "x": 1, "y": 2})
         ));
+    }
+
+    #[test]
+    fn text_entry_actions_are_detected_inside_sequences() {
+        assert!(action_is_text_entry(
+            &json!({"kind": "key_paste", "text": "hello"})
+        ));
+        assert!(action_is_text_entry(&json!({
+            "kind": "sequence",
+            "actions": [
+                {"kind": "open_app", "app_name": "Notes"},
+                {"kind": "key_press", "combo": "cmd+n"},
+                {"kind": "key_paste", "text": "hello"}
+            ]
+        })));
+        assert!(!action_is_text_entry(&json!({
+            "kind": "sequence",
+            "actions": [
+                {"kind": "open_app", "app_name": "Notes"},
+                {"kind": "key_press", "combo": "cmd+n"}
+            ]
+        })));
     }
 
     #[test]
