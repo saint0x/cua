@@ -1284,7 +1284,8 @@ impl RunebookRuntime {
         default_policy: RunebookErrorPolicy,
     ) -> anyhow::Result<()> {
         for step in steps {
-            self.execute_step_with_policy(step, macros, default_policy)
+            let _ = self
+                .execute_step_with_policy(step, macros, default_policy)
                 .await?;
         }
         Ok(())
@@ -1295,7 +1296,7 @@ impl RunebookRuntime {
         step: &RunebookStep,
         macros: &BTreeMap<String, RunebookMacro>,
         default_policy: RunebookErrorPolicy,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<serde_json::Value> {
         if !self.should_execute(step)? {
             self.trace(
                 "step_skipped",
@@ -1305,15 +1306,18 @@ impl RunebookRuntime {
                 serde_json::json!({"reason": "condition_false"}),
             )
             .await?;
-            return Ok(());
+            return Ok(serde_json::json!({
+                "schema_version": "cua.runebook.skip.v1",
+                "skipped": true
+            }));
         }
         let policy = step.on_error.unwrap_or(default_policy);
         match self.execute_step(step, macros).await {
             Ok(value) => {
                 if let Some(save_as) = &step.save_as {
-                    self.results.insert(save_as.clone(), value);
+                    self.results.insert(save_as.clone(), value.clone());
                 }
-                Ok(())
+                Ok(value)
             }
             Err(error) => {
                 let error_text = format!("{error:#}");
@@ -1338,7 +1342,7 @@ impl RunebookRuntime {
         default_policy: RunebookErrorPolicy,
         policy: RunebookErrorPolicy,
         error_text: String,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<serde_json::Value>> + Send + 'a>> {
         Box::pin(async move {
             self.trace(
                 "error_policy",
@@ -1349,10 +1353,16 @@ impl RunebookRuntime {
             )
             .await?;
             match policy {
-                RunebookErrorPolicy::Continue => Ok(()),
+                RunebookErrorPolicy::Continue => Ok(serde_json::json!({
+                    "schema_version": "cua.runebook.error.v1",
+                    "continued": true
+                })),
                 RunebookErrorPolicy::Stop => anyhow::bail!("{error_text}"),
                 RunebookErrorPolicy::Ask => match ask_operator_decision(step, &error_text).await? {
-                    OperatorDecision::Continue => Ok(()),
+                    OperatorDecision::Continue => Ok(serde_json::json!({
+                        "schema_version": "cua.runebook.error.v1",
+                        "continued": true
+                    })),
                     OperatorDecision::Stop => anyhow::bail!("{error_text}"),
                     OperatorDecision::Retry => {
                         self.execute_step_with_policy(step, macros, default_policy)
@@ -1459,7 +1469,9 @@ impl RunebookRuntime {
                 .with_context(|| format!("unknown runebook macro {name}"))?;
             let mut last = serde_json::Value::Null;
             for item in &mac.items {
-                last = self.execute_step(item, macros).await?;
+                last = self
+                    .execute_step_with_policy(item, macros, RunebookErrorPolicy::Stop)
+                    .await?;
                 if let Some(delay) = mac.delay_ms {
                     tokio::time::sleep(Duration::from_millis(delay)).await;
                 }
@@ -1473,7 +1485,9 @@ impl RunebookRuntime {
                 let delay = step_u64(step, "delay_ms")?.unwrap_or(0);
                 let mut last = serde_json::Value::Null;
                 for item in items {
-                    last = self.execute_step(&item, macros).await?;
+                    last = self
+                        .execute_step_with_policy(&item, macros, RunebookErrorPolicy::Stop)
+                        .await?;
                     if delay > 0 {
                         tokio::time::sleep(Duration::from_millis(delay)).await;
                     }
@@ -1964,10 +1978,10 @@ impl RunebookRuntime {
                 let mut runtime = self.clone();
                 let macros = macros.clone();
                 join_set.spawn(async move {
-                    runtime
+                    let value = runtime
                         .execute_step_with_policy(&item, &macros, RunebookErrorPolicy::Stop)
                         .await?;
-                    anyhow::Ok((serde_json::Value::Null, runtime.results))
+                    anyhow::Ok((value, runtime.results))
                 });
             }
             let Some(result) = join_set.join_next().await else {
@@ -1991,10 +2005,10 @@ impl RunebookRuntime {
             let mut runtime = self.clone();
             let macros = macros.clone();
             join_set.spawn(async move {
-                runtime
+                let value = runtime
                     .execute_step_with_policy(&item, &macros, RunebookErrorPolicy::Stop)
                     .await?;
-                anyhow::Ok((index, serde_json::Value::Null, runtime.results))
+                anyhow::Ok((index, value, runtime.results))
             });
         }
         let Some(result) = join_set.join_next().await else {
@@ -2122,11 +2136,13 @@ impl RunebookRuntime {
         let frames = step_u64(step, "frames")?.unwrap_or(1).max(1) as usize;
         let client = CuaClient::connect(self.profile.clone()).await?;
         let mut session = client
-            .visual_session(
+            .visual_session_with_options(
                 step_u64(step, "max_width")?.map(|value| value as u32),
                 step_u64(step, "fps")?.map(|value| value as u32),
                 step_bool(step, "include_bytes")?.unwrap_or(false),
                 self.session_id.as_deref(),
+                step_u64(step, "duration_ms")?,
+                step_u64(step, "queue_depth")?.map(|value| value as usize),
             )
             .await?;
         let mut out = Vec::with_capacity(frames);
