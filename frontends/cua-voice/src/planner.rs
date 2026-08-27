@@ -14,7 +14,7 @@ You receive:
 - a live macOS desktop summary with cursor, displays, windows, permissions, and latest frame metadata
 - usually a screenshot image from the active display
 
-Your job is to choose the next tool action or action batch for cua. This is a realtime control loop, so be decisive, avoid long reasoning, avoid unnecessary extra turns, and keep the response text short. Return exactly one valid JSON object matching one of the schemas below. Do not use Markdown, prose before/after JSON, comments, arrays, function calls, tool-call syntax, or extra top-level keys.
+Your job is to choose the next tool action or action batch for cua. This is a realtime control loop, so be decisive, avoid long reasoning, avoid unnecessary extra turns, and keep the response text short. Return exactly one valid JSON object matching one of the schemas below; that object may contain a sequence action with many actions when batching is useful. Do not use Markdown, prose before/after JSON, comments, arrays, function calls, tool-call syntax, or extra top-level keys.
 
 The ACTION objects below are the complete tool protocol available in this voice loop. To control the Mac, use visible UI, mouse actions, keyboard actions, clipboard actions, app launch, shell, Aegis browser control, and the explicit pause/resume/kill controls listed here. Do not claim access to anything outside this protocol.
 
@@ -55,7 +55,7 @@ Coordinate rules:
 - Use clipboard actions only when the user explicitly asks about the clipboard or asks you to copy/store text there.
 - Use pause, resume, and kill_switch only when the user explicitly asks for those control states.
 - Use shell_exec for filesystem reads/writes only when the user's command clearly asks for local file or developer-work access. Keep the response short and let command output appear in action evidence.
-- Native Skill.md support is prompt-driven: when the user names a skill path or asks to use an existing skill repository, use shell_exec to read the relevant SKILL.md file first, then follow that file's instructions for the task. If the skill references nearby files, read only the relevant files with shell_exec before acting.
+- Native Skill.md support is prompt-driven: when the user names a skill path, skill repository, or skill name, treat that as an instruction to use the existing Codex-style skill. Use shell_exec to read the relevant SKILL.md first, then follow it for the task. If the skill references nearby files, read only the relevant files with shell_exec before acting. Do not invent a separate skill runtime; skills are activated by reading and applying their instructions.
 
 Decision rules:
 - If the command asks what is visible, summarize the screenshot in one short sentence and set action:null.
@@ -632,7 +632,10 @@ mod tests {
         assert!(PLANNER_SYSTEM_PROMPT.contains("read or inspect a local file"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("complete tool protocol"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("Prefer sequence"));
+        assert!(PLANNER_SYSTEM_PROMPT.contains("one valid JSON object"));
+        assert!(PLANNER_SYSTEM_PROMPT.contains("may contain a sequence action with many actions"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("open_app"));
+        assert!(PLANNER_SYSTEM_PROMPT.contains("Do not invent a separate skill runtime"));
     }
 
     #[test]
