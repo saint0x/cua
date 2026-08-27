@@ -91,7 +91,9 @@ class Cua:
                 "",
                 "[[steps]]",
                 'id = "rpc"',
-                f"do = {_toml_string(method)}",
+                'save_as = "rpc"',
+                'do = "rpc"',
+                f"method = {_toml_string(method)}",
                 f"params = {_toml_value(params or {})}",
                 session_line,
             ]
@@ -130,11 +132,13 @@ class Cua:
         )
 
     def acquire_owner(self, client_name: str = "python sdk", ttl_ms: int | None = None) -> OwnerSession:
+        session_id = str(uuid.uuid4())
         args = [
             "--profile",
             self.profile,
             "session",
             "acquire",
+            session_id,
             "--role",
             "owner",
             "--client-name",
@@ -144,7 +148,6 @@ class Cua:
         if ttl_ms is not None:
             args.extend(["--ttl-ms", str(ttl_ms)])
         raw = self._exec_json(args)
-        session_id = raw["session"]["session_id"]
         return OwnerSession(session_id=session_id, raw=raw)
 
     def cancel_session(self, session: OwnerSession | str, target_session_id: str | None = None) -> Json:
@@ -174,6 +177,84 @@ class Cua:
 
     def session_status(self) -> Json:
         return self.rpc("session.status")
+
+    def inbox_publish(
+        self,
+        text: str,
+        *,
+        source: str = "python-sdk",
+        idempotency_key: str | None = None,
+        payload: Json | None = None,
+        reply_url: str | None = None,
+        ttl_ms: int | None = None,
+    ) -> Json:
+        return self.rpc(
+            "inbox.publish",
+            _compact(
+                {
+                    "schema_version": "cua.v1",
+                    "idempotency_key": idempotency_key or str(uuid.uuid4()),
+                    "source": source,
+                    "text": text,
+                    "payload": payload or {},
+                    "reply_mode": "webhook" if reply_url else "ui",
+                    "reply_url": reply_url,
+                    "ttl_ms": ttl_ms,
+                }
+            ),
+        )
+
+    def inbox_after(self, after_sequence: int = 0) -> Json:
+        return self.rpc("inbox.after", {"after_sequence": after_sequence})
+
+    def inbox_status(self, message_id: str) -> Json:
+        return self.rpc("inbox.status", {"message_id": message_id})
+
+    def webhook_publish(
+        self,
+        text: str,
+        *,
+        source: str,
+        idempotency_key: str | None = None,
+        payload: Json | None = None,
+        reply_url: str | None = None,
+        ttl_ms: int | None = None,
+    ) -> Json:
+        return self.rpc(
+            "webhook.publish",
+            _compact(
+                {
+                    "schema_version": "cua.v1",
+                    "idempotency_key": idempotency_key or str(uuid.uuid4()),
+                    "source": source,
+                    "text": text,
+                    "payload": payload or {},
+                    "reply_mode": "webhook" if reply_url else "ui",
+                    "reply_url": reply_url,
+                    "ttl_ms": ttl_ms,
+                }
+            ),
+        )
+
+    def webhook_subscribe(
+        self,
+        source: str,
+        *,
+        secret: str | None = None,
+        reply_url: str | None = None,
+    ) -> Json:
+        return self.rpc(
+            "webhook.subscribe",
+            {
+                "schema_version": "cua.v1",
+                "source": source,
+                "shared_secret": secret,
+                "reply_url": reply_url,
+            },
+        )
+
+    def webhook_status(self, source: str) -> Json:
+        return self.rpc("webhook.status", {"source": source})
 
     def profile_status(self) -> Json:
         return self._step("profile.status", {}, "profile")

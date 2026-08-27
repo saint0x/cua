@@ -69,6 +69,18 @@ HTTP endpoints:
 - `POST /session/acquire`
 - `POST /session/cancel`
 - `GET /session/status`
+- `POST /inbox/message`
+- `GET /inbox/messages?after=<sequence>`
+- `GET /inbox/status/<message_id>`
+- `POST /inbox/status/<message_id>/running`
+- `POST /inbox/status/<message_id>/done`
+- `POST /inbox/status/<message_id>/failed`
+- `POST /webhooks/<source>`
+- `POST /webhooks/<source>/subscribe`
+- `GET /webhooks/<source>/status`
+- `GET /attestation/identity`
+- `POST /attestation/challenge`
+- `POST /attestation/sign`
 - `POST /ui/step`
 - `POST /ui/reply`
 - `POST /ui/mode`
@@ -87,8 +99,6 @@ HTTP endpoints:
 - `POST /clipboard/write`
 - `POST /model/eval`
 
-No attestation, identity, or cloud-enrollment HTTP endpoints are currently exposed.
-
 Unix socket RPC methods:
 
 - `visual.session`
@@ -96,6 +106,18 @@ Unix socket RPC methods:
 - `session.acquire`
 - `session.cancel`
 - `session.status`
+- `attestation.identity`
+- `attestation.challenge`
+- `attestation.sign`
+- `inbox.publish`
+- `inbox.after`
+- `inbox.status`
+- `inbox.running`
+- `inbox.done`
+- `inbox.failed`
+- `webhook.publish`
+- `webhook.subscribe`
+- `webhook.status`
 - `capture.screenshot`
 - `capture.window`
 - `context.snapshot`
@@ -119,8 +141,6 @@ Unix socket RPC methods:
 - `input.dispatch`
 - `input.dispatch_frame`
 
-No attestation, identity, or cloud-enrollment Unix RPC methods are currently exposed.
-
 CLI commands:
 
 - `cua serve`
@@ -136,6 +156,18 @@ CLI commands:
 - `cua session acquire <session-id> --role owner|observer --json`
 - `cua session cancel <session-id> --json`
 - `cua session status --json`
+- `cua attestation identity --json`
+- `cua attestation challenge --audience <audience> --json`
+- `cua attestation sign --audience <audience> --nonce <nonce> --json`
+- `cua attestation verify <attestation.json> --audience <audience> --json`
+- `cua identity status --json`
+- `cua identity rotate --json`
+- `cua inbox publish <text> --source <source> --json`
+- `cua inbox wait --after <sequence> --json`
+- `cua inbox status <message-id> --json`
+- `cua webhook publish <text> --source <source> --json`
+- `cua webhook subscribe <source> --secret <secret> --json`
+- `cua webhook status <source> --json`
 - `cua stream --unix --json`
 - `cua ui step <label> --step-index <n> --step-total <n> --json`
 - `cua ui reply <text> --json`
@@ -167,8 +199,6 @@ CLI commands:
 - `cua trace inspect <dir> --json`
 - `cua trace verify <dir> --json`
 - `cua trace replay <dir> --json`
-
-No `cua attestation`, `cua identity`, or `cua enroll` commands are currently exposed.
 
 ## System Prompts
 

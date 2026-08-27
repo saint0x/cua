@@ -18,6 +18,7 @@ cua-model = { path = "../cua-model" }
 cua-platform-macos = { path = "../cua-platform-macos" }
 cua-trace = { path = "../cua-trace" }
 futures.workspace = true
+hmac.workspace = true
 http.workspace = true
 image.workspace = true
 serde.workspace = true

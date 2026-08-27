@@ -46,6 +46,18 @@ Initial endpoints:
 - `POST /session/heartbeat`
 - `POST /session/cancel`
 - `GET /session/status`
+- `POST /inbox/message`: inject an authenticated message into the running agent loop
+- `GET /inbox/messages?after=<sequence>`: poll retained inbound messages after an inbox sequence
+- `GET /inbox/status/<message_id>`: read message processing state
+- `POST /inbox/status/<message_id>/running`
+- `POST /inbox/status/<message_id>/done`
+- `POST /inbox/status/<message_id>/failed`
+- `POST /webhooks/<source>`: publish an inbound message for a webhook source
+- `POST /webhooks/<source>/subscribe`: configure source secret and optional reply URL
+- `GET /webhooks/<source>/status`
+- `GET /attestation/identity`
+- `POST /attestation/challenge`
+- `POST /attestation/sign`
 - `POST /profile/create`
 - `POST /profile/activate`
 - `GET /profile/status`
@@ -60,7 +72,9 @@ Initial endpoints:
 - `POST /clipboard/write`
 - `POST /model/eval`
 
-Attestation and cloud enrollment routes are not shipped in the current daemon. The `cua-core` schema bundle contains attestation schema types for compatibility work, but there is no HTTP route for challenge, sign, verify, identity, or enrollment yet.
+Webhook source secrets are optional for local development, but when a source has a secret configured, `POST /webhooks/<source>` requires `x-cua-webhook-signature: sha256=<hmac>` over the raw request body. The request body is an `InboundMessageRequest`; `idempotency_key` deduplicates repeat delivery.
+
+Cloud enrollment routes are not shipped yet.
 
 `GET /status` reports `active_streams`; stream clients increment the count on connect and decrement after disconnect cleanup. Its `inventory.config` object reports canonical `~/.cua` paths and migration state without exposing bearer token contents.
 

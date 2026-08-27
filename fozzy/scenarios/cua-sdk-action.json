@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "name": "cua-sdk-action",
+  "steps": [
+    {
+      "type": "proc_when",
+      "cmd": "scripts/host-sdk-session-proof.sh",
+      "args": [],
+      "exit_code": 0,
+      "stdout": "\"schema_version\": \"cua.sdk_session_proof.v1\"",
+      "stderr": "",
+      "times": 1
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "scripts/host-sdk-session-proof.sh",
+      "args": [],
+      "expect_exit": 0,
+      "expect_stdout": "\"owner_dispatch_confirmed\": true"
+    }
+  ]
+}

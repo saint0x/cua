@@ -71,6 +71,24 @@ export interface EventsOptions {
   timeoutMs?: number;
 }
 
+export interface InboundMessageOptions {
+  source?: string;
+  idempotencyKey?: string;
+  payload?: Json;
+  replyUrl?: string;
+  ttlMs?: number;
+}
+
+export interface WebhookMessageOptions extends InboundMessageOptions {
+  source: string;
+}
+
+export interface WebhookSubscribeOptions {
+  source: string;
+  secret?: string;
+  replyUrl?: string;
+}
+
 export interface UiStepOptions {
   label: string;
   source?: string;
@@ -176,7 +194,9 @@ export class Cua {
       "",
       "[[steps]]",
       `id = ${tomlString("rpc")}`,
-      `do = ${tomlString(method)}`,
+      `save_as = ${tomlString("rpc")}`,
+      'do = "rpc"',
+      `method = ${tomlString(method)}`,
       `params = ${tomlValue(params)}`,
       options.sessionId ? `session_id = ${tomlString(options.sessionId)}` : "",
     ]
@@ -219,11 +239,13 @@ export class Cua {
   }
 
   async acquireOwner(clientName = "typescript sdk", ttlMs?: number): Promise<OwnerSession> {
+    const sessionId = randomUUID();
     const args = [
       "--profile",
       this.profile,
       "session",
       "acquire",
+      sessionId,
       "--role",
       "owner",
       "--client-name",
@@ -234,7 +256,6 @@ export class Cua {
       args.push("--ttl-ms", String(ttlMs));
     }
     const raw = await this.execJson(args);
-    const sessionId = readSessionId(raw);
     return { sessionId, raw };
   }
 
@@ -260,6 +281,38 @@ export class Cua {
 
   async sessionStatus(): Promise<Json> {
     return this.rpc("session.status");
+  }
+
+  async inboxPublish(text: string, options: InboundMessageOptions = {}): Promise<Json> {
+    return this.rpc("inbox.publish", inboundMessageBody(text, options, "typescript-sdk"));
+  }
+
+  async inboxAfter(afterSequence = 0): Promise<Json> {
+    return this.rpc("inbox.after", { after_sequence: afterSequence });
+  }
+
+  async inboxStatus(messageId: string): Promise<Json> {
+    return this.rpc("inbox.status", { message_id: messageId });
+  }
+
+  async webhookPublish(text: string, options: WebhookMessageOptions): Promise<Json> {
+    return this.rpc("webhook.publish", inboundMessageBody(text, options, options.source));
+  }
+
+  async webhookSubscribe(options: WebhookSubscribeOptions): Promise<Json> {
+    return this.rpc(
+      "webhook.subscribe",
+      compact({
+        schema_version: "cua.v1",
+        source: options.source,
+        shared_secret: options.secret,
+        reply_url: options.replyUrl,
+      }),
+    );
+  }
+
+  async webhookStatus(source: string): Promise<Json> {
+    return this.rpc("webhook.status", { source });
   }
 
   async profileStatus(): Promise<Json> {
@@ -770,6 +823,23 @@ function readResult(value: Json, key: string): Json {
 
 function sessionIdOf(session: OwnerSession | string): string {
   return typeof session === "string" ? session : session.sessionId;
+}
+
+function inboundMessageBody(
+  text: string,
+  options: InboundMessageOptions,
+  defaultSource: string,
+): Json {
+  return compact({
+    schema_version: "cua.v1",
+    idempotency_key: options.idempotencyKey ?? randomUUID(),
+    source: options.source ?? defaultSource,
+    text,
+    payload: options.payload ?? {},
+    reply_mode: options.replyUrl ? "webhook" : "ui",
+    reply_url: options.replyUrl,
+    ttl_ms: options.ttlMs,
+  });
 }
 
 function rpcSession(options: DispatchOptions): RpcOptions {

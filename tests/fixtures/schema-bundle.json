@@ -94,6 +94,432 @@
       "title": "AttestationChallengeRequest",
       "type": "object"
     },
+    "AttestationSignRequest": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "audience": {
+          "type": "string"
+        },
+        "challenge_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nonce": {
+          "type": "string"
+        },
+        "profile": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "schema_version": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "audience",
+        "nonce",
+        "schema_version"
+      ],
+      "title": "AttestationSignRequest",
+      "type": "object"
+    },
+    "AttestationVerifyRequest": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "AttestationChallenge": {
+          "properties": {
+            "audience": {
+              "type": "string"
+            },
+            "challenge_id": {
+              "type": "string"
+            },
+            "expires_wall_ms": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "issued_wall_ms": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "nonce": {
+              "type": "string"
+            },
+            "schema_version": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "audience",
+            "challenge_id",
+            "expires_wall_ms",
+            "issued_wall_ms",
+            "nonce",
+            "schema_version"
+          ],
+          "type": "object"
+        },
+        "AttestationSignatureAlgorithm": {
+          "enum": [
+            "ed25519",
+            "p256_sha256",
+            "unknown"
+          ],
+          "type": "string"
+        },
+        "CapabilityManifest": {
+          "properties": {
+            "actions": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "apps": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "clipboard": {
+              "type": "boolean"
+            },
+            "displays": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "max_fps": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "model_egress": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "actions",
+            "apps",
+            "clipboard",
+            "displays",
+            "max_fps",
+            "model_egress"
+          ],
+          "type": "object"
+        },
+        "MachineAttestation": {
+          "properties": {
+            "challenge": {
+              "$ref": "#/definitions/AttestationChallenge"
+            },
+            "claims": {
+              "$ref": "#/definitions/RuntimeIdentityClaims"
+            },
+            "identity": {
+              "$ref": "#/definitions/MachineIdentity"
+            },
+            "schema_version": {
+              "type": "string"
+            },
+            "signature": {
+              "type": "string"
+            },
+            "signature_algorithm": {
+              "$ref": "#/definitions/AttestationSignatureAlgorithm"
+            },
+            "signed_wall_ms": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "challenge",
+            "claims",
+            "identity",
+            "schema_version",
+            "signature",
+            "signature_algorithm",
+            "signed_wall_ms"
+          ],
+          "type": "object"
+        },
+        "MachineIdentity": {
+          "properties": {
+            "created_wall_ms": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "key_backend": {
+              "$ref": "#/definitions/MachineKeyBackend"
+            },
+            "machine_id_hash": {
+              "type": "string"
+            },
+            "machine_key_id": {
+              "type": "string"
+            },
+            "machine_public_key": {
+              "type": "string"
+            },
+            "schema_version": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "created_wall_ms",
+            "key_backend",
+            "machine_id_hash",
+            "machine_key_id",
+            "machine_public_key",
+            "schema_version"
+          ],
+          "type": "object"
+        },
+        "MachineKeyBackend": {
+          "enum": [
+            "secure_enclave",
+            "keychain",
+            "file_for_tests",
+            "unknown"
+          ],
+          "type": "string"
+        },
+        "PermissionReport": {
+          "properties": {
+            "accessibility_input": {
+              "$ref": "#/definitions/PermissionState"
+            },
+            "automation": {
+              "$ref": "#/definitions/PermissionState"
+            },
+            "clipboard": {
+              "$ref": "#/definitions/PermissionState"
+            },
+            "input_monitoring": {
+              "$ref": "#/definitions/PermissionState"
+            },
+            "portal": {
+              "$ref": "#/definitions/PermissionState"
+            },
+            "screen_recording": {
+              "$ref": "#/definitions/PermissionState"
+            }
+          },
+          "required": [
+            "accessibility_input",
+            "automation",
+            "clipboard",
+            "input_monitoring",
+            "portal",
+            "screen_recording"
+          ],
+          "type": "object"
+        },
+        "PermissionState": {
+          "enum": [
+            "granted",
+            "missing",
+            "denied",
+            "not_applicable",
+            "unknown"
+          ],
+          "type": "string"
+        },
+        "ProfilePolicy": {
+          "properties": {
+            "active": {
+              "type": "boolean"
+            },
+            "capabilities": {
+              "$ref": "#/definitions/CapabilityManifest"
+            },
+            "created_wall_ms": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "expires_wall_ms": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "mode": {
+              "$ref": "#/definitions/RuntimeMode"
+            },
+            "name": {
+              "type": "string"
+            },
+            "schema_version": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "active",
+            "capabilities",
+            "created_wall_ms",
+            "mode",
+            "name",
+            "schema_version"
+          ],
+          "type": "object"
+        },
+        "RuntimeIdentityClaims": {
+          "properties": {
+            "active_profile": {
+              "$ref": "#/definitions/ProfilePolicy"
+            },
+            "binary_sha256": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "bundle_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "code_signature_summary": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "daemon_pid": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "designated_requirement": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "http_addr": {
+              "type": "string"
+            },
+            "permissions": {
+              "$ref": "#/definitions/PermissionReport"
+            },
+            "profile": {
+              "type": "string"
+            },
+            "runtime_name": {
+              "type": "string"
+            },
+            "runtime_version": {
+              "type": "string"
+            },
+            "safety_state": {
+              "$ref": "#/definitions/SafetyState"
+            },
+            "schema_version": {
+              "type": "string"
+            },
+            "session_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "socket_path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "active_profile",
+            "daemon_pid",
+            "http_addr",
+            "permissions",
+            "profile",
+            "runtime_name",
+            "runtime_version",
+            "safety_state",
+            "schema_version",
+            "socket_path"
+          ],
+          "type": "object"
+        },
+        "RuntimeMode": {
+          "enum": [
+            "observe",
+            "supervised",
+            "autonomous"
+          ],
+          "type": "string"
+        },
+        "SafetyState": {
+          "enum": [
+            "running",
+            "paused",
+            "killed"
+          ],
+          "type": "string"
+        }
+      },
+      "properties": {
+        "attestation": {
+          "$ref": "#/definitions/MachineAttestation"
+        },
+        "audience": {
+          "type": "string"
+        },
+        "schema_version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "attestation",
+        "audience",
+        "schema_version"
+      ],
+      "title": "AttestationVerifyRequest",
+      "type": "object"
+    },
+    "AttestationVerifyResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "accepted": {
+          "type": "boolean"
+        },
+        "audience": {
+          "type": "string"
+        },
+        "machine_key_id": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "schema_version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "accepted",
+        "audience",
+        "machine_key_id",
+        "reason",
+        "schema_version"
+      ],
+      "title": "AttestationVerifyResult",
+      "type": "object"
+    },
     "ClipboardReadRequest": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
@@ -2595,6 +3021,333 @@
       "title": "HealthReport",
       "type": "object"
     },
+    "InboundDeliveryMethod": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "enum": [
+        "local_http",
+        "unix_socket",
+        "webhook",
+        "sdk"
+      ],
+      "title": "InboundDeliveryMethod",
+      "type": "string"
+    },
+    "InboundMessage": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "InboundDeliveryMethod": {
+          "enum": [
+            "local_http",
+            "unix_socket",
+            "webhook",
+            "sdk"
+          ],
+          "type": "string"
+        },
+        "InboundReplyMode": {
+          "enum": [
+            "ui",
+            "poll",
+            "webhook"
+          ],
+          "type": "string"
+        }
+      },
+      "properties": {
+        "attestation": true,
+        "delivery_method": {
+          "$ref": "#/definitions/InboundDeliveryMethod"
+        },
+        "duplicate_of": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expires_wall_ms": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "idempotency_key": {
+          "type": "string"
+        },
+        "message_id": {
+          "type": "string"
+        },
+        "payload": true,
+        "received_wall_ms": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "reply_mode": {
+          "$ref": "#/definitions/InboundReplyMode"
+        },
+        "reply_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "schema_version": {
+          "type": "string"
+        },
+        "sequence": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "source": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "delivery_method",
+        "idempotency_key",
+        "message_id",
+        "payload",
+        "received_wall_ms",
+        "reply_mode",
+        "schema_version",
+        "sequence",
+        "source",
+        "text"
+      ],
+      "title": "InboundMessage",
+      "type": "object"
+    },
+    "InboundMessageRequest": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "InboundReplyMode": {
+          "enum": [
+            "ui",
+            "poll",
+            "webhook"
+          ],
+          "type": "string"
+        }
+      },
+      "properties": {
+        "attestation": {
+          "default": null
+        },
+        "idempotency_key": {
+          "type": "string"
+        },
+        "payload": {
+          "default": null
+        },
+        "reply_mode": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/InboundReplyMode"
+            }
+          ],
+          "default": "ui"
+        },
+        "reply_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "schema_version": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "ttl_ms": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "idempotency_key",
+        "schema_version",
+        "source",
+        "text"
+      ],
+      "title": "InboundMessageRequest",
+      "type": "object"
+    },
+    "InboundMessageState": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "enum": [
+        "received",
+        "accepted",
+        "running",
+        "done",
+        "failed",
+        "expired",
+        "duplicate"
+      ],
+      "title": "InboundMessageState",
+      "type": "string"
+    },
+    "InboundReplyMode": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "enum": [
+        "ui",
+        "poll",
+        "webhook"
+      ],
+      "title": "InboundReplyMode",
+      "type": "string"
+    },
+    "InboundStatus": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "InboundDeliveryMethod": {
+          "enum": [
+            "local_http",
+            "unix_socket",
+            "webhook",
+            "sdk"
+          ],
+          "type": "string"
+        },
+        "InboundMessage": {
+          "properties": {
+            "attestation": true,
+            "delivery_method": {
+              "$ref": "#/definitions/InboundDeliveryMethod"
+            },
+            "duplicate_of": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "expires_wall_ms": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "idempotency_key": {
+              "type": "string"
+            },
+            "message_id": {
+              "type": "string"
+            },
+            "payload": true,
+            "received_wall_ms": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "reply_mode": {
+              "$ref": "#/definitions/InboundReplyMode"
+            },
+            "reply_url": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "schema_version": {
+              "type": "string"
+            },
+            "sequence": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "source": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "delivery_method",
+            "idempotency_key",
+            "message_id",
+            "payload",
+            "received_wall_ms",
+            "reply_mode",
+            "schema_version",
+            "sequence",
+            "source",
+            "text"
+          ],
+          "type": "object"
+        },
+        "InboundMessageState": {
+          "enum": [
+            "received",
+            "accepted",
+            "running",
+            "done",
+            "failed",
+            "expired",
+            "duplicate"
+          ],
+          "type": "string"
+        },
+        "InboundReplyMode": {
+          "enum": [
+            "ui",
+            "poll",
+            "webhook"
+          ],
+          "type": "string"
+        }
+      },
+      "properties": {
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message": {
+          "$ref": "#/definitions/InboundMessage"
+        },
+        "message_id": {
+          "type": "string"
+        },
+        "reply": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "schema_version": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/definitions/InboundMessageState"
+        },
+        "updated_wall_ms": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "message",
+        "message_id",
+        "schema_version",
+        "state",
+        "updated_wall_ms"
+      ],
+      "title": "InboundStatus",
+      "type": "object"
+    },
     "InputAction": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "definitions": {
@@ -4256,6 +5009,78 @@
       "title": "MachineIdentity",
       "type": "object"
     },
+    "MachineIdentityStatus": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "MachineIdentity": {
+          "properties": {
+            "created_wall_ms": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "key_backend": {
+              "$ref": "#/definitions/MachineKeyBackend"
+            },
+            "machine_id_hash": {
+              "type": "string"
+            },
+            "machine_key_id": {
+              "type": "string"
+            },
+            "machine_public_key": {
+              "type": "string"
+            },
+            "schema_version": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "created_wall_ms",
+            "key_backend",
+            "machine_id_hash",
+            "machine_key_id",
+            "machine_public_key",
+            "schema_version"
+          ],
+          "type": "object"
+        },
+        "MachineKeyBackend": {
+          "enum": [
+            "secure_enclave",
+            "keychain",
+            "file_for_tests",
+            "unknown"
+          ],
+          "type": "string"
+        }
+      },
+      "properties": {
+        "identity": {
+          "$ref": "#/definitions/MachineIdentity"
+        },
+        "key_path": {
+          "type": "string"
+        },
+        "metadata_path": {
+          "type": "string"
+        },
+        "previous_keys_dir": {
+          "type": "string"
+        },
+        "schema_version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "identity",
+        "key_path",
+        "metadata_path",
+        "previous_keys_dir",
+        "schema_version"
+      ],
+      "title": "MachineIdentityStatus",
+      "type": "object"
+    },
     "Manifest": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
@@ -5635,6 +6460,71 @@
         "schema_version"
       ],
       "title": "VisualSessionRequest",
+      "type": "object"
+    },
+    "WebhookSourceStatus": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "configured": {
+          "type": "boolean"
+        },
+        "reply_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "requires_signature": {
+          "type": "boolean"
+        },
+        "schema_version": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "updated_wall_ms": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "configured",
+        "requires_signature",
+        "schema_version",
+        "source",
+        "updated_wall_ms"
+      ],
+      "title": "WebhookSourceStatus",
+      "type": "object"
+    },
+    "WebhookSubscribeRequest": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "reply_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "schema_version": {
+          "type": "string"
+        },
+        "shared_secret": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version",
+        "source"
+      ],
+      "title": "WebhookSubscribeRequest",
       "type": "object"
     }
   }

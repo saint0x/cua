@@ -56,6 +56,21 @@ export interface EventsOptions {
     after?: number;
     timeoutMs?: number;
 }
+export interface InboundMessageOptions {
+    source?: string;
+    idempotencyKey?: string;
+    payload?: Json;
+    replyUrl?: string;
+    ttlMs?: number;
+}
+export interface WebhookMessageOptions extends InboundMessageOptions {
+    source: string;
+}
+export interface WebhookSubscribeOptions {
+    source: string;
+    secret?: string;
+    replyUrl?: string;
+}
 export interface UiStepOptions {
     label: string;
     source?: string;
@@ -109,6 +124,12 @@ export declare class Cua {
     cancelSession(session: OwnerSession | string, targetSessionId?: string): Promise<Json>;
     heartbeatOwner(session: OwnerSession | string, ttlMs?: number): Promise<OwnerSession>;
     sessionStatus(): Promise<Json>;
+    inboxPublish(text: string, options?: InboundMessageOptions): Promise<Json>;
+    inboxAfter(afterSequence?: number): Promise<Json>;
+    inboxStatus(messageId: string): Promise<Json>;
+    webhookPublish(text: string, options: WebhookMessageOptions): Promise<Json>;
+    webhookSubscribe(options: WebhookSubscribeOptions): Promise<Json>;
+    webhookStatus(source: string): Promise<Json>;
     profileStatus(): Promise<Json>;
     createProfile(options: ProfileCreateOptions, session: OwnerSession | string): Promise<Json>;
     activateProfile(session: OwnerSession | string): Promise<Json>;

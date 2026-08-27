@@ -1,9 +1,14 @@
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
 use chrono::{DateTime, Utc};
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use rand_core::OsRng;
 use schemars::schema_for;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use sha2::Digest;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -64,6 +69,18 @@ pub fn profile_daemon_trace_dir(profile: &str) -> anyhow::Result<PathBuf> {
 
 pub fn identity_dir() -> anyhow::Result<PathBuf> {
     Ok(cua_home()?.join("identity"))
+}
+
+pub fn machine_identity_path() -> anyhow::Result<PathBuf> {
+    Ok(identity_dir()?.join("machine.json"))
+}
+
+pub fn machine_current_key_path() -> anyhow::Result<PathBuf> {
+    Ok(identity_dir()?.join("keys").join("current.json"))
+}
+
+pub fn machine_previous_keys_dir() -> anyhow::Result<PathBuf> {
+    Ok(identity_dir()?.join("keys").join("previous"))
 }
 
 pub fn cloud_dir() -> anyhow::Result<PathBuf> {
@@ -489,6 +506,41 @@ pub struct MachineIdentity {
     pub key_backend: MachineKeyBackend,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct MachineIdentityStatus {
+    pub schema_version: String,
+    pub identity: MachineIdentity,
+    pub metadata_path: String,
+    pub key_path: String,
+    pub previous_keys_dir: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct AttestationSignRequest {
+    pub schema_version: String,
+    pub audience: String,
+    pub nonce: String,
+    pub challenge_id: Option<String>,
+    pub profile: Option<String>,
+    pub session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct AttestationVerifyRequest {
+    pub schema_version: String,
+    pub audience: String,
+    pub attestation: MachineAttestation,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct AttestationVerifyResult {
+    pub schema_version: String,
+    pub accepted: bool,
+    pub reason: String,
+    pub machine_key_id: String,
+    pub audience: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct RuntimeIdentityClaims {
     pub schema_version: String,
@@ -525,6 +577,428 @@ pub struct MachineAttestation {
     pub signature_algorithm: AttestationSignatureAlgorithm,
     pub signature: String,
     pub signed_wall_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InboundDeliveryMethod {
+    LocalHttp,
+    UnixSocket,
+    Webhook,
+    Sdk,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InboundReplyMode {
+    Ui,
+    Poll,
+    Webhook,
+}
+
+impl Default for InboundReplyMode {
+    fn default() -> Self {
+        Self::Ui
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InboundMessageState {
+    Received,
+    Accepted,
+    Running,
+    Done,
+    Failed,
+    Expired,
+    Duplicate,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct InboundMessageRequest {
+    pub schema_version: String,
+    pub idempotency_key: String,
+    pub source: String,
+    pub text: String,
+    #[serde(default)]
+    pub payload: serde_json::Value,
+    #[serde(default)]
+    pub reply_mode: InboundReplyMode,
+    pub reply_url: Option<String>,
+    pub ttl_ms: Option<i64>,
+    #[serde(default)]
+    pub attestation: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct InboundMessage {
+    pub schema_version: String,
+    pub sequence: u64,
+    pub message_id: String,
+    pub idempotency_key: String,
+    pub source: String,
+    pub text: String,
+    pub payload: serde_json::Value,
+    pub reply_mode: InboundReplyMode,
+    pub reply_url: Option<String>,
+    pub delivery_method: InboundDeliveryMethod,
+    pub received_wall_ms: i64,
+    pub expires_wall_ms: Option<i64>,
+    pub attestation: Option<serde_json::Value>,
+    pub duplicate_of: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct InboundStatus {
+    pub schema_version: String,
+    pub message_id: String,
+    pub state: InboundMessageState,
+    pub message: InboundMessage,
+    pub reply: Option<String>,
+    pub error: Option<String>,
+    pub updated_wall_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct WebhookSubscribeRequest {
+    pub schema_version: String,
+    pub source: String,
+    pub shared_secret: Option<String>,
+    pub reply_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct WebhookSourceStatus {
+    pub schema_version: String,
+    pub source: String,
+    pub configured: bool,
+    pub requires_signature: bool,
+    pub reply_url: Option<String>,
+    pub updated_wall_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StoredMachineMetadata {
+    schema_version: String,
+    created_wall_ms: i64,
+    current_key_id: String,
+    previous_key_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StoredMachineKey {
+    schema_version: String,
+    key_id: String,
+    signing_key_base64: String,
+    created_wall_ms: i64,
+    revoked_wall_ms: Option<i64>,
+}
+
+pub fn load_or_create_machine_identity(audience: &str) -> anyhow::Result<MachineIdentityStatus> {
+    load_or_create_machine_identity_at(
+        audience,
+        &machine_identity_path()?,
+        &machine_current_key_path()?,
+        &machine_previous_keys_dir()?,
+    )
+}
+
+pub fn rotate_machine_identity(audience: &str) -> anyhow::Result<MachineIdentityStatus> {
+    rotate_machine_identity_at(
+        audience,
+        &machine_identity_path()?,
+        &machine_current_key_path()?,
+        &machine_previous_keys_dir()?,
+    )
+}
+
+pub fn sign_machine_attestation(
+    challenge: AttestationChallenge,
+    claims: RuntimeIdentityClaims,
+) -> anyhow::Result<MachineAttestation> {
+    let identity = load_or_create_machine_identity(&challenge.audience)?.identity;
+    let key = read_or_create_machine_key(&machine_identity_path()?, &machine_current_key_path()?)?;
+    let mut attestation = MachineAttestation {
+        schema_version: SCHEMA_VERSION.to_string(),
+        challenge,
+        identity,
+        claims,
+        signature_algorithm: AttestationSignatureAlgorithm::Ed25519,
+        signature: String::new(),
+        signed_wall_ms: now_wall_ms(),
+    };
+    let signing_key = signing_key_from_stored(&key)?;
+    let signature = signing_key.sign(&attestation_payload(&attestation)?);
+    attestation.signature = URL_SAFE_NO_PAD.encode(signature.to_bytes());
+    Ok(attestation)
+}
+
+pub fn verify_machine_attestation(
+    attestation: &MachineAttestation,
+    audience: &str,
+    now_ms: i64,
+) -> anyhow::Result<AttestationVerifyResult> {
+    if attestation.schema_version != SCHEMA_VERSION
+        || attestation.challenge.schema_version != SCHEMA_VERSION
+        || attestation.identity.schema_version != SCHEMA_VERSION
+        || attestation.claims.schema_version != SCHEMA_VERSION
+    {
+        return Ok(attestation_rejected(
+            attestation,
+            audience,
+            "schema_version_mismatch",
+        ));
+    }
+    if attestation.challenge.audience != audience {
+        return Ok(attestation_rejected(
+            attestation,
+            audience,
+            "audience_mismatch",
+        ));
+    }
+    if now_ms > attestation.challenge.expires_wall_ms {
+        return Ok(attestation_rejected(
+            attestation,
+            audience,
+            "challenge_expired",
+        ));
+    }
+    if attestation.identity.machine_id_hash
+        != salted_machine_id_hash(&attestation.identity.machine_public_key, audience)
+    {
+        return Ok(attestation_rejected(
+            attestation,
+            audience,
+            "machine_id_hash_mismatch",
+        ));
+    }
+    if attestation.signature_algorithm != AttestationSignatureAlgorithm::Ed25519 {
+        return Ok(attestation_rejected(
+            attestation,
+            audience,
+            "signature_algorithm_unsupported",
+        ));
+    }
+
+    let public_bytes = URL_SAFE_NO_PAD
+        .decode(&attestation.identity.machine_public_key)
+        .map_err(|error| anyhow::anyhow!("invalid machine public key base64: {error}"))?;
+    let public_array: [u8; 32] = public_bytes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("invalid machine public key length"))?;
+    let signature_bytes = URL_SAFE_NO_PAD
+        .decode(&attestation.signature)
+        .map_err(|error| anyhow::anyhow!("invalid attestation signature base64: {error}"))?;
+    let signature_array: [u8; 64] = signature_bytes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("invalid attestation signature length"))?;
+    let verifying_key = VerifyingKey::from_bytes(&public_array)?;
+    let signature = Signature::from_bytes(&signature_array);
+    match verifying_key.verify(&attestation_payload(attestation)?, &signature) {
+        Ok(()) => Ok(AttestationVerifyResult {
+            schema_version: SCHEMA_VERSION.to_string(),
+            accepted: true,
+            reason: "ok".to_string(),
+            machine_key_id: attestation.identity.machine_key_id.clone(),
+            audience: audience.to_string(),
+        }),
+        Err(_) => Ok(attestation_rejected(
+            attestation,
+            audience,
+            "signature_invalid",
+        )),
+    }
+}
+
+fn load_or_create_machine_identity_at(
+    audience: &str,
+    metadata_path: &Path,
+    key_path: &Path,
+    previous_keys_dir: &Path,
+) -> anyhow::Result<MachineIdentityStatus> {
+    let key = read_or_create_machine_key(metadata_path, key_path)?;
+    Ok(machine_identity_status(
+        audience,
+        &key,
+        metadata_path,
+        key_path,
+        previous_keys_dir,
+    )?)
+}
+
+fn rotate_machine_identity_at(
+    audience: &str,
+    metadata_path: &Path,
+    key_path: &Path,
+    previous_keys_dir: &Path,
+) -> anyhow::Result<MachineIdentityStatus> {
+    if key_path.exists() {
+        let current = read_machine_key(key_path)?;
+        std::fs::create_dir_all(previous_keys_dir)?;
+        let previous_path = previous_keys_dir.join(format!("{}.json", current.key_id));
+        std::fs::rename(key_path, previous_path)?;
+    }
+    let key = create_machine_key(metadata_path, key_path, previous_keys_dir)?;
+    machine_identity_status(audience, &key, metadata_path, key_path, previous_keys_dir)
+}
+
+fn read_or_create_machine_key(
+    metadata_path: &Path,
+    key_path: &Path,
+) -> anyhow::Result<StoredMachineKey> {
+    if key_path.exists() {
+        return read_machine_key(key_path);
+    }
+    create_machine_key(
+        metadata_path,
+        key_path,
+        &key_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("previous"),
+    )
+}
+
+fn create_machine_key(
+    metadata_path: &Path,
+    key_path: &Path,
+    previous_keys_dir: &Path,
+) -> anyhow::Result<StoredMachineKey> {
+    let signing_key = SigningKey::generate(&mut OsRng);
+    let created_wall_ms = now_wall_ms();
+    let public_key = URL_SAFE_NO_PAD.encode(signing_key.verifying_key().as_bytes());
+    let key_id = machine_key_id(&public_key);
+    let key = StoredMachineKey {
+        schema_version: SCHEMA_VERSION.to_string(),
+        key_id: key_id.clone(),
+        signing_key_base64: URL_SAFE_NO_PAD.encode(signing_key.to_bytes()),
+        created_wall_ms,
+        revoked_wall_ms: None,
+    };
+    write_json_private(key_path, &key)?;
+    let previous_key_ids = previous_key_ids(previous_keys_dir)?;
+    let metadata = StoredMachineMetadata {
+        schema_version: SCHEMA_VERSION.to_string(),
+        created_wall_ms,
+        current_key_id: key_id,
+        previous_key_ids,
+    };
+    write_json_public(metadata_path, &metadata)?;
+    Ok(key)
+}
+
+fn read_machine_key(path: &Path) -> anyhow::Result<StoredMachineKey> {
+    let bytes = std::fs::read(path)?;
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
+fn machine_identity_status(
+    audience: &str,
+    key: &StoredMachineKey,
+    metadata_path: &Path,
+    key_path: &Path,
+    previous_keys_dir: &Path,
+) -> anyhow::Result<MachineIdentityStatus> {
+    let signing_key = signing_key_from_stored(key)?;
+    let public_key = URL_SAFE_NO_PAD.encode(signing_key.verifying_key().as_bytes());
+    Ok(MachineIdentityStatus {
+        schema_version: SCHEMA_VERSION.to_string(),
+        identity: MachineIdentity {
+            schema_version: SCHEMA_VERSION.to_string(),
+            machine_key_id: key.key_id.clone(),
+            machine_public_key: public_key.clone(),
+            machine_id_hash: salted_machine_id_hash(&public_key, audience),
+            created_wall_ms: key.created_wall_ms,
+            key_backend: MachineKeyBackend::FileForTests,
+        },
+        metadata_path: metadata_path.display().to_string(),
+        key_path: key_path.display().to_string(),
+        previous_keys_dir: previous_keys_dir.display().to_string(),
+    })
+}
+
+fn signing_key_from_stored(key: &StoredMachineKey) -> anyhow::Result<SigningKey> {
+    let bytes = URL_SAFE_NO_PAD
+        .decode(&key.signing_key_base64)
+        .map_err(|error| anyhow::anyhow!("invalid stored machine key base64: {error}"))?;
+    let bytes: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("invalid stored machine key length"))?;
+    Ok(SigningKey::from_bytes(&bytes))
+}
+
+fn machine_key_id(public_key: &str) -> String {
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(b"cua-machine-key-id:v1:");
+    hasher.update(public_key.as_bytes());
+    let digest = hasher.finalize();
+    format!("ed25519_{}", URL_SAFE_NO_PAD.encode(&digest[..12]))
+}
+
+fn salted_machine_id_hash(public_key: &str, audience: &str) -> String {
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(b"cua-machine-id:v1:");
+    hasher.update(audience.as_bytes());
+    hasher.update(b":");
+    hasher.update(public_key.as_bytes());
+    URL_SAFE_NO_PAD.encode(hasher.finalize())
+}
+
+fn attestation_payload(attestation: &MachineAttestation) -> anyhow::Result<Vec<u8>> {
+    Ok(serde_json::to_vec(&serde_json::json!({
+        "schema_version": attestation.schema_version,
+        "challenge": attestation.challenge,
+        "identity": attestation.identity,
+        "claims": attestation.claims,
+        "signature_algorithm": attestation.signature_algorithm,
+    }))?)
+}
+
+fn attestation_rejected(
+    attestation: &MachineAttestation,
+    audience: &str,
+    reason: &str,
+) -> AttestationVerifyResult {
+    AttestationVerifyResult {
+        schema_version: SCHEMA_VERSION.to_string(),
+        accepted: false,
+        reason: reason.to_string(),
+        machine_key_id: attestation.identity.machine_key_id.clone(),
+        audience: audience.to_string(),
+    }
+}
+
+fn previous_key_ids(previous_keys_dir: &Path) -> anyhow::Result<Vec<String>> {
+    if !previous_keys_dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut keys = Vec::new();
+    for entry in std::fs::read_dir(previous_keys_dir)? {
+        let entry = entry?;
+        if let Some(stem) = entry.path().file_stem().and_then(|stem| stem.to_str()) {
+            keys.push(stem.to_string());
+        }
+    }
+    keys.sort();
+    Ok(keys)
+}
+
+fn write_json_public<T: Serialize>(path: &Path, value: &T) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, serde_json::to_vec_pretty(value)?)?;
+    Ok(())
+}
+
+fn write_json_private<T: Serialize>(path: &Path, value: &T) -> anyhow::Result<()> {
+    write_json_public(path, value)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -991,12 +1465,60 @@ pub fn schema_bundle() -> SchemaBundle {
         serde_json::json!(schema_for!(MachineIdentity)),
     );
     schemas.insert(
+        "MachineIdentityStatus".to_string(),
+        serde_json::json!(schema_for!(MachineIdentityStatus)),
+    );
+    schemas.insert(
+        "AttestationSignRequest".to_string(),
+        serde_json::json!(schema_for!(AttestationSignRequest)),
+    );
+    schemas.insert(
+        "AttestationVerifyRequest".to_string(),
+        serde_json::json!(schema_for!(AttestationVerifyRequest)),
+    );
+    schemas.insert(
+        "AttestationVerifyResult".to_string(),
+        serde_json::json!(schema_for!(AttestationVerifyResult)),
+    );
+    schemas.insert(
         "RuntimeIdentityClaims".to_string(),
         serde_json::json!(schema_for!(RuntimeIdentityClaims)),
     );
     schemas.insert(
         "MachineAttestation".to_string(),
         serde_json::json!(schema_for!(MachineAttestation)),
+    );
+    schemas.insert(
+        "InboundDeliveryMethod".to_string(),
+        serde_json::json!(schema_for!(InboundDeliveryMethod)),
+    );
+    schemas.insert(
+        "InboundReplyMode".to_string(),
+        serde_json::json!(schema_for!(InboundReplyMode)),
+    );
+    schemas.insert(
+        "InboundMessageState".to_string(),
+        serde_json::json!(schema_for!(InboundMessageState)),
+    );
+    schemas.insert(
+        "InboundMessageRequest".to_string(),
+        serde_json::json!(schema_for!(InboundMessageRequest)),
+    );
+    schemas.insert(
+        "InboundMessage".to_string(),
+        serde_json::json!(schema_for!(InboundMessage)),
+    );
+    schemas.insert(
+        "InboundStatus".to_string(),
+        serde_json::json!(schema_for!(InboundStatus)),
+    );
+    schemas.insert(
+        "WebhookSubscribeRequest".to_string(),
+        serde_json::json!(schema_for!(WebhookSubscribeRequest)),
+    );
+    schemas.insert(
+        "WebhookSourceStatus".to_string(),
+        serde_json::json!(schema_for!(WebhookSourceStatus)),
     );
     schemas.insert(
         "RuntimeSessionInfo".to_string(),
@@ -1115,6 +1637,9 @@ pub fn now_wall_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn frame_action_remaps_mouse_coordinates_to_display_space() {
@@ -1274,6 +1799,7 @@ mod tests {
 
     #[test]
     fn cua_home_paths_respect_cua_home_override() {
+        let _guard = ENV_LOCK.lock().unwrap();
         let old = std::env::var_os("CUA_HOME");
         std::env::set_var("CUA_HOME", "/tmp/cua-home-test");
 
@@ -1324,6 +1850,7 @@ mod tests {
 
     #[test]
     fn config_inventory_redacts_token_and_reports_paths() {
+        let _guard = ENV_LOCK.lock().unwrap();
         let temp_root =
             std::env::temp_dir().join(format!("cua-config-inventory-test-{}", Uuid::new_v4()));
         std::fs::create_dir_all(temp_root.join("config")).unwrap();
@@ -1368,6 +1895,10 @@ mod tests {
             "AttestationChallengeRequest",
             "AttestationChallenge",
             "MachineIdentity",
+            "MachineIdentityStatus",
+            "AttestationSignRequest",
+            "AttestationVerifyRequest",
+            "AttestationVerifyResult",
             "RuntimeIdentityClaims",
             "MachineAttestation",
         ] {
@@ -1458,6 +1989,155 @@ mod tests {
         assert_eq!(value["challenge"]["audience"], "quilt-cloud");
         assert_eq!(value["claims"]["runtime_name"], "cua");
         assert_eq!(value["signature_algorithm"], "ed25519");
+    }
+
+    #[test]
+    fn machine_identity_persists_and_rotates_key_files() {
+        let temp_root = std::env::temp_dir().join(format!("cua-identity-test-{}", Uuid::new_v4()));
+        let metadata = temp_root.join("machine.json");
+        let current = temp_root.join("keys/current.json");
+        let previous = temp_root.join("keys/previous");
+
+        let first =
+            load_or_create_machine_identity_at("audience-a", &metadata, &current, &previous)
+                .unwrap();
+        let second =
+            load_or_create_machine_identity_at("audience-a", &metadata, &current, &previous)
+                .unwrap();
+        assert_eq!(
+            first.identity.machine_key_id,
+            second.identity.machine_key_id
+        );
+        assert!(metadata.exists());
+        assert!(current.exists());
+
+        let rotated =
+            rotate_machine_identity_at("audience-a", &metadata, &current, &previous).unwrap();
+        assert_ne!(
+            first.identity.machine_key_id,
+            rotated.identity.machine_key_id
+        );
+        assert!(previous
+            .join(format!("{}.json", first.identity.machine_key_id))
+            .exists());
+
+        let _ = std::fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn machine_attestation_signs_and_rejects_bad_audience() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let temp_root = std::env::temp_dir().join(format!("cua-attest-test-{}", Uuid::new_v4()));
+        let old = std::env::var_os("CUA_HOME");
+        std::env::set_var("CUA_HOME", &temp_root);
+
+        let challenge = AttestationChallenge {
+            schema_version: SCHEMA_VERSION.to_string(),
+            challenge_id: "challenge".to_string(),
+            nonce: "nonce".to_string(),
+            audience: "audience-a".to_string(),
+            issued_wall_ms: 1,
+            expires_wall_ms: now_wall_ms() + 60_000,
+        };
+        let claims = RuntimeIdentityClaims {
+            schema_version: SCHEMA_VERSION.to_string(),
+            runtime_name: "cua".to_string(),
+            runtime_version: "0.1.0".to_string(),
+            daemon_pid: 123,
+            profile: "default".to_string(),
+            socket_path: "/tmp/cua.sock".to_string(),
+            http_addr: "127.0.0.1:0".to_string(),
+            bundle_id: None,
+            designated_requirement: None,
+            code_signature_summary: None,
+            binary_sha256: None,
+            permissions: PermissionReport::conservative_unknown(),
+            active_profile: ProfilePolicy {
+                schema_version: SCHEMA_VERSION.to_string(),
+                name: "default".to_string(),
+                mode: RuntimeMode::Supervised,
+                capabilities: CapabilityManifest::default(),
+                created_wall_ms: 1,
+                expires_wall_ms: None,
+                active: true,
+            },
+            safety_state: SafetyState::Running,
+            session_id: None,
+        };
+        let attestation = sign_machine_attestation(challenge, claims).unwrap();
+        let accepted =
+            verify_machine_attestation(&attestation, "audience-a", now_wall_ms()).unwrap();
+        assert!(accepted.accepted);
+        assert_eq!(accepted.reason, "ok");
+
+        let rejected =
+            verify_machine_attestation(&attestation, "audience-b", now_wall_ms()).unwrap();
+        assert!(!rejected.accepted);
+        assert_eq!(rejected.reason, "audience_mismatch");
+
+        if let Some(old) = old {
+            std::env::set_var("CUA_HOME", old);
+        } else {
+            std::env::remove_var("CUA_HOME");
+        }
+        let _ = std::fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn machine_attestation_rejects_expired_challenge() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let temp_root =
+            std::env::temp_dir().join(format!("cua-attest-expired-test-{}", Uuid::new_v4()));
+        let old = std::env::var_os("CUA_HOME");
+        std::env::set_var("CUA_HOME", &temp_root);
+
+        let now = now_wall_ms();
+        let challenge = AttestationChallenge {
+            schema_version: SCHEMA_VERSION.to_string(),
+            challenge_id: "expired-challenge".to_string(),
+            nonce: "nonce".to_string(),
+            audience: "audience-a".to_string(),
+            issued_wall_ms: now - 120_000,
+            expires_wall_ms: now - 60_000,
+        };
+        let claims = RuntimeIdentityClaims {
+            schema_version: SCHEMA_VERSION.to_string(),
+            runtime_name: "cua".to_string(),
+            runtime_version: "0.1.0".to_string(),
+            daemon_pid: 123,
+            profile: "default".to_string(),
+            socket_path: "/tmp/cua.sock".to_string(),
+            http_addr: "127.0.0.1:0".to_string(),
+            bundle_id: None,
+            designated_requirement: None,
+            code_signature_summary: None,
+            binary_sha256: None,
+            permissions: PermissionReport::conservative_unknown(),
+            active_profile: ProfilePolicy {
+                schema_version: SCHEMA_VERSION.to_string(),
+                name: "default".to_string(),
+                mode: RuntimeMode::Supervised,
+                capabilities: CapabilityManifest::default(),
+                created_wall_ms: 1,
+                expires_wall_ms: None,
+                active: true,
+            },
+            safety_state: SafetyState::Running,
+            session_id: None,
+        };
+        let attestation = sign_machine_attestation(challenge, claims).unwrap();
+        let rejected =
+            verify_machine_attestation(&attestation, "audience-a", now_wall_ms()).unwrap();
+
+        assert!(!rejected.accepted);
+        assert_eq!(rejected.reason, "challenge_expired");
+
+        if let Some(old) = old {
+            std::env::set_var("CUA_HOME", old);
+        } else {
+            std::env::remove_var("CUA_HOME");
+        }
+        let _ = std::fs::remove_dir_all(temp_root);
     }
 
     #[test]

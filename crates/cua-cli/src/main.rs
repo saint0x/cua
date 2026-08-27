@@ -4,11 +4,13 @@ use clap::{Args, Parser, Subcommand};
 use cua_capture::{CaptureRequest, FrameBus, SyntheticCaptureBackend};
 use cua_client::{CuaClient, VisualSessionMessage};
 use cua_core::{
-    config_env_path, profile_ctx_dir, schema_bundle, CapabilityManifest, ClipboardReadRequest,
-    ClipboardWriteRequest, DesktopContextSnapshot, FrameEncoding, FramePayload, InputAction,
-    MouseButton, RuntimeMode, RuntimeSessionRole, SessionCancelRequest, SessionHeartbeatRequest,
-    SessionLeaseRequest, UiIslandRequest, UiIslandState, UiMode, UiModeRequest, UiReplyRequest,
-    UiStepRequest, SCHEMA_VERSION,
+    config_env_path, load_or_create_machine_identity, profile_ctx_dir, rotate_machine_identity,
+    schema_bundle, verify_machine_attestation, AttestationChallengeRequest, AttestationSignRequest,
+    CapabilityManifest, ClipboardReadRequest, ClipboardWriteRequest, DesktopContextSnapshot,
+    FrameEncoding, FramePayload, InboundMessageRequest, InboundReplyMode, InputAction,
+    MachineAttestation, MouseButton, RuntimeMode, RuntimeSessionRole, SessionCancelRequest,
+    SessionHeartbeatRequest, SessionLeaseRequest, UiIslandRequest, UiIslandState, UiMode,
+    UiModeRequest, UiReplyRequest, UiStepRequest, WebhookSubscribeRequest, SCHEMA_VERSION,
 };
 use cua_model::{run_eval_report, EvalConfig};
 use cua_trace::{ActionTurnRecord, TraceRecord, TraceWriter};
@@ -54,10 +56,26 @@ enum Command {
         #[command(subcommand)]
         command: ConfigCommand,
     },
+    Identity {
+        #[command(subcommand)]
+        command: IdentityCommand,
+    },
+    Attestation {
+        #[command(subcommand)]
+        command: AttestationCommand,
+    },
     Events(EventsArgs),
     Session {
         #[command(subcommand)]
         command: SessionCommand,
+    },
+    Inbox {
+        #[command(subcommand)]
+        command: InboxCommand,
+    },
+    Webhook {
+        #[command(subcommand)]
+        command: WebhookCommand,
     },
     Stream(StreamArgs),
     Ui {
@@ -178,6 +196,55 @@ enum ConfigCommand {
 }
 
 #[derive(Debug, Subcommand)]
+enum IdentityCommand {
+    Status {
+        #[arg(long, default_value = "local")]
+        audience: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Rotate {
+        #[arg(long, default_value = "local")]
+        audience: String,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum AttestationCommand {
+    Identity {
+        #[arg(long)]
+        json: bool,
+    },
+    Challenge {
+        #[arg(long)]
+        audience: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Sign {
+        #[arg(long)]
+        audience: String,
+        #[arg(long)]
+        nonce: String,
+        #[arg(long)]
+        challenge_id: Option<String>,
+        #[arg(long)]
+        session_id: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    Verify {
+        file: PathBuf,
+        #[arg(long)]
+        audience: String,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum SessionCommand {
     Acquire {
         session_id: String,
@@ -205,6 +272,61 @@ enum SessionCommand {
         json: bool,
     },
     Status {
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum InboxCommand {
+    Publish(InboxPublishArgs),
+    Wait(InboxWaitArgs),
+    Status {
+        message_id: String,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Args)]
+struct InboxPublishArgs {
+    text: String,
+    #[arg(long, default_value = "cli")]
+    source: String,
+    #[arg(long)]
+    idempotency_key: Option<String>,
+    #[arg(long)]
+    payload: Option<PathBuf>,
+    #[arg(long)]
+    reply_url: Option<String>,
+    #[arg(long)]
+    ttl_ms: Option<i64>,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct InboxWaitArgs {
+    #[arg(long, default_value_t = 0)]
+    after: u64,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Subcommand)]
+enum WebhookCommand {
+    Publish(InboxPublishArgs),
+    Subscribe {
+        source: String,
+        #[arg(long)]
+        secret: Option<String>,
+        #[arg(long)]
+        reply_url: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    Status {
+        source: String,
         #[arg(long)]
         json: bool,
     },
@@ -556,8 +678,12 @@ async fn main() -> anyhow::Result<()> {
         Some(Command::Manifest(flag)) => unix_get(&cli.profile, "manifest", flag.json).await,
         Some(Command::Metrics(flag)) => unix_get(&cli.profile, "metrics", flag.json).await,
         Some(Command::Config { command }) => config(&cli.profile, command).await,
+        Some(Command::Identity { command }) => identity(command).await,
+        Some(Command::Attestation { command }) => attestation(&cli.profile, command).await,
         Some(Command::Events(args)) => events(&cli.profile, args).await,
         Some(Command::Session { command }) => session(&cli.profile, command).await,
+        Some(Command::Inbox { command }) => inbox(&cli.profile, command).await,
+        Some(Command::Webhook { command }) => webhook(&cli.profile, command).await,
         Some(Command::Stream(args)) => stream(&cli.profile, args).await,
         Some(Command::Ui { command }) => ui(cli.server_addr, &cli.profile, command).await,
         Some(Command::Screenshot(args)) => screenshot(&cli.profile, args).await,
@@ -929,6 +1055,99 @@ async fn session(profile: &str, command: SessionCommand) -> anyhow::Result<()> {
     }
 }
 
+async fn inbox(profile: &str, command: InboxCommand) -> anyhow::Result<()> {
+    match command {
+        InboxCommand::Publish(args) => publish_inbox_like(profile, "inbox.publish", args).await,
+        InboxCommand::Wait(args) => {
+            let value = unix_request_json(
+                profile,
+                "inbox.after",
+                Some(serde_json::json!({ "after_sequence": args.after })),
+            )
+            .await?;
+            print_json_value(&value, args.json)
+        }
+        InboxCommand::Status { message_id, json } => {
+            let value = unix_request_json(
+                profile,
+                "inbox.status",
+                Some(serde_json::json!({ "message_id": message_id })),
+            )
+            .await?;
+            print_json_value(&value, json)
+        }
+    }
+}
+
+async fn webhook(profile: &str, command: WebhookCommand) -> anyhow::Result<()> {
+    match command {
+        WebhookCommand::Publish(args) => publish_inbox_like(profile, "webhook.publish", args).await,
+        WebhookCommand::Subscribe {
+            source,
+            secret,
+            reply_url,
+            json,
+        } => {
+            let request = WebhookSubscribeRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                source,
+                shared_secret: secret,
+                reply_url,
+            };
+            let value = unix_request_json(
+                profile,
+                "webhook.subscribe",
+                Some(serde_json::to_value(request)?),
+            )
+            .await?;
+            print_json_value(&value, json)
+        }
+        WebhookCommand::Status { source, json } => {
+            let value = unix_request_json(
+                profile,
+                "webhook.status",
+                Some(serde_json::json!({ "source": source })),
+            )
+            .await?;
+            print_json_value(&value, json)
+        }
+    }
+}
+
+async fn publish_inbox_like(
+    profile: &str,
+    method: &str,
+    args: InboxPublishArgs,
+) -> anyhow::Result<()> {
+    let request = InboundMessageRequest {
+        schema_version: SCHEMA_VERSION.to_string(),
+        idempotency_key: args
+            .idempotency_key
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+        source: args.source,
+        text: args.text,
+        payload: read_json_payload(args.payload.as_deref())?,
+        reply_mode: if args.reply_url.is_some() {
+            InboundReplyMode::Webhook
+        } else {
+            InboundReplyMode::Ui
+        },
+        reply_url: args.reply_url,
+        ttl_ms: args.ttl_ms,
+        attestation: None,
+    };
+    let value = unix_request_json(profile, method, Some(serde_json::to_value(request)?)).await?;
+    print_json_value(&value, args.json)
+}
+
+fn read_json_payload(path: Option<&Path>) -> anyhow::Result<serde_json::Value> {
+    let Some(path) = path else {
+        return Ok(serde_json::json!({}));
+    };
+    let bytes = std::fs::read(path).with_context(|| format!("read payload {}", path.display()))?;
+    serde_json::from_slice(&bytes).with_context(|| format!("parse payload {}", path.display()))
+}
+
 async fn permissions(profile: &str, command: PermissionCommand) -> anyhow::Result<()> {
     if let PermissionCommand::RequestAccessibility(flag) = command {
         let value = unix_request_json(profile, "permissions.request_accessibility", None).await?;
@@ -1018,6 +1237,79 @@ async fn perf(profile: &str, command: PerfCommand) -> anyhow::Result<()> {
 async fn config(profile: &str, command: ConfigCommand) -> anyhow::Result<()> {
     match command {
         ConfigCommand::Status(flag) => unix_get(profile, "config.status", flag.json).await,
+    }
+}
+
+async fn identity(command: IdentityCommand) -> anyhow::Result<()> {
+    match command {
+        IdentityCommand::Status { audience, json } => {
+            let value = serde_json::to_value(load_or_create_machine_identity(&audience)?)?;
+            print_json_value(&value, json)
+        }
+        IdentityCommand::Rotate { audience, json } => {
+            let value = serde_json::to_value(rotate_machine_identity(&audience)?)?;
+            print_json_value(&value, json)
+        }
+    }
+}
+
+async fn attestation(profile: &str, command: AttestationCommand) -> anyhow::Result<()> {
+    match command {
+        AttestationCommand::Identity { json } => {
+            unix_get(profile, "attestation.identity", json).await
+        }
+        AttestationCommand::Challenge { audience, json } => {
+            let value = unix_request_json(
+                profile,
+                "attestation.challenge",
+                Some(serde_json::to_value(AttestationChallengeRequest {
+                    schema_version: SCHEMA_VERSION.to_string(),
+                    audience,
+                    profile: Some(profile.to_string()),
+                    requested_claims: Vec::new(),
+                })?),
+            )
+            .await?;
+            print_json_value(&value, json)
+        }
+        AttestationCommand::Sign {
+            audience,
+            nonce,
+            challenge_id,
+            session_id,
+            json,
+        } => {
+            let value = unix_request_json(
+                profile,
+                "attestation.sign",
+                Some(serde_json::to_value(AttestationSignRequest {
+                    schema_version: SCHEMA_VERSION.to_string(),
+                    audience,
+                    nonce,
+                    challenge_id,
+                    profile: Some(profile.to_string()),
+                    session_id,
+                })?),
+            )
+            .await?;
+            print_json_value(&value, json)
+        }
+        AttestationCommand::Verify {
+            file,
+            audience,
+            json,
+        } => {
+            let bytes = std::fs::read(&file)
+                .with_context(|| format!("read attestation {}", file.display()))?;
+            let attestation: MachineAttestation = serde_json::from_slice(&bytes)
+                .with_context(|| format!("parse attestation {}", file.display()))?;
+            let value = serde_json::to_value(verify_machine_attestation(
+                &attestation,
+                &audience,
+                cua_core::now_wall_ms(),
+            )?)?;
+            print_json_value(&value, json)
+        }
     }
 }
 
@@ -3709,6 +4001,39 @@ mod tests {
             cua_core::PermissionState::Missing
         ));
         assert!(should_request_permission(cua_core::PermissionState::Denied));
+    }
+
+    #[test]
+    fn dotenv_loading_keeps_process_env_then_first_file_value() {
+        let key = format!("CUA_DOTENV_PRECEDENCE_{}", uuid::Uuid::new_v4().simple());
+        let first_key = format!("CUA_DOTENV_FIRST_{}", uuid::Uuid::new_v4().simple());
+        let temp_root =
+            std::env::temp_dir().join(format!("cua-dotenv-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_root).unwrap();
+        let first = temp_root.join("first.env");
+        let second = temp_root.join("second.env");
+        std::fs::write(
+            &first,
+            format!("{key}=first-file\n{first_key}=from-first\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            &second,
+            format!("{key}=second-file\n{first_key}=from-second\n"),
+        )
+        .unwrap();
+
+        std::env::set_var(&key, "process-env");
+        std::env::remove_var(&first_key);
+        load_dotenv_path(&first);
+        load_dotenv_path(&second);
+
+        assert_eq!(std::env::var(&key).unwrap(), "process-env");
+        assert_eq!(std::env::var(&first_key).unwrap(), "from-first");
+
+        std::env::remove_var(&key);
+        std::env::remove_var(&first_key);
+        let _ = std::fs::remove_dir_all(temp_root);
     }
 
     #[test]

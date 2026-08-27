@@ -27,6 +27,12 @@ while let Some(frame) = stream.next_frame().await? {
 stream.close().await?;
 ```
 
+Rust also exposes typed helpers for inbox/webhook and attestation over the profile Unix socket:
+
+```rust
+let status = client.inbox_after(0).await?;
+```
+
 ## TypeScript
 
 The local TypeScript package lives at `sdks/typescript`.
@@ -37,6 +43,7 @@ import { Cua } from "@cua/sdk";
 const cua = await Cua.connect({ profile: "default" });
 await cua.run("tests/fixtures/runebook-smoke.cua.toml");
 console.log(await cua.configStatus());
+await cua.inboxPublish("what do you see on my screen?");
 ```
 
 ## Python
@@ -49,15 +56,14 @@ from cua_sdk import Cua
 cua = Cua.connect(profile="default")
 print(cua.run("tests/fixtures/runebook-smoke.cua.toml"))
 print(cua.config_status())
+print(cua.inbox_publish("what do you see on my screen?"))
 ```
 
-The TypeScript and Python packages shell to `cua run` and typed CLI commands. They expose one-shot context/screenshot helpers and frame-relative dispatch, but do not currently expose persistent visual-session, attestation, or cloud-enrollment helpers.
+The TypeScript and Python packages shell to `cua run`, typed CLI commands, and Unix RPC. They expose one-shot context/screenshot helpers, frame-relative dispatch, owner sessions, local attestation signing, and inbox/webhook helpers. Rust exposes persistent visual sessions directly. Cloud-enrollment helpers are not shipped yet.
 
 ## Examples And Proofs
 
-The SDK README files and `sdks/*/examples` include examples for shipped helpers. Those examples are backed by the runebook fixtures under `tests/fixtures/`, daemon unit tests for owner-session refusal and clipboard policy, and host proofs such as `scripts/host-session-proof.sh` and `scripts/host-visual-session-action-proof.sh`.
-
-Attestation and Quilt/cloud enrollment examples are intentionally omitted because the current source has no CLI, daemon RPC/routes, or SDK helpers for those flows. See `docs/attestation.md` for the current schema-only state.
+The SDK README files and `sdks/*/examples` include examples for shipped helpers. Those examples are backed by the runebook fixtures under `tests/fixtures/`, daemon unit tests for owner-session refusal, inbox/webhook behavior, and clipboard policy, plus host proofs such as `scripts/host-session-proof.sh` and `scripts/host-visual-session-action-proof.sh`.
 
 ## Design Rule
 

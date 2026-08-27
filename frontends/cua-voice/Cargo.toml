@@ -12,6 +12,7 @@ ui = ["dep:gpui"]
 [dependencies]
 anyhow.workspace = true
 base64.workspace = true
+chrono.workspace = true
 clap.workspace = true
 cpal.workspace = true
 cua-client = { path = "../../crates/cua-client" }

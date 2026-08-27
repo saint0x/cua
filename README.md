@@ -35,6 +35,8 @@ cargo run -p cua -- ui step "checking target" --task "Click target" --tool visio
 cargo run -p cua -- ui reply "Done with the target." --json
 cargo run -p cua -- ui mode headless --json
 cargo run -p cua -- ui mode headful --json
+cargo run -p cua -- inbox publish "what do you see on my screen?" --json
+cargo run -p cua -- webhook subscribe local-alerts --secret "$CUA_WEBHOOK_SECRET" --json
 cargo run -p cua -- perf bench screenshot --iterations 5 --json
 cargo run -p cua -- context --json --force-fresh
 cargo run -p cua -- screenshot --out artifacts/cua/smoke/screen.png --json
@@ -121,4 +123,4 @@ fozzy replay artifacts/cua/macos/fozzy/cua-smoke.fozzy --json
 
 The current runtime has production-shaped contracts, daemon/CLI plumbing, Unix socket voice transport, live headless/headful HUD mode switching, persistent Unix visual-control sessions, frame-relative action dispatch, macOS permission probes, profile policy state, pause/resume/kill-switch controls, profile-gated daemon clipboard, daemon-owned capture/encode/input/event/permission/trace/model lanes, ScreenCaptureKit-backed macOS capture with CoreGraphics fallback, native macOS display/cursor/window observation, CGEvent mouse/keyboard input with refusing fallback, signed macOS app packaging, continuous MJPEG/WebSocket streams, schema export, trace inspection, and bounded model evals.
 
-Programmable SDKs are intentionally thin: Rust uses `crates/cua-client`, and TypeScript/Python wrappers live in `sdks/` on top of `cua run` plus the daemon protocol. Attestation and Quilt/cloud enrollment are schema-only in the current source, not shipped CLI/daemon/SDK surfaces. See [docs/sdk.md](docs/sdk.md), [docs/http-api.md](docs/http-api.md), [docs/config-home.md](docs/config-home.md), and [docs/attestation.md](docs/attestation.md).
+Programmable SDKs are intentionally thin: Rust uses `crates/cua-client`, and TypeScript/Python wrappers live in `sdks/` on top of `cua run` plus the daemon protocol. The daemon also exposes an authenticated inbox/webhook lane that injects messages into the running agent loop, and local runtime attestation is available over CLI, Unix socket, and HTTP. Quilt/cloud enrollment is not shipped yet. See [docs/sdk.md](docs/sdk.md), [docs/http-api.md](docs/http-api.md), [docs/config-home.md](docs/config-home.md), and [docs/attestation.md](docs/attestation.md).

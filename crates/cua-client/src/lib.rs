@@ -1,11 +1,14 @@
 use cua_core::{
-    profile_socket_path, profile_token_path, ApiErrorBody, ClipboardReadRequest, ClipboardResult,
+    profile_socket_path, profile_token_path, ApiErrorBody, AttestationChallenge,
+    AttestationChallengeRequest, AttestationSignRequest, ClipboardReadRequest, ClipboardResult,
     ClipboardWriteRequest, ConfigInventory, DesktopContextSnapshot, DesktopState,
-    FrameActionRequest, FrameEncoding, FrameEnvelope, FramePayload, HealthReport, InputAction,
+    FrameActionRequest, FrameEncoding, FrameEnvelope, FramePayload, HealthReport,
+    InboundMessageRequest, InboundStatus, InputAction, MachineAttestation, MachineIdentityStatus,
     Manifest, RuntimeControlState, RuntimeInventory, RuntimeSessionRole, SchemaBundle,
     SessionCancelRequest, SessionHeartbeatRequest, SessionLeaseRequest, SessionLeaseResult,
     UiIslandRequest, UiIslandResult, UiIslandState, UiMode, UiModeRequest, UiReplyRequest,
-    UiStepRequest, VisualSessionRequest, SCHEMA_VERSION,
+    UiStepRequest, VisualSessionRequest, WebhookSourceStatus, WebhookSubscribeRequest,
+    SCHEMA_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -214,6 +217,121 @@ impl CuaClient {
 
     pub async fn session_status(&self) -> Result<RuntimeInventory> {
         self.request("session.status", None).await
+    }
+
+    pub async fn attestation_identity(&self) -> Result<MachineIdentityStatus> {
+        self.request("attestation.identity", None).await
+    }
+
+    pub async fn attestation_challenge(
+        &self,
+        audience: impl Into<String>,
+    ) -> Result<AttestationChallenge> {
+        self.request(
+            "attestation.challenge",
+            Some(serde_json::to_value(AttestationChallengeRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                audience: audience.into(),
+                profile: Some(self.profile.clone()),
+                requested_claims: Vec::new(),
+            })?),
+        )
+        .await
+    }
+
+    pub async fn attestation_sign(
+        &self,
+        audience: impl Into<String>,
+        nonce: impl Into<String>,
+        challenge_id: Option<String>,
+        session_id: Option<String>,
+    ) -> Result<MachineAttestation> {
+        self.request(
+            "attestation.sign",
+            Some(serde_json::to_value(AttestationSignRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                audience: audience.into(),
+                nonce: nonce.into(),
+                challenge_id,
+                profile: Some(self.profile.clone()),
+                session_id,
+            })?),
+        )
+        .await
+    }
+
+    pub async fn inbox_publish(&self, request: InboundMessageRequest) -> Result<InboundStatus> {
+        self.request("inbox.publish", Some(serde_json::to_value(request)?))
+            .await
+    }
+
+    pub async fn inbox_after(&self, after_sequence: u64) -> Result<Vec<InboundStatus>> {
+        self.request(
+            "inbox.after",
+            Some(serde_json::json!({ "after_sequence": after_sequence })),
+        )
+        .await
+    }
+
+    pub async fn inbox_status(&self, message_id: impl Into<String>) -> Result<InboundStatus> {
+        self.request(
+            "inbox.status",
+            Some(serde_json::json!({ "message_id": message_id.into() })),
+        )
+        .await
+    }
+
+    pub async fn inbox_running(&self, message_id: impl Into<String>) -> Result<InboundStatus> {
+        self.request(
+            "inbox.running",
+            Some(serde_json::json!({ "message_id": message_id.into() })),
+        )
+        .await
+    }
+
+    pub async fn inbox_done(
+        &self,
+        message_id: impl Into<String>,
+        reply: Option<String>,
+    ) -> Result<InboundStatus> {
+        self.request(
+            "inbox.done",
+            Some(serde_json::json!({ "message_id": message_id.into(), "reply": reply })),
+        )
+        .await
+    }
+
+    pub async fn inbox_failed(
+        &self,
+        message_id: impl Into<String>,
+        error: impl Into<String>,
+    ) -> Result<InboundStatus> {
+        self.request(
+            "inbox.failed",
+            Some(serde_json::json!({ "message_id": message_id.into(), "error": error.into() })),
+        )
+        .await
+    }
+
+    pub async fn webhook_publish(&self, request: InboundMessageRequest) -> Result<InboundStatus> {
+        self.request("webhook.publish", Some(serde_json::to_value(request)?))
+            .await
+    }
+
+    pub async fn webhook_subscribe(
+        &self,
+        request: WebhookSubscribeRequest,
+    ) -> Result<WebhookSourceStatus> {
+        self.request("webhook.subscribe", Some(serde_json::to_value(request)?))
+            .await
+    }
+
+    pub async fn webhook_status(&self, source: impl Into<String>) -> Result<WebhookSourceStatus> {
+        self.request(
+            "webhook.status",
+            Some(serde_json::json!({ "source": source.into() })),
+        )
+        .await
     }
 
     pub async fn ui_step(

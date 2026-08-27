@@ -7,8 +7,10 @@ INSTALL_DIR="${CUA_APP_INSTALL_DIR:-$HOME/Applications}"
 INSTALL_APP="$INSTALL_DIR/$APP_NAME.app"
 RUN_ID="$(date +%Y%m%d-%H%M%S)"
 ARTIFACT_DIR="${CUA_RELEASE_ARTIFACT_DIR:-$ROOT/artifacts/cua/release/$RUN_ID}"
-SEED="${CUA_RELEASE_SEED:-424242}"
+SEED="${CUA_RELEASE_SEED:-4242}"
 SCENARIO="${CUA_RELEASE_SCENARIO:-fozzy/scenarios/cua-smoke.json}"
+RUNEBOOK_SCENARIO="${CUA_RELEASE_RUNEBOOK_SCENARIO:-fozzy/scenarios/cua-runebook.json}"
+SDK_SCENARIO="${CUA_RELEASE_SDK_SCENARIO:-fozzy/scenarios/cua-sdk-action.json}"
 STT_BACKEND="${CUA_RELEASE_STT_BACKEND:-local}"
 STT_MODEL="${CUA_RELEASE_STT_MODEL:-tiny.en}"
 PLANNER_MODEL="${CUA_RELEASE_PLANNER_MODEL:-google/gemini-2.5-flash-lite}"
@@ -76,6 +78,47 @@ openrouter_key_available() {
   return 1
 }
 
+require_cmd() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    printf 'required dependency missing: %s\n' "$1" >&2
+    exit 1
+  fi
+}
+
+require_file() {
+  if [[ ! -e "$1" ]]; then
+    printf 'required file missing: %s\n' "$1" >&2
+    exit 1
+  fi
+}
+
+require_no_generated_diff() {
+  local changed
+  changed="$(git diff --name-only -- \
+    tests/fixtures/schema-bundle.json \
+    sdks/typescript/dist/index.d.ts \
+    sdks/typescript/dist/index.js)"
+  if [[ -n "$changed" ]]; then
+    printf 'generated artifacts have uncommitted changes:\n%s\n' "$changed" >&2
+    exit 1
+  fi
+}
+
+fozzy_trace_gate() {
+  local scenario="$1"
+  local name="$2"
+  local trace="$ARTIFACT_DIR/$name.fozzy"
+
+  require_file "$scenario"
+  log "Fozzy deterministic $name"
+  run fozzy doctor --deep --scenario "$scenario" --runs 5 --seed "$SEED" --json
+  run fozzy test --det --strict-verify "$scenario" --json
+  run fozzy run "$scenario" --det --record "$trace" --json
+  run fozzy trace verify "$trace" --strict --json
+  run fozzy replay "$trace" --json
+  run fozzy ci "$trace" --json
+}
+
 generate_voice_fixture() {
   local out="$ARTIFACT_DIR/voice-smoke.wav"
   local aiff="$ARTIFACT_DIR/voice-smoke.aiff"
@@ -99,8 +142,21 @@ restart_installed_app() {
 cd "$ROOT"
 mkdir -p "$ARTIFACT_DIR"
 
+require_cmd cargo
+require_cmd git
+require_cmd jq
+require_cmd curl
+require_cmd plutil
+require_cmd /usr/bin/codesign
+if [[ "$SKIP_FOZZY" -eq 0 ]]; then
+  require_cmd fozzy
+fi
+
 log "Release config"
 printf 'artifact_dir=%s\n' "$ARTIFACT_DIR"
+printf 'smoke_scenario=%s\n' "$SCENARIO"
+printf 'runebook_scenario=%s\n' "$RUNEBOOK_SCENARIO"
+printf 'sdk_scenario=%s\n' "$SDK_SCENARIO"
 printf 'stt_backend=%s\n' "$STT_BACKEND"
 printf 'stt_model=%s\n' "$STT_MODEL"
 printf 'planner_model=%s\n' "$PLANNER_MODEL"
@@ -109,31 +165,39 @@ if [[ "$SKIP_TESTS" -eq 0 ]]; then
   log "Format and compile checks"
   run cargo fmt --check
   run git diff --check
+  run cargo check
   run cargo check -p cua-voice --all-targets
+  run cargo build -p cua
 
   log "Unit tests"
+  run cargo test
+  run cargo test -p cua-core --test schema_compat
   run cargo test -p cua-voice --lib
   run cargo test -p cua-voice --bin cua-voice
+  require_no_generated_diff
 fi
 
 if [[ "$SKIP_FOZZY" -eq 0 ]]; then
-  if command -v fozzy >/dev/null 2>&1; then
-    log "Fozzy deterministic smoke"
-    run fozzy doctor --deep --scenario "$SCENARIO" --runs 5 --seed "$SEED" --strict --host-backends --json
-    run fozzy test "$SCENARIO" --det --strict-verify --seed "$SEED" --host-backends --json
-    TRACE="$ARTIFACT_DIR/cua-smoke.fozzy"
-    run fozzy run "$SCENARIO" --det --record "$TRACE" --seed "$SEED" --host-backends --json
-    run fozzy trace verify "$TRACE" --strict --json
-    run fozzy replay "$TRACE" --json
-    run fozzy ci "$TRACE" --strict --json
-  else
-    printf 'fozzy not found; skipping deterministic smoke\n' >&2
-  fi
+  fozzy_trace_gate "$SCENARIO" "cua-smoke"
+  fozzy_trace_gate "$RUNEBOOK_SCENARIO" "cua-runebook"
+  fozzy_trace_gate "$SDK_SCENARIO" "cua-sdk-action"
 fi
+
+log "Host production proofs"
+run scripts/host-session-proof.sh | tee "$ARTIFACT_DIR/host-session-proof.json"
+run scripts/host-control-surface-proof.sh | tee "$ARTIFACT_DIR/host-control-surface-proof.json"
+run scripts/host-visual-session-action-proof.sh | tee "$ARTIFACT_DIR/host-visual-session-action-proof.json"
+run scripts/host-latency-proof.sh | tee "$ARTIFACT_DIR/host-latency-proof.json"
+run scripts/host-machine-key-persistence-proof.sh | tee "$ARTIFACT_DIR/host-machine-key-persistence-proof.json"
+run scripts/host-config-migration-proof.sh | tee "$ARTIFACT_DIR/host-config-migration-proof.json"
+run scripts/host-sdk-session-proof.sh | tee "$ARTIFACT_DIR/host-sdk-session-proof.json"
+run scripts/host-inbox-webhook-proof.sh | tee "$ARTIFACT_DIR/host-inbox-webhook-proof.json"
 
 log "Package app"
 APP_PATH="$(scripts/package-macos-app.sh | tail -n 1)"
 printf '%s\n' "$APP_PATH" | tee "$ARTIFACT_DIR/package-path.txt"
+run scripts/host-package-proof.sh | tee "$ARTIFACT_DIR/host-package-proof.json"
+run scripts/host-packaged-attestation-proof.sh | tee "$ARTIFACT_DIR/host-packaged-attestation-proof.json"
 
 if [[ "$SKIP_INSTALL" -eq 0 ]]; then
   log "Install app"

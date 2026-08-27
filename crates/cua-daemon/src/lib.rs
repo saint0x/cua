@@ -2,7 +2,7 @@ use axum::{
     body::Body,
     extract::{
         ws::{Message, WebSocketUpgrade},
-        Query, Request, State,
+        Path as AxumPath, Query, Request, State,
     },
     http::{header, HeaderMap, HeaderValue, StatusCode},
     middleware::{self, Next},
@@ -19,20 +19,26 @@ use cua_capture::{
     FrameLookup,
 };
 use cua_core::{
-    now_wall_ms, profile_daemon_trace_dir, profile_socket_path, profile_token_path, schema_bundle,
-    ApiErrorBody, CapabilityManifest, CapabilityState, ClipboardReadRequest, ClipboardResult,
-    ClipboardWriteRequest, ConfigInventory, DeliveryMode, DesktopContextSnapshot, DesktopState,
-    Effect, Evidence, EvidenceKind, FrameActionRequest, FrameEncoding, FramePayload, HealthReport,
-    InputAction, InputRequest, InputResult, InputRoute, Manifest, MetricBucket, MetricHistogram,
-    MetricsSnapshot, PermissionReport, PermissionState, ProfilePolicy, RuntimeControlState,
-    RuntimeInventory, RuntimeMode, RuntimeSessionInfo, RuntimeSessionRole, SafetyState,
-    SessionCancelRequest, SessionHeartbeatRequest, SessionLeaseRequest, SessionLeaseResult,
-    UiIslandRequest, UiIslandResult, UiMode, UiModeRequest, UiModeResult, UiReplyRequest,
-    UiReplyResult, UiStepRequest, UiStepResult, VisualSessionRequest, WindowInfo, SCHEMA_VERSION,
+    load_or_create_machine_identity, now_wall_ms, profile_daemon_trace_dir, profile_socket_path,
+    profile_token_path, schema_bundle, sign_machine_attestation, ApiErrorBody,
+    AttestationChallenge, AttestationChallengeRequest, AttestationSignRequest, CapabilityManifest,
+    CapabilityState, ClipboardReadRequest, ClipboardResult, ClipboardWriteRequest, ConfigInventory,
+    DeliveryMode, DesktopContextSnapshot, DesktopState, Effect, Evidence, EvidenceKind,
+    FrameActionRequest, FrameEncoding, FramePayload, HealthReport, InboundDeliveryMethod,
+    InboundMessage, InboundMessageRequest, InboundMessageState, InboundReplyMode, InboundStatus,
+    InputAction, InputRequest, InputResult, InputRoute, MachineAttestation, MachineIdentityStatus,
+    Manifest, MetricBucket, MetricHistogram, MetricsSnapshot, PermissionReport, PermissionState,
+    ProfilePolicy, RuntimeControlState, RuntimeIdentityClaims, RuntimeInventory, RuntimeMode,
+    RuntimeSessionInfo, RuntimeSessionRole, SafetyState, SessionCancelRequest,
+    SessionHeartbeatRequest, SessionLeaseRequest, SessionLeaseResult, UiIslandRequest,
+    UiIslandResult, UiMode, UiModeRequest, UiModeResult, UiReplyRequest, UiReplyResult,
+    UiStepRequest, UiStepResult, VisualSessionRequest, WebhookSourceStatus,
+    WebhookSubscribeRequest, WindowInfo, SCHEMA_VERSION,
 };
 use cua_input::InputBackend;
 use cua_model::{run_eval_report, EvalConfig, EvalReport};
 use cua_trace::{ActionTurnRecord, TraceRecord, TraceWriter};
+use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, VecDeque};
@@ -51,6 +57,8 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{mpsc, oneshot, Notify, RwLock, Semaphore};
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
+
+type HmacSha256 = Hmac<Sha256>;
 
 #[derive(Clone)]
 pub struct DaemonState {
@@ -75,6 +83,8 @@ pub struct DaemonState {
     http_addr: Arc<StdMutex<String>>,
     profile_socket: Arc<StdMutex<String>>,
     sessions: SessionRegistry,
+    inbox: InboxRegistry,
+    attestation_challenges: Arc<StdMutex<BTreeMap<String, AttestationChallenge>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -119,6 +129,8 @@ impl DaemonState {
             http_addr: Arc::new(StdMutex::new(String::new())),
             profile_socket: Arc::new(StdMutex::new(String::new())),
             sessions: SessionRegistry::default(),
+            inbox: InboxRegistry::default(),
+            attestation_challenges: Arc::new(StdMutex::new(BTreeMap::new())),
         };
         state.publish_event("daemon_started", serde_json::json!({}));
         state
@@ -548,6 +560,262 @@ impl SessionRegistry {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+struct InboxRegistry {
+    inner: Arc<StdMutex<InboxState>>,
+}
+
+#[derive(Debug, Default)]
+struct InboxState {
+    next_sequence: u64,
+    order: VecDeque<String>,
+    statuses: BTreeMap<String, InboundStatus>,
+    idempotency: BTreeMap<String, String>,
+    webhooks: BTreeMap<String, WebhookConfig>,
+}
+
+#[derive(Debug, Clone)]
+struct WebhookConfig {
+    shared_secret: Option<String>,
+    reply_url: Option<String>,
+    updated_wall_ms: i64,
+}
+
+impl InboxRegistry {
+    fn publish(
+        &self,
+        request: InboundMessageRequest,
+        delivery_method: InboundDeliveryMethod,
+    ) -> Result<InboundStatus, ApiError> {
+        validate_inbound_request(&request)?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| ApiError::internal(anyhow::anyhow!("inbox registry poisoned")))?;
+        if let Some(existing_id) = inner.idempotency.get(&request.idempotency_key).cloned() {
+            let mut duplicate = inner.statuses.get(&existing_id).cloned().ok_or_else(|| {
+                ApiError::internal(anyhow::anyhow!("inbox idempotency index lost status"))
+            })?;
+            duplicate.state = InboundMessageState::Duplicate;
+            duplicate.updated_wall_ms = now_wall_ms();
+            duplicate.message.duplicate_of = Some(existing_id);
+            return Ok(duplicate);
+        }
+
+        let now = now_wall_ms();
+        inner.next_sequence = inner.next_sequence.saturating_add(1);
+        let sequence = inner.next_sequence;
+        let message_id = Uuid::new_v4().to_string();
+        let expires_wall_ms = request
+            .ttl_ms
+            .map(|ttl_ms| now + ttl_ms.clamp(1_000, 86_400_000));
+        let message = InboundMessage {
+            schema_version: SCHEMA_VERSION.to_string(),
+            sequence,
+            message_id: message_id.clone(),
+            idempotency_key: request.idempotency_key.clone(),
+            source: normalize_inbound_field(&request.source, 96, "source")?,
+            text: normalize_inbound_field(&request.text, 8_192, "text")?,
+            payload: request.payload,
+            reply_mode: request.reply_mode,
+            reply_url: request.reply_url,
+            delivery_method,
+            received_wall_ms: now,
+            expires_wall_ms,
+            attestation: request.attestation,
+            duplicate_of: None,
+        };
+        let status = InboundStatus {
+            schema_version: SCHEMA_VERSION.to_string(),
+            message_id: message_id.clone(),
+            state: InboundMessageState::Accepted,
+            message,
+            reply: None,
+            error: None,
+            updated_wall_ms: now,
+        };
+        inner
+            .idempotency
+            .insert(request.idempotency_key, message_id.clone());
+        inner.statuses.insert(message_id.clone(), status.clone());
+        inner.order.push_back(message_id);
+        prune_inbox(&mut inner);
+        Ok(status)
+    }
+
+    fn after(&self, after_sequence: Option<u64>) -> Result<Vec<InboundStatus>, ApiError> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| ApiError::internal(anyhow::anyhow!("inbox registry poisoned")))?;
+        let after = after_sequence.unwrap_or(0);
+        Ok(inner
+            .order
+            .iter()
+            .filter_map(|id| inner.statuses.get(id))
+            .filter(|status| status.message.sequence > after)
+            .cloned()
+            .collect())
+    }
+
+    fn status(&self, message_id: &str) -> Result<InboundStatus, ApiError> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| ApiError::internal(anyhow::anyhow!("inbox registry poisoned")))?;
+        inner.statuses.get(message_id).cloned().ok_or_else(|| {
+            ApiError::bad_request("message_id", "inbox message_id is unknown or expired")
+        })
+    }
+
+    fn set_running(&self, message_id: &str) -> Result<InboundStatus, ApiError> {
+        self.update(message_id, InboundMessageState::Running, None, None)
+    }
+
+    fn set_done(&self, message_id: &str, reply: Option<String>) -> Result<InboundStatus, ApiError> {
+        self.update(message_id, InboundMessageState::Done, reply, None)
+    }
+
+    fn set_failed(&self, message_id: &str, error: String) -> Result<InboundStatus, ApiError> {
+        self.update(message_id, InboundMessageState::Failed, None, Some(error))
+    }
+
+    fn update(
+        &self,
+        message_id: &str,
+        state: InboundMessageState,
+        reply: Option<String>,
+        error: Option<String>,
+    ) -> Result<InboundStatus, ApiError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| ApiError::internal(anyhow::anyhow!("inbox registry poisoned")))?;
+        let status = inner.statuses.get_mut(message_id).ok_or_else(|| {
+            ApiError::bad_request("message_id", "inbox message_id is unknown or expired")
+        })?;
+        status.state = state;
+        status.reply = reply;
+        status.error = error;
+        status.updated_wall_ms = now_wall_ms();
+        Ok(status.clone())
+    }
+
+    fn subscribe(&self, request: WebhookSubscribeRequest) -> Result<WebhookSourceStatus, ApiError> {
+        if request.schema_version != SCHEMA_VERSION {
+            return Err(ApiError::bad_request(
+                "schema_version",
+                format!("expected {SCHEMA_VERSION}"),
+            ));
+        }
+        let source = normalize_inbound_field(&request.source, 96, "source")?;
+        let config = WebhookConfig {
+            shared_secret: request
+                .shared_secret
+                .map(|secret| normalize_inbound_field(&secret, 512, "shared_secret"))
+                .transpose()?,
+            reply_url: request.reply_url,
+            updated_wall_ms: now_wall_ms(),
+        };
+        let status = webhook_status_from_config(&source, Some(&config));
+        self.inner
+            .lock()
+            .map_err(|_| ApiError::internal(anyhow::anyhow!("inbox registry poisoned")))?
+            .webhooks
+            .insert(source, config);
+        Ok(status)
+    }
+
+    fn webhook_status(&self, source: &str) -> Result<WebhookSourceStatus, ApiError> {
+        let source = normalize_inbound_field(source, 96, "source")?;
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| ApiError::internal(anyhow::anyhow!("inbox registry poisoned")))?;
+        Ok(webhook_status_from_config(
+            &source,
+            inner.webhooks.get(&source),
+        ))
+    }
+
+    fn webhook_config(&self, source: &str) -> Result<Option<WebhookConfig>, ApiError> {
+        let source = normalize_inbound_field(source, 96, "source")?;
+        Ok(self
+            .inner
+            .lock()
+            .map_err(|_| ApiError::internal(anyhow::anyhow!("inbox registry poisoned")))?
+            .webhooks
+            .get(&source)
+            .cloned())
+    }
+}
+
+fn validate_inbound_request(request: &InboundMessageRequest) -> Result<(), ApiError> {
+    if request.schema_version != SCHEMA_VERSION {
+        return Err(ApiError::bad_request(
+            "schema_version",
+            format!("expected {SCHEMA_VERSION}"),
+        ));
+    }
+    normalize_inbound_field(&request.idempotency_key, 128, "idempotency_key")?;
+    normalize_inbound_field(&request.source, 96, "source")?;
+    normalize_inbound_field(&request.text, 8_192, "text")?;
+    if request.reply_mode == InboundReplyMode::Webhook && request.reply_url.is_none() {
+        return Err(ApiError::bad_request(
+            "reply_url",
+            "reply_mode webhook requires reply_url",
+        ));
+    }
+    Ok(())
+}
+
+fn normalize_inbound_field(
+    value: &str,
+    max_chars: usize,
+    field: &'static str,
+) -> Result<String, ApiError> {
+    let normalized = value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(max_chars)
+        .collect::<String>();
+    if normalized.is_empty() {
+        return Err(ApiError::bad_request(
+            field,
+            format!("{field} must not be empty"),
+        ));
+    }
+    Ok(normalized)
+}
+
+fn prune_inbox(inner: &mut InboxState) {
+    let retention = env_usize("CUA_INBOX_RETENTION", 256, 16, 4096);
+    while inner.order.len() > retention {
+        if let Some(id) = inner.order.pop_front() {
+            if let Some(status) = inner.statuses.remove(&id) {
+                inner.idempotency.remove(&status.message.idempotency_key);
+            }
+        }
+    }
+}
+
+fn webhook_status_from_config(source: &str, config: Option<&WebhookConfig>) -> WebhookSourceStatus {
+    WebhookSourceStatus {
+        schema_version: SCHEMA_VERSION.to_string(),
+        source: source.to_string(),
+        configured: config.is_some(),
+        requires_signature: config
+            .and_then(|config| config.shared_secret.as_ref())
+            .is_some(),
+        reply_url: config.and_then(|config| config.reply_url.clone()),
+        updated_wall_ms: config
+            .map(|config| config.updated_wall_ms)
+            .unwrap_or_else(now_wall_ms),
+    }
+}
+
 fn normalize_session_field(
     value: String,
     max_chars: usize,
@@ -592,6 +860,7 @@ fn hud_wake_event(kind: &str) -> bool {
             | "control_paused"
             | "control_resumed"
             | "kill_switch"
+            | "inbound_message"
             | "visual_session_started"
     )
 }
@@ -1329,6 +1598,21 @@ pub fn router(state: DaemonState) -> Router {
         .route("/session/heartbeat", post(session_heartbeat))
         .route("/session/cancel", post(session_cancel))
         .route("/session/status", get(session_status))
+        .route("/inbox/message", post(inbox_message))
+        .route("/inbox/messages", get(inbox_messages))
+        .route("/inbox/status/:message_id", get(inbox_status))
+        .route(
+            "/inbox/status/:message_id/running",
+            post(inbox_mark_running),
+        )
+        .route("/inbox/status/:message_id/done", post(inbox_mark_done))
+        .route("/inbox/status/:message_id/failed", post(inbox_mark_failed))
+        .route("/webhooks/:source", post(webhook_publish))
+        .route("/webhooks/:source/subscribe", post(webhook_subscribe))
+        .route("/webhooks/:source/status", get(webhook_status))
+        .route("/attestation/identity", get(attestation_identity))
+        .route("/attestation/challenge", post(attestation_challenge))
+        .route("/attestation/sign", post(attestation_sign))
         .route("/ui/step", post(ui_step))
         .route("/ui/reply", post(ui_reply))
         .route("/ui/mode", post(ui_mode))
@@ -1864,6 +2148,197 @@ async fn handle_unix_request(state: &DaemonState, request: UnixRequest) -> serde
             }
         }
         "session.status" => Ok(serde_json::to_value(state.runtime_inventory().await)),
+        "inbox.publish" => {
+            let params = request.params.unwrap_or_else(|| serde_json::json!({}));
+            match serde_json::from_value::<InboundMessageRequest>(params) {
+                Ok(request) => {
+                    publish_inbound_message(state, request, InboundDeliveryMethod::UnixSocket)
+                        .map(serde_json::to_value)
+                }
+                Err(error) => {
+                    return unix_error(
+                        id,
+                        "bad_request",
+                        error.to_string(),
+                        Some(StatusCode::BAD_REQUEST),
+                    )
+                }
+            }
+        }
+        "inbox.after" => {
+            let params = request.params.unwrap_or_else(|| serde_json::json!({}));
+            match serde_json::from_value::<InboxQuery>(params) {
+                Ok(query) => state
+                    .inbox
+                    .after(query.after_sequence.or(query.after))
+                    .map(serde_json::to_value),
+                Err(error) => {
+                    return unix_error(
+                        id,
+                        "bad_request",
+                        error.to_string(),
+                        Some(StatusCode::BAD_REQUEST),
+                    )
+                }
+            }
+        }
+        "inbox.status" => {
+            let params = request.params.unwrap_or_else(|| serde_json::json!({}));
+            match serde_json::from_value::<InboxMessageIdRequest>(params) {
+                Ok(request) => state
+                    .inbox
+                    .status(&request.message_id)
+                    .map(serde_json::to_value),
+                Err(error) => {
+                    return unix_error(
+                        id,
+                        "bad_request",
+                        error.to_string(),
+                        Some(StatusCode::BAD_REQUEST),
+                    )
+                }
+            }
+        }
+        "inbox.running" => {
+            let params = request.params.unwrap_or_else(|| serde_json::json!({}));
+            match serde_json::from_value::<InboxMessageIdRequest>(params) {
+                Ok(request) => {
+                    let result = state.inbox.set_running(&request.message_id);
+                    if let Ok(status) = result.as_ref() {
+                        publish_inbox_status_event(state, status);
+                    }
+                    result.map(serde_json::to_value)
+                }
+                Err(error) => {
+                    return unix_error(
+                        id,
+                        "bad_request",
+                        error.to_string(),
+                        Some(StatusCode::BAD_REQUEST),
+                    )
+                }
+            }
+        }
+        "inbox.done" => {
+            let params = request.params.unwrap_or_else(|| serde_json::json!({}));
+            match serde_json::from_value::<InboxDoneRpcRequest>(params) {
+                Ok(request) => {
+                    let result = state.inbox.set_done(
+                        &request.message_id,
+                        request.reply.map(|reply| compact_action_text(&reply, 480)),
+                    );
+                    if let Ok(status) = result.as_ref() {
+                        publish_inbox_status_event(state, status);
+                    }
+                    result.map(serde_json::to_value)
+                }
+                Err(error) => {
+                    return unix_error(
+                        id,
+                        "bad_request",
+                        error.to_string(),
+                        Some(StatusCode::BAD_REQUEST),
+                    )
+                }
+            }
+        }
+        "inbox.failed" => {
+            let params = request.params.unwrap_or_else(|| serde_json::json!({}));
+            match serde_json::from_value::<InboxFailedRpcRequest>(params) {
+                Ok(request) => {
+                    let result = state.inbox.set_failed(
+                        &request.message_id,
+                        compact_action_text(&request.error, 480),
+                    );
+                    if let Ok(status) = result.as_ref() {
+                        publish_inbox_status_event(state, status);
+                    }
+                    result.map(serde_json::to_value)
+                }
+                Err(error) => {
+                    return unix_error(
+                        id,
+                        "bad_request",
+                        error.to_string(),
+                        Some(StatusCode::BAD_REQUEST),
+                    )
+                }
+            }
+        }
+        "webhook.publish" => {
+            let params = request.params.unwrap_or_else(|| serde_json::json!({}));
+            match serde_json::from_value::<InboundMessageRequest>(params) {
+                Ok(request) => {
+                    publish_inbound_message(state, request, InboundDeliveryMethod::Webhook)
+                        .map(serde_json::to_value)
+                }
+                Err(error) => {
+                    return unix_error(
+                        id,
+                        "bad_request",
+                        error.to_string(),
+                        Some(StatusCode::BAD_REQUEST),
+                    )
+                }
+            }
+        }
+        "webhook.subscribe" => {
+            let params = request.params.unwrap_or_else(|| serde_json::json!({}));
+            match serde_json::from_value::<WebhookSubscribeRequest>(params) {
+                Ok(request) => state.inbox.subscribe(request).map(serde_json::to_value),
+                Err(error) => {
+                    return unix_error(
+                        id,
+                        "bad_request",
+                        error.to_string(),
+                        Some(StatusCode::BAD_REQUEST),
+                    )
+                }
+            }
+        }
+        "webhook.status" => {
+            let params = request.params.unwrap_or_else(|| serde_json::json!({}));
+            let source = params
+                .get("source")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            state.inbox.webhook_status(source).map(serde_json::to_value)
+        }
+        "attestation.identity" => attestation_identity_state(state)
+            .await
+            .map(serde_json::to_value),
+        "attestation.challenge" => {
+            let params = request.params.unwrap_or_else(|| serde_json::json!({}));
+            match serde_json::from_value::<AttestationChallengeRequest>(params) {
+                Ok(request) => attestation_challenge_state(state, request)
+                    .await
+                    .map(serde_json::to_value),
+                Err(error) => {
+                    return unix_error(
+                        id,
+                        "bad_request",
+                        error.to_string(),
+                        Some(StatusCode::BAD_REQUEST),
+                    )
+                }
+            }
+        }
+        "attestation.sign" => {
+            let params = request.params.unwrap_or_else(|| serde_json::json!({}));
+            match serde_json::from_value::<AttestationSignRequest>(params) {
+                Ok(request) => attestation_sign_state(state, request)
+                    .await
+                    .map(serde_json::to_value),
+                Err(error) => {
+                    return unix_error(
+                        id,
+                        "bad_request",
+                        error.to_string(),
+                        Some(StatusCode::BAD_REQUEST),
+                    )
+                }
+            }
+        }
         "capture.screenshot" => {
             let params = request.params.unwrap_or_else(|| serde_json::json!({}));
             match serde_json::from_value::<ScreenshotRequest>(params) {
@@ -2283,10 +2758,34 @@ fn manifest_payload() -> Manifest {
             "POST /session/heartbeat".to_string(),
             "POST /session/cancel".to_string(),
             "GET /session/status".to_string(),
+            "POST /inbox/message".to_string(),
+            "GET /inbox/messages?after=<sequence>".to_string(),
+            "GET /inbox/status/<message_id>".to_string(),
+            "POST /inbox/status/<message_id>/running".to_string(),
+            "POST /inbox/status/<message_id>/done".to_string(),
+            "POST /inbox/status/<message_id>/failed".to_string(),
+            "POST /webhooks/<source>".to_string(),
+            "POST /webhooks/<source>/subscribe".to_string(),
+            "GET /webhooks/<source>/status".to_string(),
+            "GET /attestation/identity".to_string(),
+            "POST /attestation/challenge".to_string(),
+            "POST /attestation/sign".to_string(),
             "UNIX session.acquire".to_string(),
             "UNIX session.heartbeat".to_string(),
             "UNIX session.cancel".to_string(),
             "UNIX session.status".to_string(),
+            "UNIX attestation.identity".to_string(),
+            "UNIX attestation.challenge".to_string(),
+            "UNIX attestation.sign".to_string(),
+            "UNIX inbox.publish".to_string(),
+            "UNIX inbox.after".to_string(),
+            "UNIX inbox.status".to_string(),
+            "UNIX inbox.running".to_string(),
+            "UNIX inbox.done".to_string(),
+            "UNIX inbox.failed".to_string(),
+            "UNIX webhook.publish".to_string(),
+            "UNIX webhook.subscribe".to_string(),
+            "UNIX webhook.status".to_string(),
             "UNIX schemas".to_string(),
             "UNIX config.status".to_string(),
             "POST /ui/step".to_string(),
@@ -2318,6 +2817,18 @@ fn manifest_payload() -> Manifest {
             "cua session heartbeat <session-id> --json".to_string(),
             "cua session cancel <session-id> --json".to_string(),
             "cua session status --json".to_string(),
+            "cua attestation identity --json".to_string(),
+            "cua attestation challenge --audience <audience> --json".to_string(),
+            "cua attestation sign --audience <audience> --nonce <nonce> --json".to_string(),
+            "cua attestation verify <attestation.json> --audience <audience> --json".to_string(),
+            "cua identity status --json".to_string(),
+            "cua identity rotate --json".to_string(),
+            "cua inbox publish <text> --source <source> --json".to_string(),
+            "cua inbox wait --after <sequence> --json".to_string(),
+            "cua inbox status <message-id> --json".to_string(),
+            "cua webhook publish <text> --source <source> --json".to_string(),
+            "cua webhook subscribe <source> --secret <secret> --json".to_string(),
+            "cua webhook status <source> --json".to_string(),
             "cua stream --unix --json".to_string(),
             "cua ui step <label> --step-index <n> --step-total <n> --json".to_string(),
             "cua ui reply <text> --json".to_string(),
@@ -2976,6 +3487,456 @@ async fn session_cancel(
 
 async fn session_status(State(state): State<DaemonState>) -> Json<RuntimeInventory> {
     Json(state.runtime_inventory().await)
+}
+
+#[derive(Debug, Deserialize)]
+struct InboxQuery {
+    after: Option<u64>,
+    after_sequence: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct InboxDoneRequest {
+    reply: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct InboxFailedRequest {
+    error: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct InboxMessageIdRequest {
+    message_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct InboxDoneRpcRequest {
+    message_id: String,
+    reply: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct InboxFailedRpcRequest {
+    message_id: String,
+    error: String,
+}
+
+async fn inbox_message(
+    State(state): State<DaemonState>,
+    Json(request): Json<InboundMessageRequest>,
+) -> Result<Json<InboundStatus>, ApiError> {
+    Ok(Json(publish_inbound_message(
+        &state,
+        request,
+        InboundDeliveryMethod::LocalHttp,
+    )?))
+}
+
+async fn inbox_messages(
+    State(state): State<DaemonState>,
+    Query(query): Query<InboxQuery>,
+) -> Result<Json<Vec<InboundStatus>>, ApiError> {
+    Ok(Json(
+        state.inbox.after(query.after_sequence.or(query.after))?,
+    ))
+}
+
+async fn inbox_status(
+    State(state): State<DaemonState>,
+    AxumPath(message_id): AxumPath<String>,
+) -> Result<Json<InboundStatus>, ApiError> {
+    Ok(Json(state.inbox.status(&message_id)?))
+}
+
+async fn inbox_mark_running(
+    State(state): State<DaemonState>,
+    AxumPath(message_id): AxumPath<String>,
+) -> Result<Json<InboundStatus>, ApiError> {
+    let status = state.inbox.set_running(&message_id)?;
+    publish_inbox_status_event(&state, &status);
+    Ok(Json(status))
+}
+
+async fn inbox_mark_done(
+    State(state): State<DaemonState>,
+    AxumPath(message_id): AxumPath<String>,
+    Json(request): Json<InboxDoneRequest>,
+) -> Result<Json<InboundStatus>, ApiError> {
+    let status = state.inbox.set_done(
+        &message_id,
+        request.reply.map(|reply| compact_action_text(&reply, 480)),
+    )?;
+    publish_inbox_status_event(&state, &status);
+    Ok(Json(status))
+}
+
+async fn inbox_mark_failed(
+    State(state): State<DaemonState>,
+    AxumPath(message_id): AxumPath<String>,
+    Json(request): Json<InboxFailedRequest>,
+) -> Result<Json<InboundStatus>, ApiError> {
+    let status = state
+        .inbox
+        .set_failed(&message_id, compact_action_text(&request.error, 480))?;
+    publish_inbox_status_event(&state, &status);
+    Ok(Json(status))
+}
+
+async fn webhook_subscribe(
+    State(state): State<DaemonState>,
+    AxumPath(source): AxumPath<String>,
+    Json(mut request): Json<WebhookSubscribeRequest>,
+) -> Result<Json<WebhookSourceStatus>, ApiError> {
+    let source = normalize_inbound_field(&source, 96, "source")?;
+    if !request.source.trim().is_empty()
+        && normalize_inbound_field(&request.source, 96, "source")? != source
+    {
+        return Err(ApiError::bad_request(
+            "source",
+            "webhook source path and request source must match",
+        ));
+    }
+    request.source = source;
+    Ok(Json(state.inbox.subscribe(request)?))
+}
+
+async fn webhook_status(
+    State(state): State<DaemonState>,
+    AxumPath(source): AxumPath<String>,
+) -> Result<Json<WebhookSourceStatus>, ApiError> {
+    Ok(Json(state.inbox.webhook_status(&source)?))
+}
+
+async fn webhook_publish(
+    State(state): State<DaemonState>,
+    AxumPath(source): AxumPath<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<InboundStatus>, ApiError> {
+    let source = normalize_inbound_field(&source, 96, "source")?;
+    let config = state.inbox.webhook_config(&source)?;
+    if let Some(secret) = config
+        .as_ref()
+        .and_then(|config| config.shared_secret.as_ref())
+    {
+        verify_webhook_signature(secret, &headers, &body)?;
+    }
+    let mut request: InboundMessageRequest = serde_json::from_slice(&body)
+        .map_err(|error| ApiError::bad_request("body", error.to_string()))?;
+    request.source = source;
+    if request.reply_url.is_none() {
+        request.reply_url = config.and_then(|config| config.reply_url);
+    }
+    Ok(Json(publish_inbound_message(
+        &state,
+        request,
+        InboundDeliveryMethod::Webhook,
+    )?))
+}
+
+fn publish_inbound_message(
+    state: &DaemonState,
+    request: InboundMessageRequest,
+    delivery_method: InboundDeliveryMethod,
+) -> Result<InboundStatus, ApiError> {
+    let status = state.inbox.publish(request, delivery_method)?;
+    if status.state != InboundMessageState::Duplicate {
+        state.publish_event(
+            "inbound_message",
+            serde_json::json!({
+                "message_id": status.message_id,
+                "sequence": status.message.sequence,
+                "source": status.message.source,
+                "text": status.message.text,
+                "payload": status.message.payload,
+                "reply_mode": status.message.reply_mode,
+                "reply_url": status.message.reply_url,
+                "delivery_method": status.message.delivery_method,
+            }),
+        );
+    }
+    Ok(status)
+}
+
+fn publish_inbox_status_event(state: &DaemonState, status: &InboundStatus) {
+    state.publish_event(
+        "inbox_status",
+        serde_json::json!({
+            "message_id": status.message_id,
+            "sequence": status.message.sequence,
+            "state": status.state,
+            "reply": status.reply,
+            "error": status.error,
+        }),
+    );
+}
+
+fn verify_webhook_signature(
+    secret: &str,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> Result<(), ApiError> {
+    let provided = headers
+        .get("x-cua-webhook-signature")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            ApiError::forbidden(
+                "webhook_signature_required",
+                "x-cua-webhook-signature is required for this webhook source",
+            )
+        })?;
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
+        .map_err(|error| ApiError::internal(anyhow::anyhow!(error)))?;
+    mac.update(body);
+    let expected = bytes_to_hex(&mac.finalize().into_bytes());
+    let provided = provided.strip_prefix("sha256=").unwrap_or(provided);
+    if constant_time_ascii_eq(provided.as_bytes(), expected.as_bytes()) {
+        Ok(())
+    } else {
+        Err(ApiError::forbidden(
+            "webhook_signature_mismatch",
+            "webhook signature did not match this source",
+        ))
+    }
+}
+
+fn bytes_to_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
+fn constant_time_ascii_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter()
+        .zip(b)
+        .fold(0u8, |acc, (left, right)| acc | (left ^ right))
+        == 0
+}
+
+async fn attestation_identity(
+    State(state): State<DaemonState>,
+) -> Result<Json<MachineIdentityStatus>, ApiError> {
+    Ok(Json(attestation_identity_state(&state).await?))
+}
+
+async fn attestation_challenge(
+    State(state): State<DaemonState>,
+    Json(request): Json<AttestationChallengeRequest>,
+) -> Result<Json<AttestationChallenge>, ApiError> {
+    Ok(Json(attestation_challenge_state(&state, request).await?))
+}
+
+async fn attestation_sign(
+    State(state): State<DaemonState>,
+    Json(request): Json<AttestationSignRequest>,
+) -> Result<Json<MachineAttestation>, ApiError> {
+    Ok(Json(attestation_sign_state(&state, request).await?))
+}
+
+async fn attestation_identity_state(
+    state: &DaemonState,
+) -> Result<MachineIdentityStatus, ApiError> {
+    load_or_create_machine_identity(&state.profile).map_err(ApiError::internal)
+}
+
+async fn attestation_challenge_state(
+    state: &DaemonState,
+    request: AttestationChallengeRequest,
+) -> Result<AttestationChallenge, ApiError> {
+    if request.audience.trim().is_empty() {
+        return Err(ApiError::bad_request("audience", "audience is required"));
+    }
+    let issued_wall_ms = now_wall_ms();
+    let challenge = AttestationChallenge {
+        schema_version: SCHEMA_VERSION.to_string(),
+        challenge_id: Uuid::new_v4().to_string(),
+        nonce: Uuid::new_v4().to_string(),
+        audience: request.audience,
+        issued_wall_ms,
+        expires_wall_ms: issued_wall_ms + attestation_challenge_ttl().as_millis() as i64,
+    };
+    let mut challenges = state.attestation_challenges.lock().map_err(|_| {
+        ApiError::internal(anyhow::anyhow!(
+            "attestation challenge registry lock poisoned"
+        ))
+    })?;
+    prune_expired_challenges(&mut challenges, issued_wall_ms);
+    challenges.insert(challenge.challenge_id.clone(), challenge.clone());
+    Ok(challenge)
+}
+
+async fn attestation_sign_state(
+    state: &DaemonState,
+    request: AttestationSignRequest,
+) -> Result<MachineAttestation, ApiError> {
+    if request.audience.trim().is_empty() {
+        return Err(ApiError::bad_request("audience", "audience is required"));
+    }
+    if request.nonce.trim().is_empty() {
+        return Err(ApiError::bad_request("nonce", "nonce is required"));
+    }
+    let now = now_wall_ms();
+    let challenge = if let Some(challenge_id) = request.challenge_id.as_deref() {
+        let mut challenges = state.attestation_challenges.lock().map_err(|_| {
+            ApiError::internal(anyhow::anyhow!(
+                "attestation challenge registry lock poisoned"
+            ))
+        })?;
+        prune_expired_challenges(&mut challenges, now);
+        let challenge = challenges.remove(challenge_id).ok_or_else(|| {
+            ApiError::bad_request("challenge_id", "challenge_id is unknown or already used")
+        })?;
+        if challenge.audience != request.audience {
+            return Err(ApiError::bad_request(
+                "audience",
+                "challenge audience mismatch",
+            ));
+        }
+        if challenge.nonce != request.nonce {
+            return Err(ApiError::bad_request("nonce", "challenge nonce mismatch"));
+        }
+        if now > challenge.expires_wall_ms {
+            return Err(ApiError::bad_request("challenge_id", "challenge expired"));
+        }
+        challenge
+    } else {
+        AttestationChallenge {
+            schema_version: SCHEMA_VERSION.to_string(),
+            challenge_id: Uuid::new_v4().to_string(),
+            nonce: request.nonce,
+            audience: request.audience.clone(),
+            issued_wall_ms: now,
+            expires_wall_ms: now + attestation_challenge_ttl().as_millis() as i64,
+        }
+    };
+    let claims = runtime_identity_claims(state, request.profile, request.session_id).await?;
+    sign_machine_attestation(challenge, claims).map_err(ApiError::internal)
+}
+
+async fn runtime_identity_claims(
+    state: &DaemonState,
+    profile: Option<String>,
+    session_id: Option<String>,
+) -> Result<RuntimeIdentityClaims, ApiError> {
+    let permissions = state.permission_report().await;
+    let control = state.control.read().await.clone();
+    let code_identity = current_exe_code_identity().unwrap_or_default();
+    let socket_path = state
+        .profile_socket
+        .lock()
+        .map(|value| value.clone())
+        .unwrap_or_default();
+    let http_addr = state
+        .http_addr
+        .lock()
+        .map(|value| value.clone())
+        .unwrap_or_default();
+    Ok(RuntimeIdentityClaims {
+        schema_version: SCHEMA_VERSION.to_string(),
+        runtime_name: "cua".to_string(),
+        runtime_version: env!("CARGO_PKG_VERSION").to_string(),
+        daemon_pid: std::process::id(),
+        profile: profile.unwrap_or_else(|| state.profile.clone()),
+        socket_path,
+        http_addr,
+        bundle_id: code_identity.bundle_id,
+        designated_requirement: code_identity.designated_requirement,
+        code_signature_summary: code_identity.code_signature_summary,
+        binary_sha256: current_exe_sha256().ok(),
+        permissions,
+        active_profile: control.active_profile,
+        safety_state: control.safety_state,
+        session_id,
+    })
+}
+
+#[derive(Debug, Default)]
+struct CurrentExeCodeIdentity {
+    bundle_id: Option<String>,
+    designated_requirement: Option<String>,
+    code_signature_summary: Option<String>,
+}
+
+fn current_exe_code_identity() -> anyhow::Result<CurrentExeCodeIdentity> {
+    let exe = std::env::current_exe()?;
+    let Some(macos_dir) = exe.parent() else {
+        return Ok(CurrentExeCodeIdentity::default());
+    };
+    if macos_dir.file_name().and_then(|name| name.to_str()) != Some("MacOS") {
+        return Ok(CurrentExeCodeIdentity::default());
+    }
+    let Some(contents_dir) = macos_dir.parent() else {
+        return Ok(CurrentExeCodeIdentity::default());
+    };
+    if contents_dir.file_name().and_then(|name| name.to_str()) != Some("Contents") {
+        return Ok(CurrentExeCodeIdentity::default());
+    }
+    let info_plist = contents_dir.join("Info.plist");
+    let bundle_id = command_stdout(
+        "/usr/bin/plutil",
+        &["-extract", "CFBundleIdentifier", "raw", "-o", "-"],
+        Some(&info_plist),
+    );
+    let code_signature_summary = command_stdout(
+        "/usr/bin/codesign",
+        &["--display", "--verbose=2"],
+        Some(&exe),
+    );
+    let designated_requirement = command_stdout("/usr/bin/codesign", &["-d", "-r-"], Some(&exe));
+
+    Ok(CurrentExeCodeIdentity {
+        bundle_id,
+        designated_requirement,
+        code_signature_summary,
+    })
+}
+
+fn command_stdout(command: &str, args: &[&str], final_path: Option<&Path>) -> Option<String> {
+    let mut process = std::process::Command::new(command);
+    process.args(args);
+    if let Some(path) = final_path {
+        process.arg(path);
+    }
+    let output = process.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    match (stdout.is_empty(), stderr.is_empty()) {
+        (false, _) => Some(stdout),
+        (true, false) => Some(stderr),
+        (true, true) => None,
+    }
+}
+
+fn attestation_challenge_ttl() -> Duration {
+    Duration::from_secs(5 * 60)
+}
+
+fn prune_expired_challenges(
+    challenges: &mut BTreeMap<String, AttestationChallenge>,
+    now_wall_ms: i64,
+) {
+    challenges.retain(|_, challenge| challenge.expires_wall_ms >= now_wall_ms);
+}
+
+fn current_exe_sha256() -> anyhow::Result<String> {
+    let exe = std::env::current_exe()?;
+    let bytes = std::fs::read(exe)?;
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 async fn config_status(State(state): State<DaemonState>) -> Json<ConfigInventory> {
@@ -5295,6 +6256,130 @@ mod tests {
             .await,
         );
         assert_eq!(empty_wait.as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn inbox_publish_deduplicates_and_advances_by_sequence() {
+        let state = DaemonState::synthetic("inbox-methods", "token");
+        let request = serde_json::json!({
+            "schema_version": SCHEMA_VERSION,
+            "idempotency_key": "same-message",
+            "source": "test",
+            "text": "open notes",
+            "payload": {"kind": "smoke"}
+        });
+
+        let first = unix_result(
+            handle_unix_request(&state, unix_request("inbox.publish", request.clone())).await,
+        );
+        let duplicate =
+            unix_result(handle_unix_request(&state, unix_request("inbox.publish", request)).await);
+        let after_zero = unix_result(
+            handle_unix_request(
+                &state,
+                unix_request("inbox.after", serde_json::json!({ "after_sequence": 0 })),
+            )
+            .await,
+        );
+        let after_first = unix_result(
+            handle_unix_request(
+                &state,
+                unix_request(
+                    "inbox.after",
+                    serde_json::json!({ "after_sequence": first["message"]["sequence"] }),
+                ),
+            )
+            .await,
+        );
+
+        assert_eq!(first["state"], "accepted");
+        assert_eq!(first["message"]["sequence"], 1);
+        assert_eq!(duplicate["state"], "duplicate");
+        assert_eq!(duplicate["message_id"], first["message_id"]);
+        assert_eq!(after_zero.as_array().unwrap().len(), 1);
+        assert!(after_first.as_array().unwrap().is_empty());
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(state
+            .events
+            .snapshot()
+            .await
+            .iter()
+            .any(
+                |event| event["kind"] == "inbound_message" && event["data"]["text"] == "open notes"
+            ));
+    }
+
+    #[tokio::test]
+    async fn inbox_status_transitions_are_pollable() {
+        let state = DaemonState::synthetic("inbox-status", "token");
+        let published = unix_result(
+            handle_unix_request(
+                &state,
+                unix_request(
+                    "inbox.publish",
+                    serde_json::json!({
+                        "schema_version": SCHEMA_VERSION,
+                        "idempotency_key": "status-message",
+                        "source": "test",
+                        "text": "what do you see"
+                    }),
+                ),
+            )
+            .await,
+        );
+        let message_id = published["message_id"].as_str().unwrap();
+
+        let running = unix_result(
+            handle_unix_request(
+                &state,
+                unix_request(
+                    "inbox.running",
+                    serde_json::json!({ "message_id": message_id }),
+                ),
+            )
+            .await,
+        );
+        let done = unix_result(
+            handle_unix_request(
+                &state,
+                unix_request(
+                    "inbox.done",
+                    serde_json::json!({ "message_id": message_id, "reply": "complete" }),
+                ),
+            )
+            .await,
+        );
+        let status = unix_result(
+            handle_unix_request(
+                &state,
+                unix_request(
+                    "inbox.status",
+                    serde_json::json!({ "message_id": message_id }),
+                ),
+            )
+            .await,
+        );
+
+        assert_eq!(running["state"], "running");
+        assert_eq!(done["state"], "done");
+        assert_eq!(status["reply"], "complete");
+    }
+
+    #[test]
+    fn webhook_signature_accepts_sha256_hmac_header() {
+        let body =
+            br#"{"schema_version":"cua.v1","idempotency_key":"x","source":"test","text":"hi"}"#;
+        let mut mac = HmacSha256::new_from_slice(b"secret").unwrap();
+        mac.update(body);
+        let signature = format!("sha256={}", bytes_to_hex(&mac.finalize().into_bytes()));
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-cua-webhook-signature",
+            HeaderValue::from_str(&signature).unwrap(),
+        );
+
+        assert!(verify_webhook_signature("secret", &headers, body).is_ok());
+        assert!(verify_webhook_signature("wrong", &headers, body).is_err());
     }
 
     #[tokio::test]

@@ -329,7 +329,7 @@ jq -e '(.public_surfaces | index("cli")) and (.public_surfaces | index("local_ht
   "$HTTP_MANIFEST" >/dev/null
 jq -e '.schema_version == "cua.v1" and (.histograms | type) == "array" and (.counters | type) == "object"' \
   "$HTTP_METRICS" >/dev/null
-jq -e '.schema_version == "cua.v1" and .counters["capture.sck.frames"] > 0' \
+jq -e '.schema_version == "cua.v1" and ((.counters["capture.sck.frames"] // 0) + (.counters["capture.core_graphics.frames"] // 0)) > 0 and (.counters["capture.synthetic.frames"] // 0) == 0' \
   "$FINAL_METRICS" >/dev/null
 jq -e '.accepted == true and .label == "http programmable step" and .source == "http proof" and .task == "http task" and .tool == "http tool" and .step_index == 2 and .step_total == 5 and .ttl_ms == 1500' \
   "$HTTP_UI_STEP" >/dev/null

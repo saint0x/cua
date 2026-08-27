@@ -67,7 +67,9 @@ export class Cua {
             "",
             "[[steps]]",
             `id = ${tomlString("rpc")}`,
-            `do = ${tomlString(method)}`,
+            `save_as = ${tomlString("rpc")}`,
+            'do = "rpc"',
+            `method = ${tomlString(method)}`,
             `params = ${tomlValue(params)}`,
             options.sessionId ? `session_id = ${tomlString(options.sessionId)}` : "",
         ]
@@ -99,11 +101,13 @@ export class Cua {
         }, session ? { sessionId: sessionIdOf(session) } : {});
     }
     async acquireOwner(clientName = "typescript sdk", ttlMs) {
+        const sessionId = randomUUID();
         const args = [
             "--profile",
             this.profile,
             "session",
             "acquire",
+            sessionId,
             "--role",
             "owner",
             "--client-name",
@@ -114,7 +118,6 @@ export class Cua {
             args.push("--ttl-ms", String(ttlMs));
         }
         const raw = await this.execJson(args);
-        const sessionId = readSessionId(raw);
         return { sessionId, raw };
     }
     async cancelSession(session, targetSessionId) {
@@ -134,6 +137,29 @@ export class Cua {
     }
     async sessionStatus() {
         return this.rpc("session.status");
+    }
+    async inboxPublish(text, options = {}) {
+        return this.rpc("inbox.publish", inboundMessageBody(text, options, "typescript-sdk"));
+    }
+    async inboxAfter(afterSequence = 0) {
+        return this.rpc("inbox.after", { after_sequence: afterSequence });
+    }
+    async inboxStatus(messageId) {
+        return this.rpc("inbox.status", { message_id: messageId });
+    }
+    async webhookPublish(text, options) {
+        return this.rpc("webhook.publish", inboundMessageBody(text, options, options.source));
+    }
+    async webhookSubscribe(options) {
+        return this.rpc("webhook.subscribe", compact({
+            schema_version: "cua.v1",
+            source: options.source,
+            shared_secret: options.secret,
+            reply_url: options.replyUrl,
+        }));
+    }
+    async webhookStatus(source) {
+        return this.rpc("webhook.status", { source });
     }
     async profileStatus() {
         return this.step("profile.status", {}, "profile");
@@ -555,6 +581,18 @@ function readResult(value, key) {
 }
 function sessionIdOf(session) {
     return typeof session === "string" ? session : session.sessionId;
+}
+function inboundMessageBody(text, options, defaultSource) {
+    return compact({
+        schema_version: "cua.v1",
+        idempotency_key: options.idempotencyKey ?? randomUUID(),
+        source: options.source ?? defaultSource,
+        text,
+        payload: options.payload ?? {},
+        reply_mode: options.replyUrl ? "webhook" : "ui",
+        reply_url: options.replyUrl,
+        ttl_ms: options.ttlMs,
+    });
 }
 function rpcSession(options) {
     return { sessionId: sessionIdOf(options.session) };

@@ -11,7 +11,8 @@ CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 ENTITLEMENTS="$OUT_DIR/$APP_NAME.entitlements.plist"
-BUILD_SUPPORT_DIR="$ROOT/target/cua-package"
+TARGET_ROOT="${CARGO_TARGET_DIR:-$ROOT/target}"
+BUILD_SUPPORT_DIR="$TARGET_ROOT/cua-package"
 EMBEDDED_INFO_PLIST="$BUILD_SUPPORT_DIR/$APP_NAME.binary-info.plist"
 
 mkdir -p "$OUT_DIR" "$BUILD_SUPPORT_DIR"
@@ -63,14 +64,14 @@ PACKAGE_RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-C link-arg=-Wl,-sectcreate,__TEXT,_
 RUSTFLAGS="$PACKAGE_RUSTFLAGS" cargo build -p cua --release
 RUSTFLAGS="$PACKAGE_RUSTFLAGS" cargo build -p cua-voice --release
 
-BIN="$ROOT/target/release/cua"
-VOICE_BIN="$ROOT/target/release/cua-voice"
+BIN="$TARGET_ROOT/release/cua"
+VOICE_BIN="$TARGET_ROOT/release/cua-voice"
 CTX_BIN="$ROOT/vendor/ctx/ctx"
 if [[ ! -x "$BIN" ]]; then
   CANDIDATES=()
   while IFS= read -r candidate; do
     CANDIDATES+=("$candidate")
-  done < <(find "$ROOT/target" -path '*/release/cua' -type f -perm +111 | sort)
+  done < <(find "$TARGET_ROOT" -path '*/release/cua' -type f -perm +111 | sort)
   if [[ "${#CANDIDATES[@]}" -ne 1 ]]; then
     printf 'expected one release cua binary, found %s\n' "${#CANDIDATES[@]}" >&2
     exit 1
@@ -81,7 +82,7 @@ if [[ ! -x "$VOICE_BIN" ]]; then
   VOICE_CANDIDATES=()
   while IFS= read -r candidate; do
     VOICE_CANDIDATES+=("$candidate")
-  done < <(find "$ROOT/target" -path '*/release/cua-voice' -type f -perm +111 | sort)
+  done < <(find "$TARGET_ROOT" -path '*/release/cua-voice' -type f -perm +111 | sort)
   if [[ "${#VOICE_CANDIDATES[@]}" -ne 1 ]]; then
     printf 'expected one release cua-voice binary, found %s\n' "${#VOICE_CANDIDATES[@]}" >&2
     exit 1

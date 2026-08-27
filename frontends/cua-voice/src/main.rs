@@ -1148,6 +1148,7 @@ fn main() -> anyhow::Result<()> {
         start_control_shortcut_controller(config.clone(), runtime.clone(), tx.clone());
         start_island_double_tap_listener(tx.clone(), island_bounds.clone());
         start_agent_step_poll(config.profile.clone(), runtime.clone(), tx.clone());
+        start_inbox_turn_poll(config.clone(), runtime.clone(), tx.clone());
     }
     Application::new().run(move |cx: &mut App| {
         if should_request_desktop_access {
@@ -1422,6 +1423,124 @@ fn start_agent_step_poll(
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     });
+}
+
+fn start_inbox_turn_poll(
+    config: VoiceConfig,
+    runtime: Arc<tokio::runtime::Runtime>,
+    tx: Sender<VoiceUiEvent>,
+) {
+    runtime.spawn(async move {
+        let Ok(client) = CuaClient::new(config.profile.clone()).await else {
+            tx.send(VoiceUiEvent::Error("Invalid cua profile path".to_string()))
+                .ok();
+            return;
+        };
+        let mut last_sequence = 0_u64;
+        loop {
+            let Ok(mut session) = client.session().await else {
+                tokio::time::sleep(Duration::from_millis(150)).await;
+                continue;
+            };
+            if last_sequence == 0 {
+                match session.events_snapshot().await {
+                    Ok(events) => {
+                        last_sequence = max_daemon_event_sequence(&events);
+                    }
+                    Err(_) => break,
+                }
+            }
+            loop {
+                match session.events_wait(last_sequence, 1_000).await {
+                    Ok(events) => {
+                        for event in events {
+                            if let Some(sequence) =
+                                event.get("sequence").and_then(|value| value.as_u64())
+                            {
+                                last_sequence = last_sequence.max(sequence);
+                            }
+                            let Some(message) = inbound_message_from_daemon_event(&event) else {
+                                continue;
+                            };
+                            let message_id = message.message_id.clone();
+                            client.inbox_running(message_id.clone()).await.ok();
+                            let prompt = inbound_prompt(&message);
+                            let result =
+                                run_text_turn_checked(config.clone(), prompt, tx.clone()).await;
+                            match result {
+                                Ok(()) => {
+                                    client
+                                        .inbox_done(message_id, Some("completed".to_string()))
+                                        .await
+                                        .ok();
+                                }
+                                Err(error) => {
+                                    let error = error.to_string();
+                                    client.inbox_failed(message_id, error.clone()).await.ok();
+                                    tx.send(VoiceUiEvent::Error(error)).ok();
+                                }
+                            }
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    });
+}
+
+#[derive(Debug, Clone)]
+struct InboundHudMessage {
+    message_id: String,
+    source: String,
+    text: String,
+    payload: serde_json::Value,
+    delivery_method: String,
+}
+
+fn inbound_message_from_daemon_event(event: &serde_json::Value) -> Option<InboundHudMessage> {
+    if event.get("kind").and_then(|value| value.as_str()) != Some("inbound_message") {
+        return None;
+    }
+    let data = event.get("data")?;
+    Some(InboundHudMessage {
+        message_id: data.get("message_id")?.as_str()?.to_string(),
+        source: data
+            .get("source")
+            .and_then(|value| value.as_str())
+            .unwrap_or("inbox")
+            .to_string(),
+        text: data.get("text")?.as_str()?.to_string(),
+        payload: data
+            .get("payload")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+        delivery_method: data
+            .get("delivery_method")
+            .and_then(|value| value.as_str())
+            .unwrap_or("inbox")
+            .to_string(),
+    })
+}
+
+fn inbound_prompt(message: &InboundHudMessage) -> String {
+    let payload = if message.payload.is_null() {
+        "{}".to_string()
+    } else {
+        serde_json::to_string(&message.payload).unwrap_or_else(|_| "{}".to_string())
+    };
+    format!(
+        "Inbound cua message received at {} via {} from source {}.\n\
+         Treat this exactly like a user command. Check current desktop context when useful, use tools when needed, and verify visible effects before finishing.\n\
+         Message: {}\n\
+         Payload JSON: {}",
+        chrono::Utc::now().to_rfc3339(),
+        message.delivery_method,
+        message.source,
+        message.text,
+        payload
+    )
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
