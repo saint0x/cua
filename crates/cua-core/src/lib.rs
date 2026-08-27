@@ -55,6 +55,10 @@ pub fn profile_ctx_dir(profile: &str) -> anyhow::Result<PathBuf> {
     Ok(profile_dir(profile)?.join("ctx"))
 }
 
+pub fn profile_scratchpads_dir(profile: &str) -> anyhow::Result<PathBuf> {
+    Ok(profile_dir(profile)?.join("scratchpads"))
+}
+
 pub fn profile_trace_dir(profile: &str) -> anyhow::Result<PathBuf> {
     Ok(profile_dir(profile)?.join("traces"))
 }
@@ -131,6 +135,7 @@ pub struct ConfigInventory {
     pub profile_token_present: bool,
     pub chat_db: String,
     pub ctx_workspace: String,
+    pub scratchpads: String,
     pub trace_root: String,
     pub voice_trace: String,
     pub daemon_trace_root: String,
@@ -153,6 +158,7 @@ impl ConfigInventory {
         let profile_token = profile_token_path(profile)?;
         let chat_db = profile_chat_db_path(profile)?;
         let ctx_workspace = profile_ctx_dir(profile)?;
+        let scratchpads = profile_scratchpads_dir(profile)?;
         let trace_root = profile_trace_dir(profile)?;
         let voice_trace = profile_voice_trace_path(profile)?;
         let daemon_trace_root = profile_daemon_trace_dir(profile)?;
@@ -185,6 +191,7 @@ impl ConfigInventory {
             profile_token_present: profile_token.exists(),
             chat_db: path_string(chat_db),
             ctx_workspace: path_string(ctx_workspace),
+            scratchpads: path_string(scratchpads),
             trace_root: path_string(trace_root),
             voice_trace: path_string(voice_trace),
             daemon_trace_root: path_string(daemon_trace_root),
@@ -675,6 +682,94 @@ pub struct WebhookSourceStatus {
     pub requires_signature: bool,
     pub reply_url: Option<String>,
     pub updated_wall_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ScratchpadKind {
+    Durable,
+    Ephemeral,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ScratchpadEntry {
+    pub schema_version: String,
+    pub profile: String,
+    pub name: String,
+    pub kind: ScratchpadKind,
+    pub text: String,
+    pub created_wall_ms: i64,
+    pub updated_wall_ms: i64,
+    pub expires_wall_ms: Option<i64>,
+    pub bytes: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ScratchpadSummary {
+    pub schema_version: String,
+    pub profile: String,
+    pub name: String,
+    pub kind: ScratchpadKind,
+    pub updated_wall_ms: i64,
+    pub expires_wall_ms: Option<i64>,
+    pub bytes: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ScratchpadWriteRequest {
+    pub schema_version: String,
+    pub name: String,
+    pub text: String,
+    #[serde(default = "default_true")]
+    pub durable: bool,
+    #[serde(default)]
+    pub append: bool,
+    pub ttl_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ScratchpadReadRequest {
+    pub schema_version: String,
+    pub name: String,
+    #[serde(default)]
+    pub durable: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ScratchpadListRequest {
+    pub schema_version: String,
+    #[serde(default = "default_true")]
+    pub include_durable: bool,
+    #[serde(default = "default_true")]
+    pub include_ephemeral: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ScratchpadListResult {
+    pub schema_version: String,
+    pub profile: String,
+    pub entries: Vec<ScratchpadSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ScratchpadDeleteRequest {
+    pub schema_version: String,
+    pub name: String,
+    #[serde(default = "default_true")]
+    pub durable: bool,
+    #[serde(default = "default_true")]
+    pub ephemeral: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ScratchpadDeleteResult {
+    pub schema_version: String,
+    pub profile: String,
+    pub deleted: usize,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1519,6 +1614,42 @@ pub fn schema_bundle() -> SchemaBundle {
     schemas.insert(
         "WebhookSourceStatus".to_string(),
         serde_json::json!(schema_for!(WebhookSourceStatus)),
+    );
+    schemas.insert(
+        "ScratchpadKind".to_string(),
+        serde_json::json!(schema_for!(ScratchpadKind)),
+    );
+    schemas.insert(
+        "ScratchpadEntry".to_string(),
+        serde_json::json!(schema_for!(ScratchpadEntry)),
+    );
+    schemas.insert(
+        "ScratchpadSummary".to_string(),
+        serde_json::json!(schema_for!(ScratchpadSummary)),
+    );
+    schemas.insert(
+        "ScratchpadWriteRequest".to_string(),
+        serde_json::json!(schema_for!(ScratchpadWriteRequest)),
+    );
+    schemas.insert(
+        "ScratchpadReadRequest".to_string(),
+        serde_json::json!(schema_for!(ScratchpadReadRequest)),
+    );
+    schemas.insert(
+        "ScratchpadListRequest".to_string(),
+        serde_json::json!(schema_for!(ScratchpadListRequest)),
+    );
+    schemas.insert(
+        "ScratchpadListResult".to_string(),
+        serde_json::json!(schema_for!(ScratchpadListResult)),
+    );
+    schemas.insert(
+        "ScratchpadDeleteRequest".to_string(),
+        serde_json::json!(schema_for!(ScratchpadDeleteRequest)),
+    );
+    schemas.insert(
+        "ScratchpadDeleteResult".to_string(),
+        serde_json::json!(schema_for!(ScratchpadDeleteResult)),
     );
     schemas.insert(
         "RuntimeSessionInfo".to_string(),

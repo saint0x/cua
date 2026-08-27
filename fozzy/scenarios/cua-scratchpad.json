@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "name": "cua-scratchpad",
+  "steps": [
+    {
+      "type": "proc_when",
+      "cmd": "scripts/host-scratchpad-proof.sh",
+      "args": [],
+      "exit_code": 0,
+      "stdout": "\"schema_version\": \"cua.scratchpad_proof.v1\"",
+      "stderr": "",
+      "times": 1
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "scripts/host-scratchpad-proof.sh",
+      "args": [],
+      "expect_exit": 0,
+      "expect_stdout": "\"cli_round_trip\": true"
+    }
+  ]
+}

@@ -19,21 +19,23 @@ use cua_capture::{
     FrameLookup,
 };
 use cua_core::{
-    load_or_create_machine_identity, now_wall_ms, profile_daemon_trace_dir, profile_socket_path,
-    profile_token_path, schema_bundle, sign_machine_attestation, ApiErrorBody,
-    AttestationChallenge, AttestationChallengeRequest, AttestationSignRequest, CapabilityManifest,
-    CapabilityState, ClipboardReadRequest, ClipboardResult, ClipboardWriteRequest, ConfigInventory,
-    DeliveryMode, DesktopContextSnapshot, DesktopState, Effect, Evidence, EvidenceKind,
-    FrameActionRequest, FrameEncoding, FramePayload, HealthReport, InboundDeliveryMethod,
-    InboundMessage, InboundMessageRequest, InboundMessageState, InboundReplyMode, InboundStatus,
-    InputAction, InputRequest, InputResult, InputRoute, MachineAttestation, MachineIdentityStatus,
-    Manifest, MetricBucket, MetricHistogram, MetricsSnapshot, PermissionReport, PermissionState,
-    ProfilePolicy, RuntimeControlState, RuntimeIdentityClaims, RuntimeInventory, RuntimeMode,
-    RuntimeSessionInfo, RuntimeSessionRole, SafetyState, SessionCancelRequest,
-    SessionHeartbeatRequest, SessionLeaseRequest, SessionLeaseResult, UiIslandRequest,
-    UiIslandResult, UiMode, UiModeRequest, UiModeResult, UiReplyRequest, UiReplyResult,
-    UiStepRequest, UiStepResult, VisualSessionRequest, WebhookSourceStatus,
-    WebhookSubscribeRequest, WindowInfo, SCHEMA_VERSION,
+    load_or_create_machine_identity, now_wall_ms, profile_daemon_trace_dir,
+    profile_scratchpads_dir, profile_socket_path, profile_token_path, schema_bundle,
+    sign_machine_attestation, ApiErrorBody, AttestationChallenge, AttestationChallengeRequest,
+    AttestationSignRequest, CapabilityManifest, CapabilityState, ClipboardReadRequest,
+    ClipboardResult, ClipboardWriteRequest, ConfigInventory, DeliveryMode, DesktopContextSnapshot,
+    DesktopState, Effect, Evidence, EvidenceKind, FrameActionRequest, FrameEncoding, FramePayload,
+    HealthReport, InboundDeliveryMethod, InboundMessage, InboundMessageRequest,
+    InboundMessageState, InboundReplyMode, InboundStatus, InputAction, InputRequest, InputResult,
+    InputRoute, MachineAttestation, MachineIdentityStatus, Manifest, MetricBucket, MetricHistogram,
+    MetricsSnapshot, PermissionReport, PermissionState, ProfilePolicy, RuntimeControlState,
+    RuntimeIdentityClaims, RuntimeInventory, RuntimeMode, RuntimeSessionInfo, RuntimeSessionRole,
+    SafetyState, ScratchpadDeleteRequest, ScratchpadDeleteResult, ScratchpadEntry, ScratchpadKind,
+    ScratchpadListRequest, ScratchpadListResult, ScratchpadReadRequest, ScratchpadSummary,
+    ScratchpadWriteRequest, SessionCancelRequest, SessionHeartbeatRequest, SessionLeaseRequest,
+    SessionLeaseResult, UiIslandRequest, UiIslandResult, UiMode, UiModeRequest, UiModeResult,
+    UiReplyRequest, UiReplyResult, UiStepRequest, UiStepResult, VisualSessionRequest,
+    WebhookSourceStatus, WebhookSubscribeRequest, WindowInfo, SCHEMA_VERSION,
 };
 use cua_input::InputBackend;
 use cua_model::{run_eval_report, EvalConfig, EvalReport};
@@ -1610,6 +1612,22 @@ pub fn router(state: DaemonState) -> Router {
         .route("/webhooks/:source", post(webhook_publish))
         .route("/webhooks/:source/subscribe", post(webhook_subscribe))
         .route("/webhooks/:source/status", get(webhook_status))
+        .route(
+            "/scratchpads/write",
+            post(scratchpad_write).route_layer(middleware::from_fn_with_state(
+                write_state.clone(),
+                require_http_owner_write,
+            )),
+        )
+        .route("/scratchpads/read", post(scratchpad_read))
+        .route("/scratchpads/list", post(scratchpad_list))
+        .route(
+            "/scratchpads/delete",
+            post(scratchpad_delete).route_layer(middleware::from_fn_with_state(
+                write_state.clone(),
+                require_http_owner_write,
+            )),
+        )
         .route("/attestation/identity", get(attestation_identity))
         .route("/attestation/challenge", post(attestation_challenge))
         .route("/attestation/sign", post(attestation_sign))
@@ -2304,6 +2322,76 @@ async fn handle_unix_request(state: &DaemonState, request: UnixRequest) -> serde
                 .unwrap_or_default();
             state.inbox.webhook_status(source).map(serde_json::to_value)
         }
+        "scratchpad.write" => {
+            if let Err(error) = state.sessions.authorize_write(session_id.as_deref()) {
+                return unix_api_error(id, error);
+            }
+            let params = request.params.unwrap_or_else(|| serde_json::json!({}));
+            match serde_json::from_value::<ScratchpadWriteRequest>(params) {
+                Ok(request) => scratchpad_write_state(state, request)
+                    .await
+                    .map(serde_json::to_value),
+                Err(error) => {
+                    return unix_error(
+                        id,
+                        "bad_request",
+                        error.to_string(),
+                        Some(StatusCode::BAD_REQUEST),
+                    )
+                }
+            }
+        }
+        "scratchpad.read" => {
+            let params = request.params.unwrap_or_else(|| serde_json::json!({}));
+            match serde_json::from_value::<ScratchpadReadRequest>(params) {
+                Ok(request) => scratchpad_read_state(state, request)
+                    .await
+                    .map(serde_json::to_value),
+                Err(error) => {
+                    return unix_error(
+                        id,
+                        "bad_request",
+                        error.to_string(),
+                        Some(StatusCode::BAD_REQUEST),
+                    )
+                }
+            }
+        }
+        "scratchpad.list" => {
+            let params = request.params.unwrap_or_else(|| serde_json::json!({}));
+            match serde_json::from_value::<ScratchpadListRequest>(params) {
+                Ok(request) => scratchpad_list_state(state, request)
+                    .await
+                    .map(serde_json::to_value),
+                Err(error) => {
+                    return unix_error(
+                        id,
+                        "bad_request",
+                        error.to_string(),
+                        Some(StatusCode::BAD_REQUEST),
+                    )
+                }
+            }
+        }
+        "scratchpad.delete" => {
+            if let Err(error) = state.sessions.authorize_write(session_id.as_deref()) {
+                return unix_api_error(id, error);
+            }
+            let params = request.params.unwrap_or_else(|| serde_json::json!({}));
+            match serde_json::from_value::<ScratchpadDeleteRequest>(params) {
+                Ok(request) => scratchpad_delete_state(state, request)
+                    .await
+                    .map(serde_json::to_value),
+                Err(error) => {
+                    return unix_error(
+                        id,
+                        "bad_request",
+                        error.to_string(),
+                        Some(StatusCode::BAD_REQUEST),
+                    )
+                }
+            }
+        }
         "attestation.identity" => attestation_identity_state(state)
             .await
             .map(serde_json::to_value),
@@ -2767,6 +2855,10 @@ fn manifest_payload() -> Manifest {
             "POST /webhooks/<source>".to_string(),
             "POST /webhooks/<source>/subscribe".to_string(),
             "GET /webhooks/<source>/status".to_string(),
+            "POST /scratchpads/write".to_string(),
+            "POST /scratchpads/read".to_string(),
+            "POST /scratchpads/list".to_string(),
+            "POST /scratchpads/delete".to_string(),
             "GET /attestation/identity".to_string(),
             "POST /attestation/challenge".to_string(),
             "POST /attestation/sign".to_string(),
@@ -2786,6 +2878,10 @@ fn manifest_payload() -> Manifest {
             "UNIX webhook.publish".to_string(),
             "UNIX webhook.subscribe".to_string(),
             "UNIX webhook.status".to_string(),
+            "UNIX scratchpad.write".to_string(),
+            "UNIX scratchpad.read".to_string(),
+            "UNIX scratchpad.list".to_string(),
+            "UNIX scratchpad.delete".to_string(),
             "UNIX schemas".to_string(),
             "UNIX config.status".to_string(),
             "POST /ui/step".to_string(),
@@ -2829,6 +2925,10 @@ fn manifest_payload() -> Manifest {
             "cua webhook publish <text> --source <source> --json".to_string(),
             "cua webhook subscribe <source> --secret <secret> --json".to_string(),
             "cua webhook status <source> --json".to_string(),
+            "cua scratchpad write <name> <text> --session-id <owner-session-id> --json".to_string(),
+            "cua scratchpad read <name> --json".to_string(),
+            "cua scratchpad list --json".to_string(),
+            "cua scratchpad delete <name> --session-id <owner-session-id> --json".to_string(),
             "cua stream --unix --json".to_string(),
             "cua ui step <label> --step-index <n> --step-total <n> --json".to_string(),
             "cua ui reply <text> --json".to_string(),
@@ -3659,6 +3759,328 @@ fn publish_inbound_message(
     Ok(status)
 }
 
+async fn scratchpad_write(
+    State(state): State<DaemonState>,
+    Json(request): Json<ScratchpadWriteRequest>,
+) -> Result<Json<ScratchpadEntry>, ApiError> {
+    Ok(Json(scratchpad_write_state(&state, request).await?))
+}
+
+async fn scratchpad_read(
+    State(state): State<DaemonState>,
+    Json(request): Json<ScratchpadReadRequest>,
+) -> Result<Json<ScratchpadEntry>, ApiError> {
+    Ok(Json(scratchpad_read_state(&state, request).await?))
+}
+
+async fn scratchpad_list(
+    State(state): State<DaemonState>,
+    Json(request): Json<ScratchpadListRequest>,
+) -> Result<Json<ScratchpadListResult>, ApiError> {
+    Ok(Json(scratchpad_list_state(&state, request).await?))
+}
+
+async fn scratchpad_delete(
+    State(state): State<DaemonState>,
+    Json(request): Json<ScratchpadDeleteRequest>,
+) -> Result<Json<ScratchpadDeleteResult>, ApiError> {
+    Ok(Json(scratchpad_delete_state(&state, request).await?))
+}
+
+async fn scratchpad_write_state(
+    state: &DaemonState,
+    request: ScratchpadWriteRequest,
+) -> Result<ScratchpadEntry, ApiError> {
+    validate_schema_version(&request.schema_version)?;
+    let name = normalize_scratchpad_name(&request.name)?;
+    let text = normalize_scratchpad_text(&request.text)?;
+    let kind = if request.durable {
+        ScratchpadKind::Durable
+    } else {
+        ScratchpadKind::Ephemeral
+    };
+    let path = scratchpad_entry_path(&state.profile, &kind, &name)?;
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|error| ApiError::internal(error.into()))?;
+    }
+    prune_expired_scratchpads(&state.profile).await?;
+    let now = now_wall_ms();
+    let existing = if request.append {
+        read_scratchpad_file(&path)
+            .await?
+            .filter(|entry| !scratchpad_expired(entry, now))
+    } else {
+        None
+    };
+    let created_wall_ms = existing
+        .as_ref()
+        .map(|entry| entry.created_wall_ms)
+        .unwrap_or(now);
+    let text = match existing {
+        Some(entry) if entry.text.trim().is_empty() => text,
+        Some(entry) => format!("{}\n{}", entry.text, text),
+        None => text,
+    };
+    let expires_wall_ms = if matches!(kind, ScratchpadKind::Ephemeral) {
+        Some(now + request.ttl_ms.unwrap_or(3_600_000).clamp(1_000, 86_400_000))
+    } else {
+        None
+    };
+    let entry = ScratchpadEntry {
+        schema_version: SCHEMA_VERSION.to_string(),
+        profile: state.profile.clone(),
+        name,
+        kind,
+        bytes: text.len(),
+        text,
+        created_wall_ms,
+        updated_wall_ms: now,
+        expires_wall_ms,
+    };
+    let bytes =
+        serde_json::to_vec_pretty(&entry).map_err(|error| ApiError::internal(error.into()))?;
+    tokio::fs::write(&path, bytes)
+        .await
+        .map_err(|error| ApiError::internal(error.into()))?;
+    state.publish_event(
+        "scratchpad_written",
+        serde_json::json!({
+            "name": entry.name,
+            "kind": entry.kind,
+            "bytes": entry.bytes,
+            "updated_wall_ms": entry.updated_wall_ms,
+        }),
+    );
+    Ok(entry)
+}
+
+async fn scratchpad_read_state(
+    state: &DaemonState,
+    request: ScratchpadReadRequest,
+) -> Result<ScratchpadEntry, ApiError> {
+    validate_schema_version(&request.schema_version)?;
+    let name = normalize_scratchpad_name(&request.name)?;
+    prune_expired_scratchpads(&state.profile).await?;
+    let kinds = match request.durable {
+        Some(true) => vec![ScratchpadKind::Durable],
+        Some(false) => vec![ScratchpadKind::Ephemeral],
+        None => vec![ScratchpadKind::Durable, ScratchpadKind::Ephemeral],
+    };
+    for kind in kinds {
+        let path = scratchpad_entry_path(&state.profile, &kind, &name)?;
+        if let Some(entry) = read_scratchpad_file(&path).await? {
+            return Ok(entry);
+        }
+    }
+    Err(ApiError::bad_request(
+        "name",
+        "scratchpad name is unknown or expired",
+    ))
+}
+
+async fn scratchpad_list_state(
+    state: &DaemonState,
+    request: ScratchpadListRequest,
+) -> Result<ScratchpadListResult, ApiError> {
+    validate_schema_version(&request.schema_version)?;
+    prune_expired_scratchpads(&state.profile).await?;
+    let mut entries = Vec::new();
+    if request.include_durable {
+        entries.extend(scratchpad_summaries(&state.profile, ScratchpadKind::Durable).await?);
+    }
+    if request.include_ephemeral {
+        entries.extend(scratchpad_summaries(&state.profile, ScratchpadKind::Ephemeral).await?);
+    }
+    entries.sort_by(|left, right| {
+        right
+            .updated_wall_ms
+            .cmp(&left.updated_wall_ms)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    Ok(ScratchpadListResult {
+        schema_version: SCHEMA_VERSION.to_string(),
+        profile: state.profile.clone(),
+        entries,
+    })
+}
+
+async fn scratchpad_delete_state(
+    state: &DaemonState,
+    request: ScratchpadDeleteRequest,
+) -> Result<ScratchpadDeleteResult, ApiError> {
+    validate_schema_version(&request.schema_version)?;
+    let name = normalize_scratchpad_name(&request.name)?;
+    let mut deleted = 0;
+    if request.durable {
+        deleted += remove_scratchpad(&state.profile, ScratchpadKind::Durable, &name).await?;
+    }
+    if request.ephemeral {
+        deleted += remove_scratchpad(&state.profile, ScratchpadKind::Ephemeral, &name).await?;
+    }
+    state.publish_event(
+        "scratchpad_deleted",
+        serde_json::json!({
+            "name": name,
+            "deleted": deleted,
+        }),
+    );
+    Ok(ScratchpadDeleteResult {
+        schema_version: SCHEMA_VERSION.to_string(),
+        profile: state.profile.clone(),
+        deleted,
+    })
+}
+
+async fn scratchpad_summaries(
+    profile: &str,
+    kind: ScratchpadKind,
+) -> Result<Vec<ScratchpadSummary>, ApiError> {
+    let dir = scratchpad_kind_dir(profile, &kind)?;
+    let mut summaries = Vec::new();
+    let mut entries = match tokio::fs::read_dir(&dir).await {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(summaries),
+        Err(error) => return Err(ApiError::internal(error.into())),
+    };
+    while let Some(entry) = entries
+        .next_entry()
+        .await
+        .map_err(|error| ApiError::internal(error.into()))?
+    {
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        if let Some(entry) = read_scratchpad_file(&path).await? {
+            summaries.push(ScratchpadSummary {
+                schema_version: SCHEMA_VERSION.to_string(),
+                profile: entry.profile,
+                name: entry.name,
+                kind: entry.kind,
+                updated_wall_ms: entry.updated_wall_ms,
+                expires_wall_ms: entry.expires_wall_ms,
+                bytes: entry.bytes,
+            });
+        }
+    }
+    Ok(summaries)
+}
+
+async fn prune_expired_scratchpads(profile: &str) -> Result<(), ApiError> {
+    let dir = scratchpad_kind_dir(profile, &ScratchpadKind::Ephemeral)?;
+    let mut entries = match tokio::fs::read_dir(&dir).await {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(ApiError::internal(error.into())),
+    };
+    let now = now_wall_ms();
+    while let Some(entry) = entries
+        .next_entry()
+        .await
+        .map_err(|error| ApiError::internal(error.into()))?
+    {
+        let path = entry.path();
+        if let Some(stored) = read_scratchpad_file(&path).await? {
+            if scratchpad_expired(&stored, now) {
+                let _ = tokio::fs::remove_file(path).await;
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn read_scratchpad_file(path: &Path) -> Result<Option<ScratchpadEntry>, ApiError> {
+    let bytes = match tokio::fs::read(path).await {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(ApiError::internal(error.into())),
+    };
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .map_err(|error| ApiError::internal(error.into()))
+}
+
+async fn remove_scratchpad(
+    profile: &str,
+    kind: ScratchpadKind,
+    name: &str,
+) -> Result<usize, ApiError> {
+    let path = scratchpad_entry_path(profile, &kind, name)?;
+    match tokio::fs::remove_file(path).await {
+        Ok(()) => Ok(1),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
+        Err(error) => Err(ApiError::internal(error.into())),
+    }
+}
+
+fn scratchpad_expired(entry: &ScratchpadEntry, now: i64) -> bool {
+    entry
+        .expires_wall_ms
+        .map(|expires| expires <= now)
+        .unwrap_or(false)
+}
+
+fn scratchpad_entry_path(
+    profile: &str,
+    kind: &ScratchpadKind,
+    name: &str,
+) -> Result<PathBuf, ApiError> {
+    Ok(scratchpad_kind_dir(profile, kind)?.join(format!("{name}.json")))
+}
+
+fn scratchpad_kind_dir(profile: &str, kind: &ScratchpadKind) -> Result<PathBuf, ApiError> {
+    let root = profile_scratchpads_dir(profile).map_err(ApiError::internal)?;
+    Ok(root.join(match kind {
+        ScratchpadKind::Durable => "durable",
+        ScratchpadKind::Ephemeral => "ephemeral",
+    }))
+}
+
+fn normalize_scratchpad_name(name: &str) -> Result<String, ApiError> {
+    let name = name.trim();
+    if name.is_empty() || name.len() > 96 {
+        return Err(ApiError::bad_request(
+            "name",
+            "scratchpad name must be 1-96 bytes",
+        ));
+    }
+    if matches!(name, "." | "..")
+        || name
+            .bytes()
+            .any(|byte| !(byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')))
+    {
+        return Err(ApiError::bad_request(
+            "name",
+            "scratchpad name may only contain letters, numbers, dot, dash, and underscore",
+        ));
+    }
+    Ok(name.to_string())
+}
+
+fn normalize_scratchpad_text(text: &str) -> Result<String, ApiError> {
+    let text = text.trim();
+    if text.is_empty() || text.len() > 32_768 {
+        return Err(ApiError::bad_request(
+            "text",
+            "scratchpad text must be 1-32768 bytes",
+        ));
+    }
+    Ok(text.to_string())
+}
+
+fn validate_schema_version(schema_version: &str) -> Result<(), ApiError> {
+    if schema_version == SCHEMA_VERSION {
+        Ok(())
+    } else {
+        Err(ApiError::bad_request(
+            "schema_version",
+            format!("expected {SCHEMA_VERSION}"),
+        ))
+    }
+}
+
 fn publish_inbox_status_event(state: &DaemonState, status: &InboundStatus) {
     state.publish_event(
         "inbox_status",
@@ -3958,6 +4380,7 @@ fn config_inventory_state(state: &DaemonState) -> ConfigInventory {
         profile_token_present: false,
         chat_db: String::new(),
         ctx_workspace: String::new(),
+        scratchpads: String::new(),
         trace_root: String::new(),
         voice_trace: String::new(),
         daemon_trace_root: String::new(),
@@ -6622,6 +7045,194 @@ mod tests {
 
         drop(listener);
         let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[tokio::test]
+    async fn unix_scratchpads_are_profile_scoped_owner_gated_and_pruned() {
+        let profile = format!("scratchpad-test-{}", Uuid::new_v4());
+        let _ = tokio::fs::remove_dir_all(cua_core::profile_dir(&profile).unwrap()).await;
+        let state = DaemonState::synthetic(profile.clone(), "token");
+
+        let owner = unix_result(
+            handle_unix_request(
+                &state,
+                unix_request(
+                    "session.acquire",
+                    serde_json::json!({
+                        "schema_version": SCHEMA_VERSION,
+                        "session_id": "scratch-owner",
+                        "client_name": "scratchpad test",
+                        "role": "owner",
+                        "ttl_ms": 60000
+                    }),
+                ),
+            )
+            .await,
+        );
+        assert_eq!(owner["accepted"], true);
+
+        let unauthorized = handle_unix_request(
+            &state,
+            unix_request(
+                "scratchpad.write",
+                serde_json::json!({
+                    "schema_version": SCHEMA_VERSION,
+                    "name": "goal",
+                    "text": "blocked"
+                }),
+            ),
+        )
+        .await;
+        assert_eq!(unauthorized["ok"], false);
+        assert_eq!(unauthorized["error"]["code"], "session_owner");
+
+        let invalid = handle_unix_request(
+            &state,
+            unix_request_with_session(
+                "scratchpad.write",
+                serde_json::json!({
+                    "schema_version": SCHEMA_VERSION,
+                    "name": "../escape",
+                    "text": "blocked"
+                }),
+                "scratch-owner",
+            ),
+        )
+        .await;
+        assert_eq!(invalid["ok"], false);
+        assert_eq!(invalid["error"]["code"], "bad_request");
+
+        let first = unix_result(
+            handle_unix_request(
+                &state,
+                unix_request_with_session(
+                    "scratchpad.write",
+                    serde_json::json!({
+                        "schema_version": SCHEMA_VERSION,
+                        "name": "goal",
+                        "text": "remember the desktop target",
+                        "durable": true
+                    }),
+                    "scratch-owner",
+                ),
+            )
+            .await,
+        );
+        assert_eq!(first["kind"], "durable");
+        assert!(first["text"].as_str().unwrap().contains("desktop target"));
+
+        let appended = unix_result(
+            handle_unix_request(
+                &state,
+                unix_request_with_session(
+                    "scratchpad.write",
+                    serde_json::json!({
+                        "schema_version": SCHEMA_VERSION,
+                        "name": "goal",
+                        "text": "verify with screenshot",
+                        "durable": true,
+                        "append": true
+                    }),
+                    "scratch-owner",
+                ),
+            )
+            .await,
+        );
+        assert!(appended["text"]
+            .as_str()
+            .unwrap()
+            .contains("desktop target"));
+        assert!(appended["text"]
+            .as_str()
+            .unwrap()
+            .contains("verify with screenshot"));
+
+        let read = unix_result(
+            handle_unix_request(
+                &state,
+                unix_request(
+                    "scratchpad.read",
+                    serde_json::json!({
+                        "schema_version": SCHEMA_VERSION,
+                        "name": "goal"
+                    }),
+                ),
+            )
+            .await,
+        );
+        assert_eq!(read["profile"], profile);
+        assert_eq!(read["name"], "goal");
+
+        let _ephemeral = unix_result(
+            handle_unix_request(
+                &state,
+                unix_request_with_session(
+                    "scratchpad.write",
+                    serde_json::json!({
+                        "schema_version": SCHEMA_VERSION,
+                        "name": "temp",
+                        "text": "short lived",
+                        "durable": false,
+                        "ttl_ms": 1
+                    }),
+                    "scratch-owner",
+                ),
+            )
+            .await,
+        );
+        tokio::time::sleep(Duration::from_millis(1_050)).await;
+        let list = unix_result(
+            handle_unix_request(
+                &state,
+                unix_request(
+                    "scratchpad.list",
+                    serde_json::json!({
+                        "schema_version": SCHEMA_VERSION,
+                        "include_durable": true,
+                        "include_ephemeral": true
+                    }),
+                ),
+            )
+            .await,
+        );
+        let entries = list["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["name"], "goal");
+
+        let deleted = unix_result(
+            handle_unix_request(
+                &state,
+                unix_request_with_session(
+                    "scratchpad.delete",
+                    serde_json::json!({
+                        "schema_version": SCHEMA_VERSION,
+                        "name": "goal"
+                    }),
+                    "scratch-owner",
+                ),
+            )
+            .await,
+        );
+        assert_eq!(deleted["deleted"], 1);
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let events = unix_result(
+            handle_unix_request(
+                &state,
+                unix_request("events.snapshot", serde_json::json!({})),
+            )
+            .await,
+        );
+        let event_kinds = events
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|event| event["kind"].as_str())
+            .collect::<Vec<_>>();
+        assert!(event_kinds.contains(&"scratchpad_written"));
+        assert!(event_kinds.contains(&"scratchpad_deleted"));
+
+        let _ = tokio::fs::remove_dir_all(cua_core::profile_dir(&profile).unwrap()).await;
     }
 
     fn unix_request(method: &str, params: serde_json::Value) -> UnixRequest {

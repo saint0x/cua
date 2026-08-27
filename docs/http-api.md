@@ -12,6 +12,7 @@ Security:
 - `CUA_HTTP_TOKEN` is honored only for tests or explicit development runs with `CUA_DEV_HTTP_TOKEN_OVERRIDE=1`.
 - The Unix socket uses the same profile token and newline-delimited JSON requests.
 - HTTP write routes require an active owner session. Acquire one with `POST /session/acquire`, then send `x-cua-session-id: <owner-session-id>` on profile mutation, control, input dispatch, and clipboard-write requests.
+- Scratchpad write/delete routes also require `x-cua-session-id`; scratchpad read/list routes are authenticated read-only context access.
 - Observer sessions are valid for reads such as status, manifest, schemas, screenshot, context, observe, events, and visual sessions. Observer sessions cannot mutate runtime state.
 - Unix write callers pass `session_id` in the request envelope.
 - `GET /`, `GET /version`, and `GET /healthz` are unauthenticated readiness/discovery endpoints.
@@ -55,6 +56,10 @@ Initial endpoints:
 - `POST /webhooks/<source>`: publish an inbound message for a webhook source
 - `POST /webhooks/<source>/subscribe`: configure source secret and optional reply URL
 - `GET /webhooks/<source>/status`
+- `POST /scratchpads/write`: create, replace, or append a profile scratchpad
+- `POST /scratchpads/read`: read one profile scratchpad by name
+- `POST /scratchpads/list`: list durable and ephemeral profile scratchpads
+- `POST /scratchpads/delete`: delete one scratchpad name from durable and/or ephemeral storage
 - `GET /attestation/identity`
 - `POST /attestation/challenge`
 - `POST /attestation/sign`
@@ -78,7 +83,14 @@ Cloud enrollment routes are not shipped yet.
 
 `GET /status` reports `active_streams`; stream clients increment the count on connect and decrement after disconnect cleanup. Its `inventory.config` object reports canonical `~/.cua` paths and migration state without exposing bearer token contents.
 
-`GET /config/status` returns that same config inventory directly for SDKs, runebooks, and scripts that need to discover the profile socket, profile root, chat database, ctx workspace, trace roots, and config migration state.
+`GET /config/status` returns that same config inventory directly for SDKs, runebooks, and scripts that need to discover the profile socket, profile root, chat database, ctx workspace, scratchpad root, trace roots, and config migration state.
+
+Scratchpads:
+
+- Scratchpads are stored under `~/.cua/profiles/<profile>/scratchpads/`, split into `durable` and `ephemeral` entry folders.
+- Names are single path segments containing only letters, numbers, dot, dash, and underscore.
+- `ScratchpadWriteRequest` supports `durable`, `append`, and `ttl_ms`; durable entries ignore TTL, ephemeral entries expire and are pruned on scratchpad reads/lists/writes.
+- The voice planner receives a bounded recent scratchpad context frame automatically.
 
 `GET /metrics` returns typed latency histograms and counters for hot runtime paths including screenshot capture, encode queueing, streaming ticks, input dispatch, model queueing, permission probes, trace writes, clipboard operations, emitted stream frames, refusals, active streams, dropped events, dropped encode jobs, dropped model jobs, permission fallbacks, and dropped trace jobs. `cua perf live --json` reads the same endpoint. `cua perf bench screenshot|stream|input|model-prep --json` runs bounded local latency checks against the daemon and fails when p95 exceeds its budget.
 

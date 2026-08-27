@@ -315,6 +315,62 @@ export class Cua {
     return this.rpc("webhook.status", { source });
   }
 
+  async scratchpadWrite(
+    name: string,
+    text: string,
+    session: OwnerSession | string,
+    options: { durable?: boolean; append?: boolean; ttlMs?: number } = {},
+  ): Promise<Json> {
+    return this.rpc(
+      "scratchpad.write",
+      compact({
+        schema_version: "cua.v1",
+        name,
+        text,
+        durable: options.durable ?? true,
+        append: options.append ?? false,
+        ttl_ms: options.ttlMs,
+      }),
+      { sessionId: sessionIdOf(session) },
+    );
+  }
+
+  async scratchpadRead(name: string, durable?: boolean): Promise<Json> {
+    return this.rpc(
+      "scratchpad.read",
+      compact({
+        schema_version: "cua.v1",
+        name,
+        durable,
+      }),
+    );
+  }
+
+  async scratchpadList(options: { includeDurable?: boolean; includeEphemeral?: boolean } = {}): Promise<Json> {
+    return this.rpc("scratchpad.list", {
+      schema_version: "cua.v1",
+      include_durable: options.includeDurable ?? true,
+      include_ephemeral: options.includeEphemeral ?? true,
+    });
+  }
+
+  async scratchpadDelete(
+    name: string,
+    session: OwnerSession | string,
+    options: { durable?: boolean; ephemeral?: boolean } = {},
+  ): Promise<Json> {
+    return this.rpc(
+      "scratchpad.delete",
+      {
+        schema_version: "cua.v1",
+        name,
+        durable: options.durable ?? true,
+        ephemeral: options.ephemeral ?? true,
+      },
+      { sessionId: sessionIdOf(session) },
+    );
+  }
+
   async profileStatus(): Promise<Json> {
     return this.step("profile.status", {}, "profile");
   }

@@ -37,6 +37,8 @@ cargo run -p cua -- ui mode headless --json
 cargo run -p cua -- ui mode headful --json
 cargo run -p cua -- inbox publish "what do you see on my screen?" --json
 cargo run -p cua -- webhook subscribe local-alerts --secret "$CUA_WEBHOOK_SECRET" --json
+cargo run -p cua -- scratchpad write active-goal "verify Notes before replying" --session-id <owner-session-id> --json
+cargo run -p cua -- scratchpad read active-goal --json
 cargo run -p cua -- perf bench screenshot --iterations 5 --json
 cargo run -p cua -- context --json --force-fresh
 cargo run -p cua -- screenshot --out artifacts/cua/smoke/screen.png --json
@@ -53,7 +55,7 @@ cargo run -p cua -- stream --unix --frames 3 --json
 
 `cua` automatically loads environment values from `CUA_ENV_FILE` and `~/.cua/config/env`. The current directory `.env` is ignored by production runtime code.
 
-`cua serve` refuses non-loopback binds unless `--allow-lan` is explicit. The daemon also opens a profile-local socket at `~/.cua/profiles/<profile>/daemon.sock`; the app runtime uses that socket for context snapshots, visual sessions, and input dispatch. The local APIs use a per-profile bearer token stored at `~/.cua/profiles/<profile>/http.token`; CLI and app commands load it automatically. HTTP write routes also require an owner session id in `x-cua-session-id`. `CUA_HTTP_TOKEN` is a test/development override only when `CUA_DEV_HTTP_TOKEN_OVERRIDE=1` is set. `cua config status --json` reports the canonical `~/.cua` paths and migration state without exposing token contents.
+`cua serve` refuses non-loopback binds unless `--allow-lan` is explicit. The daemon also opens a profile-local socket at `~/.cua/profiles/<profile>/daemon.sock`; the app runtime uses that socket for context snapshots, visual sessions, input dispatch, and scratchpad RPC. The local APIs use a per-profile bearer token stored at `~/.cua/profiles/<profile>/http.token`; CLI and app commands load it automatically. HTTP write routes also require an owner session id in `x-cua-session-id`. `CUA_HTTP_TOKEN` is a test/development override only when `CUA_DEV_HTTP_TOKEN_OVERRIDE=1` is set. `cua config status --json` reports the canonical `~/.cua` paths and migration state without exposing token contents.
 
 Run `cua serve --hud-mode headful` for the visible dynamic-island HUD or `cua serve --hud-mode headless` for the same resident voice/control event loop without a visible HUD. The HUD process also accepts `cua-voice --headful|--headless` directly. Agents can switch a running HUD with `cua ui mode headless|headful`.
 
@@ -121,6 +123,6 @@ fozzy replay artifacts/cua/macos/fozzy/cua-smoke.fozzy --json
 
 ## Status
 
-The current runtime has production-shaped contracts, daemon/CLI plumbing, Unix socket voice transport, live headless/headful HUD mode switching, persistent Unix visual-control sessions, frame-relative action dispatch, macOS permission probes, profile policy state, pause/resume/kill-switch controls, profile-gated daemon clipboard, daemon-owned capture/encode/input/event/permission/trace/model lanes, ScreenCaptureKit-backed macOS capture with CoreGraphics fallback, native macOS display/cursor/window observation, CGEvent mouse/keyboard input with refusing fallback, signed macOS app packaging, continuous MJPEG/WebSocket streams, schema export, trace inspection, and bounded model evals.
+The current runtime has production-shaped contracts, daemon/CLI plumbing, Unix socket voice transport, live headless/headful HUD mode switching, persistent Unix visual-control sessions, frame-relative action dispatch, macOS permission probes, profile policy state, pause/resume/kill-switch controls, profile-gated daemon clipboard, profile-scoped scratchpads, daemon-owned capture/encode/input/event/permission/trace/model lanes, ScreenCaptureKit-backed macOS capture with CoreGraphics fallback, native macOS display/cursor/window observation, CGEvent mouse/keyboard input with refusing fallback, signed macOS app packaging, continuous MJPEG/WebSocket streams, schema export, trace inspection, and bounded model evals.
 
 Programmable SDKs are intentionally thin: Rust uses `crates/cua-client`, and TypeScript/Python wrappers live in `sdks/` on top of `cua run` plus the daemon protocol. The daemon also exposes an authenticated inbox/webhook lane that injects messages into the running agent loop, and local runtime attestation is available over CLI, Unix socket, and HTTP. Quilt/cloud enrollment is not shipped yet. See [docs/sdk.md](docs/sdk.md), [docs/http-api.md](docs/http-api.md), [docs/config-home.md](docs/config-home.md), and [docs/attestation.md](docs/attestation.md).

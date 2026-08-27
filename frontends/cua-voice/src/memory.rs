@@ -1,5 +1,8 @@
 use anyhow::{bail, Context};
-use cua_core::{cua_bin_path, profile_chat_db_path, profile_ctx_dir};
+use cua_core::{
+    cua_bin_path, now_wall_ms, profile_chat_db_path, profile_ctx_dir, profile_scratchpads_dir,
+    ScratchpadEntry,
+};
 use serde_json::Value;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -7,6 +10,8 @@ use tokio::process::Command;
 
 const CHAT_CONTEXT_LIMIT: usize = 8;
 const CTX_TIMEOUT_MS: u64 = 5_000;
+const SCRATCHPAD_CONTEXT_LIMIT: usize = 6;
+const SCRATCHPAD_CONTEXT_TEXT_LIMIT: usize = 2_400;
 
 #[derive(Debug, Clone)]
 pub struct ChatStore {
@@ -25,6 +30,7 @@ pub struct CtxMemory {
 pub struct AgentContext {
     pub chat: String,
     pub ctx: String,
+    pub scratchpads: String,
 }
 
 impl ChatStore {
@@ -204,7 +210,72 @@ pub async fn load_agent_context_with_chat(
     chat: String,
 ) -> anyhow::Result<AgentContext> {
     let ctx = CtxMemory::new(profile)?.frame(request, &chat).await?;
-    Ok(AgentContext { chat, ctx })
+    let scratchpads = load_scratchpad_context(profile).await?;
+    Ok(AgentContext {
+        chat,
+        ctx,
+        scratchpads,
+    })
+}
+
+pub async fn load_scratchpad_context(profile: &str) -> anyhow::Result<String> {
+    let mut entries = Vec::new();
+    load_scratchpad_kind(profile, "durable", &mut entries).await?;
+    load_scratchpad_kind(profile, "ephemeral", &mut entries).await?;
+    let now = now_wall_ms();
+    entries.retain(|entry| {
+        entry
+            .expires_wall_ms
+            .map(|expires| expires > now)
+            .unwrap_or(true)
+    });
+    entries.sort_by(|left, right| {
+        right
+            .updated_wall_ms
+            .cmp(&left.updated_wall_ms)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    if entries.is_empty() {
+        return Ok("Scratchpads: none.".to_string());
+    }
+    let mut remaining = SCRATCHPAD_CONTEXT_TEXT_LIMIT;
+    let mut lines = Vec::new();
+    for entry in entries.into_iter().take(SCRATCHPAD_CONTEXT_LIMIT) {
+        if remaining == 0 {
+            break;
+        }
+        let text = compact_text(&entry.text, remaining.min(420));
+        remaining = remaining.saturating_sub(text.chars().count());
+        lines.push(format!("- {} {:?}: {}", entry.name, entry.kind, text));
+    }
+    Ok(format!("Scratchpads:\n{}", lines.join("\n")))
+}
+
+async fn load_scratchpad_kind(
+    profile: &str,
+    kind: &str,
+    out: &mut Vec<ScratchpadEntry>,
+) -> anyhow::Result<()> {
+    let dir = profile_scratchpads_dir(profile)?.join(kind);
+    let mut files = match tokio::fs::read_dir(&dir).await {
+        Ok(files) => files,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    while let Some(file) = files.next_entry().await? {
+        let path = file.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        let bytes = match tokio::fs::read(&path).await {
+            Ok(bytes) => bytes,
+            Err(_) => continue,
+        };
+        if let Ok(entry) = serde_json::from_slice::<ScratchpadEntry>(&bytes) {
+            out.push(entry);
+        }
+    }
+    Ok(())
 }
 
 fn format_ctx_frame(raw: &str) -> anyhow::Result<String> {
@@ -342,6 +413,40 @@ mod tests {
 
         assert!(context.contains("user: open safari"));
         assert!(context.contains("assistant: Opening Safari."));
+    }
+
+    #[tokio::test]
+    async fn scratchpad_context_reads_bounded_profile_state() {
+        let profile = format!("scratchpad-context-{}", uuid::Uuid::new_v4());
+        let root = profile_scratchpads_dir(&profile).unwrap();
+        let durable = root.join("durable");
+        tokio::fs::create_dir_all(&durable).await.unwrap();
+        let now = now_wall_ms();
+        let entry = ScratchpadEntry {
+            schema_version: cua_core::SCHEMA_VERSION.to_string(),
+            profile: profile.clone(),
+            name: "active-goal".to_string(),
+            kind: cua_core::ScratchpadKind::Durable,
+            text: "use the Notes window and verify with a screenshot".to_string(),
+            created_wall_ms: now,
+            updated_wall_ms: now,
+            expires_wall_ms: None,
+            bytes: 52,
+        };
+        tokio::fs::write(
+            durable.join("active-goal.json"),
+            serde_json::to_vec_pretty(&entry).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let frame = load_scratchpad_context(&profile).await.unwrap();
+
+        assert!(frame.contains("Scratchpads:"));
+        assert!(frame.contains("active-goal"));
+        assert!(frame.contains("verify with a screenshot"));
+
+        let _ = tokio::fs::remove_dir_all(cua_core::profile_dir(&profile).unwrap()).await;
     }
 
     #[tokio::test]

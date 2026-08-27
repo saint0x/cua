@@ -772,6 +772,9 @@
         "schema_version": {
           "type": "string"
         },
+        "scratchpads": {
+          "type": "string"
+        },
         "trace_root": {
           "type": "string"
         },
@@ -800,6 +803,7 @@
         "profile_socket",
         "profile_token_present",
         "schema_version",
+        "scratchpads",
         "trace_root",
         "voice_trace"
       ],
@@ -2578,6 +2582,9 @@
             "schema_version": {
               "type": "string"
             },
+            "scratchpads": {
+              "type": "string"
+            },
             "trace_root": {
               "type": "string"
             },
@@ -2606,6 +2613,7 @@
             "profile_socket",
             "profile_token_present",
             "schema_version",
+            "scratchpads",
             "trace_root",
             "voice_trace"
           ],
@@ -5714,6 +5722,9 @@
             "schema_version": {
               "type": "string"
             },
+            "scratchpads": {
+              "type": "string"
+            },
             "trace_root": {
               "type": "string"
             },
@@ -5742,6 +5753,7 @@
             "profile_socket",
             "profile_token_present",
             "schema_version",
+            "scratchpads",
             "trace_root",
             "voice_trace"
           ],
@@ -5917,6 +5929,331 @@
         "session_id"
       ],
       "title": "RuntimeSessionInfo",
+      "type": "object"
+    },
+    "ScratchpadDeleteRequest": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "durable": {
+          "default": true,
+          "type": "boolean"
+        },
+        "ephemeral": {
+          "default": true,
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "schema_version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "schema_version"
+      ],
+      "title": "ScratchpadDeleteRequest",
+      "type": "object"
+    },
+    "ScratchpadDeleteResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "deleted": {
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "profile": {
+          "type": "string"
+        },
+        "schema_version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "deleted",
+        "profile",
+        "schema_version"
+      ],
+      "title": "ScratchpadDeleteResult",
+      "type": "object"
+    },
+    "ScratchpadEntry": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "ScratchpadKind": {
+          "enum": [
+            "durable",
+            "ephemeral"
+          ],
+          "type": "string"
+        }
+      },
+      "properties": {
+        "bytes": {
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "created_wall_ms": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "expires_wall_ms": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/definitions/ScratchpadKind"
+        },
+        "name": {
+          "type": "string"
+        },
+        "profile": {
+          "type": "string"
+        },
+        "schema_version": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "updated_wall_ms": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "bytes",
+        "created_wall_ms",
+        "kind",
+        "name",
+        "profile",
+        "schema_version",
+        "text",
+        "updated_wall_ms"
+      ],
+      "title": "ScratchpadEntry",
+      "type": "object"
+    },
+    "ScratchpadKind": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "enum": [
+        "durable",
+        "ephemeral"
+      ],
+      "title": "ScratchpadKind",
+      "type": "string"
+    },
+    "ScratchpadListRequest": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "include_durable": {
+          "default": true,
+          "type": "boolean"
+        },
+        "include_ephemeral": {
+          "default": true,
+          "type": "boolean"
+        },
+        "schema_version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version"
+      ],
+      "title": "ScratchpadListRequest",
+      "type": "object"
+    },
+    "ScratchpadListResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "ScratchpadKind": {
+          "enum": [
+            "durable",
+            "ephemeral"
+          ],
+          "type": "string"
+        },
+        "ScratchpadSummary": {
+          "properties": {
+            "bytes": {
+              "format": "uint",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "expires_wall_ms": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "kind": {
+              "$ref": "#/definitions/ScratchpadKind"
+            },
+            "name": {
+              "type": "string"
+            },
+            "profile": {
+              "type": "string"
+            },
+            "schema_version": {
+              "type": "string"
+            },
+            "updated_wall_ms": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "bytes",
+            "kind",
+            "name",
+            "profile",
+            "schema_version",
+            "updated_wall_ms"
+          ],
+          "type": "object"
+        }
+      },
+      "properties": {
+        "entries": {
+          "items": {
+            "$ref": "#/definitions/ScratchpadSummary"
+          },
+          "type": "array"
+        },
+        "profile": {
+          "type": "string"
+        },
+        "schema_version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "entries",
+        "profile",
+        "schema_version"
+      ],
+      "title": "ScratchpadListResult",
+      "type": "object"
+    },
+    "ScratchpadReadRequest": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "durable": {
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "schema_version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "schema_version"
+      ],
+      "title": "ScratchpadReadRequest",
+      "type": "object"
+    },
+    "ScratchpadSummary": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "ScratchpadKind": {
+          "enum": [
+            "durable",
+            "ephemeral"
+          ],
+          "type": "string"
+        }
+      },
+      "properties": {
+        "bytes": {
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "expires_wall_ms": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/definitions/ScratchpadKind"
+        },
+        "name": {
+          "type": "string"
+        },
+        "profile": {
+          "type": "string"
+        },
+        "schema_version": {
+          "type": "string"
+        },
+        "updated_wall_ms": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "bytes",
+        "kind",
+        "name",
+        "profile",
+        "schema_version",
+        "updated_wall_ms"
+      ],
+      "title": "ScratchpadSummary",
+      "type": "object"
+    },
+    "ScratchpadWriteRequest": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "append": {
+          "default": false,
+          "type": "boolean"
+        },
+        "durable": {
+          "default": true,
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "schema_version": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "ttl_ms": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "schema_version",
+        "text"
+      ],
+      "title": "ScratchpadWriteRequest",
       "type": "object"
     },
     "SessionCancelRequest": {

@@ -130,6 +130,20 @@ export declare class Cua {
     webhookPublish(text: string, options: WebhookMessageOptions): Promise<Json>;
     webhookSubscribe(options: WebhookSubscribeOptions): Promise<Json>;
     webhookStatus(source: string): Promise<Json>;
+    scratchpadWrite(name: string, text: string, session: OwnerSession | string, options?: {
+        durable?: boolean;
+        append?: boolean;
+        ttlMs?: number;
+    }): Promise<Json>;
+    scratchpadRead(name: string, durable?: boolean): Promise<Json>;
+    scratchpadList(options?: {
+        includeDurable?: boolean;
+        includeEphemeral?: boolean;
+    }): Promise<Json>;
+    scratchpadDelete(name: string, session: OwnerSession | string, options?: {
+        durable?: boolean;
+        ephemeral?: boolean;
+    }): Promise<Json>;
     profileStatus(): Promise<Json>;
     createProfile(options: ProfileCreateOptions, session: OwnerSession | string): Promise<Json>;
     activateProfile(session: OwnerSession | string): Promise<Json>;

@@ -8,7 +8,8 @@ use cua_core::{
     schema_bundle, verify_machine_attestation, AttestationChallengeRequest, AttestationSignRequest,
     CapabilityManifest, ClipboardReadRequest, ClipboardWriteRequest, DesktopContextSnapshot,
     FrameEncoding, FramePayload, InboundMessageRequest, InboundReplyMode, InputAction,
-    MachineAttestation, MouseButton, RuntimeMode, RuntimeSessionRole, SessionCancelRequest,
+    MachineAttestation, MouseButton, RuntimeMode, RuntimeSessionRole, ScratchpadDeleteRequest,
+    ScratchpadListRequest, ScratchpadReadRequest, ScratchpadWriteRequest, SessionCancelRequest,
     SessionHeartbeatRequest, SessionLeaseRequest, UiIslandRequest, UiIslandState, UiMode,
     UiModeRequest, UiReplyRequest, UiStepRequest, WebhookSubscribeRequest, SCHEMA_VERSION,
 };
@@ -76,6 +77,10 @@ enum Command {
     Webhook {
         #[command(subcommand)]
         command: WebhookCommand,
+    },
+    Scratchpad {
+        #[command(subcommand)]
+        command: ScratchpadCommand,
     },
     Stream(StreamArgs),
     Ui {
@@ -330,6 +335,53 @@ enum WebhookCommand {
         #[arg(long)]
         json: bool,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum ScratchpadCommand {
+    Write(ScratchpadWriteArgs),
+    Read {
+        name: String,
+        #[arg(long)]
+        durable: Option<bool>,
+        #[arg(long)]
+        json: bool,
+    },
+    List {
+        #[arg(long, default_value_t = true)]
+        include_durable: bool,
+        #[arg(long, default_value_t = true)]
+        include_ephemeral: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    Delete {
+        name: String,
+        #[arg(long)]
+        session_id: String,
+        #[arg(long, default_value_t = true)]
+        durable: bool,
+        #[arg(long, default_value_t = true)]
+        ephemeral: bool,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Args)]
+struct ScratchpadWriteArgs {
+    name: String,
+    text: String,
+    #[arg(long)]
+    session_id: String,
+    #[arg(long)]
+    ephemeral: bool,
+    #[arg(long)]
+    append: bool,
+    #[arg(long)]
+    ttl_ms: Option<i64>,
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum, Deserialize)]
@@ -684,6 +736,7 @@ async fn main() -> anyhow::Result<()> {
         Some(Command::Session { command }) => session(&cli.profile, command).await,
         Some(Command::Inbox { command }) => inbox(&cli.profile, command).await,
         Some(Command::Webhook { command }) => webhook(&cli.profile, command).await,
+        Some(Command::Scratchpad { command }) => scratchpad(&cli.profile, command).await,
         Some(Command::Stream(args)) => stream(&cli.profile, args).await,
         Some(Command::Ui { command }) => ui(cli.server_addr, &cli.profile, command).await,
         Some(Command::Screenshot(args)) => screenshot(&cli.profile, args).await,
@@ -1107,6 +1160,87 @@ async fn webhook(profile: &str, command: WebhookCommand) -> anyhow::Result<()> {
                 profile,
                 "webhook.status",
                 Some(serde_json::json!({ "source": source })),
+            )
+            .await?;
+            print_json_value(&value, json)
+        }
+    }
+}
+
+async fn scratchpad(profile: &str, command: ScratchpadCommand) -> anyhow::Result<()> {
+    match command {
+        ScratchpadCommand::Write(args) => {
+            let request = ScratchpadWriteRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                name: args.name,
+                text: args.text,
+                durable: !args.ephemeral,
+                append: args.append,
+                ttl_ms: args.ttl_ms,
+            };
+            let value = unix_request_json_with_session(
+                profile,
+                "scratchpad.write",
+                Some(serde_json::to_value(request)?),
+                Some(&args.session_id),
+            )
+            .await?;
+            print_json_value(&value, args.json)
+        }
+        ScratchpadCommand::Read {
+            name,
+            durable,
+            json,
+        } => {
+            let request = ScratchpadReadRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                name,
+                durable,
+            };
+            let value = unix_request_json(
+                profile,
+                "scratchpad.read",
+                Some(serde_json::to_value(request)?),
+            )
+            .await?;
+            print_json_value(&value, json)
+        }
+        ScratchpadCommand::List {
+            include_durable,
+            include_ephemeral,
+            json,
+        } => {
+            let request = ScratchpadListRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                include_durable,
+                include_ephemeral,
+            };
+            let value = unix_request_json(
+                profile,
+                "scratchpad.list",
+                Some(serde_json::to_value(request)?),
+            )
+            .await?;
+            print_json_value(&value, json)
+        }
+        ScratchpadCommand::Delete {
+            name,
+            session_id,
+            durable,
+            ephemeral,
+            json,
+        } => {
+            let request = ScratchpadDeleteRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                name,
+                durable,
+                ephemeral,
+            };
+            let value = unix_request_json_with_session(
+                profile,
+                "scratchpad.delete",
+                Some(serde_json::to_value(request)?),
+                Some(&session_id),
             )
             .await?;
             print_json_value(&value, json)
@@ -2012,6 +2146,58 @@ impl RunebookRuntime {
                 .await
             }
             "session.status" => self.request("session.status", None, None).await,
+            "scratchpad.write" => {
+                self.request(
+                    "scratchpad.write",
+                    Some(serde_json::json!({
+                        "schema_version": SCHEMA_VERSION,
+                        "name": self.required_string(step, "name")?,
+                        "text": self.required_string(step, "text")?,
+                        "durable": step_bool(step, "durable")?.unwrap_or(true),
+                        "append": step_bool(step, "append")?.unwrap_or(false),
+                        "ttl_ms": step_i64(step, "ttl_ms")?,
+                    })),
+                    self.session_id.as_deref(),
+                )
+                .await
+            }
+            "scratchpad.read" => {
+                self.request(
+                    "scratchpad.read",
+                    Some(serde_json::json!({
+                        "schema_version": SCHEMA_VERSION,
+                        "name": self.required_string(step, "name")?,
+                        "durable": step_bool(step, "durable")?,
+                    })),
+                    None,
+                )
+                .await
+            }
+            "scratchpad.list" => {
+                self.request(
+                    "scratchpad.list",
+                    Some(serde_json::json!({
+                        "schema_version": SCHEMA_VERSION,
+                        "include_durable": step_bool(step, "include_durable")?.unwrap_or(true),
+                        "include_ephemeral": step_bool(step, "include_ephemeral")?.unwrap_or(true),
+                    })),
+                    None,
+                )
+                .await
+            }
+            "scratchpad.delete" => {
+                self.request(
+                    "scratchpad.delete",
+                    Some(serde_json::json!({
+                        "schema_version": SCHEMA_VERSION,
+                        "name": self.required_string(step, "name")?,
+                        "durable": step_bool(step, "durable")?.unwrap_or(true),
+                        "ephemeral": step_bool(step, "ephemeral")?.unwrap_or(true),
+                    })),
+                    self.session_id.as_deref(),
+                )
+                .await
+            }
             "profile.status" => self.request("profile.status", None, None).await,
             "profile.create" => {
                 self.request(

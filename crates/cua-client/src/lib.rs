@@ -5,10 +5,11 @@ use cua_core::{
     FrameActionRequest, FrameEncoding, FrameEnvelope, FramePayload, HealthReport,
     InboundMessageRequest, InboundStatus, InputAction, MachineAttestation, MachineIdentityStatus,
     Manifest, RuntimeControlState, RuntimeInventory, RuntimeSessionRole, SchemaBundle,
-    SessionCancelRequest, SessionHeartbeatRequest, SessionLeaseRequest, SessionLeaseResult,
-    UiIslandRequest, UiIslandResult, UiIslandState, UiMode, UiModeRequest, UiReplyRequest,
-    UiStepRequest, VisualSessionRequest, WebhookSourceStatus, WebhookSubscribeRequest,
-    SCHEMA_VERSION,
+    ScratchpadDeleteRequest, ScratchpadDeleteResult, ScratchpadEntry, ScratchpadListRequest,
+    ScratchpadListResult, ScratchpadReadRequest, ScratchpadWriteRequest, SessionCancelRequest,
+    SessionHeartbeatRequest, SessionLeaseRequest, SessionLeaseResult, UiIslandRequest,
+    UiIslandResult, UiIslandState, UiMode, UiModeRequest, UiReplyRequest, UiStepRequest,
+    VisualSessionRequest, WebhookSourceStatus, WebhookSubscribeRequest, SCHEMA_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -330,6 +331,45 @@ impl CuaClient {
         self.request(
             "webhook.status",
             Some(serde_json::json!({ "source": source.into() })),
+        )
+        .await
+    }
+
+    pub async fn scratchpad_write(
+        &self,
+        request: ScratchpadWriteRequest,
+        owner_session_id: &str,
+    ) -> Result<ScratchpadEntry> {
+        self.request_with_session(
+            "scratchpad.write",
+            Some(serde_json::to_value(request)?),
+            Some(owner_session_id),
+        )
+        .await
+    }
+
+    pub async fn scratchpad_read(&self, request: ScratchpadReadRequest) -> Result<ScratchpadEntry> {
+        self.request("scratchpad.read", Some(serde_json::to_value(request)?))
+            .await
+    }
+
+    pub async fn scratchpad_list(
+        &self,
+        request: ScratchpadListRequest,
+    ) -> Result<ScratchpadListResult> {
+        self.request("scratchpad.list", Some(serde_json::to_value(request)?))
+            .await
+    }
+
+    pub async fn scratchpad_delete(
+        &self,
+        request: ScratchpadDeleteRequest,
+        owner_session_id: &str,
+    ) -> Result<ScratchpadDeleteResult> {
+        self.request_with_session(
+            "scratchpad.delete",
+            Some(serde_json::to_value(request)?),
+            Some(owner_session_id),
         )
         .await
     }

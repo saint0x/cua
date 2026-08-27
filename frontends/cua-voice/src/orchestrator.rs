@@ -613,6 +613,7 @@ async fn plan_and_dispatch(
                 json!({
                     "chat_chars": agent_context.chat.chars().count(),
                     "ctx_chars": agent_context.ctx.chars().count(),
+                    "scratchpad_chars": agent_context.scratchpads.chars().count(),
                 }),
             )
             .await;
@@ -626,7 +627,10 @@ async fn plan_and_dispatch(
             )
             .await;
         let planner = Planner::new(&config.planner_model);
-        let combined_agent_context = format!("{}\n{}", agent_context.chat, agent_context.ctx);
+        let combined_agent_context = format!(
+            "{}\n{}\n{}",
+            agent_context.chat, agent_context.ctx, agent_context.scratchpads
+        );
         let mut attempts = Vec::new();
         let max_attempts = agent_loop_max_attempts();
         let mut completed = None;

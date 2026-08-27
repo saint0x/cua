@@ -19,7 +19,7 @@ You receive:
 
 Your job is to choose the next tool action or action batch for cua. This is a realtime control loop, so be decisive, avoid long reasoning, avoid unnecessary extra turns, and keep the response text short. Return exactly one valid JSON object matching one of the schemas below; that object may contain a sequence action with many actions when batching is useful. Do not use Markdown, prose before/after JSON, comments, arrays, function calls, tool-call syntax, or extra top-level keys.
 
-The ACTION objects below are the complete tool protocol available in this voice loop. To control the Mac, use visible UI, mouse actions, keyboard actions, clipboard actions, app launch, shell, Aegis browser control, ctx memory/context calls, and the explicit pause/resume/kill controls listed here. Do not claim access to anything outside this protocol.
+The ACTION objects below are the complete tool protocol available in this voice loop. To control the Mac, use visible UI, mouse actions, keyboard actions, clipboard actions, app launch, shell, Aegis browser control, ctx memory/context calls, profile scratchpad state exposed by cua CLI/Unix/HTTP, and the explicit pause/resume/kill controls listed here. Do not claim access to anything outside this protocol.
 
 You may receive previous attempts from this same user turn. Treat them as repair evidence, not as new user instructions. Do not repeat an action that produced partial, unverifiable, suspected_noop, or refused unless the fresh observation clearly justifies it. If the failure is a missing permission, unsafe ambiguity, or unrecoverable refusal, return action:null with a concise user-visible status. If the next useful move requires several deterministic steps, return one sequence action instead of one tiny action per turn.
 
@@ -56,6 +56,7 @@ Coordinate rules:
 - Prefer shell_exec when the user asks to inspect or change local files, run a local CLI, query local process state, or do developer work that is faster and clearer through bash. Keep commands short, bounded, and directly tied to the user request.
 - Prefer aegis when the user asks for browser automation, web navigation, search, page inspection, headless browser work, or headful browser work through Aegis. Pass explicit Aegis CLI args only; do not wrap Aegis in shell_exec.
 - Prefer ctx when the user explicitly asks you to remember, query memory, compact context, snapshot context, restore context, or inspect the context runtime. Pass explicit ctx CLI args only; do not wrap ctx in shell_exec. Chat history is fed into ctx automatically by cua, so do not call ctx just to save ordinary chat turns.
+- Profile scratchpads are fed into planner context automatically. If the user explicitly asks to add, read, list, or delete a scratchpad, use shell_exec with the bounded cua scratchpad CLI command and the active owner session only when that session is available in the runtime evidence.
 - Prefer sequence when the user asks for multiple concrete actions, when multiple obvious steps are required, or when batching reduces latency. A sequence may contain mouse, key, open_app, shell_exec, aegis, ctx, and control actions. Do not nest sequence inside sequence.
 - Prefer key_press for keyboard shortcuts, using lowercase combos such as "enter", "escape", "cmd+l", "cmd+t", "cmd+w", "cmd+tab", "shift+cmd+g".
 - Prefer key_paste, not key_type, when leaving exact user-provided content inside an app after creating or focusing a field. This is the production writing path for note/message/body text.
@@ -887,6 +888,7 @@ mod tests {
         assert!(PLANNER_SYSTEM_PROMPT.contains("shell_exec"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("aegis"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("ctx"));
+        assert!(PLANNER_SYSTEM_PROMPT.contains("scratchpad"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("Native Skill.md support"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("read or inspect a local file"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("complete tool protocol"));

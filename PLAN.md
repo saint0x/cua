@@ -25,21 +25,6 @@ Done means:
 - Verifier rejects unknown keys, revoked enrollments, bad audience, expired challenge, altered payload, and stale timestamp.
 - Enrollment docs explain what is local runtime proof versus cloud authorization.
 
-Agent F: Scratchpads
-
-Scope:
-- Own ephemeral and durable scratchpads under `~/.cua/profiles/<profile>/scratchpads/`.
-
-Work:
-- Add agent-accessible scratchpad append/read/list/delete operations.
-- Feed useful scratchpad context into the planner without slowing the voice hot path.
-- Add tests for scratchpad path policy, retention, and planner injection.
-
-Done means:
-- Scratchpad state is profile-scoped, durable when requested, and never stored in repo paths.
-- Planner context includes bounded scratchpad retrieval.
-- CLI/Unix/HTTP access and focused tests pass.
-
 Agent G: Final Release Gate
 
 Scope:

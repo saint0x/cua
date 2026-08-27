@@ -9,6 +9,7 @@ Canonical paths:
 - `~/.cua/profiles/<profile>/daemon.sock`: profile-local Unix socket
 - `~/.cua/profiles/<profile>/chat.db`: local chat history
 - `~/.cua/profiles/<profile>/ctx`: ctx workspace
+- `~/.cua/profiles/<profile>/scratchpads`: durable and ephemeral agent scratchpad state
 - `~/.cua/bin/ctx`: local ctx install path for non-packaged production installs
 - packaged sibling `ctx`: ctx path inside `cua.app/Contents/MacOS`
 

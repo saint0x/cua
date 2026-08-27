@@ -256,6 +256,77 @@ class Cua:
     def webhook_status(self, source: str) -> Json:
         return self.rpc("webhook.status", {"source": source})
 
+    def scratchpad_write(
+        self,
+        name: str,
+        text: str,
+        session: OwnerSession | str,
+        *,
+        durable: bool = True,
+        append: bool = False,
+        ttl_ms: int | None = None,
+    ) -> Json:
+        return self.rpc(
+            "scratchpad.write",
+            _compact(
+                {
+                    "schema_version": "cua.v1",
+                    "name": name,
+                    "text": text,
+                    "durable": durable,
+                    "append": append,
+                    "ttl_ms": ttl_ms,
+                }
+            ),
+            session_id=_session_id(session),
+        )
+
+    def scratchpad_read(self, name: str, durable: bool | None = None) -> Json:
+        return self.rpc(
+            "scratchpad.read",
+            _compact(
+                {
+                    "schema_version": "cua.v1",
+                    "name": name,
+                    "durable": durable,
+                }
+            ),
+        )
+
+    def scratchpad_list(
+        self,
+        *,
+        include_durable: bool = True,
+        include_ephemeral: bool = True,
+    ) -> Json:
+        return self.rpc(
+            "scratchpad.list",
+            {
+                "schema_version": "cua.v1",
+                "include_durable": include_durable,
+                "include_ephemeral": include_ephemeral,
+            },
+        )
+
+    def scratchpad_delete(
+        self,
+        name: str,
+        session: OwnerSession | str,
+        *,
+        durable: bool = True,
+        ephemeral: bool = True,
+    ) -> Json:
+        return self.rpc(
+            "scratchpad.delete",
+            {
+                "schema_version": "cua.v1",
+                "name": name,
+                "durable": durable,
+                "ephemeral": ephemeral,
+            },
+            session_id=_session_id(session),
+        )
+
     def profile_status(self) -> Json:
         return self._step("profile.status", {}, "profile")
 
