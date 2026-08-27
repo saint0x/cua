@@ -6,6 +6,99 @@ The north star:
 
 > cua should expose a trusted local computer-use control plane that agents can script programmatically, while proving which local machine/runtime/profile they are controlling.
 
+## 0. Implement cua runebooks as the canonical scripting surface
+
+The runebook is the proposed compact, structured `cua run <file>.toml` execution format. It should become the first-class scripting surface before public TypeScript/Python SDKs.
+
+Reference design:
+
+- `sample-cua-runebook.md`
+
+Required work:
+
+1. Add `cua run <file>` to `crates/cua-cli`.
+2. Add a typed runebook parser and validator, either in a new `crates/cua-runebook` crate or in `cua-core` if the types should be part of the stable protocol schema.
+3. Support the full top-level runebook shape from `sample-cua-runebook.md`:
+   - `schema`
+   - `[run]`
+   - `[daemon]`
+   - `[session]`
+   - `[attest]`
+   - `[stt.<name>]`
+   - `[planner.<name>]`
+   - `[memory]`
+   - `[trace]`
+   - `[vars]`
+   - `[macro.<name>]`
+   - `[[steps]]`
+4. Compile compact aliases to the existing cua protocol:
+   - `click`
+   - `drag`
+   - `key`
+   - `type`
+   - `paste`
+   - `open_app`
+   - `shell`
+   - `aegis`
+   - `ctx`
+5. Support canonical raw input through existing `InputAction` shapes.
+6. Support `input.frame` by compiling to frame-relative input dispatch.
+7. Support the raw `rpc` escape hatch for full Unix/HTTP protocol coverage.
+8. Support `save_as` result binding.
+9. Support `${var}` interpolation and `$result.path` references.
+10. Support direct protocol steps:
+   - status, doctor, manifest, schemas, metrics
+   - permissions
+   - sessions
+   - profiles
+   - context, screenshot, window capture, visual session
+   - observe desktop/displays/cursor
+   - events and waits
+   - UI step/reply/mode/island
+   - clipboard read/write
+   - pause/resume/kill switch
+   - trace start/inspect/verify/replay
+   - perf bench
+   - model eval
+   - schema export
+11. Support workflow nodes:
+   - `seq`
+   - `parallel`
+   - `race`
+   - `batch`
+   - `foreach`
+   - `run`
+   - `spawn_run`
+12. Support built-in model/voice turn nodes:
+   - text turn
+   - WAV turn
+   - live record turn
+   - STT-only step
+   - planner-only step
+   - generic model call step
+   - dispatch model output as cua action
+   - spawn child runebook from model output
+13. Add a runebook trace format and write a trace for every runebook execution.
+14. Add trace verify/replay support for runebook traces.
+15. Add deterministic fozzy scenarios for runebook parsing, validation, execution, trace verification, and replay.
+16. Add docs that make clear the runebook format is the canonical programmable surface and SDKs are convenience layers over the same protocol/runebook substrate.
+
+Current source reality:
+
+- `cua run <file>` is not implemented yet.
+- A runebook parser/executor is not implemented yet.
+- `on_error = "stop" | "continue" | "ask" | "rollback"` is not implemented yet.
+- Existing source has localized retry/error behavior for STT, planner, capture, trace verification, and normal command failures, but not a global runebook error policy.
+
+Required `on_error` implementation:
+
+1. `stop`: stop at the first failed step, record the error in the run trace, return non-zero.
+2. `continue`: record the error and continue to the next eligible step.
+3. `ask`: pause execution and request an operator decision through the HUD/CLI before proceeding.
+4. `rollback`: run explicit rollback steps when present; otherwise stop with a clear unsupported rollback error.
+5. Allow step-level `on_error` to override `[run].on_error`.
+6. Include error policy decisions in the runebook trace.
+
 ## 1. Extract a reusable `cua-client` SDK crate
 
 The voice frontend already contains a real client abstraction in `frontends/cua-voice/src/client.rs`. It should move into a reusable workspace crate instead of living inside the HUD/voice frontend.
@@ -248,7 +341,7 @@ Required work:
 
 ## 7. Add cloud enrollment and verification flow
 
-This connects local CUA to Quilt/cloud.
+This connects local cua to Quilt/cloud.
 
 Required work:
 
@@ -313,7 +406,7 @@ await cua.dispatchFrame({
 
 ## 9. Normalize all config under `~/.cua/{concern}/**/*`
 
-All durable CUA runtime/config state should live under `~/.cua` by concern. No production path should be assembled ad hoc in each crate.
+All durable cua runtime/config state should live under `~/.cua` by concern. No production path should be assembled ad hoc in each crate.
 
 Target layout:
 
@@ -415,7 +508,7 @@ These are the concrete gaps found in the current source scan.
    - `voice_trace_path()` writes `~/.cua/profiles/<profile>/<VOICE_TRACE_FILE>`; move this under `~/.cua/profiles/<profile>/traces/voice.jsonl`.
 6. `crates/cua-platform-macos/src/lib.rs`
    - `aegis_binary()` searches `~/.local/bin/aegis`, Homebrew, and `/usr/local/bin`.
-   - This is fine for external tool discovery, but any CUA-owned tool should resolve under `~/.cua/bin/` or packaged sibling first.
+   - This is fine for external tool discovery, but any cua-owned tool should resolve under `~/.cua/bin/` or packaged sibling first.
    - `ctx_binary()` falls back to `vendor/ctx/ctx`; production should prefer packaged sibling or `~/.cua/bin/ctx`.
 7. `scripts/package-macos-app.sh`
    - Defaults package output to repo-local `artifacts/cua/macos`.
@@ -534,8 +627,8 @@ Required examples:
 7. Read/write clipboard with explicit capability profile.
 8. Request attestation and verify it locally.
 9. Enroll with Quilt/cloud.
-10. Use Aegis through CUA.
-11. Use ctx through CUA.
+10. Use Aegis through cua.
+11. Use ctx through cua.
 
 ## 15. Validation and release checks
 
@@ -586,4 +679,4 @@ fozzy replay ~/.cua/artifacts/fozzy/cua-smoke.fozzy --json
 4. Whether `CUA_HTTP_TOKEN` should remain a production override or become dev/test only.
 5. Whether current-directory `.env` loading should be removed entirely or kept as dev-only behavior.
 6. Whether `ctx` should be installed into `~/.cua/bin/ctx` or only resolved as a packaged sibling.
-7. Whether cloud enrollment belongs in this repo or in Quilt cloud with a local CUA client.
+7. Whether cloud enrollment belongs in this repo or in Quilt cloud with a local cua client.
