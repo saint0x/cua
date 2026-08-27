@@ -33,6 +33,16 @@ export class Cua {
             await rm(dir, { force: true, recursive: true });
         }
     }
+    async runSteps(steps, options = {}) {
+        const runebook = renderRunebook({
+            profile: this.profile,
+            name: options.name ?? "typescript-sdk",
+            trace: options.trace ?? false,
+            onError: options.onError,
+            steps,
+        });
+        return this.runInline(runebook, options);
+    }
     async rpc(method, params = {}, options = {}) {
         const runebook = [
             'schema = "cua.runebook.v1"',
@@ -45,13 +55,22 @@ export class Cua {
             "[[steps]]",
             `id = ${tomlString("rpc")}`,
             `do = ${tomlString(method)}`,
-            ...tomlFields(params),
+            `params = ${tomlValue(params)}`,
             options.sessionId ? `session_id = ${tomlString(options.sessionId)}` : "",
         ]
             .filter(Boolean)
             .join("\n");
         const report = await this.runInline(runebook);
         return report;
+    }
+    async manifest() {
+        return this.step("manifest", {}, "manifest");
+    }
+    async schemas() {
+        return this.step("schemas", {}, "schemas");
+    }
+    async metrics() {
+        return this.step("metrics", {}, "metrics");
     }
     async status() {
         return this.execJson(["--profile", this.profile, "status", "--json"]);
@@ -78,6 +97,138 @@ export class Cua {
         const sessionId = readSessionId(raw);
         return { sessionId, raw };
     }
+    async cancelSession(session, targetSessionId) {
+        return this.rpc("session.cancel", compact({
+            schema_version: "cua.v1",
+            session_id: sessionIdOf(session),
+            target_session_id: targetSessionId,
+        }));
+    }
+    async sessionStatus() {
+        return this.rpc("session.status");
+    }
+    async profileStatus() {
+        return this.step("profile.status", {}, "profile");
+    }
+    async createProfile(options, session) {
+        if (session) {
+            return this.rpc("profile.create", compact({
+                name: options.name,
+                mode: options.mode ?? "supervised",
+                duration_ms: options.durationMs,
+                capabilities: options.capabilities,
+            }), { sessionId: sessionIdOf(session) });
+        }
+        return this.step("profile.create", {
+            name: options.name,
+            mode: options.mode ?? "supervised",
+            duration_ms: options.durationMs,
+            capabilities: options.capabilities,
+        }, "profile");
+    }
+    async activateProfile(session) {
+        if (session) {
+            return this.rpc("profile.activate", {}, { sessionId: sessionIdOf(session) });
+        }
+        return this.step("profile.activate", {}, "profile");
+    }
+    async requestAccessibility() {
+        return this.step("permissions.request_accessibility", {}, "permissions");
+    }
+    async observe() {
+        return this.step("observe", {}, "desktop");
+    }
+    async screenshot(options = {}) {
+        return this.step("screenshot", {
+            max_width: options.maxWidth,
+            encoding: options.encoding,
+            force_fresh: options.forceFresh,
+            include_bytes: options.includeBytes,
+        }, "screenshot");
+    }
+    async windowCapture(options) {
+        return this.step("window.capture", {
+            window_id: options.windowId,
+            max_width: options.maxWidth,
+            encoding: options.encoding,
+            include_bytes: options.includeBytes,
+        }, "window");
+    }
+    async context(options = {}) {
+        return this.step("context", {
+            max_width: options.maxWidth,
+            encoding: options.encoding,
+            force_fresh: options.forceFresh,
+            include_bytes: options.includeBytes,
+        }, "context");
+    }
+    async events(options = {}) {
+        return this.step("events", {
+            after: options.after,
+            timeout_ms: options.timeoutMs,
+        }, "events");
+    }
+    async uiStep(options) {
+        return this.step("ui.step", {
+            label: options.label,
+            source: options.source,
+            task: options.task,
+            tool: options.tool,
+            step_index: options.stepIndex,
+            step_total: options.stepTotal,
+            ttl_ms: options.ttlMs,
+        }, "ui");
+    }
+    async uiIsland(state, source) {
+        return this.step("ui.island", { state, source }, "ui");
+    }
+    async uiReply(options) {
+        return this.step("ui.reply", { text: options.text, source: options.source, ttl_ms: options.ttlMs }, "ui");
+    }
+    async uiMode(mode, source) {
+        return this.step("ui.mode", { mode, source }, "ui");
+    }
+    async clipboardRead(allowSensitive = false) {
+        return this.step("clipboard.read", { allow_sensitive: allowSensitive }, "clipboard");
+    }
+    async clipboardWrite(text, session) {
+        return this.rpc("clipboard.write", { schema_version: "cua.v1", text }, session ? { sessionId: sessionIdOf(session) } : {});
+    }
+    async pause(session) {
+        return this.rpc("control.pause", {}, { sessionId: sessionIdOf(session) });
+    }
+    async resume(session) {
+        return this.rpc("control.resume", {}, { sessionId: sessionIdOf(session) });
+    }
+    async killSwitch(session) {
+        return this.rpc("control.kill_switch", {}, { sessionId: sessionIdOf(session) });
+    }
+    async dispatch(action, options = {}) {
+        return this.rpc("input.dispatch", action, rpcSession(options));
+    }
+    async dispatchFrame(options) {
+        return this.rpc("input.dispatch_frame", {
+            schema_version: "cua.v1",
+            source_frame: options.sourceFrame,
+            action: options.action,
+        }, rpcSession(options));
+    }
+    async openApp(app, options = {}) {
+        return this.dispatch({ schema_version: "cua.v1", action: "open_app", app }, options);
+    }
+    async shell(command, options = {}) {
+        return this.dispatch({ schema_version: "cua.v1", action: "shell", command }, options);
+    }
+    async aegis(args, options = {}) {
+        return this.dispatch({ schema_version: "cua.v1", action: "aegis", args }, options);
+    }
+    async ctx(args, options = {}) {
+        return this.dispatch({ schema_version: "cua.v1", action: "ctx", args }, options);
+    }
+    async step(action, fields, saveAs) {
+        const report = await this.runSteps([{ id: saveAs, do: action, save_as: saveAs, ...fields }]);
+        return readResult(report, saveAs);
+    }
     async execJson(args) {
         const result = await execFile(this.bin, args, this.env);
         if (result.code !== 0) {
@@ -90,6 +241,30 @@ export class Cua {
             throw new Error(`cua returned non-JSON output: ${error.message}\n${result.stdout}`);
         }
     }
+}
+function renderRunebook(input) {
+    const lines = [
+        'schema = "cua.runebook.v1"',
+        "",
+        "[run]",
+        `name = ${tomlString(input.name)}`,
+        `profile = ${tomlString(input.profile)}`,
+        `trace = ${input.trace ? "true" : "false"}`,
+        input.onError ? `on_error = ${tomlString(input.onError)}` : "",
+        "",
+    ].filter(Boolean);
+    for (const step of input.steps) {
+        lines.push("[[steps]]");
+        const { do: action, ...fields } = step;
+        lines.push(`do = ${tomlString(action)}`);
+        for (const [key, value] of Object.entries(fields)) {
+            if (value !== undefined) {
+                lines.push(`${tomlKey(key)} = ${tomlValue(value)}`);
+            }
+        }
+        lines.push("");
+    }
+    return lines.join("\n");
 }
 function execFile(bin, args, env) {
     return new Promise((resolve, reject) => {
@@ -120,18 +295,45 @@ function readSessionId(value) {
     }
     throw new Error("cua session response did not include session.session_id");
 }
+function readResult(value, key) {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+        const results = value.results;
+        if (results && typeof results === "object" && !Array.isArray(results) && key in results) {
+            return results[key];
+        }
+    }
+    throw new Error(`cua runebook response did not include results.${key}`);
+}
+function sessionIdOf(session) {
+    return typeof session === "string" ? session : session.sessionId;
+}
+function rpcSession(options) {
+    return options.session ? { sessionId: sessionIdOf(options.session) } : {};
+}
+function compact(value) {
+    return Object.fromEntries(Object.entries(value).filter(([, field]) => field !== undefined && field !== null));
+}
 function tomlString(value) {
     return JSON.stringify(value);
 }
-function tomlFields(value) {
-    if (!value || typeof value !== "object" || Array.isArray(value)) {
-        return [`value = ${tomlJson(value)}`];
-    }
-    return Object.entries(value).map(([key, field]) => `${key} = ${tomlJson(field)}`);
+function tomlKey(key) {
+    return /^[A-Za-z_][A-Za-z0-9_-]*$/.test(key) ? key : tomlString(key);
 }
-function tomlJson(value) {
+function tomlValue(value) {
+    if (value === undefined || value === null) {
+        return "{}";
+    }
     if (typeof value === "string") {
         return tomlString(value);
     }
-    return JSON.stringify(value);
+    if (typeof value === "number" || typeof value === "boolean") {
+        return JSON.stringify(value);
+    }
+    if (Array.isArray(value)) {
+        return `[${value.map(tomlValue).join(", ")}]`;
+    }
+    return `{ ${Object.entries(value)
+        .filter(([, field]) => field !== null)
+        .map(([key, field]) => `${tomlKey(key)} = ${tomlValue(field)}`)
+        .join(", ")} }`;
 }

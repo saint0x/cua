@@ -110,8 +110,7 @@
     - Add SDK method `client.attest({ audience, nonce })`.
     - Add Quilt-side verifier design: verify nonce, verify signature, verify public key enrollment, verify code identity policy, verify profile/capability policy, and verify timestamp freshness.
 
-15. Define the public TypeScript SDK.
-    - Decide the package name: `@quilt/cua`, `@cua/sdk`, or `cua-sdk`.
+15. Finish advanced TypeScript SDK surfaces.
     - Connect to local Unix socket on macOS where supported.
     - Fall back to loopback HTTP where Unix socket is not practical.
     - Generate types from `/schemas` or checked-in schema bundle.
@@ -122,25 +121,11 @@
     - Verify final actions against fresh stream/screenshot evidence before completion.
     - Support owner/observer session semantics.
     - Support attestation.
-    - Support frame-relative input dispatch.
     - Support event long-polling/streaming.
-    - Support the target API shape:
 
-      ```ts
-      const cua = await Cua.connect({ profile: "default" });
-      const owner = await cua.acquireOwner({ clientName: "agent" });
-      const context = await cua.context({ maxWidth: 1280, includeBytes: true });
-
-      await cua.dispatchFrame({
-        session: owner,
-        sourceFrame: context.frame.envelope,
-        action: { kind: "mouse_click", x: 420, y: 240, button: "left", count: 1 },
-      });
-      ```
-
-16. Define the public Python SDK.
-    - Use the same transport and session semantics as TypeScript.
-    - Include examples for local agent scripts and notebook use.
+16. Finish advanced Python SDK surfaces.
+    - Keep advanced surfaces aligned with TypeScript.
+    - Include notebook-focused examples after advanced surfaces land.
 
 17. Normalize all config under `~/.cua/{concern}/**/*`.
     - Keep all durable cua runtime/config state under `~/.cua` by concern.
@@ -225,11 +210,7 @@
     - Add docs explaining profile policy vs bearer token vs owner session: bearer token authenticates local profile access, owner session authorizes mutation, profile policy controls capabilities, and attestation proves runtime/machine identity.
 
 20. Make all documented functionality scriptable through the SDK.
-    - Support screenshot and window capture.
     - Support visual session streaming.
-    - Support accessibility permission request.
-    - Support profile create/activate/status.
-    - Support input dispatch for mouse move, mouse click, mouse drag, key press, key type, key paste, sequence, open app, shell exec, Aegis, and ctx.
     - Support model eval only as an optional advanced surface.
     - Support trace verify/replay helpers.
     - Support attestation identity/challenge/sign/verify.
