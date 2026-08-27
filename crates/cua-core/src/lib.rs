@@ -378,6 +378,29 @@ pub struct UiModeResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+pub enum UiIslandState {
+    Expanded,
+    Collapsed,
+    Toggle,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct UiIslandRequest {
+    pub schema_version: String,
+    pub state: UiIslandState,
+    pub source: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct UiIslandResult {
+    pub schema_version: String,
+    pub accepted: bool,
+    pub state: UiIslandState,
+    pub source: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum Effect {
     Confirmed,
     Partial,
@@ -698,6 +721,14 @@ pub fn schema_bundle() -> SchemaBundle {
     schemas.insert(
         "UiModeResult".to_string(),
         serde_json::json!(schema_for!(UiModeResult)),
+    );
+    schemas.insert(
+        "UiIslandRequest".to_string(),
+        serde_json::json!(schema_for!(UiIslandRequest)),
+    );
+    schemas.insert(
+        "UiIslandResult".to_string(),
+        serde_json::json!(schema_for!(UiIslandResult)),
     );
     schemas.insert(
         "InputAction".to_string(),

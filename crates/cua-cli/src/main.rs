@@ -5,8 +5,8 @@ use cua_capture::{CaptureRequest, FrameBus, SyntheticCaptureBackend};
 use cua_core::{
     schema_bundle, CapabilityManifest, ClipboardReadRequest, ClipboardWriteRequest,
     DesktopContextSnapshot, FrameEncoding, FramePayload, InputAction, MouseButton, RuntimeMode,
-    RuntimeSessionRole, SessionCancelRequest, SessionLeaseRequest, UiMode, UiModeRequest,
-    UiReplyRequest, UiStepRequest, SCHEMA_VERSION,
+    RuntimeSessionRole, SessionCancelRequest, SessionLeaseRequest, UiIslandRequest, UiIslandState,
+    UiMode, UiModeRequest, UiReplyRequest, UiStepRequest, SCHEMA_VERSION,
 };
 use cua_model::{run_eval_report, EvalConfig};
 use cua_trace::{ActionTurnRecord, TraceRecord, TraceWriter};
@@ -317,6 +317,31 @@ enum UiCommand {
         #[arg(long)]
         json: bool,
     },
+    Island {
+        #[arg(value_enum)]
+        state: UiIslandStateArg,
+        #[arg(long)]
+        source: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Clone, Debug, clap::ValueEnum)]
+enum UiIslandStateArg {
+    Expanded,
+    Collapsed,
+    Toggle,
+}
+
+impl From<UiIslandStateArg> for UiIslandState {
+    fn from(value: UiIslandStateArg) -> Self {
+        match value {
+            UiIslandStateArg::Expanded => UiIslandState::Expanded,
+            UiIslandStateArg::Collapsed => UiIslandState::Collapsed,
+            UiIslandStateArg::Toggle => UiIslandState::Toggle,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -619,6 +644,23 @@ async fn ui(_addr: SocketAddr, profile: &str, command: UiCommand) -> anyhow::Res
                 Some(serde_json::to_value(UiModeRequest {
                     schema_version: SCHEMA_VERSION.to_string(),
                     mode: mode.into(),
+                    source,
+                })?),
+            )
+            .await?;
+            print_json_value(&value, json)
+        }
+        UiCommand::Island {
+            state,
+            source,
+            json,
+        } => {
+            let value = unix_request_json(
+                profile,
+                "ui.island",
+                Some(serde_json::to_value(UiIslandRequest {
+                    schema_version: SCHEMA_VERSION.to_string(),
+                    state: state.into(),
                     source,
                 })?),
             )

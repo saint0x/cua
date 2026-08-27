@@ -225,6 +225,8 @@ impl HudSnapshot {
                 self.programmed_step_restore = None;
             }
             VoiceUiEvent::Metric { .. } => {}
+            VoiceUiEvent::ToggleExpanded => {}
+            VoiceUiEvent::SetExpanded(_) => {}
             VoiceUiEvent::Idle => {
                 let mode = self.mode.clone();
                 let input_label = self.input_label.clone();
@@ -322,6 +324,8 @@ pub enum VoiceUiEvent {
         name: String,
         ms: u64,
     },
+    ToggleExpanded,
+    SetExpanded(bool),
     Idle,
 }
 

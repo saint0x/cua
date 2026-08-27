@@ -6,7 +6,7 @@ use cua_voice::agent_events::{
     agent_ui_event_from_daemon_event_advancing_cursor,
 };
 use cua_voice::client::CuaClient;
-use cua_voice::daemon::profile_daemon_is_alive;
+use cua_voice::daemon::{profile_daemon_is_alive, spawn_profile_daemon};
 use cua_voice::hud::{
     compact_label, HudDisplay, HudMetrics, COMPACT_HEIGHT, EXPANDED_HEIGHT, TOP_MARGIN,
     WINDOW_HEIGHT, WINDOW_WIDTH,
@@ -96,6 +96,7 @@ struct VoiceHud {
     chrome_visible: bool,
     drag: Option<IslandDrag>,
     model_label: String,
+    island_bounds: Arc<Mutex<Option<Bounds<Pixels>>>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -105,7 +106,12 @@ struct IslandDrag {
 }
 
 impl VoiceHud {
-    fn new(rx: Receiver<VoiceUiEvent>, mode: UiMode, model_label: String) -> Self {
+    fn new(
+        rx: Receiver<VoiceUiEvent>,
+        mode: UiMode,
+        model_label: String,
+        island_bounds: Arc<Mutex<Option<Bounds<Pixels>>>>,
+    ) -> Self {
         let mut snapshot = HudSnapshot::default();
         let source = initial_ui_source(&mode).to_string();
         snapshot.apply(VoiceUiEvent::UiMode {
@@ -127,13 +133,24 @@ impl VoiceHud {
             chrome_visible: false,
             drag: None,
             model_label,
+            island_bounds,
         }
     }
 
-    fn drain_events(&mut self) {
+    fn drain_events(&mut self) -> Option<bool> {
+        let mut expansion_command = None;
         while let Ok(event) = self.rx.try_recv() {
-            self.snapshot.apply(event);
+            match event {
+                VoiceUiEvent::ToggleExpanded => {
+                    expansion_command = Some(!expansion_command.unwrap_or(self.expanded));
+                }
+                VoiceUiEvent::SetExpanded(expanded) => {
+                    expansion_command = Some(expanded);
+                }
+                event => self.snapshot.apply(event),
+            }
         }
+        expansion_command
     }
 
     fn orb(&self) -> impl IntoElement {
@@ -250,7 +267,7 @@ impl VoiceHud {
         let app = if reply_visible {
             display.phase.to_string()
         } else {
-            display.rows[1].app.clone()
+            display.target.clone()
         };
 
         div()
@@ -399,6 +416,34 @@ impl VoiceHud {
                 display.bounds(),
             );
             window.set_bounds(bounds);
+        }
+    }
+
+    fn set_expanded_from_render(
+        &mut self,
+        expanded: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.expanded = expanded;
+        self.minimized = false;
+        self.drag = None;
+        cx.notify();
+        if let Some(display) = window.display(cx) {
+            let bounds = animated_island_bounds(
+                window.bounds(),
+                HudMetrics::with_expansion(self.response_progress, self.expansion_progress),
+                self.minimized_progress,
+                display.bounds(),
+            );
+            window.set_bounds(bounds);
+            self.remember_island_bounds(bounds);
+        }
+    }
+
+    fn remember_island_bounds(&self, bounds: Bounds<Pixels>) {
+        if let Ok(mut current) = self.island_bounds.lock() {
+            *current = Some(bounds);
         }
     }
 
@@ -924,10 +969,13 @@ fn should_reset_after_reply_collapse(reply_window_expired: bool, response_progre
 
 impl Render for VoiceHud {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.drain_events();
+        let expansion_command = self.drain_events();
         let reply_window_expired =
             self.snapshot.expanded_until.is_some() && !self.snapshot.is_expanded();
         self.tick_animation();
+        if let Some(expanded) = expansion_command {
+            self.set_expanded_from_render(expanded, window, cx);
+        }
         if should_reset_after_reply_collapse(reply_window_expired, self.response_progress) {
             self.snapshot.apply(VoiceUiEvent::Idle);
         }
@@ -951,7 +999,10 @@ impl Render for VoiceHud {
                     display.bounds(),
                 );
                 window.set_bounds(bounds);
+                self.remember_island_bounds(bounds);
             }
+        } else {
+            self.remember_island_bounds(window.bounds());
         }
         div()
             .size_full()
@@ -982,6 +1033,7 @@ fn main() -> anyhow::Result<()> {
     let model_label = config.planner_model.clone();
     let runtime = Arc::new(tokio::runtime::Runtime::new()?);
     let (tx, rx) = channel::<VoiceUiEvent>();
+    let island_bounds = Arc::new(Mutex::new(None::<Bounds<Pixels>>));
     if let Some(transcript) = once_transcript {
         let result = runtime.block_on(run_text_turn_checked(config, transcript, tx));
         print_headless_events(rx);
@@ -1028,6 +1080,7 @@ fn main() -> anyhow::Result<()> {
         request_desktop_access_once_if_packaged_app(&config.profile);
         start_embedded_daemon_if_needed(config.profile.clone(), runtime.clone(), tx.clone());
         start_control_shortcut_controller(config.clone(), runtime.clone(), tx.clone());
+        start_island_double_tap_listener(tx.clone(), island_bounds.clone());
         start_agent_step_poll(config.profile.clone(), runtime.clone(), tx.clone());
     }
     Application::new().run(move |cx: &mut App| {
@@ -1044,7 +1097,16 @@ fn main() -> anyhow::Result<()> {
                 window_background: WindowBackgroundAppearance::Transparent,
                 ..Default::default()
             },
-            move |_, cx| cx.new(|_| VoiceHud::new(rx, ui_mode.clone(), model_label.clone())),
+            move |_, cx| {
+                cx.new(|_| {
+                    VoiceHud::new(
+                        rx,
+                        ui_mode.clone(),
+                        model_label.clone(),
+                        island_bounds.clone(),
+                    )
+                })
+            },
         )
         .unwrap();
     });
@@ -1134,6 +1196,10 @@ fn print_headless_events(rx: Receiver<VoiceUiEvent>) {
             VoiceUiEvent::Error(text) => serde_json::json!({"event": "error", "text": text}),
             VoiceUiEvent::Metric { name, ms } => {
                 serde_json::json!({"event": "metric", "name": name, "ms": ms})
+            }
+            VoiceUiEvent::ToggleExpanded => serde_json::json!({"event": "toggle_expanded"}),
+            VoiceUiEvent::SetExpanded(expanded) => {
+                serde_json::json!({"event": "set_expanded", "expanded": expanded})
             }
             VoiceUiEvent::Idle => serde_json::json!({"event": "idle"}),
         };
@@ -1463,6 +1529,60 @@ fn start_double_control_listener(tx: Sender<()>) {
     });
 }
 
+fn start_island_double_tap_listener(
+    tx: Sender<VoiceUiEvent>,
+    island_bounds: Arc<Mutex<Option<Bounds<Pixels>>>>,
+) {
+    std::thread::spawn(move || {
+        let mut detector = ControlDoubleTap::default();
+        let mut was_down = false;
+        let mut tap_started_inside = false;
+        loop {
+            let bounds = island_bounds.lock().ok().and_then(|current| *current);
+            let cursor = current_cursor_point();
+            if island_mouse_sample_triggers_toggle(
+                &mut detector,
+                &mut was_down,
+                &mut tap_started_inside,
+                cua_platform_macos::left_mouse_button_is_down(),
+                cursor,
+                bounds,
+                Instant::now(),
+            ) {
+                tx.send(VoiceUiEvent::ToggleExpanded).ok();
+            }
+            std::thread::sleep(CONTROL_SHORTCUT_POLL_INTERVAL);
+        }
+    });
+}
+
+fn island_mouse_sample_triggers_toggle(
+    detector: &mut ControlDoubleTap,
+    was_down: &mut bool,
+    tap_started_inside: &mut bool,
+    is_down: bool,
+    cursor: Point<Pixels>,
+    bounds: Option<Bounds<Pixels>>,
+    now: Instant,
+) -> bool {
+    let inside = bounds.is_some_and(|bounds| point_inside_bounds(cursor, bounds));
+    let triggered = if is_down && !*was_down {
+        *tap_started_inside = inside;
+        if inside {
+            detector.key_down();
+        }
+        false
+    } else if !is_down && *was_down {
+        let valid_tap = *tap_started_inside && inside;
+        *tap_started_inside = false;
+        valid_tap && detector.key_up(now)
+    } else {
+        false
+    };
+    *was_down = is_down;
+    triggered
+}
+
 fn control_poll_sample_triggers_arm(
     detector: &mut ControlDoubleTap,
     was_down: &mut bool,
@@ -1481,19 +1601,16 @@ fn control_poll_sample_triggers_arm(
 
 fn start_embedded_daemon_if_needed(
     profile: String,
-    runtime: Arc<tokio::runtime::Runtime>,
+    _runtime: Arc<tokio::runtime::Runtime>,
     tx: Sender<VoiceUiEvent>,
 ) {
     if profile_daemon_is_alive(&profile) {
         return;
     }
-    runtime.spawn(async move {
-        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 0));
-        if let Err(error) = cua_daemon::serve(addr, profile, false, UiMode::Headless).await {
-            tx.send(VoiceUiEvent::Error(format!("Daemon start failed: {error}")))
-                .ok();
-        }
-    });
+    if let Err(error) = spawn_profile_daemon(&profile) {
+        tx.send(VoiceUiEvent::Error(format!("Daemon start failed: {error}")))
+            .ok();
+    }
 }
 
 fn request_desktop_access_once_if_packaged_app(profile: &str) {
@@ -1708,6 +1825,75 @@ mod tests {
     }
 
     #[test]
+    fn island_mouse_poll_toggles_only_for_inside_double_tap() {
+        let start = Instant::now();
+        let bounds = Bounds {
+            origin: point(px(100.0), px(20.0)),
+            size: size(px(300.0), px(40.0)),
+        };
+        let inside = point(px(250.0), px(40.0));
+        let outside = point(px(80.0), px(40.0));
+        let mut detector = ControlDoubleTap::default();
+        let mut was_down = false;
+        let mut tap_started_inside = false;
+
+        assert!(!island_mouse_sample_triggers_toggle(
+            &mut detector,
+            &mut was_down,
+            &mut tap_started_inside,
+            true,
+            inside,
+            Some(bounds),
+            start,
+        ));
+        assert!(!island_mouse_sample_triggers_toggle(
+            &mut detector,
+            &mut was_down,
+            &mut tap_started_inside,
+            false,
+            inside,
+            Some(bounds),
+            start + Duration::from_millis(40),
+        ));
+        assert!(!island_mouse_sample_triggers_toggle(
+            &mut detector,
+            &mut was_down,
+            &mut tap_started_inside,
+            true,
+            outside,
+            Some(bounds),
+            start + Duration::from_millis(120),
+        ));
+        assert!(!island_mouse_sample_triggers_toggle(
+            &mut detector,
+            &mut was_down,
+            &mut tap_started_inside,
+            false,
+            inside,
+            Some(bounds),
+            start + Duration::from_millis(160),
+        ));
+        assert!(!island_mouse_sample_triggers_toggle(
+            &mut detector,
+            &mut was_down,
+            &mut tap_started_inside,
+            true,
+            inside,
+            Some(bounds),
+            start + Duration::from_millis(220),
+        ));
+        assert!(island_mouse_sample_triggers_toggle(
+            &mut detector,
+            &mut was_down,
+            &mut tap_started_inside,
+            false,
+            inside,
+            Some(bounds),
+            start + Duration::from_millis(260),
+        ));
+    }
+
+    #[test]
     fn animated_island_bounds_preserves_center_and_top_attachment() {
         let display = Bounds {
             origin: point(px(0.0), px(0.0)),
@@ -1813,6 +1999,7 @@ mod tests {
             rx,
             UiMode::Headless,
             "anthropic/claude-sonnet-5".to_string(),
+            Arc::new(Mutex::new(None)),
         );
 
         assert_eq!(hud.snapshot.mode, UiMode::Headless);

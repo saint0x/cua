@@ -46,6 +46,7 @@ pub struct HudDisplay {
     pub result: String,
     pub phase: &'static str,
     pub tool: String,
+    pub target: String,
     pub rows: [HudRow; 2],
 }
 
@@ -79,9 +80,66 @@ impl HudDisplay {
             prompt,
             result,
             phase: snapshot.phase.label(),
-            tool: short_tool(&snapshot.tool),
+            tool: live_transport_label(snapshot),
+            target: live_target_label(snapshot),
             rows: action_rows(snapshot),
         }
+    }
+}
+
+fn live_transport_label(snapshot: &HudSnapshot) -> String {
+    match snapshot.phase {
+        crate::ui_state::HudPhase::Listening | crate::ui_state::HudPhase::Accepted => {
+            "Mic".to_string()
+        }
+        crate::ui_state::HudPhase::Transcribing => "Router".to_string(),
+        crate::ui_state::HudPhase::Planning if snapshot.tool.contains("OpenRouter") => {
+            "Router".to_string()
+        }
+        crate::ui_state::HudPhase::Planning | crate::ui_state::HudPhase::Dispatching => {
+            short_tool(&snapshot.tool)
+        }
+        crate::ui_state::HudPhase::Reply | crate::ui_state::HudPhase::Idle => {
+            short_tool(&snapshot.tool)
+        }
+        _ => short_tool(&snapshot.tool),
+    }
+}
+
+fn live_target_label(snapshot: &HudSnapshot) -> String {
+    if snapshot.tool.contains("Screen") || snapshot.tool.contains("Capture") {
+        return "Screen".to_string();
+    }
+    if snapshot.tool.contains("Microphone")
+        || matches!(
+            snapshot.phase,
+            crate::ui_state::HudPhase::Listening | crate::ui_state::HudPhase::Accepted
+        )
+    {
+        return "Microphone".to_string();
+    }
+    if snapshot.tool.contains("Safari") {
+        return "Safari".to_string();
+    }
+    if snapshot.tool.contains("Terminal") {
+        return "Terminal".to_string();
+    }
+    if snapshot.tool.contains("Finder") {
+        return "Finder".to_string();
+    }
+    if snapshot.tool.contains("Unix")
+        || snapshot.tool.contains("socket")
+        || snapshot.tool.contains("Mouse")
+        || snapshot.tool.contains("Keyboard")
+    {
+        return "macOS".to_string();
+    }
+    match snapshot.phase {
+        crate::ui_state::HudPhase::Transcribing => "STT".to_string(),
+        crate::ui_state::HudPhase::Planning => "Model".to_string(),
+        crate::ui_state::HudPhase::Dispatching => "macOS".to_string(),
+        crate::ui_state::HudPhase::Reply => "Result".to_string(),
+        _ => "macOS".to_string(),
     }
 }
 
@@ -115,7 +173,7 @@ fn action_rows(snapshot: &HudSnapshot) -> [HudRow; 2] {
             app: if snapshot.tool.contains("Unix") || snapshot.tool.contains("socket") {
                 "macOS".to_string()
             } else {
-                "cua".to_string()
+                live_target_label(snapshot)
             },
             age: if snapshot.response.is_some() {
                 "done".to_string()
@@ -154,6 +212,8 @@ pub fn short_tool(tool: &str) -> String {
         "Router".to_string()
     } else if tool.contains("Microphone") {
         "Mic".to_string()
+    } else if tool.contains("Screen") || tool.contains("Capture") {
+        "Screen".to_string()
     } else {
         tool.to_string()
     }
@@ -194,6 +254,33 @@ mod tests {
         assert_eq!(display.rows[0].label, "Move 10-20.");
         assert_eq!(display.rows[1].tool, "Socket");
         assert_eq!(display.rows[1].app, "macOS");
+        assert_eq!(display.tool, "Socket");
+        assert_eq!(display.target, "macOS");
+    }
+
+    #[test]
+    fn display_chips_track_live_voice_and_screen_surfaces() {
+        let mut listening = HudSnapshot::default();
+        listening.apply(VoiceUiEvent::Listening { ms: 120 });
+        let display = HudDisplay::from_snapshot(&listening);
+
+        assert_eq!(display.tool, "Mic");
+        assert_eq!(display.target, "Microphone");
+
+        let mut screen = HudSnapshot::default();
+        screen.apply(VoiceUiEvent::AgentStep {
+            label: "capturing full screen".to_string(),
+            source: Some("external agent".to_string()),
+            task: Some("Observe".to_string()),
+            tool: Some("Screen capture".to_string()),
+            step_index: Some(1),
+            step_total: Some(3),
+            ttl_ms: None,
+        });
+        let display = HudDisplay::from_snapshot(&screen);
+
+        assert_eq!(display.tool, "Screen");
+        assert_eq!(display.target, "Screen");
     }
 
     #[test]
@@ -226,6 +313,7 @@ mod tests {
         assert_eq!(short_tool("Unix socket"), "Socket");
         assert_eq!(short_tool("OpenRouter Vision"), "Router");
         assert_eq!(short_tool("Microphone"), "Mic");
+        assert_eq!(short_tool("Screen capture"), "Screen");
     }
 
     #[test]

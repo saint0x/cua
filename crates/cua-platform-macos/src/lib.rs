@@ -168,6 +168,10 @@ pub fn control_key_is_down() -> bool {
     native_control_key_is_down()
 }
 
+pub fn left_mouse_button_is_down() -> bool {
+    native_left_mouse_button_is_down()
+}
+
 pub fn window_list() -> anyhow::Result<Vec<WindowInfo>> {
     native_window_list()
 }
@@ -520,8 +524,23 @@ fn native_control_key_is_down() -> bool {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn native_left_mouse_button_is_down() -> bool {
+    unsafe {
+        CGEventSourceButtonState(
+            K_CG_EVENT_SOURCE_STATE_HID_SYSTEM_STATE,
+            CG_MOUSE_BUTTON_LEFT,
+        )
+    }
+}
+
 #[cfg(not(target_os = "macos"))]
 fn native_control_key_is_down() -> bool {
+    false
+}
+
+#[cfg(not(target_os = "macos"))]
+fn native_left_mouse_button_is_down() -> bool {
     false
 }
 
@@ -694,9 +713,12 @@ fn post_mouse_click(x: i32, y: i32, button: MouseButton, count: u8) -> Result<St
             CG_MOUSE_BUTTON_CENTER,
         ),
     };
-    for _ in 0..count.max(1) {
-        post_mouse_event(down, x, y, native_button)?;
-        post_mouse_event(up, x, y, native_button)?;
+    for click_index in 0..count.max(1) {
+        let click_state = u8::min(click_index + 1, 2);
+        post_mouse_click_event(down, x, y, native_button, click_state)?;
+        std::thread::sleep(Duration::from_millis(12));
+        post_mouse_click_event(up, x, y, native_button, click_state)?;
+        std::thread::sleep(Duration::from_millis(24));
     }
     Ok("mouse click posted through CGEvent".to_string())
 }
@@ -731,6 +753,17 @@ fn post_mouse_drag(_from_x: i32, _from_y: i32, _to_x: i32, _to_y: i32) -> Result
 
 #[cfg(target_os = "macos")]
 fn post_mouse_event(event_type: u32, x: i32, y: i32, button: u32) -> Result<(), String> {
+    post_mouse_click_event(event_type, x, y, button, 1)
+}
+
+#[cfg(target_os = "macos")]
+fn post_mouse_click_event(
+    event_type: u32,
+    x: i32,
+    y: i32,
+    button: u32,
+    click_state: u8,
+) -> Result<(), String> {
     ensure_accessibility_trusted()?;
     let point = CGPoint {
         x: x as f64,
@@ -741,6 +774,7 @@ fn post_mouse_event(event_type: u32, x: i32, y: i32, button: u32) -> Result<(), 
         return Err("CGEventCreateMouseEvent returned null".to_string());
     }
     unsafe {
+        CGEventSetIntegerValueField(event, K_CG_MOUSE_EVENT_CLICK_STATE, click_state as i64);
         CGEventPost(CG_HID_EVENT_TAP, event);
         CFRelease(event.cast());
     }
@@ -1038,6 +1072,7 @@ unsafe extern "C" {
     fn CGEventGetLocation(event: *const std::ffi::c_void) -> CGPoint;
     fn CGEventGetFlags(event: *const std::ffi::c_void) -> u64;
     fn CGEventSourceKeyState(state_id: i32, virtual_key: u16) -> bool;
+    fn CGEventSourceButtonState(state_id: i32, button: u32) -> bool;
     fn CGDisplayCreateImage(display: u32) -> *const std::ffi::c_void;
     fn CGWindowListCopyWindowInfo(option: u32, relative_to_window: u32) -> *const std::ffi::c_void;
     fn CGRectMakeWithDictionaryRepresentation(
@@ -1068,6 +1103,7 @@ unsafe extern "C" {
     );
     fn CGEventPost(tap: u32, event: *const std::ffi::c_void);
     fn CGEventSetFlags(event: *const std::ffi::c_void, flags: u64);
+    fn CGEventSetIntegerValueField(event: *const std::ffi::c_void, field: u32, value: i64);
     fn CFDataGetBytePtr(data: *const std::ffi::c_void) -> *const u8;
     fn CFDataGetLength(data: *const std::ffi::c_void) -> usize;
     fn CFArrayGetCount(array: *const std::ffi::c_void) -> isize;
@@ -1137,6 +1173,8 @@ const K_IOHID_ACCESS_TYPE_DENIED: i32 = 1;
 const K_IOHID_ACCESS_TYPE_UNKNOWN: i32 = 2;
 
 const K_CG_EVENT_SOURCE_STATE_HID_SYSTEM_STATE: i32 = 1;
+#[cfg(target_os = "macos")]
+const K_CG_MOUSE_EVENT_CLICK_STATE: u32 = 1;
 const K_VK_CONTROL: u16 = 0x3B;
 const K_VK_RIGHT_CONTROL: u16 = 0x3E;
 
@@ -1288,6 +1326,11 @@ mod tests {
     #[test]
     fn native_control_key_state_is_observable() {
         let _ = control_key_is_down();
+    }
+
+    #[test]
+    fn native_left_mouse_button_state_is_observable() {
+        let _ = left_mouse_button_is_down();
     }
 
     #[cfg(target_os = "macos")]

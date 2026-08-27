@@ -24,8 +24,33 @@ pub fn agent_ui_event_from_daemon_event(
     agent_step_from_daemon_event(event, last_sequence)
         .or_else(|| agent_reply_from_daemon_event(event, last_sequence))
         .or_else(|| agent_mode_from_daemon_event(event, last_sequence))
+        .or_else(|| agent_island_from_daemon_event(event, last_sequence))
         .or_else(|| agent_visual_session_from_daemon_event(event, last_sequence))
         .or_else(|| agent_input_from_daemon_event(event, last_sequence))
+}
+
+pub fn agent_island_from_daemon_event(
+    event: &Value,
+    last_sequence: u64,
+) -> Option<(u64, VoiceUiEvent)> {
+    let sequence = event.get("sequence").and_then(|value| value.as_u64())?;
+    if sequence <= last_sequence {
+        return None;
+    }
+    if event.get("kind").and_then(|value| value.as_str()) != Some("ui_island") {
+        return None;
+    }
+    let state = event
+        .get("data")
+        .and_then(|data| data.get("state"))
+        .and_then(|value| value.as_str())?;
+    let event = match state {
+        "expanded" => VoiceUiEvent::SetExpanded(true),
+        "collapsed" => VoiceUiEvent::SetExpanded(false),
+        "toggle" => VoiceUiEvent::ToggleExpanded,
+        _ => return None,
+    };
+    Some((sequence, event))
 }
 
 pub fn agent_mode_from_daemon_event(
@@ -364,6 +389,54 @@ mod tests {
         assert_eq!(mode, UiMode::Headless);
         assert_eq!(source.as_deref(), Some("cli"));
         assert!(agent_mode_from_daemon_event(&event, 46).is_none());
+    }
+
+    #[test]
+    fn daemon_ui_island_event_maps_to_expansion_command() {
+        let expanded = serde_json::json!({
+            "sequence": 47,
+            "kind": "ui_island",
+            "data": {
+                "state": "expanded",
+                "source": "automation"
+            }
+        });
+        let collapsed = serde_json::json!({
+            "sequence": 48,
+            "kind": "ui_island",
+            "data": {
+                "state": "collapsed"
+            }
+        });
+        let toggle = serde_json::json!({
+            "sequence": 49,
+            "kind": "ui_island",
+            "data": {
+                "state": "toggle"
+            }
+        });
+
+        let Some((sequence, VoiceUiEvent::SetExpanded(true))) =
+            agent_island_from_daemon_event(&expanded, 46)
+        else {
+            panic!("expected expanded island event");
+        };
+        assert_eq!(sequence, 47);
+
+        let Some((sequence, VoiceUiEvent::SetExpanded(false))) =
+            agent_island_from_daemon_event(&collapsed, 47)
+        else {
+            panic!("expected collapsed island event");
+        };
+        assert_eq!(sequence, 48);
+
+        let Some((sequence, VoiceUiEvent::ToggleExpanded)) =
+            agent_island_from_daemon_event(&toggle, 48)
+        else {
+            panic!("expected toggle island event");
+        };
+        assert_eq!(sequence, 49);
+        assert!(agent_island_from_daemon_event(&toggle, 49).is_none());
     }
 
     #[test]

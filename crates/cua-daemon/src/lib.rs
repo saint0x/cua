@@ -25,9 +25,9 @@ use cua_core::{
     FrameEncoding, FramePayload, HealthReport, InputAction, InputRequest, InputResult, InputRoute,
     Manifest, MetricBucket, MetricHistogram, MetricsSnapshot, PermissionReport, ProfilePolicy,
     RuntimeControlState, RuntimeInventory, RuntimeMode, RuntimeSessionInfo, RuntimeSessionRole,
-    SafetyState, SessionCancelRequest, SessionLeaseRequest, SessionLeaseResult, UiMode,
-    UiModeRequest, UiModeResult, UiReplyRequest, UiReplyResult, UiStepRequest, UiStepResult,
-    VisualSessionRequest, WindowInfo, SCHEMA_VERSION,
+    SafetyState, SessionCancelRequest, SessionLeaseRequest, SessionLeaseResult, UiIslandRequest,
+    UiIslandResult, UiMode, UiModeRequest, UiModeResult, UiReplyRequest, UiReplyResult,
+    UiStepRequest, UiStepResult, VisualSessionRequest, WindowInfo, SCHEMA_VERSION,
 };
 use cua_input::InputBackend;
 use cua_model::{run_eval_report, EvalConfig, EvalReport};
@@ -483,6 +483,7 @@ fn hud_wake_event(kind: &str) -> bool {
         kind,
         "ui_step"
             | "ui_reply"
+            | "ui_island"
             | "input_started"
             | "input_completed"
             | "input_refused"
@@ -1166,6 +1167,7 @@ pub fn router(state: DaemonState) -> Router {
         .route("/ui/step", post(ui_step))
         .route("/ui/reply", post(ui_reply))
         .route("/ui/mode", post(ui_mode))
+        .route("/ui/island", post(ui_island))
         .route("/profile/create", post(profile_create))
         .route("/profile/activate", post(profile_activate))
         .route("/profile/status", get(profile_status))
@@ -1666,6 +1668,20 @@ async fn handle_unix_request(state: &DaemonState, request: UnixRequest) -> serde
             let params = request.params.unwrap_or_else(|| serde_json::json!({}));
             match serde_json::from_value::<UiModeRequest>(params) {
                 Ok(request) => ui_mode_state(state, request).map(serde_json::to_value),
+                Err(error) => {
+                    return unix_error(
+                        id,
+                        "bad_request",
+                        error.to_string(),
+                        Some(StatusCode::BAD_REQUEST),
+                    )
+                }
+            }
+        }
+        "ui.island" => {
+            let params = request.params.unwrap_or_else(|| serde_json::json!({}));
+            match serde_json::from_value::<UiIslandRequest>(params) {
+                Ok(request) => ui_island_state(state, request).map(serde_json::to_value),
                 Err(error) => {
                     return unix_error(
                         id,
@@ -2559,6 +2575,13 @@ async fn ui_mode(
     Ok(Json(ui_mode_state(&state, request)?))
 }
 
+async fn ui_island(
+    State(state): State<DaemonState>,
+    Json(request): Json<UiIslandRequest>,
+) -> Result<Json<UiIslandResult>, ApiError> {
+    Ok(Json(ui_island_state(&state, request)?))
+}
+
 fn ui_step_state(state: &DaemonState, request: UiStepRequest) -> Result<UiStepResult, ApiError> {
     if request.schema_version != SCHEMA_VERSION {
         return Err(ApiError::bad_request(
@@ -2675,6 +2698,33 @@ fn input_action_label(action: &InputAction) -> String {
         InputAction::Resume => "resume control".to_string(),
         InputAction::KillSwitch => "kill switch".to_string(),
     }
+}
+
+fn ui_island_state(
+    state: &DaemonState,
+    request: UiIslandRequest,
+) -> Result<UiIslandResult, ApiError> {
+    if request.schema_version != SCHEMA_VERSION {
+        return Err(ApiError::bad_request(
+            "schema_version",
+            format!("expected {SCHEMA_VERSION}"),
+        ));
+    }
+    let source = normalize_optional_step_field(request.source, 48);
+    let result = UiIslandResult {
+        schema_version: SCHEMA_VERSION.to_string(),
+        accepted: true,
+        state: request.state,
+        source,
+    };
+    state.publish_event(
+        "ui_island",
+        serde_json::json!({
+            "state": result.state,
+            "source": result.source,
+        }),
+    );
+    Ok(result)
 }
 
 fn ui_reply_state(state: &DaemonState, request: UiReplyRequest) -> Result<UiReplyResult, ApiError> {
@@ -4705,6 +4755,35 @@ mod tests {
             .expect("ui_mode event");
         assert_eq!(mode["data"]["mode"], "headless");
         assert_eq!(mode["data"]["source"], "cli");
+    }
+
+    #[tokio::test]
+    async fn ui_island_emits_live_expansion_event() {
+        let state = DaemonState::synthetic("test", "token");
+
+        let Json(result) = ui_island(
+            State(state.clone()),
+            Json(UiIslandRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                state: cua_core::UiIslandState::Expanded,
+                source: Some("  automation  ".to_string()),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert!(result.accepted);
+        assert_eq!(result.state, cua_core::UiIslandState::Expanded);
+        assert_eq!(result.source.as_deref(), Some("automation"));
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let events = state.events.snapshot().await;
+        let island = events
+            .iter()
+            .find(|event| event["kind"] == "ui_island")
+            .expect("ui_island event");
+        assert_eq!(island["data"]["state"], "expanded");
+        assert_eq!(island["data"]["source"], "automation");
     }
 
     #[test]
