@@ -526,8 +526,7 @@ impl VoiceHud {
     }
 
     fn expanded_body(&self, display: &HudDisplay, metrics: HudMetrics) -> impl IntoElement {
-        let step_total = self.snapshot.step.total.max(1);
-        let step_index = self.snapshot.step.index.min(step_total);
+        let step_counter = self.snapshot.step.counter();
         let response = expanded_response_text(display);
         div()
             .opacity(metrics.expansion_opacity)
@@ -562,27 +561,29 @@ impl VoiceHud {
                                     .child(display.prompt.clone()),
                             ),
                     )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_1p5()
-                            .flex_none()
-                            .child(index_tab("02", "Step", true))
-                            .child(
-                                div()
-                                    .h(px(15.0))
-                                    .px_1()
-                                    .rounded(px(3.0))
-                                    .bg(hsla(0.0, 0.0, 1.0, 0.045))
-                                    .flex()
-                                    .items_center()
-                                    .text_color(rgb(0x8d8d96))
-                                    .text_size(px(UI_META_PX))
-                                    .child(format!("{step_index}/{step_total}")),
-                            )
-                            .child(step_segments(step_index, step_total)),
-                    ),
+                    .when_some(step_counter, |element, (step_index, step_total)| {
+                        element.child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_1p5()
+                                .flex_none()
+                                .child(index_tab("02", "Step", true))
+                                .child(
+                                    div()
+                                        .h(px(15.0))
+                                        .px_1()
+                                        .rounded(px(3.0))
+                                        .bg(hsla(0.0, 0.0, 1.0, 0.045))
+                                        .flex()
+                                        .items_center()
+                                        .text_color(rgb(0x8d8d96))
+                                        .text_size(px(UI_META_PX))
+                                        .child(format!("{step_index}/{step_total}")),
+                                )
+                                .child(step_segments(step_index, step_total)),
+                        )
+                    }),
             )
             .child(
                 div()
@@ -997,7 +998,7 @@ fn step_label(index: usize, total: usize, label: &str) -> String {
 }
 
 fn center_status_text(snapshot: &HudSnapshot) -> String {
-    if snapshot.phase == HudPhase::Idle && snapshot.step.index == 0 {
+    if snapshot.phase == HudPhase::Idle {
         return snapshot.step.label.clone();
     }
     if snapshot.phase == HudPhase::Listening {
@@ -1012,11 +1013,10 @@ fn center_status_text(snapshot: &HudSnapshot) -> String {
     if snapshot.phase == HudPhase::Accepted {
         return "Accepted".to_string();
     }
-    step_label(
-        snapshot.step.index,
-        snapshot.step.total,
-        &snapshot.step.label,
-    )
+    if let Some((index, total)) = snapshot.step.counter() {
+        return step_label(index, total, &snapshot.step.label);
+    }
+    snapshot.step.label.clone()
 }
 
 fn should_reset_after_reply_collapse(reply_window_expired: bool, response_progress: f32) -> bool {
@@ -2470,11 +2470,28 @@ mod tests {
     }
 
     #[test]
+    fn center_text_omits_counter_without_protocol_step_numbers() {
+        let mut snapshot = HudSnapshot::default();
+        snapshot.apply(VoiceUiEvent::Planning {
+            tool: "OpenRouter Vision".to_string(),
+        });
+        assert_eq!(center_status_text(&snapshot), "Choosing action");
+
+        snapshot.apply(VoiceUiEvent::AgentStep {
+            label: "checking target".to_string(),
+            source: Some("remote".to_string()),
+            task: Some("Web browsing".to_string()),
+            tool: Some("Unix socket".to_string()),
+            step_index: None,
+            step_total: None,
+            ttl_ms: Some(2_000),
+        });
+        assert_eq!(center_status_text(&snapshot), "checking target");
+    }
+
+    #[test]
     fn marquee_stays_still_for_short_center_text() {
-        assert_eq!(
-            marquee_offset_px("Step 1/4   Ready", CENTER_LABEL_WIDTH, 10.0),
-            0.0
-        );
+        assert_eq!(marquee_offset_px("Ready", CENTER_LABEL_WIDTH, 10.0), 0.0);
     }
 
     #[test]

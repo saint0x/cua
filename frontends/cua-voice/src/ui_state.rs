@@ -42,8 +42,8 @@ impl HudPhase {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HudStep {
-    pub index: usize,
-    pub total: usize,
+    pub index: Option<usize>,
+    pub total: Option<usize>,
     pub label: String,
 }
 
@@ -71,8 +71,8 @@ impl Default for HudSnapshot {
             input_label: "Voice control".to_string(),
             task: "Voice control".to_string(),
             step: HudStep {
-                index: 0,
-                total: 4,
+                index: None,
+                total: None,
                 label: "Ready".to_string(),
             },
             tool: "Unix socket".to_string(),
@@ -92,7 +92,7 @@ impl HudSnapshot {
             VoiceUiEvent::Armed => {
                 self.phase = HudPhase::Armed;
                 self.mark_voice_control();
-                self.step = HudStep::new(1, 4, "Starting recorder");
+                self.step = HudStep::plain("Starting recorder");
                 self.tool = "Keyboard".to_string();
                 self.transcript = None;
                 self.transcript_until = None;
@@ -104,7 +104,7 @@ impl HudSnapshot {
             VoiceUiEvent::Listening { .. } => {
                 self.phase = HudPhase::Listening;
                 self.mark_voice_control();
-                self.step = HudStep::new(1, 4, "Listening");
+                self.step = HudStep::plain("Listening");
                 self.tool = "Microphone".to_string();
                 self.programmed_step_expires_at = None;
                 self.programmed_step_restore = None;
@@ -112,7 +112,7 @@ impl HudSnapshot {
             VoiceUiEvent::RecordingStopped => {
                 self.phase = HudPhase::RecordingStopped;
                 self.mark_voice_control();
-                self.step = HudStep::new(2, 4, "Recording Stopped");
+                self.step = HudStep::plain("Recording Stopped");
                 self.tool = "Microphone".to_string();
                 self.programmed_step_expires_at = None;
                 self.programmed_step_restore = None;
@@ -120,7 +120,7 @@ impl HudSnapshot {
             VoiceUiEvent::Accepted => {
                 self.phase = HudPhase::Accepted;
                 self.mark_voice_control();
-                self.step = HudStep::new(2, 4, "Accepted");
+                self.step = HudStep::plain("Accepted");
                 self.tool = "Microphone".to_string();
                 self.programmed_step_expires_at = None;
                 self.programmed_step_restore = None;
@@ -128,7 +128,7 @@ impl HudSnapshot {
             VoiceUiEvent::Transcribing => {
                 self.phase = HudPhase::Transcribing;
                 self.mark_voice_control();
-                self.step = HudStep::new(2, 4, "Processing");
+                self.step = HudStep::plain("Processing");
                 self.tool = "Whisper STT".to_string();
                 self.programmed_step_expires_at = None;
                 self.programmed_step_restore = None;
@@ -140,7 +140,7 @@ impl HudSnapshot {
             VoiceUiEvent::Planning { tool } => {
                 self.phase = HudPhase::Planning;
                 self.mark_voice_control();
-                self.step = HudStep::new(3, 4, "Choosing action");
+                self.step = HudStep::plain("Choosing action");
                 self.tool = tool;
                 self.programmed_step_expires_at = None;
                 self.programmed_step_restore = None;
@@ -148,7 +148,7 @@ impl HudSnapshot {
             VoiceUiEvent::Dispatching(action) => {
                 self.phase = HudPhase::Dispatching;
                 self.mark_voice_control();
-                self.step = HudStep::new(4, 4, action);
+                self.step = HudStep::plain(action);
                 self.tool = "Unix socket".to_string();
                 self.programmed_step_expires_at = None;
                 self.programmed_step_restore = None;
@@ -181,11 +181,7 @@ impl HudSnapshot {
                 } else {
                     "Automation".to_string()
                 };
-                self.step = HudStep::new(
-                    step_index.unwrap_or(3).into(),
-                    step_total.unwrap_or(4).into(),
-                    label,
-                );
+                self.step = HudStep::protocol(step_index, step_total, label);
                 if let Some(task) = task {
                     self.task = task;
                 }
@@ -217,13 +213,13 @@ impl HudSnapshot {
                 self.phase = HudPhase::Dispatching;
                 self.mark_automation_control();
                 self.task = source.unwrap_or_else(|| "Computer control".to_string());
-                self.step = HudStep::new(1, 1, label);
+                self.step = HudStep::plain(label);
                 self.tool = tool.unwrap_or_else(|| "Unix socket".to_string());
             }
             VoiceUiEvent::Reply(text) => {
                 self.phase = HudPhase::Reply;
                 self.mark_voice_control();
-                self.step = HudStep::new(4, 4, "Done");
+                self.step = HudStep::plain("Done");
                 self.expanded_until = Some(Instant::now() + reply_visible_for(&text));
                 self.response = Some(text);
                 self.programmed_step_expires_at = None;
@@ -232,7 +228,7 @@ impl HudSnapshot {
             VoiceUiEvent::AutomationReply(text) => {
                 self.phase = HudPhase::Reply;
                 self.mark_automation_control();
-                self.step = HudStep::new(4, 4, "Done");
+                self.step = HudStep::plain("Done");
                 self.expanded_until = Some(Instant::now() + reply_visible_for(&text));
                 self.response = Some(text);
                 self.programmed_step_expires_at = None;
@@ -240,7 +236,7 @@ impl HudSnapshot {
             }
             VoiceUiEvent::Error(text) => {
                 self.phase = HudPhase::Error;
-                self.step = HudStep::new(0, 4, "Stopped");
+                self.step = HudStep::plain("Stopped");
                 self.expanded_until = Some(Instant::now() + reply_visible_for(&text));
                 self.response = Some(text);
                 self.programmed_step_expires_at = None;
@@ -325,12 +321,29 @@ fn reply_visible_for(text: &str) -> Duration {
 }
 
 impl HudStep {
-    pub fn new(index: usize, total: usize, label: impl Into<String>) -> Self {
+    pub fn plain(label: impl Into<String>) -> Self {
+        Self {
+            index: None,
+            total: None,
+            label: label.into(),
+        }
+    }
+
+    pub fn protocol(index: Option<u16>, total: Option<u16>, label: impl Into<String>) -> Self {
+        let total = total.map(|value| value.max(1) as usize);
+        let index = index.map(|value| {
+            let value = value as usize;
+            total.map(|total| value.min(total)).unwrap_or(value)
+        });
         Self {
             index,
             total,
             label: label.into(),
         }
+    }
+
+    pub fn counter(&self) -> Option<(usize, usize)> {
+        Some((self.index?, self.total?))
     }
 }
 
@@ -498,8 +511,8 @@ mod tests {
         assert_eq!(state.phase, HudPhase::Planning);
         assert_eq!(state.task, "Click target");
         assert_eq!(state.step.label, "checking target position");
-        assert_eq!(state.step.index, 2);
-        assert_eq!(state.step.total, 5);
+        assert_eq!(state.step.index, Some(2));
+        assert_eq!(state.step.total, Some(5));
         assert_eq!(state.tool, "vision");
         assert_eq!(state.input_label, "Automation");
         assert_eq!(state.transcript.as_deref(), Some("find the red button"));
@@ -540,8 +553,8 @@ mod tests {
             ttl_ms: None,
         });
 
-        assert_eq!(state.step.index, 37);
-        assert_eq!(state.step.total, 120);
+        assert_eq!(state.step.index, Some(37));
+        assert_eq!(state.step.total, Some(120));
         assert_eq!(state.step.label, "validating candidate window");
     }
 

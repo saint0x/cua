@@ -2852,6 +2852,30 @@ fn publish_protocol_step(
     );
 }
 
+fn publish_protocol_status(
+    state: &DaemonState,
+    label: String,
+    tool: impl Into<String>,
+    ttl_ms: u64,
+) {
+    if state.has_active_programmed_step() {
+        return;
+    }
+    let _ = ui_step_state(
+        state,
+        UiStepRequest {
+            schema_version: SCHEMA_VERSION.to_string(),
+            label,
+            source: Some("cua-runtime".to_string()),
+            task: Some("Computer control".to_string()),
+            tool: Some(tool.into()),
+            step_index: None,
+            step_total: None,
+            ttl_ms: Some(ttl_ms),
+        },
+    );
+}
+
 fn input_action_label(action: &InputAction) -> String {
     match action {
         InputAction::MouseMove { x, y, .. } => format!("mouse move to {x},{y}"),
@@ -3281,18 +3305,25 @@ async fn dispatch_input_action(state: &DaemonState, action: InputAction) -> cua_
             "tool": "Unix socket",
         }),
     );
-    let initial_step_total = match &action {
-        InputAction::Sequence { actions, .. } => sequence_step_total(actions.len()).unwrap_or(3),
-        _ => 3,
-    };
-    publish_protocol_step(
-        state,
-        1,
-        initial_step_total,
-        format!("Preparing {action_label}"),
-        "Unix socket",
-        5_000,
-    );
+    if let InputAction::Sequence { actions, .. } = &action {
+        if let Some(initial_step_total) = sequence_step_total(actions.len()) {
+            publish_protocol_step(
+                state,
+                1,
+                initial_step_total,
+                format!("Preparing {action_label}"),
+                "Unix socket",
+                5_000,
+            );
+        }
+    } else {
+        publish_protocol_status(
+            state,
+            format!("Preparing {action_label}"),
+            "Unix socket",
+            5_000,
+        );
+    }
     let action_json = serde_json::to_value(&action).unwrap_or_else(|_| serde_json::json!(null));
     let capture_trace_snapshots = captures_trace_snapshots(&action);
     let before = if capture_trace_snapshots {
@@ -3360,10 +3391,8 @@ async fn dispatch_input_action(state: &DaemonState, action: InputAction) -> cua_
         .await;
     }
     let dispatch_started = Instant::now();
-    publish_protocol_step(
+    publish_protocol_status(
         state,
-        2,
-        3,
         format!("Dispatching {action_label}"),
         "Unix socket",
         5_000,
@@ -3405,10 +3434,8 @@ async fn dispatch_input_action(state: &DaemonState, action: InputAction) -> cua_
     } else {
         "Confirmed"
     };
-    publish_protocol_step(
+    publish_protocol_status(
         state,
-        3,
-        3,
         format!("{final_prefix} {action_label}"),
         "Unix socket",
         3_500,
@@ -3533,14 +3560,23 @@ async fn dispatch_sequence_action(
     } else {
         "Confirmed"
     };
-    publish_protocol_step(
-        state,
-        step_total.unwrap_or(3),
-        step_total.unwrap_or(3),
-        format!("{final_prefix} sequence {action_count} actions"),
-        "Unix socket",
-        3_500,
-    );
+    if let Some(step_total) = step_total {
+        publish_protocol_step(
+            state,
+            step_total,
+            step_total,
+            format!("{final_prefix} sequence {action_count} actions"),
+            "Unix socket",
+            3_500,
+        );
+    } else {
+        publish_protocol_status(
+            state,
+            format!("{final_prefix} sequence {action_count} actions"),
+            "Unix socket",
+            3_500,
+        );
+    }
     publish_input_event(state, "input_completed", &aggregate);
     aggregate
 }
@@ -3600,10 +3636,8 @@ async fn dispatch_control_action(
     started: Instant,
 ) -> cua_core::InputResult {
     let action_label = input_action_label(&action);
-    publish_protocol_step(
+    publish_protocol_status(
         state,
-        2,
-        3,
         format!("Dispatching {action_label}"),
         "Unix socket",
         5_000,
@@ -3668,10 +3702,8 @@ async fn dispatch_control_action(
         None,
     )
     .await;
-    publish_protocol_step(
+    publish_protocol_status(
         state,
-        3,
-        3,
         format!("Confirmed {action_label}"),
         "Unix socket",
         3_500,
@@ -5523,12 +5555,14 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(steps.len(), 3);
-        assert_eq!(steps[0]["data"]["step_index"], 1);
-        assert_eq!(steps[0]["data"]["step_total"], 3);
+        assert_eq!(steps[0]["data"]["step_index"], serde_json::Value::Null);
+        assert_eq!(steps[0]["data"]["step_total"], serde_json::Value::Null);
         assert_eq!(steps[0]["data"]["label"], "Preparing pause control");
-        assert_eq!(steps[1]["data"]["step_index"], 2);
+        assert_eq!(steps[1]["data"]["step_index"], serde_json::Value::Null);
+        assert_eq!(steps[1]["data"]["step_total"], serde_json::Value::Null);
         assert_eq!(steps[1]["data"]["label"], "Dispatching pause control");
-        assert_eq!(steps[2]["data"]["step_index"], 3);
+        assert_eq!(steps[2]["data"]["step_index"], serde_json::Value::Null);
+        assert_eq!(steps[2]["data"]["step_total"], serde_json::Value::Null);
         assert_eq!(steps[2]["data"]["label"], "Confirmed pause control");
     }
 

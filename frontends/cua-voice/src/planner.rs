@@ -508,7 +508,9 @@ pub fn parse_fast_command(transcript: &str) -> Option<PlannedTurn> {
     if words.is_empty() {
         return None;
     }
-    if let Some(app_name) = fast_open_app_name(&words) {
+    if let Some(app_name) =
+        fast_open_app_name(&words).filter(|_| simple_fast_open_app_command(&words))
+    {
         return Some(turn(
             format!("Opening {app_name}."),
             Some(InputAction::OpenApp {
@@ -598,6 +600,45 @@ fn fast_open_app_name(words: &[String]) -> Option<&'static str> {
         return Some("Mail");
     }
     None
+}
+
+fn simple_fast_open_app_command(words: &[String]) -> bool {
+    let Some(open_index) = words
+        .iter()
+        .position(|word| matches!(word.as_str(), "open" | "launch"))
+    else {
+        return false;
+    };
+    if words[open_index + 1..].iter().any(|word| {
+        matches!(
+            word.as_str(),
+            "and"
+                | "then"
+                | "new"
+                | "create"
+                | "leave"
+                | "write"
+                | "type"
+                | "paste"
+                | "add"
+                | "make"
+                | "with"
+                | "to"
+                | "for"
+        )
+    }) {
+        return false;
+    }
+    let leading_words_are_control_phrasing = words[..open_index].iter().all(|word| {
+        matches!(
+            word.as_str(),
+            "use" | "your" | "tool" | "tools" | "please" | "can" | "you" | "could" | "to"
+        )
+    });
+    if !leading_words_are_control_phrasing {
+        return false;
+    }
+    words.len().saturating_sub(open_index) <= 4
 }
 
 fn is_observation_query(transcript: &str) -> bool {
@@ -865,7 +906,7 @@ mod tests {
 
     #[test]
     fn parses_fast_open_app_commands_to_open_app() {
-        let plan = parse_fast_command("Open the messages app at the bottom").unwrap();
+        let plan = parse_fast_command("Open messages").unwrap();
 
         assert_eq!(plan.response, "Opening Messages.");
         assert!(matches!(
@@ -876,14 +917,20 @@ mod tests {
 
     #[test]
     fn parses_fast_open_app_when_open_is_not_first_word() {
-        let plan =
-            parse_fast_command("Use your tool to open the messages app at the bottom").unwrap();
+        let plan = parse_fast_command("Use your tool to open messages").unwrap();
 
         assert_eq!(plan.response, "Opening Messages.");
         assert!(matches!(
             plan.action,
             Some(InputAction::OpenApp { ref app_name }) if app_name == "Messages"
         ));
+    }
+
+    #[test]
+    fn compound_open_app_requests_use_planner_loop() {
+        assert!(parse_fast_command("Open notes and leave me a new note").is_none());
+        assert!(parse_fast_command("Launch Safari then search for cua").is_none());
+        assert!(parse_fast_command("Open Messages with a new draft").is_none());
     }
 
     #[test]

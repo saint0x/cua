@@ -324,8 +324,8 @@ mod tests {
         assert_eq!(display.rows[1].tool, "Safari");
         assert_eq!(display.rows[1].app, "Safari");
         assert_eq!(snapshot.task, "Browse test");
-        assert_eq!(snapshot.step.index, 7);
-        assert_eq!(snapshot.step.total, 11);
+        assert_eq!(snapshot.step.index, Some(7));
+        assert_eq!(snapshot.step.total, Some(11));
     }
 
     #[test]
