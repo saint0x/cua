@@ -2,13 +2,13 @@ use anyhow::Context;
 use base64::Engine;
 use clap::{Args, Parser, Subcommand};
 use cua_capture::{CaptureRequest, FrameBus, SyntheticCaptureBackend};
-use cua_client::CuaClient;
+use cua_client::{CuaClient, VisualSessionMessage};
 use cua_core::{
-    config_env_path, profile_ctx_dir, profile_socket_path, profile_token_path, schema_bundle,
-    CapabilityManifest, ClipboardReadRequest, ClipboardWriteRequest, DesktopContextSnapshot,
-    FrameEncoding, FramePayload, InputAction, MouseButton, RuntimeMode, RuntimeSessionRole,
-    SessionCancelRequest, SessionLeaseRequest, UiIslandRequest, UiIslandState, UiMode,
-    UiModeRequest, UiReplyRequest, UiStepRequest, SCHEMA_VERSION,
+    config_env_path, profile_ctx_dir, schema_bundle, CapabilityManifest, ClipboardReadRequest,
+    ClipboardWriteRequest, DesktopContextSnapshot, FrameEncoding, FramePayload, InputAction,
+    MouseButton, RuntimeMode, RuntimeSessionRole, SessionCancelRequest, SessionLeaseRequest,
+    UiIslandRequest, UiIslandState, UiMode, UiModeRequest, UiReplyRequest, UiStepRequest,
+    SCHEMA_VERSION,
 };
 use cua_model::{run_eval_report, EvalConfig};
 use cua_trace::{ActionTurnRecord, TraceRecord, TraceWriter};
@@ -20,8 +20,7 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::UnixStream;
+use tokio::io::AsyncWriteExt;
 
 #[derive(Debug, Parser)]
 #[command(name = "cua", version, about = "CLI-first local computer-use runtime")]
@@ -723,57 +722,37 @@ async fn stream(profile: &str, args: StreamArgs) -> anyhow::Result<()> {
     if !args.unix {
         anyhow::bail!("stream currently uses the local Unix visual session; pass --unix");
     }
-    let token = load_profile_token(profile).await?;
-    let socket_path = profile_socket_path(profile)?;
-    let stream = UnixStream::connect(&socket_path)
-        .await
-        .with_context(|| format!("connect {}", socket_path.display()))?;
-    let (read, mut write) = stream.into_split();
-    let mut lines = BufReader::new(read).lines();
-    let request = serde_json::json!({
-        "id": uuid::Uuid::new_v4().to_string(),
-        "token": token,
-        "method": "visual.session",
-        "params": {
-            "schema_version": SCHEMA_VERSION,
-            "max_width": args.max_width,
-            "fps": args.fps,
-            "include_bytes": args.include_bytes
-        }
-    });
-    write.write_all(request.to_string().as_bytes()).await?;
-    write.write_all(b"\n").await?;
-    write.flush().await?;
+    let client = CuaClient::connect(profile.to_string()).await?;
+    let mut session = client
+        .visual_session(
+            Some(args.max_width),
+            Some(args.fps),
+            args.include_bytes,
+            None,
+        )
+        .await?;
     let mut frames = 0usize;
-    while let Some(line) = lines.next_line().await? {
-        let value: serde_json::Value = serde_json::from_str(&line)?;
+    while let Some(message) = session.next_message().await? {
+        let value = serde_json::to_value(&message)?;
         if args.json {
-            println!("{line}");
-        } else if value.get("type").and_then(|kind| kind.as_str()) == Some("frame") {
-            let frame = &value["frame"]["envelope"];
+            println!("{}", serde_json::to_string(&value)?);
+        } else if let VisualSessionMessage::Frame { frame, .. } = &message {
+            let envelope = &frame["envelope"];
             println!(
                 "frame {} {}x{} display={}x{}",
-                frame["frame_id"],
-                frame["width"],
-                frame["height"],
-                frame["display_width"],
-                frame["display_height"]
+                envelope["frame_id"],
+                envelope["width"],
+                envelope["height"],
+                envelope["display_width"],
+                envelope["display_height"]
             );
         } else {
             println!("{value}");
         }
-        if value.get("type").and_then(|kind| kind.as_str()) == Some("frame") {
+        if matches!(message, VisualSessionMessage::Frame { .. }) {
             frames += 1;
             if frames >= args.frames {
-                let close = serde_json::json!({
-                    "id": uuid::Uuid::new_v4().to_string(),
-                    "token": token,
-                    "method": "visual.close",
-                    "params": {}
-                });
-                write.write_all(close.to_string().as_bytes()).await?;
-                write.write_all(b"\n").await?;
-                write.flush().await?;
+                session.close().await?;
                 break;
             }
         }
@@ -787,46 +766,23 @@ async fn unix_visual_first_frame(
     fps: Option<u32>,
     include_bytes: bool,
 ) -> anyhow::Result<serde_json::Value> {
-    let token = load_profile_token(profile).await?;
-    let socket_path = profile_socket_path(profile)?;
-    let stream = UnixStream::connect(&socket_path)
-        .await
-        .with_context(|| format!("connect {}", socket_path.display()))?;
-    let (read, mut write) = stream.into_split();
-    let mut lines = BufReader::new(read).lines();
-    let request = serde_json::json!({
-        "id": uuid::Uuid::new_v4().to_string(),
-        "token": token,
-        "method": "visual.session",
-        "params": {
-            "schema_version": SCHEMA_VERSION,
-            "max_width": max_width,
-            "fps": fps,
-            "include_bytes": include_bytes
-        }
-    });
-    write.write_all(request.to_string().as_bytes()).await?;
-    write.write_all(b"\n").await?;
-    write.flush().await?;
-    while let Some(line) = tokio::time::timeout(Duration::from_millis(750), lines.next_line())
-        .await
-        .context("timed out waiting for unix visual frame")??
-    {
-        let value: serde_json::Value = serde_json::from_str(&line)?;
-        if value.get("type").and_then(|kind| kind.as_str()) == Some("frame") {
-            let close = serde_json::json!({
-                "id": uuid::Uuid::new_v4().to_string(),
-                "token": token,
-                "method": "visual.close",
-                "params": {}
-            });
-            write.write_all(close.to_string().as_bytes()).await?;
-            write.write_all(b"\n").await?;
-            write.flush().await?;
-            return Ok(value);
+    let client = CuaClient::connect(profile.to_string()).await?;
+    let mut session = client
+        .visual_session(max_width, fps, include_bytes, None)
+        .await?;
+    loop {
+        let frame = tokio::time::timeout(Duration::from_millis(750), session.next_frame())
+            .await
+            .context("timed out waiting for unix visual frame")??;
+        if let Some(frame) = frame {
+            session.close().await?;
+            return Ok(serde_json::json!({
+                "schema_version": SCHEMA_VERSION,
+                "type": "frame",
+                "frame": frame
+            }));
         }
     }
-    anyhow::bail!("unix visual session closed before first frame")
 }
 
 async fn session(profile: &str, command: SessionCommand) -> anyhow::Result<()> {
@@ -873,19 +829,6 @@ async fn session(profile: &str, command: SessionCommand) -> anyhow::Result<()> {
         }
         SessionCommand::Status { json } => unix_get(profile, "session.status", json).await,
     }
-}
-
-async fn load_profile_token(profile: &str) -> anyhow::Result<String> {
-    if let Ok(token) = std::env::var("CUA_HTTP_TOKEN") {
-        if !token.trim().is_empty() {
-            return Ok(token);
-        }
-    }
-    let path = profile_token_path(profile)?;
-    let token = tokio::fs::read_to_string(&path)
-        .await
-        .with_context(|| format!("read profile token {}", path.display()))?;
-    Ok(token.trim().to_string())
 }
 
 async fn permissions(profile: &str, command: PermissionCommand) -> anyhow::Result<()> {

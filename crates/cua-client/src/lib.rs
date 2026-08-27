@@ -5,9 +5,10 @@ use cua_core::{
     FrameActionRequest, FrameEncoding, FrameEnvelope, FramePayload, HealthReport, InputAction,
     Manifest, RuntimeControlState, RuntimeInventory, RuntimeSessionRole, SchemaBundle,
     SessionCancelRequest, SessionLeaseRequest, SessionLeaseResult, UiIslandRequest, UiIslandResult,
-    UiIslandState, UiMode, UiModeRequest, UiReplyRequest, UiStepRequest, SCHEMA_VERSION,
+    UiIslandState, UiMode, UiModeRequest, UiReplyRequest, UiStepRequest, VisualSessionRequest,
+    SCHEMA_VERSION,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -271,6 +272,45 @@ impl CuaClient {
             .await
     }
 
+    pub async fn visual_session(
+        &self,
+        max_width: Option<u32>,
+        fps: Option<u32>,
+        include_bytes: bool,
+        session_id: Option<&str>,
+    ) -> anyhow::Result<CuaVisualSession> {
+        let stream = UnixStream::connect(&self.socket_path)
+            .await
+            .with_context(|| format!("connect {}", self.socket_path.display()))?;
+        let (read, mut write) = stream.into_split();
+        let request = serde_json::json!({
+            "id": uuid::Uuid::new_v4().to_string(),
+            "token": self.token,
+            "session_id": session_id,
+            "method": "visual.session",
+            "params": VisualSessionRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                max_width,
+                fps,
+                include_bytes,
+            }
+        });
+        write
+            .write_all(request.to_string().as_bytes())
+            .await
+            .context("write visual session request")?;
+        write
+            .write_all(b"\n")
+            .await
+            .context("flush visual session request")?;
+        write.flush().await.context("flush visual session stream")?;
+        Ok(CuaVisualSession {
+            read: BufReader::new(read),
+            write,
+            closed: false,
+        })
+    }
+
     pub async fn dispatch(&self, action: &InputAction) -> anyhow::Result<Value> {
         ensure_dispatchable(action)?;
         self.request("input.dispatch", Some(serde_json::to_value(action)?))
@@ -347,6 +387,93 @@ pub struct CuaSession {
     token: String,
     read: BufReader<OwnedReadHalf>,
     write: OwnedWriteHalf,
+}
+
+pub struct CuaVisualSession {
+    read: BufReader<OwnedReadHalf>,
+    write: OwnedWriteHalf,
+    closed: bool,
+}
+
+impl CuaVisualSession {
+    pub async fn next_message(&mut self) -> anyhow::Result<Option<VisualSessionMessage>> {
+        let mut line = String::new();
+        let bytes = self
+            .read
+            .read_line(&mut line)
+            .await
+            .context("read visual session message")?;
+        if bytes == 0 {
+            return Ok(None);
+        }
+        if line.trim().is_empty() {
+            return Ok(Some(VisualSessionMessage::Empty));
+        }
+        Ok(Some(serde_json::from_str(&line).with_context(|| {
+            format!("decode visual session message {}", line.trim())
+        })?))
+    }
+
+    pub async fn next_frame(&mut self) -> anyhow::Result<Option<Value>> {
+        while let Some(message) = self.next_message().await? {
+            match message {
+                VisualSessionMessage::Frame { frame, .. } => return Ok(Some(frame)),
+                VisualSessionMessage::Error { error, .. } => {
+                    anyhow::bail!("visual session error: {error}");
+                }
+                VisualSessionMessage::Closed { .. } => return Ok(None),
+                VisualSessionMessage::Started { .. } | VisualSessionMessage::Empty => {}
+            }
+        }
+        Ok(None)
+    }
+
+    pub async fn close(&mut self) -> anyhow::Result<()> {
+        if self.closed {
+            return Ok(());
+        }
+        let request = serde_json::json!({
+            "id": uuid::Uuid::new_v4().to_string(),
+            "method": "visual.close",
+            "params": {}
+        });
+        self.write
+            .write_all(request.to_string().as_bytes())
+            .await
+            .context("write visual close request")?;
+        self.write
+            .write_all(b"\n")
+            .await
+            .context("flush visual close request")?;
+        self.write
+            .flush()
+            .await
+            .context("flush visual close stream")?;
+        self.closed = true;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum VisualSessionMessage {
+    Started {
+        schema_version: String,
+        fps: u32,
+    },
+    Frame {
+        schema_version: String,
+        frame: Value,
+    },
+    Error {
+        schema_version: String,
+        error: String,
+    },
+    Closed {
+        schema_version: String,
+    },
+    #[serde(other)]
+    Empty,
 }
 
 impl CuaSession {
