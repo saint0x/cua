@@ -349,17 +349,11 @@ mod tests {
     async fn ctx_is_required_without_fallback() {
         let ctx = CtxMemory {
             profile: "test".to_string(),
-            binary: PathBuf::from(format!(
-                "/tmp/cua-missing-ctx-{}",
-                uuid::Uuid::new_v4()
-            )),
+            binary: PathBuf::from(format!("/tmp/cua-missing-ctx-{}", uuid::Uuid::new_v4())),
             workspace_root: std::env::temp_dir()
                 .join(format!("cua-ctx-missing-{}", uuid::Uuid::new_v4())),
         };
-        let error = ctx
-            .frame("hello", "Recent chat: none.")
-            .await
-            .unwrap_err();
+        let error = ctx.frame("hello", "Recent chat: none.").await.unwrap_err();
 
         assert!(format!("{error:#}").contains("ctx binary is required"));
     }

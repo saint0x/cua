@@ -590,10 +590,7 @@ async fn plan_and_dispatch(
             .plan(
                 &api_key,
                 &transcript,
-                Some(&format!(
-                    "{}\n{}",
-                    agent_context.chat, agent_context.ctx
-                )),
+                Some(&format!("{}\n{}", agent_context.chat, agent_context.ctx)),
                 context.frame.as_ref(),
                 context.desktop.as_ref(),
             )

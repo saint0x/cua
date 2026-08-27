@@ -191,7 +191,9 @@ async fn execute_macos_input_leaf(action: InputAction) -> Result<MacosActionOutc
         InputAction::KeyPress { combo } => post_key_combo(&combo).map(MacosActionOutcome::desktop),
         InputAction::KeyType { text } => post_text(&text).map(MacosActionOutcome::desktop),
         InputAction::KeyPaste { text } => post_text(&text).map(MacosActionOutcome::desktop),
-        InputAction::OpenApp { app_name } => open_app(&app_name).map(MacosActionOutcome::system),
+        InputAction::OpenApp { app_name } => {
+            open_app(&app_name).await.map(MacosActionOutcome::system)
+        }
         InputAction::ShellExec {
             command,
             timeout_ms,
@@ -219,11 +221,16 @@ async fn execute_macos_input_leaf(action: InputAction) -> Result<MacosActionOutc
 }
 
 #[cfg(target_os = "macos")]
-fn open_app(app_name: &str) -> Result<String, String> {
-    let status = std::process::Command::new("/usr/bin/open")
+async fn open_app(app_name: &str) -> Result<String, String> {
+    let timeout = Duration::from_millis(5_000);
+    let child = tokio::process::Command::new("/usr/bin/open")
         .arg("-a")
         .arg(app_name)
-        .status()
+        .kill_on_drop(true)
+        .status();
+    let status = tokio::time::timeout(timeout, child)
+        .await
+        .map_err(|_| format!("open app timed out after {}ms", timeout.as_millis()))?
         .map_err(|error| format!("open app failed to launch /usr/bin/open: {error}"))?;
     if status.success() {
         Ok(format!("opened app {app_name}"))
@@ -233,7 +240,7 @@ fn open_app(app_name: &str) -> Result<String, String> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn open_app(_app_name: &str) -> Result<String, String> {
+async fn open_app(_app_name: &str) -> Result<String, String> {
     Err("open_app is only available on macOS".to_string())
 }
 
@@ -310,18 +317,8 @@ async fn run_ctx_command(
     let output = tokio::time::timeout(timeout, child)
         .await
         .map_err(|_| format!("ctx command timed out after {}ms", timeout.as_millis()))?
-        .map_err(|error| {
-            format!(
-                "ctx command failed to launch {}: {error}",
-                binary.display()
-            )
-        })?;
-    command_output_message(
-        "ctx",
-        output.status.code(),
-        &output.stdout,
-        &output.stderr,
-    )
+        .map_err(|error| format!("ctx command failed to launch {}: {error}", binary.display()))?;
+    command_output_message("ctx", output.status.code(), &output.stdout, &output.stderr)
 }
 
 fn aegis_binary() -> std::path::PathBuf {

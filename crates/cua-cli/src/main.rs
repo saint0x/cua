@@ -505,7 +505,9 @@ async fn main() -> anyhow::Result<()> {
         Some(Command::Key { command }) => daemon_input(&cli.profile, key_action(command)).await,
         Some(Command::Shell(args)) => daemon_input(&cli.profile, shell_action(args)).await,
         Some(Command::Aegis(args)) => daemon_input(&cli.profile, aegis_action(args)).await,
-        Some(Command::Ctx(args)) => daemon_input(&cli.profile, ctx_action(args, &cli.profile)).await,
+        Some(Command::Ctx(args)) => {
+            daemon_input(&cli.profile, ctx_action(args, &cli.profile)).await
+        }
         Some(Command::Clipboard { command }) => clipboard(&cli.profile, command).await,
         Some(Command::Model { command }) => model(command).await,
         Some(Command::Schema { command }) => schema(command).await,

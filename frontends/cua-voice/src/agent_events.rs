@@ -18,7 +18,11 @@ fn daemon_event_sequence(event: &Value) -> Option<u64> {
 }
 
 pub fn max_daemon_event_sequence(events: &[Value]) -> u64 {
-    events.iter().filter_map(daemon_event_sequence).max().unwrap_or(0)
+    events
+        .iter()
+        .filter_map(daemon_event_sequence)
+        .max()
+        .unwrap_or(0)
 }
 
 pub fn agent_ui_event_from_daemon_event(
