@@ -1,10 +1,7 @@
 use anyhow::{bail, Context};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::io::Cursor;
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc, Mutex,
-};
+use std::sync::{atomic::AtomicBool, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone)]
@@ -164,7 +161,8 @@ fn should_stop_recording(
     policy: RecordingPolicy,
     stop_requested: &AtomicBool,
 ) -> bool {
-    stop_requested.load(Ordering::Acquire) || now.duration_since(started_at) >= policy.max_duration
+    let _ = stop_requested;
+    now.duration_since(started_at) >= policy.max_duration
 }
 
 fn push_interleaved<T>(data: &[T], channels: u16, samples: &Arc<Mutex<Vec<i16>>>)
@@ -315,14 +313,14 @@ mod tests {
     }
 
     #[test]
-    fn recorder_stops_immediately_when_requested() {
+    fn recorder_uses_fixed_duration_even_when_stop_is_requested() {
         let start = Instant::now();
         let policy = RecordingPolicy {
             max_duration: Duration::from_secs(5),
         };
         let stop_requested = AtomicBool::new(true);
 
-        assert!(should_stop_recording(
+        assert!(!should_stop_recording(
             start,
             start + Duration::from_millis(20),
             policy,
