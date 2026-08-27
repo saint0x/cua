@@ -208,6 +208,16 @@ async fn transcribe_and_run_turn_after_local(
             }),
         )
         .await;
+    trace
+        .write_artifact(
+            "input.wav",
+            &wav_bytes,
+            json!({
+                "kind": "stt_input_wav",
+                "bytes": wav_bytes.len()
+            }),
+        )
+        .await;
     let stt_backend = config.stt_backend.clone();
     let stt_model = config.stt_model.clone();
     let stt_api_key = api_key.clone();
@@ -857,6 +867,38 @@ impl VoiceTurnTrace {
             let _ = file.write_all(b"\n").await;
             let _ = file.flush().await;
         }
+    }
+
+    async fn write_artifact(&self, name: &'static str, bytes: &[u8], data: serde_json::Value) {
+        if !self.enabled {
+            return;
+        }
+        let Some(path) = self.artifact_path(name) else {
+            return;
+        };
+        if let Some(parent) = path.parent() {
+            let _ = tokio::fs::create_dir_all(parent).await;
+        }
+        if tokio::fs::write(&path, bytes).await.is_ok() {
+            self.append(
+                "artifact",
+                json!({
+                    "path": path.display().to_string(),
+                    "data": data,
+                }),
+            )
+            .await;
+        }
+    }
+
+    fn artifact_path(&self, name: &str) -> Option<PathBuf> {
+        let parent = self.path.as_ref()?.parent()?;
+        Some(
+            parent
+                .join("voice-turn-artifacts")
+                .join(&self.turn_id)
+                .join(name),
+        )
     }
 }
 
