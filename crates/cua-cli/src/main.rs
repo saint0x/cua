@@ -6,9 +6,9 @@ use cua_client::{CuaClient, VisualSessionMessage};
 use cua_core::{
     config_env_path, profile_ctx_dir, schema_bundle, CapabilityManifest, ClipboardReadRequest,
     ClipboardWriteRequest, DesktopContextSnapshot, FrameEncoding, FramePayload, InputAction,
-    MouseButton, RuntimeMode, RuntimeSessionRole, SessionCancelRequest, SessionLeaseRequest,
-    UiIslandRequest, UiIslandState, UiMode, UiModeRequest, UiReplyRequest, UiStepRequest,
-    SCHEMA_VERSION,
+    MouseButton, RuntimeMode, RuntimeSessionRole, SessionCancelRequest, SessionHeartbeatRequest,
+    SessionLeaseRequest, UiIslandRequest, UiIslandState, UiMode, UiModeRequest, UiReplyRequest,
+    UiStepRequest, SCHEMA_VERSION,
 };
 use cua_model::{run_eval_report, EvalConfig};
 use cua_trace::{ActionTurnRecord, TraceRecord, TraceWriter};
@@ -68,10 +68,14 @@ enum Command {
     WindowCapture(WindowCaptureArgs),
     Observe(JsonFlag),
     Mouse {
+        #[arg(long)]
+        session_id: String,
         #[command(subcommand)]
         command: MouseCommand,
     },
     Key {
+        #[arg(long)]
+        session_id: String,
         #[command(subcommand)]
         command: KeyCommand,
     },
@@ -98,9 +102,9 @@ enum Command {
         #[command(subcommand)]
         command: ProfileCommand,
     },
-    Pause(JsonFlag),
-    Resume(JsonFlag),
-    KillSwitch(JsonFlag),
+    Pause(ControlArgs),
+    Resume(ControlArgs),
+    KillSwitch(ControlArgs),
 }
 
 #[derive(Debug, Args)]
@@ -115,6 +119,14 @@ struct ServeArgs {
 
 #[derive(Debug, Args)]
 struct JsonFlag {
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct ControlArgs {
+    #[arg(long)]
+    session_id: String,
     #[arg(long)]
     json: bool,
 }
@@ -182,6 +194,13 @@ enum SessionCommand {
         session_id: String,
         #[arg(long)]
         target_session_id: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    Heartbeat {
+        session_id: String,
+        #[arg(long)]
+        ttl_ms: Option<i64>,
         #[arg(long)]
         json: bool,
     },
@@ -301,12 +320,16 @@ enum KeyCommand {
 #[derive(Debug, Args)]
 struct ShellArgs {
     command: String,
+    #[arg(long)]
+    session_id: String,
     #[arg(long, default_value_t = 5_000)]
     timeout_ms: u64,
 }
 
 #[derive(Debug, Args)]
 struct AegisArgs {
+    #[arg(long)]
+    session_id: String,
     #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
     args: Vec<String>,
     #[arg(long, default_value_t = 15_000)]
@@ -315,6 +338,8 @@ struct AegisArgs {
 
 #[derive(Debug, Args)]
 struct CtxArgs {
+    #[arg(long)]
+    session_id: String,
     #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
     args: Vec<String>,
     #[arg(long, default_value_t = 5_000)]
@@ -331,6 +356,8 @@ enum ClipboardCommand {
     },
     Write {
         text: String,
+        #[arg(long)]
+        session_id: String,
         #[arg(long)]
         json: bool,
     },
@@ -477,9 +504,13 @@ enum ProfileCommand {
         #[arg(long)]
         clipboard: bool,
         #[arg(long)]
+        session_id: String,
+        #[arg(long)]
         json: bool,
     },
     Activate {
+        #[arg(long)]
+        session_id: String,
         #[arg(long)]
         json: bool,
     },
@@ -532,22 +563,62 @@ async fn main() -> anyhow::Result<()> {
         Some(Command::Screenshot(args)) => screenshot(&cli.profile, args).await,
         Some(Command::WindowCapture(args)) => window_capture(&cli.profile, args).await,
         Some(Command::Observe(flag)) => unix_get(&cli.profile, "observe.desktop", flag.json).await,
-        Some(Command::Mouse { command }) => daemon_input(&cli.profile, mouse_action(command)).await,
-        Some(Command::Key { command }) => daemon_input(&cli.profile, key_action(command)).await,
-        Some(Command::Shell(args)) => daemon_input(&cli.profile, shell_action(args)).await,
-        Some(Command::Aegis(args)) => daemon_input(&cli.profile, aegis_action(args)).await,
+        Some(Command::Mouse {
+            command,
+            session_id,
+        }) => daemon_input(&cli.profile, mouse_action(command), &session_id).await,
+        Some(Command::Key {
+            command,
+            session_id,
+        }) => daemon_input(&cli.profile, key_action(command), &session_id).await,
+        Some(Command::Shell(args)) => {
+            daemon_input(&cli.profile, shell_action(&args), &args.session_id).await
+        }
+        Some(Command::Aegis(args)) => {
+            daemon_input(&cli.profile, aegis_action(&args), &args.session_id).await
+        }
         Some(Command::Ctx(args)) => {
-            daemon_input(&cli.profile, ctx_action(args, &cli.profile)).await
+            daemon_input(
+                &cli.profile,
+                ctx_action(&args, &cli.profile),
+                &args.session_id,
+            )
+            .await
         }
         Some(Command::Clipboard { command }) => clipboard(&cli.profile, command).await,
         Some(Command::Model { command }) => model(command).await,
         Some(Command::Schema { command }) => schema(command).await,
         Some(Command::Trace { command }) => trace(&cli.profile, command).await,
         Some(Command::Profile { command }) => profile(&cli.profile, command).await,
-        Some(Command::Pause(flag)) => unix_get(&cli.profile, "control.pause", flag.json).await,
-        Some(Command::Resume(flag)) => unix_get(&cli.profile, "control.resume", flag.json).await,
-        Some(Command::KillSwitch(flag)) => {
-            unix_get(&cli.profile, "control.kill_switch", flag.json).await
+        Some(Command::Pause(args)) => {
+            let value = unix_request_json_with_session(
+                &cli.profile,
+                "control.pause",
+                None,
+                Some(&args.session_id),
+            )
+            .await?;
+            print_json_value(&value, args.json)
+        }
+        Some(Command::Resume(args)) => {
+            let value = unix_request_json_with_session(
+                &cli.profile,
+                "control.resume",
+                None,
+                Some(&args.session_id),
+            )
+            .await?;
+            print_json_value(&value, args.json)
+        }
+        Some(Command::KillSwitch(args)) => {
+            let value = unix_request_json_with_session(
+                &cli.profile,
+                "control.kill_switch",
+                None,
+                Some(&args.session_id),
+            )
+            .await?;
+            print_json_value(&value, args.json)
         }
     }
 }
@@ -836,6 +907,24 @@ async fn session(profile: &str, command: SessionCommand) -> anyhow::Result<()> {
             .await?;
             print_json_value(&value, json)
         }
+        SessionCommand::Heartbeat {
+            session_id,
+            ttl_ms,
+            json,
+        } => {
+            let request = SessionHeartbeatRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                session_id,
+                ttl_ms,
+            };
+            let value = unix_request_json(
+                profile,
+                "session.heartbeat",
+                Some(serde_json::to_value(request)?),
+            )
+            .await?;
+            print_json_value(&value, json)
+        }
         SessionCommand::Status { json } => unix_get(profile, "session.status", json).await,
     }
 }
@@ -914,9 +1003,9 @@ async fn unix_request_json_with_session(
     session_id: Option<&str>,
 ) -> anyhow::Result<serde_json::Value> {
     let client = CuaClient::connect(profile.to_string()).await?;
-    client
+    Ok(client
         .request_with_session(method, params, session_id)
-        .await
+        .await?)
 }
 
 async fn perf(profile: &str, command: PerfCommand) -> anyhow::Result<()> {
@@ -3122,23 +3211,23 @@ fn key_action(command: KeyCommand) -> InputAction {
     }
 }
 
-fn shell_action(args: ShellArgs) -> InputAction {
+fn shell_action(args: &ShellArgs) -> InputAction {
     InputAction::ShellExec {
-        command: args.command,
+        command: args.command.clone(),
         timeout_ms: args.timeout_ms,
     }
 }
 
-fn aegis_action(args: AegisArgs) -> InputAction {
+fn aegis_action(args: &AegisArgs) -> InputAction {
     InputAction::Aegis {
-        args: args.args,
+        args: args.args.clone(),
         timeout_ms: args.timeout_ms,
     }
 }
 
-fn ctx_action(args: CtxArgs, profile: &str) -> InputAction {
+fn ctx_action(args: &CtxArgs, profile: &str) -> InputAction {
     InputAction::Ctx {
-        args: args.args,
+        args: args.args.clone(),
         timeout_ms: args.timeout_ms,
         workspace_root: Some(ctx_workspace_root(profile)),
     }
@@ -3150,11 +3239,12 @@ fn ctx_workspace_root(profile: &str) -> String {
         .unwrap_or_else(|_| format!(".cua/profiles/{profile}/ctx"))
 }
 
-async fn daemon_input(profile: &str, action: InputAction) -> anyhow::Result<()> {
-    let value = unix_request_json(
+async fn daemon_input(profile: &str, action: InputAction, session_id: &str) -> anyhow::Result<()> {
+    let value = unix_request_json_with_session(
         profile,
         "input.dispatch",
         Some(serde_json::to_value(action)?),
+        Some(session_id),
     )
     .await?;
     print_json_value(&value, true)
@@ -3177,14 +3267,19 @@ async fn clipboard(profile: &str, command: ClipboardCommand) -> anyhow::Result<(
             .await?;
             print_json_value(&value, json)
         }
-        ClipboardCommand::Write { text, json } => {
-            let value = unix_request_json(
+        ClipboardCommand::Write {
+            text,
+            session_id,
+            json,
+        } => {
+            let value = unix_request_json_with_session(
                 profile,
                 "clipboard.write",
                 Some(serde_json::to_value(ClipboardWriteRequest {
                     schema_version: SCHEMA_VERSION.to_string(),
                     text,
                 })?),
+                Some(&session_id),
             )
             .await?;
             print_json_value(&value, json)
@@ -3450,11 +3545,12 @@ async fn profile(active_profile: &str, command: ProfileCommand) -> anyhow::Resul
             mode,
             duration_ms,
             clipboard,
+            session_id,
             json,
         } => {
             let mut capabilities = CapabilityManifest::default();
             capabilities.clipboard = clipboard;
-            let value = unix_request_json(
+            let value = unix_request_json_with_session(
                 active_profile,
                 "profile.create",
                 Some(serde_json::json!({
@@ -3463,12 +3559,19 @@ async fn profile(active_profile: &str, command: ProfileCommand) -> anyhow::Resul
                     "duration_ms": duration_ms,
                     "capabilities": capabilities,
                 })),
+                Some(&session_id),
             )
             .await?;
             print_json_value(&value, json)
         }
-        ProfileCommand::Activate { json } => {
-            let value = unix_request_json(active_profile, "profile.activate", None).await?;
+        ProfileCommand::Activate { session_id, json } => {
+            let value = unix_request_json_with_session(
+                active_profile,
+                "profile.activate",
+                None,
+                Some(&session_id),
+            )
+            .await?;
             print_json_value(&value, json)
         }
         ProfileCommand::Status { json } => unix_get(active_profile, "profile.status", json).await,

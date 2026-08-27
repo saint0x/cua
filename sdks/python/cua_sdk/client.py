@@ -25,10 +25,12 @@ class Cua:
         profile: str = "default",
         bin: str = "cua",
         env: dict[str, str] | None = None,
+        transport: Literal["unix", "cli"] = "unix",
     ) -> None:
         self.profile = profile
         self.bin = bin
         self.env = {**os.environ, **(env or {})}
+        self.transport = transport
 
     @classmethod
     def connect(
@@ -36,8 +38,9 @@ class Cua:
         profile: str = "default",
         bin: str = "cua",
         env: dict[str, str] | None = None,
+        transport: Literal["unix", "cli"] = "unix",
     ) -> "Cua":
-        return cls(profile=profile, bin=bin, env=env)
+        return cls(profile=profile, bin=bin, env=env, transport=transport)
 
     def run(self, file: str | Path, trace_dir: str | Path | None = None) -> Json:
         args = ["--profile", self.profile, "run", str(file), "--json"]
@@ -70,6 +73,11 @@ class Cua:
         return self.run_inline(runebook, trace_dir=trace_dir)
 
     def rpc(self, method: str, params: Json | None = None, session_id: str | None = None) -> Json:
+        if self.transport == "unix":
+            try:
+                return self._unix_rpc(method, params or {}, session_id=session_id)
+            except (FileNotFoundError, ConnectionRefusedError):
+                pass
         session_line = f"session_id = {_toml_string(session_id)}" if session_id else ""
         runebook = "\n".join(
             line
@@ -89,7 +97,11 @@ class Cua:
             ]
             if line
         )
-        return self.run_inline(runebook)
+        report = self.run_inline(runebook)
+        try:
+            return report["results"]["rpc"]
+        except KeyError as error:
+            raise RuntimeError("cua runebook response did not include results.rpc") from error
 
     def manifest(self) -> Json:
         return self._step("manifest", {}, "manifest")
@@ -105,6 +117,17 @@ class Cua:
 
     def config_status(self) -> Json:
         return self._exec_json(["--profile", self.profile, "config", "status", "--json"])
+
+    def attest(self, audience: str, nonce: str, session: OwnerSession | str | None = None) -> Json:
+        return self.rpc(
+            "attestation.sign",
+            {
+                "schema_version": "cua.v1",
+                "audience": audience,
+                "nonce": nonce,
+            },
+            session_id=_session_id(session) if session is not None else None,
+        )
 
     def acquire_owner(self, client_name: str = "python sdk", ttl_ms: int | None = None) -> OwnerSession:
         args = [
@@ -136,6 +159,19 @@ class Cua:
             ),
         )
 
+    def heartbeat_owner(self, session: OwnerSession | str, ttl_ms: int | None = None) -> OwnerSession:
+        raw = self.rpc(
+            "session.heartbeat",
+            _compact(
+                {
+                    "schema_version": "cua.v1",
+                    "session_id": _session_id(session),
+                    "ttl_ms": ttl_ms,
+                }
+            ),
+        )
+        return OwnerSession(session_id=raw["session"]["session_id"], raw=raw)
+
     def session_status(self) -> Json:
         return self.rpc("session.status")
 
@@ -149,7 +185,7 @@ class Cua:
         mode: Literal["observe", "supervised", "autonomous"] = "supervised",
         duration_ms: int | None = None,
         capabilities: Json | None = None,
-        session: OwnerSession | str | None = None,
+        session: OwnerSession | str,
     ) -> Json:
         params = _compact(
             {
@@ -159,14 +195,10 @@ class Cua:
                 "capabilities": capabilities,
             }
         )
-        if session is not None:
-            return self.rpc("profile.create", params, session_id=_session_id(session))
-        return self._step("profile.create", params, "profile")
+        return self.rpc("profile.create", params, session_id=_session_id(session))
 
-    def activate_profile(self, session: OwnerSession | str | None = None) -> Json:
-        if session is not None:
-            return self.rpc("profile.activate", {}, session_id=_session_id(session))
-        return self._step("profile.activate", {}, "profile")
+    def activate_profile(self, session: OwnerSession | str) -> Json:
+        return self.rpc("profile.activate", {}, session_id=_session_id(session))
 
     def request_accessibility(self) -> Json:
         return self._step("permissions.request_accessibility", {}, "permissions")
@@ -238,7 +270,36 @@ class Cua:
         )
 
     def events(self, *, after: int | None = None, timeout_ms: int | None = None) -> Json:
-        return self._step("events", _compact({"after": after, "timeout_ms": timeout_ms}), "events")
+        if after is not None and timeout_ms is not None:
+            return self.rpc("events.wait", {"after_sequence": after, "timeout_ms": timeout_ms})
+        if after is not None:
+            return self.rpc("events.after", {"after_sequence": after})
+        return self.rpc("events.snapshot")
+
+    def visual_frames(
+        self,
+        *,
+        max_width: int = 1280,
+        fps: int = 10,
+        include_bytes: bool = False,
+        frames: int = 3,
+    ) -> Json:
+        args = [
+            "--profile",
+            self.profile,
+            "stream",
+            "--unix",
+            "--frames",
+            str(frames),
+            "--fps",
+            str(fps),
+            "--max-width",
+            str(max_width),
+            "--json",
+        ]
+        if include_bytes:
+            args.append("--include-bytes")
+        return self._exec_json(args)
 
     def ui_step(
         self,
@@ -279,11 +340,11 @@ class Cua:
     def clipboard_read(self, allow_sensitive: bool = False) -> Json:
         return self._step("clipboard.read", {"allow_sensitive": allow_sensitive}, "clipboard")
 
-    def clipboard_write(self, text: str, session: OwnerSession | str | None = None) -> Json:
+    def clipboard_write(self, text: str, session: OwnerSession | str) -> Json:
         return self.rpc(
             "clipboard.write",
             {"schema_version": "cua.v1", "text": text},
-            session_id=_session_id(session) if session is not None else None,
+            session_id=_session_id(session),
         )
 
     def pause(self, session: OwnerSession | str) -> Json:
@@ -295,14 +356,14 @@ class Cua:
     def kill_switch(self, session: OwnerSession | str) -> Json:
         return self.rpc("control.kill_switch", {}, session_id=_session_id(session))
 
-    def dispatch(self, action: Json, session: OwnerSession | str | None = None) -> Json:
-        return self.rpc("input.dispatch", action, session_id=_session_id(session) if session is not None else None)
+    def dispatch(self, action: Json, session: OwnerSession | str) -> Json:
+        return self.rpc("input.dispatch", action, session_id=_session_id(session))
 
-    def dispatch_frame(self, source_frame: Json, action: Json, session: OwnerSession | str | None = None) -> Json:
+    def dispatch_frame(self, source_frame: Json, action: Json, session: OwnerSession | str) -> Json:
         return self.rpc(
             "input.dispatch_frame",
             {"schema_version": "cua.v1", "source_frame": source_frame, "action": action},
-            session_id=_session_id(session) if session is not None else None,
+            session_id=_session_id(session),
         )
 
     def visual_session(
@@ -339,17 +400,42 @@ class Cua:
         stream.sendall((json.dumps(request) + "\n").encode("utf-8"))
         return VisualSession(stream)
 
-    def open_app(self, app: str, session: OwnerSession | str | None = None) -> Json:
+    def open_app(self, app: str, session: OwnerSession | str) -> Json:
         return self.dispatch({"schema_version": "cua.v1", "action": "open_app", "app": app}, session=session)
 
-    def shell(self, command: str, session: OwnerSession | str | None = None) -> Json:
+    def shell(self, command: str, session: OwnerSession | str) -> Json:
         return self.dispatch({"schema_version": "cua.v1", "action": "shell", "command": command}, session=session)
 
-    def aegis(self, args: list[str], session: OwnerSession | str | None = None) -> Json:
+    def aegis(self, args: list[str], session: OwnerSession | str) -> Json:
         return self.dispatch({"schema_version": "cua.v1", "action": "aegis", "args": args}, session=session)
 
-    def ctx(self, args: list[str], session: OwnerSession | str | None = None) -> Json:
+    def ctx(self, args: list[str], session: OwnerSession | str) -> Json:
         return self.dispatch({"schema_version": "cua.v1", "action": "ctx", "args": args}, session=session)
+
+    def trace_verify(self, dir: str | Path) -> Json:
+        return self._exec_json(["--profile", self.profile, "trace", "verify", str(dir), "--json"])
+
+    def trace_replay(self, dir: str | Path, *, dry_run: bool = False) -> Json:
+        args = ["--profile", self.profile, "trace", "replay", str(dir), "--json"]
+        if dry_run:
+            args.append("--dry-run")
+        return self._exec_json(args)
+
+    def model_eval(
+        self,
+        *,
+        live: bool = False,
+        max_calls: int | None = None,
+        max_output_tokens: int | None = None,
+    ) -> Json:
+        args = ["model", "eval", "--json"]
+        if live:
+            args.append("--live")
+        if max_calls is not None:
+            args.extend(["--max-calls", str(max_calls)])
+        if max_output_tokens is not None:
+            args.extend(["--max-output-tokens", str(max_output_tokens)])
+        return self._exec_json(args)
 
     def _step(self, action: str, fields: dict[str, Json], save_as: str) -> Json:
         report = self.run_steps([{"id": save_as, "do": action, "save_as": save_as, **fields}])
@@ -373,6 +459,45 @@ class Cua:
             return json.loads(result.stdout)
         except json.JSONDecodeError as error:
             raise RuntimeError(f"cua returned non-JSON output: {error}\n{result.stdout}") from error
+
+    def _unix_rpc(self, method: str, params: Json, session_id: str | None = None) -> Json:
+        request = {
+            "id": str(uuid.uuid4()),
+            "token": self._load_token(),
+            "method": method,
+            "params": params,
+        }
+        if session_id is not None:
+            request["session_id"] = session_id
+        stream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        stream.settimeout(30)
+        try:
+            stream.connect(str(_profile_socket_path(self.profile, self.env)))
+            stream.sendall((json.dumps(request) + "\n").encode("utf-8"))
+            data = b""
+            while not data.endswith(b"\n"):
+                chunk = stream.recv(1 << 20)
+                if not chunk:
+                    break
+                data += chunk
+        finally:
+            stream.close()
+        if not data:
+            raise RuntimeError(f"empty unix response for {method}")
+        response = json.loads(data.decode("utf-8"))
+        if response.get("ok") is not True:
+            raise CuaProtocolError(method, response.get("error"))
+        return response.get("result")
+
+    def _load_token(self) -> str:
+        return _profile_token(self.profile, self.env)
+
+
+class CuaProtocolError(RuntimeError):
+    def __init__(self, method: str, error: Json) -> None:
+        super().__init__(f"cua {method} failed: {json.dumps(error)}")
+        self.method = method
+        self.error = error
 
 
 def _render_runebook(
@@ -462,21 +587,25 @@ def _session_id(session: OwnerSession | str) -> str:
     return session if isinstance(session, str) else session.session_id
 
 
-def _cua_home(env: dict[str, str]) -> str:
-    return env.get("CUA_HOME") or str(Path.home() / ".cua")
+def _cua_home(env: dict[str, str]) -> Path:
+    configured = env.get("CUA_HOME")
+    if configured:
+        return Path(configured)
+    return Path.home() / ".cua"
 
 
-def _profile_socket_path(profile: str, env: dict[str, str]) -> str:
-    return str(Path(_cua_home(env)) / "profiles" / profile / "daemon.sock")
+def _profile_socket_path(profile: str, env: dict[str, str]) -> Path:
+    return _cua_home(env) / "profiles" / profile / "daemon.sock"
 
 
 def _profile_token_path(profile: str, env: dict[str, str]) -> Path:
-    return Path(_cua_home(env)) / "profiles" / profile / "http.token"
+    return _cua_home(env) / "profiles" / profile / "http.token"
 
 
 def _profile_token(profile: str, env: dict[str, str]) -> str:
-    token = env.get("CUA_HTTP_TOKEN")
-    if token and token.strip():
+    token = env.get("CUA_HTTP_TOKEN", "").strip()
+    override = env.get("CUA_DEV_HTTP_TOKEN_OVERRIDE", "")
+    if token and (override == "1" or override.lower() == "true"):
         return token
     path = _profile_token_path(profile, env)
     try:

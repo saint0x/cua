@@ -8,10 +8,12 @@ export class Cua {
     profile;
     bin;
     env;
+    transport;
     constructor(options = {}) {
         this.profile = options.profile ?? "default";
         this.bin = options.bin ?? "cua";
         this.env = { ...process.env, ...options.env };
+        this.transport = options.transport ?? "unix";
     }
     static async connect(options = {}) {
         return new Cua(options);
@@ -45,6 +47,16 @@ export class Cua {
         return this.runInline(runebook, options);
     }
     async rpc(method, params = {}, options = {}) {
+        if (this.transport === "unix") {
+            try {
+                return await this.unixRpc(method, params, options.sessionId);
+            }
+            catch (error) {
+                if (!isMissingUnixSocketError(error)) {
+                    throw error;
+                }
+            }
+        }
         const runebook = [
             'schema = "cua.runebook.v1"',
             "",
@@ -62,7 +74,7 @@ export class Cua {
             .filter(Boolean)
             .join("\n");
         const report = await this.runInline(runebook);
-        return report;
+        return readResult(report, "rpc");
     }
     async manifest() {
         return this.step("manifest", {}, "manifest");
@@ -78,6 +90,13 @@ export class Cua {
     }
     async configStatus() {
         return this.execJson(["--profile", this.profile, "config", "status", "--json"]);
+    }
+    async attest(audience, nonce, session) {
+        return this.rpc("attestation.sign", {
+            schema_version: "cua.v1",
+            audience,
+            nonce,
+        }, session ? { sessionId: sessionIdOf(session) } : {});
     }
     async acquireOwner(clientName = "typescript sdk", ttlMs) {
         const args = [
@@ -105,6 +124,14 @@ export class Cua {
             target_session_id: targetSessionId,
         }));
     }
+    async heartbeatOwner(session, ttlMs) {
+        const raw = await this.rpc("session.heartbeat", compact({
+            schema_version: "cua.v1",
+            session_id: sessionIdOf(session),
+            ttl_ms: ttlMs,
+        }));
+        return { sessionId: readSessionId(raw), raw };
+    }
     async sessionStatus() {
         return this.rpc("session.status");
     }
@@ -112,26 +139,15 @@ export class Cua {
         return this.step("profile.status", {}, "profile");
     }
     async createProfile(options, session) {
-        if (session) {
-            return this.rpc("profile.create", compact({
-                name: options.name,
-                mode: options.mode ?? "supervised",
-                duration_ms: options.durationMs,
-                capabilities: options.capabilities,
-            }), { sessionId: sessionIdOf(session) });
-        }
-        return this.step("profile.create", {
+        return this.rpc("profile.create", compact({
             name: options.name,
             mode: options.mode ?? "supervised",
             duration_ms: options.durationMs,
             capabilities: options.capabilities,
-        }, "profile");
+        }), { sessionId: sessionIdOf(session) });
     }
     async activateProfile(session) {
-        if (session) {
-            return this.rpc("profile.activate", {}, { sessionId: sessionIdOf(session) });
-        }
-        return this.step("profile.activate", {}, "profile");
+        return this.rpc("profile.activate", {}, { sessionId: sessionIdOf(session) });
     }
     async requestAccessibility() {
         return this.step("permissions.request_accessibility", {}, "permissions");
@@ -164,10 +180,33 @@ export class Cua {
         }, "context");
     }
     async events(options = {}) {
-        return this.step("events", {
-            after: options.after,
-            timeout_ms: options.timeoutMs,
-        }, "events");
+        if (options.timeoutMs !== undefined && options.after !== undefined) {
+            return this.rpc("events.wait", { after_sequence: options.after, timeout_ms: options.timeoutMs });
+        }
+        if (options.after !== undefined) {
+            return this.rpc("events.after", { after_sequence: options.after });
+        }
+        return this.rpc("events.snapshot");
+    }
+    async visualFrames(options = {}) {
+        const frames = options.frames ?? 3;
+        const args = [
+            "--profile",
+            this.profile,
+            "stream",
+            "--unix",
+            "--frames",
+            String(frames),
+            "--fps",
+            String(options.fps ?? 10),
+            "--max-width",
+            String(options.maxWidth ?? 1280),
+            "--json",
+        ];
+        if (options.includeBytes) {
+            args.push("--include-bytes");
+        }
+        return this.execJson(args);
     }
     async uiStep(options) {
         return this.step("ui.step", {
@@ -193,7 +232,7 @@ export class Cua {
         return this.step("clipboard.read", { allow_sensitive: allowSensitive }, "clipboard");
     }
     async clipboardWrite(text, session) {
-        return this.rpc("clipboard.write", { schema_version: "cua.v1", text }, session ? { sessionId: sessionIdOf(session) } : {});
+        return this.rpc("clipboard.write", { schema_version: "cua.v1", text }, { sessionId: sessionIdOf(session) });
     }
     async pause(session) {
         return this.rpc("control.pause", {}, { sessionId: sessionIdOf(session) });
@@ -204,7 +243,7 @@ export class Cua {
     async killSwitch(session) {
         return this.rpc("control.kill_switch", {}, { sessionId: sessionIdOf(session) });
     }
-    async dispatch(action, options = {}) {
+    async dispatch(action, options) {
         return this.rpc("input.dispatch", action, rpcSession(options));
     }
     async dispatchFrame(options) {
@@ -235,17 +274,40 @@ export class Cua {
         })}\n`);
         return session;
     }
-    async openApp(app, options = {}) {
+    async openApp(app, options) {
         return this.dispatch({ schema_version: "cua.v1", action: "open_app", app }, options);
     }
-    async shell(command, options = {}) {
+    async shell(command, options) {
         return this.dispatch({ schema_version: "cua.v1", action: "shell", command }, options);
     }
-    async aegis(args, options = {}) {
+    async aegis(args, options) {
         return this.dispatch({ schema_version: "cua.v1", action: "aegis", args }, options);
     }
-    async ctx(args, options = {}) {
+    async ctx(args, options) {
         return this.dispatch({ schema_version: "cua.v1", action: "ctx", args }, options);
+    }
+    async traceVerify(dir) {
+        return this.execJson(["--profile", this.profile, "trace", "verify", dir, "--json"]);
+    }
+    async traceReplay(dir, dryRun = false) {
+        const args = ["--profile", this.profile, "trace", "replay", dir, "--json"];
+        if (dryRun) {
+            args.push("--dry-run");
+        }
+        return this.execJson(args);
+    }
+    async modelEval(options = {}) {
+        const args = ["model", "eval", "--json"];
+        if (options.live) {
+            args.push("--live");
+        }
+        if (options.maxCalls !== undefined) {
+            args.push("--max-calls", String(options.maxCalls));
+        }
+        if (options.maxOutputTokens !== undefined) {
+            args.push("--max-output-tokens", String(options.maxOutputTokens));
+        }
+        return this.execJson(args);
     }
     async step(action, fields, saveAs) {
         const report = await this.runSteps([{ id: saveAs, do: action, save_as: saveAs, ...fields }]);
@@ -262,6 +324,42 @@ export class Cua {
         catch (error) {
             throw new Error(`cua returned non-JSON output: ${error.message}\n${result.stdout}`);
         }
+    }
+    async unixRpc(method, params, sessionId) {
+        const token = await this.loadToken();
+        const request = {
+            id: randomUUID(),
+            token,
+            session_id: sessionId,
+            method,
+            params,
+        };
+        const line = await unixRequest(profileSocketPath(this.profile, this.env), JSON.stringify(compact(request)));
+        const response = JSON.parse(line);
+        if (response && typeof response === "object" && !Array.isArray(response)) {
+            if (response.ok === true) {
+                return response.result ?? null;
+            }
+            throw new CuaProtocolError(method, response.error ?? null);
+        }
+        throw new Error(`cua unix response for ${method} was not an object`);
+    }
+    async loadToken() {
+        const override = this.env.CUA_HTTP_TOKEN?.trim();
+        if (override) {
+            return override;
+        }
+        return (await readFile(profileTokenPath(this.profile, this.env), "utf8")).trim();
+    }
+}
+export class CuaProtocolError extends Error {
+    method;
+    error;
+    constructor(method, error) {
+        super(`cua ${method} failed: ${JSON.stringify(error)}`);
+        this.name = "CuaProtocolError";
+        this.method = method;
+        this.error = error;
     }
 }
 export class CuaVisualSession {
@@ -405,8 +503,9 @@ function connectUnix(path) {
     });
 }
 async function profileToken(profile, env) {
-    const token = env.CUA_HTTP_TOKEN;
-    if (token && token.trim().length > 0) {
+    const token = env.CUA_HTTP_TOKEN?.trim();
+    const override = env.CUA_DEV_HTTP_TOKEN_OVERRIDE;
+    if (token && (override === "1" || override?.toLowerCase() === "true")) {
         return token;
     }
     const path = profileTokenPath(profile, env);
@@ -458,7 +557,36 @@ function sessionIdOf(session) {
     return typeof session === "string" ? session : session.sessionId;
 }
 function rpcSession(options) {
-    return options.session ? { sessionId: sessionIdOf(options.session) } : {};
+    return { sessionId: sessionIdOf(options.session) };
+}
+function unixRequest(path, payload) {
+    return new Promise((resolve, reject) => {
+        const socket = createConnection(path);
+        let buffer = "";
+        socket.setEncoding("utf8");
+        socket.on("connect", () => socket.write(`${payload}\n`));
+        socket.on("data", (chunk) => {
+            buffer += chunk;
+            const newline = buffer.indexOf("\n");
+            if (newline >= 0) {
+                const line = buffer.slice(0, newline);
+                socket.end();
+                resolve(line);
+            }
+        });
+        socket.on("error", reject);
+        socket.on("end", () => {
+            if (buffer.trim().length === 0) {
+                reject(new Error(`empty unix response from ${path}`));
+            }
+        });
+    });
+}
+function isMissingUnixSocketError(error) {
+    return Boolean(error &&
+        typeof error === "object" &&
+        "code" in error &&
+        (error.code === "ENOENT" || error.code === "ECONNREFUSED"));
 }
 function isObject(value) {
     return value !== null && typeof value === "object" && !Array.isArray(value);

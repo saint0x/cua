@@ -1,3 +1,3 @@
-from .client import Cua, OwnerSession, VisualSession
+from .client import Cua, CuaProtocolError, OwnerSession, VisualSession
 
-__all__ = ["Cua", "OwnerSession", "VisualSession"]
+__all__ = ["Cua", "CuaProtocolError", "OwnerSession", "VisualSession"]

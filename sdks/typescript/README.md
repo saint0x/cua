@@ -10,11 +10,11 @@ console.log(await cua.status());
 console.log(await cua.run("tests/fixtures/runebook-smoke.cua.toml"));
 ```
 
-The SDK intentionally shells to `cua run` and protocol commands instead of owning a second runtime.
+The SDK uses the local Unix socket for protocol RPC by default and falls back to `cua run` when the profile socket is unavailable.
 
 ## Thin Runebook Helpers
 
-Every helper either runs a compact Runebook step or sends a Runebook `rpc` step with an optional owner session id.
+Every helper either runs a compact Runebook step or sends a Runebook `rpc` step. Read helpers work without ownership; mutation helpers require an explicit owner session so callers do not create unleased actions by accident.
 
 ```ts
 const cua = await Cua.connect({ profile: "default" });
@@ -37,4 +37,6 @@ await cua.dispatchFrame({
 });
 ```
 
-Available helpers include `manifest`, `schemas`, `metrics`, `status`, `configStatus`, `sessionStatus`, `acquireOwner`, `cancelSession`, `profileStatus`, `createProfile`, `activateProfile`, `requestAccessibility`, `observe`, `screenshot`, `windowCapture`, `context`, `events`, `uiStep`, `uiIsland`, `uiReply`, `uiMode`, `clipboardRead`, `clipboardWrite`, `pause`, `resume`, `killSwitch`, `dispatch`, `dispatchFrame`, `openApp`, `shell`, `aegis`, and `ctx`.
+Use `heartbeatOwner(owner, ttlMs)` to renew a lease while a long-running controller is active.
+
+Available helpers include `manifest`, `schemas`, `metrics`, `status`, `configStatus`, `sessionStatus`, `acquireOwner`, `heartbeatOwner`, `cancelSession`, `profileStatus`, `createProfile`, `activateProfile`, `requestAccessibility`, `attest`, `observe`, `screenshot`, `windowCapture`, `context`, `events`, `visualFrames`, `uiStep`, `uiIsland`, `uiReply`, `uiMode`, `clipboardRead`, `clipboardWrite`, `pause`, `resume`, `killSwitch`, `dispatch`, `dispatchFrame`, `openApp`, `shell`, `aegis`, `ctx`, `traceVerify`, `traceReplay`, and `modelEval`.

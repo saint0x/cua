@@ -12,6 +12,7 @@ export interface CuaOptions {
   profile?: string;
   bin?: string;
   env?: CuaEnv;
+  transport?: "unix" | "cli";
 }
 
 export interface RunebookOptions {
@@ -54,6 +55,7 @@ export interface VisualSessionOptions {
   includeBytes?: boolean;
   durationMs?: number;
   queueDepth?: number;
+  frames?: number;
   session?: OwnerSession | string;
 }
 
@@ -93,7 +95,7 @@ export interface ProfileCreateOptions {
 }
 
 export interface DispatchOptions {
-  session?: OwnerSession | string;
+  session: OwnerSession | string;
 }
 
 export interface DispatchFrameOptions extends DispatchOptions {
@@ -101,15 +103,23 @@ export interface DispatchFrameOptions extends DispatchOptions {
   action: Json;
 }
 
+export interface ModelEvalOptions {
+  live?: boolean;
+  maxCalls?: number;
+  maxOutputTokens?: number;
+}
+
 export class Cua {
   private readonly profile: string;
   private readonly bin: string;
   private readonly env: CuaEnv;
+  private readonly transport: "unix" | "cli";
 
   private constructor(options: CuaOptions = {}) {
     this.profile = options.profile ?? "default";
     this.bin = options.bin ?? "cua";
     this.env = { ...process.env, ...options.env };
+    this.transport = options.transport ?? "unix";
   }
 
   static async connect(options: CuaOptions = {}): Promise<Cua> {
@@ -147,6 +157,15 @@ export class Cua {
   }
 
   async rpc(method: string, params: Json = {}, options: RpcOptions = {}): Promise<Json> {
+    if (this.transport === "unix") {
+      try {
+        return await this.unixRpc(method, params, options.sessionId);
+      } catch (error) {
+        if (!isMissingUnixSocketError(error)) {
+          throw error;
+        }
+      }
+    }
     const runebook = [
       'schema = "cua.runebook.v1"',
       "",
@@ -164,7 +183,7 @@ export class Cua {
       .filter(Boolean)
       .join("\n");
     const report = await this.runInline(runebook);
-    return report;
+    return readResult(report, "rpc");
   }
 
   async manifest(): Promise<Json> {
@@ -185,6 +204,18 @@ export class Cua {
 
   async configStatus(): Promise<Json> {
     return this.execJson(["--profile", this.profile, "config", "status", "--json"]);
+  }
+
+  async attest(audience: string, nonce: string, session?: OwnerSession | string): Promise<Json> {
+    return this.rpc(
+      "attestation.sign",
+      {
+        schema_version: "cua.v1",
+        audience,
+        nonce,
+      },
+      session ? { sessionId: sessionIdOf(session) } : {},
+    );
   }
 
   async acquireOwner(clientName = "typescript sdk", ttlMs?: number): Promise<OwnerSession> {
@@ -218,6 +249,15 @@ export class Cua {
     );
   }
 
+  async heartbeatOwner(session: OwnerSession | string, ttlMs?: number): Promise<OwnerSession> {
+    const raw = await this.rpc("session.heartbeat", compact({
+      schema_version: "cua.v1",
+      session_id: sessionIdOf(session),
+      ttl_ms: ttlMs,
+    }));
+    return { sessionId: readSessionId(raw), raw };
+  }
+
   async sessionStatus(): Promise<Json> {
     return this.rpc("session.status");
   }
@@ -226,36 +266,21 @@ export class Cua {
     return this.step("profile.status", {}, "profile");
   }
 
-  async createProfile(options: ProfileCreateOptions, session?: OwnerSession | string): Promise<Json> {
-    if (session) {
-      return this.rpc(
-        "profile.create",
-        compact({
-          name: options.name,
-          mode: options.mode ?? "supervised",
-          duration_ms: options.durationMs,
-          capabilities: options.capabilities,
-        }),
-        { sessionId: sessionIdOf(session) },
-      );
-    }
-    return this.step(
+  async createProfile(options: ProfileCreateOptions, session: OwnerSession | string): Promise<Json> {
+    return this.rpc(
       "profile.create",
-      {
+      compact({
         name: options.name,
         mode: options.mode ?? "supervised",
         duration_ms: options.durationMs,
         capabilities: options.capabilities,
-      },
-      "profile",
+      }),
+      { sessionId: sessionIdOf(session) },
     );
   }
 
-  async activateProfile(session?: OwnerSession | string): Promise<Json> {
-    if (session) {
-      return this.rpc("profile.activate", {}, { sessionId: sessionIdOf(session) });
-    }
-    return this.step("profile.activate", {}, "profile");
+  async activateProfile(session: OwnerSession | string): Promise<Json> {
+    return this.rpc("profile.activate", {}, { sessionId: sessionIdOf(session) });
   }
 
   async requestAccessibility(): Promise<Json> {
@@ -306,14 +331,34 @@ export class Cua {
   }
 
   async events(options: EventsOptions = {}): Promise<Json> {
-    return this.step(
-      "events",
-      {
-        after: options.after,
-        timeout_ms: options.timeoutMs,
-      },
-      "events",
-    );
+    if (options.timeoutMs !== undefined && options.after !== undefined) {
+      return this.rpc("events.wait", { after_sequence: options.after, timeout_ms: options.timeoutMs });
+    }
+    if (options.after !== undefined) {
+      return this.rpc("events.after", { after_sequence: options.after });
+    }
+    return this.rpc("events.snapshot");
+  }
+
+  async visualFrames(options: VisualSessionOptions = {}): Promise<Json> {
+    const frames = options.frames ?? 3;
+    const args = [
+      "--profile",
+      this.profile,
+      "stream",
+      "--unix",
+      "--frames",
+      String(frames),
+      "--fps",
+      String(options.fps ?? 10),
+      "--max-width",
+      String(options.maxWidth ?? 1280),
+      "--json",
+    ];
+    if (options.includeBytes) {
+      args.push("--include-bytes");
+    }
+    return this.execJson(args);
   }
 
   async uiStep(options: UiStepOptions): Promise<Json> {
@@ -348,11 +393,11 @@ export class Cua {
     return this.step("clipboard.read", { allow_sensitive: allowSensitive }, "clipboard");
   }
 
-  async clipboardWrite(text: string, session?: OwnerSession | string): Promise<Json> {
+  async clipboardWrite(text: string, session: OwnerSession | string): Promise<Json> {
     return this.rpc(
       "clipboard.write",
       { schema_version: "cua.v1", text },
-      session ? { sessionId: sessionIdOf(session) } : {},
+      { sessionId: sessionIdOf(session) },
     );
   }
 
@@ -368,7 +413,7 @@ export class Cua {
     return this.rpc("control.kill_switch", {}, { sessionId: sessionIdOf(session) });
   }
 
-  async dispatch(action: Json, options: DispatchOptions = {}): Promise<Json> {
+  async dispatch(action: Json, options: DispatchOptions): Promise<Json> {
     return this.rpc("input.dispatch", action, rpcSession(options));
   }
 
@@ -408,20 +453,46 @@ export class Cua {
     return session;
   }
 
-  async openApp(app: string, options: DispatchOptions = {}): Promise<Json> {
+  async openApp(app: string, options: DispatchOptions): Promise<Json> {
     return this.dispatch({ schema_version: "cua.v1", action: "open_app", app }, options);
   }
 
-  async shell(command: string, options: DispatchOptions = {}): Promise<Json> {
+  async shell(command: string, options: DispatchOptions): Promise<Json> {
     return this.dispatch({ schema_version: "cua.v1", action: "shell", command }, options);
   }
 
-  async aegis(args: string[], options: DispatchOptions = {}): Promise<Json> {
+  async aegis(args: string[], options: DispatchOptions): Promise<Json> {
     return this.dispatch({ schema_version: "cua.v1", action: "aegis", args }, options);
   }
 
-  async ctx(args: string[], options: DispatchOptions = {}): Promise<Json> {
+  async ctx(args: string[], options: DispatchOptions): Promise<Json> {
     return this.dispatch({ schema_version: "cua.v1", action: "ctx", args }, options);
+  }
+
+  async traceVerify(dir: string): Promise<Json> {
+    return this.execJson(["--profile", this.profile, "trace", "verify", dir, "--json"]);
+  }
+
+  async traceReplay(dir: string, dryRun = false): Promise<Json> {
+    const args = ["--profile", this.profile, "trace", "replay", dir, "--json"];
+    if (dryRun) {
+      args.push("--dry-run");
+    }
+    return this.execJson(args);
+  }
+
+  async modelEval(options: ModelEvalOptions = {}): Promise<Json> {
+    const args = ["model", "eval", "--json"];
+    if (options.live) {
+      args.push("--live");
+    }
+    if (options.maxCalls !== undefined) {
+      args.push("--max-calls", String(options.maxCalls));
+    }
+    if (options.maxOutputTokens !== undefined) {
+      args.push("--max-output-tokens", String(options.maxOutputTokens));
+    }
+    return this.execJson(args);
   }
 
   private async step(action: string, fields: Record<string, Json | undefined>, saveAs: string): Promise<Json> {
@@ -439,6 +510,46 @@ export class Cua {
     } catch (error) {
       throw new Error(`cua returned non-JSON output: ${(error as Error).message}\n${result.stdout}`);
     }
+  }
+
+  private async unixRpc(method: string, params: Json, sessionId?: string): Promise<Json> {
+    const token = await this.loadToken();
+    const request = {
+      id: randomUUID(),
+      token,
+      session_id: sessionId,
+      method,
+      params,
+    };
+    const line = await unixRequest(profileSocketPath(this.profile, this.env), JSON.stringify(compact(request)));
+    const response = JSON.parse(line) as Json;
+    if (response && typeof response === "object" && !Array.isArray(response)) {
+      if (response.ok === true) {
+        return response.result ?? null;
+      }
+      throw new CuaProtocolError(method, response.error ?? null);
+    }
+    throw new Error(`cua unix response for ${method} was not an object`);
+  }
+
+  private async loadToken(): Promise<string> {
+    const override = this.env.CUA_HTTP_TOKEN?.trim();
+    if (override) {
+      return override;
+    }
+    return (await readFile(profileTokenPath(this.profile, this.env), "utf8")).trim();
+  }
+}
+
+export class CuaProtocolError extends Error {
+  readonly method: string;
+  readonly error: Json;
+
+  constructor(method: string, error: Json) {
+    super(`cua ${method} failed: ${JSON.stringify(error)}`);
+    this.name = "CuaProtocolError";
+    this.method = method;
+    this.error = error;
   }
 }
 
@@ -602,8 +713,9 @@ function connectUnix(path: string): Promise<Socket> {
 }
 
 async function profileToken(profile: string, env: CuaEnv): Promise<string> {
-  const token = env.CUA_HTTP_TOKEN;
-  if (token && token.trim().length > 0) {
+  const token = env.CUA_HTTP_TOKEN?.trim();
+  const override = env.CUA_DEV_HTTP_TOKEN_OVERRIDE;
+  if (token && (override === "1" || override?.toLowerCase() === "true")) {
     return token;
   }
   const path = profileTokenPath(profile, env);
@@ -661,7 +773,40 @@ function sessionIdOf(session: OwnerSession | string): string {
 }
 
 function rpcSession(options: DispatchOptions): RpcOptions {
-  return options.session ? { sessionId: sessionIdOf(options.session) } : {};
+  return { sessionId: sessionIdOf(options.session) };
+}
+
+function unixRequest(path: string, payload: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const socket = createConnection(path);
+    let buffer = "";
+    socket.setEncoding("utf8");
+    socket.on("connect", () => socket.write(`${payload}\n`));
+    socket.on("data", (chunk: string) => {
+      buffer += chunk;
+      const newline = buffer.indexOf("\n");
+      if (newline >= 0) {
+        const line = buffer.slice(0, newline);
+        socket.end();
+        resolve(line);
+      }
+    });
+    socket.on("error", reject);
+    socket.on("end", () => {
+      if (buffer.trim().length === 0) {
+        reject(new Error(`empty unix response from ${path}`));
+      }
+    });
+  });
+}
+
+function isMissingUnixSocketError(error: unknown): boolean {
+  return Boolean(
+    error &&
+      typeof error === "object" &&
+      "code" in error &&
+      ((error as { code?: string }).code === "ENOENT" || (error as { code?: string }).code === "ECONNREFUSED"),
+  );
 }
 
 function isObject(value: Json): value is { [key: string]: Json } {

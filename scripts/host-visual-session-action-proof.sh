@@ -6,6 +6,26 @@ export CUA_DEV_HTTP_TOKEN_OVERRIDE=1
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+debug_bin() {
+  local name="$1"
+  local target_root="${CARGO_TARGET_DIR:-target}"
+  if [[ -x "$target_root/debug/$name" ]]; then
+    printf '%s\n' "$target_root/debug/$name"
+  elif [[ -x "target/debug/$name" ]]; then
+    printf '%s\n' "target/debug/$name"
+  else
+    local root found
+    for root in "$target_root" target; do
+      [[ -d "$root" ]] || continue
+      found="$(find "$root" -path "*/debug/$name" -type f 2>/dev/null | head -n 1 || true)"
+      if [[ -n "$found" ]]; then
+        printf '%s\n' "$found"
+        return 0
+      fi
+    done
+  fi
+}
+
 RUN_ID="$(date +%s)"
 PROFILE="${CUA_VISUAL_ACTION_PROOF_PROFILE:-host-visual-action-proof-$RUN_ID}"
 ADDR="${CUA_VISUAL_ACTION_PROOF_ADDR:-127.0.0.1:$((23000 + RUN_ID % 1000))}"
@@ -17,10 +37,8 @@ cargo build -p cua >/dev/null
 
 if [[ -n "${CUA_BIN:-}" ]]; then
   CUA_BIN_PATH="$CUA_BIN"
-elif [[ -x target/debug/cua ]]; then
-  CUA_BIN_PATH="target/debug/cua"
 else
-  CUA_BIN_PATH="$(find target -path '*/debug/cua' -type f 2>/dev/null | head -n 1)"
+  CUA_BIN_PATH="$(debug_bin cua)"
 fi
 
 if [[ -z "$CUA_BIN_PATH" || ! -x "$CUA_BIN_PATH" ]]; then
@@ -66,20 +84,18 @@ class LineReader:
         line, self.buffer = self.buffer.split(b"\n", 1)
         return json.loads(line.decode("utf-8"))
 
-def send_request(stream, method, params=None):
+def send_request(stream, method, params=None, session_id=None):
     request_id = str(uuid.uuid4())
+    request = {
+        "id": request_id,
+        "token": token,
+        "method": method,
+        "params": params or {},
+    }
+    if session_id is not None:
+        request["session_id"] = session_id
     stream.sendall(
-        (
-            json.dumps(
-                {
-                    "id": request_id,
-                    "token": token,
-                    "method": method,
-                    "params": params or {},
-                }
-            )
-            + "\n"
-        ).encode("utf-8")
+        (json.dumps(request) + "\n").encode("utf-8")
     )
     return request_id
 
@@ -160,6 +176,21 @@ try:
     stream.settimeout(float(os.environ.get("CUA_VISUAL_ACTION_PROOF_TIMEOUT_SECS", "45")))
     stream.connect(str(socket_path))
     reader = LineReader(stream)
+    owner_id = "visual-action-owner-proof"
+    owner_request_id = send_request(
+        stream,
+        "session.acquire",
+        {
+            "schema_version": "cua.v1",
+            "session_id": owner_id,
+            "client_name": "visual action proof owner",
+            "role": "owner",
+            "ttl_ms": 60000,
+        },
+    )
+    owner = wait_for_response(reader, owner_request_id, [])
+    if owner["owner_session_id"] != owner_id:
+        raise RuntimeError(owner)
     started_at = time.perf_counter()
     send_request(
         stream,
@@ -194,6 +225,7 @@ try:
                 "duration_ms": 0,
             },
         },
+        session_id=owner_id,
     )
     action = wait_for_response(reader, action_id, frames_seen_during_action)
     observe_id = send_request(stream, "observe.desktop", {})
@@ -229,6 +261,7 @@ try:
         "profile": profile,
         "started_type": started.get("type"),
         "closed_type": closed.get("type"),
+        "owner_session_id": owner["owner_session_id"],
         "first_frame_ms": frame_after_start_ms,
         "first_frame": {
             "frame_id": source_frame["frame_id"],

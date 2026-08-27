@@ -26,9 +26,9 @@ use cua_core::{
     InputAction, InputRequest, InputResult, InputRoute, Manifest, MetricBucket, MetricHistogram,
     MetricsSnapshot, PermissionReport, PermissionState, ProfilePolicy, RuntimeControlState,
     RuntimeInventory, RuntimeMode, RuntimeSessionInfo, RuntimeSessionRole, SafetyState,
-    SessionCancelRequest, SessionLeaseRequest, SessionLeaseResult, UiIslandRequest, UiIslandResult,
-    UiMode, UiModeRequest, UiModeResult, UiReplyRequest, UiReplyResult, UiStepRequest,
-    UiStepResult, VisualSessionRequest, WindowInfo, SCHEMA_VERSION,
+    SessionCancelRequest, SessionHeartbeatRequest, SessionLeaseRequest, SessionLeaseResult,
+    UiIslandRequest, UiIslandResult, UiMode, UiModeRequest, UiModeResult, UiReplyRequest,
+    UiReplyResult, UiStepRequest, UiStepResult, VisualSessionRequest, WindowInfo, SCHEMA_VERSION,
 };
 use cua_input::InputBackend;
 use cua_model::{run_eval_report, EvalConfig, EvalReport};
@@ -422,6 +422,40 @@ impl SessionRegistry {
         Ok(())
     }
 
+    fn heartbeat(&self, request: SessionHeartbeatRequest) -> Result<SessionLeaseResult, ApiError> {
+        if request.schema_version != SCHEMA_VERSION {
+            return Err(ApiError::bad_request(
+                "schema_version",
+                format!("expected {SCHEMA_VERSION}"),
+            ));
+        }
+        let session_id = normalize_session_field(request.session_id, 96, "session_id")?;
+        let now = now_wall_ms();
+        let expires_wall_ms = request
+            .ttl_ms
+            .map(|ttl_ms| now + ttl_ms.clamp(1_000, 86_400_000));
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| ApiError::internal(anyhow::anyhow!("session registry poisoned")))?;
+        prune_expired_sessions(&mut inner, now);
+        let owner_session_id = inner.owner_session_id.clone();
+        let Some(session) = inner.sessions.get_mut(&session_id) else {
+            return Err(ApiError::forbidden(
+                "session_lease",
+                "session does not hold an active lease",
+            ));
+        };
+        session.last_seen_wall_ms = now;
+        session.expires_wall_ms = expires_wall_ms;
+        Ok(SessionLeaseResult {
+            schema_version: SCHEMA_VERSION.to_string(),
+            accepted: true,
+            session: session.clone(),
+            owner_session_id,
+        })
+    }
+
     fn remove(&self, session_id: &str) {
         let Ok(mut inner) = self.inner.lock() else {
             return;
@@ -439,7 +473,10 @@ impl SessionRegistry {
             .map_err(|_| ApiError::internal(anyhow::anyhow!("session registry poisoned")))?;
         prune_expired_sessions(&mut inner, now_wall_ms());
         let Some(owner) = inner.owner_session_id.clone() else {
-            return Ok(());
+            return Err(ApiError::forbidden(
+                "session_owner",
+                "write requires an active owner session",
+            ));
         };
         let Some(session_id) = session_id else {
             return Err(ApiError::forbidden(
@@ -1289,6 +1326,7 @@ pub fn router(state: DaemonState) -> Router {
             post(request_accessibility),
         )
         .route("/session/acquire", post(session_acquire))
+        .route("/session/heartbeat", post(session_heartbeat))
         .route("/session/cancel", post(session_cancel))
         .route("/session/status", get(session_status))
         .route("/ui/step", post(ui_step))
@@ -1811,6 +1849,20 @@ async fn handle_unix_request(state: &DaemonState, request: UnixRequest) -> serde
                 }
             }
         }
+        "session.heartbeat" => {
+            let params = request.params.unwrap_or_else(|| serde_json::json!({}));
+            match serde_json::from_value::<SessionHeartbeatRequest>(params) {
+                Ok(request) => state.sessions.heartbeat(request).map(serde_json::to_value),
+                Err(error) => {
+                    return unix_error(
+                        id,
+                        "bad_request",
+                        error.to_string(),
+                        Some(StatusCode::BAD_REQUEST),
+                    )
+                }
+            }
+        }
         "session.status" => Ok(serde_json::to_value(state.runtime_inventory().await)),
         "capture.screenshot" => {
             let params = request.params.unwrap_or_else(|| serde_json::json!({}));
@@ -2228,9 +2280,11 @@ fn manifest_payload() -> Manifest {
             "GET /events/live?after=<sequence>&timeout_ms=<ms>".to_string(),
             "POST /permissions/accessibility/request".to_string(),
             "POST /session/acquire".to_string(),
+            "POST /session/heartbeat".to_string(),
             "POST /session/cancel".to_string(),
             "GET /session/status".to_string(),
             "UNIX session.acquire".to_string(),
+            "UNIX session.heartbeat".to_string(),
             "UNIX session.cancel".to_string(),
             "UNIX session.status".to_string(),
             "UNIX schemas".to_string(),
@@ -2261,6 +2315,7 @@ fn manifest_payload() -> Manifest {
             "cua events --json [--after <sequence>]".to_string(),
             "cua permissions request-accessibility --json".to_string(),
             "cua session acquire <session-id> --role owner|observer --json".to_string(),
+            "cua session heartbeat <session-id> --json".to_string(),
             "cua session cancel <session-id> --json".to_string(),
             "cua session status --json".to_string(),
             "cua stream --unix --json".to_string(),
@@ -2274,10 +2329,10 @@ fn manifest_payload() -> Manifest {
             "cua observe --json".to_string(),
             "cua profile status --json".to_string(),
             "cua clipboard read --allow-sensitive --json".to_string(),
-            "cua clipboard write <text> --json".to_string(),
-            "cua pause --json".to_string(),
-            "cua resume --json".to_string(),
-            "cua kill-switch --json".to_string(),
+            "cua clipboard write <text> --session-id <owner-session-id> --json".to_string(),
+            "cua pause --session-id <owner-session-id> --json".to_string(),
+            "cua resume --session-id <owner-session-id> --json".to_string(),
+            "cua kill-switch --session-id <owner-session-id> --json".to_string(),
             "cua model eval".to_string(),
         ],
     }
@@ -2904,6 +2959,13 @@ async fn session_acquire(
     Ok(Json(state.sessions.acquire(request)?))
 }
 
+async fn session_heartbeat(
+    State(state): State<DaemonState>,
+    Json(request): Json<SessionHeartbeatRequest>,
+) -> Result<Json<SessionLeaseResult>, ApiError> {
+    Ok(Json(state.sessions.heartbeat(request)?))
+}
+
 async fn session_cancel(
     State(state): State<DaemonState>,
     Json(request): Json<SessionCancelRequest>,
@@ -3275,8 +3337,8 @@ struct ProfileCreateRequest {
 async fn profile_create(
     State(state): State<DaemonState>,
     Json(request): Json<ProfileCreateRequest>,
-) -> Json<RuntimeControlState> {
-    Json(profile_create_state(&state, request).await)
+) -> Result<Json<RuntimeControlState>, ApiError> {
+    Ok(Json(profile_create_state(&state, request).await))
 }
 
 async fn profile_create_state(
@@ -3307,8 +3369,10 @@ async fn profile_create_state(
     result
 }
 
-async fn profile_activate(State(state): State<DaemonState>) -> Json<RuntimeControlState> {
-    Json(profile_activate_state(&state).await)
+async fn profile_activate(
+    State(state): State<DaemonState>,
+) -> Result<Json<RuntimeControlState>, ApiError> {
+    Ok(Json(profile_activate_state(&state).await))
 }
 
 async fn profile_activate_state(state: &DaemonState) -> RuntimeControlState {
@@ -3335,8 +3399,10 @@ async fn profile_status(State(state): State<DaemonState>) -> Json<RuntimeControl
     Json(state.control.read().await.clone())
 }
 
-async fn control_pause(State(state): State<DaemonState>) -> Json<RuntimeControlState> {
-    Json(control_pause_state(&state).await)
+async fn control_pause(
+    State(state): State<DaemonState>,
+) -> Result<Json<RuntimeControlState>, ApiError> {
+    Ok(Json(control_pause_state(&state).await))
 }
 
 async fn control_pause_state(state: &DaemonState) -> RuntimeControlState {
@@ -3354,8 +3420,10 @@ async fn control_pause_state(state: &DaemonState) -> RuntimeControlState {
     result
 }
 
-async fn control_resume(State(state): State<DaemonState>) -> Json<RuntimeControlState> {
-    Json(control_resume_state(&state).await)
+async fn control_resume(
+    State(state): State<DaemonState>,
+) -> Result<Json<RuntimeControlState>, ApiError> {
+    Ok(Json(control_resume_state(&state).await))
 }
 
 async fn control_resume_state(state: &DaemonState) -> RuntimeControlState {
@@ -3373,8 +3441,10 @@ async fn control_resume_state(state: &DaemonState) -> RuntimeControlState {
     result
 }
 
-async fn control_kill_switch(State(state): State<DaemonState>) -> Json<RuntimeControlState> {
-    Json(control_kill_switch_state(&state).await)
+async fn control_kill_switch(
+    State(state): State<DaemonState>,
+) -> Result<Json<RuntimeControlState>, ApiError> {
+    Ok(Json(control_kill_switch_state(&state).await))
 }
 
 async fn control_kill_switch_state(state: &DaemonState) -> RuntimeControlState {
@@ -3487,15 +3557,17 @@ async fn append_action_turn(
 async fn input_action(
     State(state): State<DaemonState>,
     Json(action): Json<InputAction>,
-) -> Json<cua_core::InputResult> {
-    Json(dispatch_input_action(&state, action).await)
+) -> Result<Json<cua_core::InputResult>, ApiError> {
+    Ok(Json(dispatch_input_action(&state, action).await))
 }
 
 async fn input_frame_action(
     State(state): State<DaemonState>,
     Json(request): Json<FrameActionRequest>,
-) -> Json<cua_core::InputResult> {
-    Json(dispatch_input_action(&state, request.into_display_action()).await)
+) -> Result<Json<cua_core::InputResult>, ApiError> {
+    Ok(Json(
+        dispatch_input_action(&state, request.into_display_action()).await,
+    ))
 }
 
 async fn dispatch_input_action(state: &DaemonState, action: InputAction) -> cua_core::InputResult {
@@ -4011,8 +4083,8 @@ async fn clipboard_read_state(
 async fn clipboard_write(
     State(state): State<DaemonState>,
     Json(request): Json<ClipboardWriteRequest>,
-) -> Json<ClipboardResult> {
-    Json(clipboard_write_state(&state, request).await)
+) -> Result<Json<ClipboardResult>, ApiError> {
+    Ok(Json(clipboard_write_state(&state, request).await))
 }
 
 async fn clipboard_write_state(
@@ -4689,12 +4761,12 @@ mod tests {
     #[tokio::test]
     async fn clipboard_write_requires_profile_grant() {
         let state = DaemonState::synthetic("test", "token");
-        let Json(result) = clipboard_write(
-            State(state),
-            Json(ClipboardWriteRequest {
+        let result = clipboard_write_state(
+            &state,
+            ClipboardWriteRequest {
                 schema_version: SCHEMA_VERSION.to_string(),
                 text: "denied".to_string(),
-            }),
+            },
         )
         .await;
 
@@ -4709,12 +4781,12 @@ mod tests {
     async fn refused_clipboard_write_does_not_mutate_clipboard() {
         let state = DaemonState::synthetic("test", "token");
         *state.clipboard.write().await = Some("original".to_string());
-        let Json(result) = clipboard_write(
-            State(state.clone()),
-            Json(ClipboardWriteRequest {
+        let result = clipboard_write_state(
+            &state,
+            ClipboardWriteRequest {
                 schema_version: SCHEMA_VERSION.to_string(),
                 text: "overwrite".to_string(),
-            }),
+            },
         )
         .await;
 
@@ -4726,11 +4798,11 @@ mod tests {
     async fn refused_input_clipboard_action_does_not_mutate_clipboard() {
         let state = DaemonState::synthetic("test", "token");
         *state.clipboard.write().await = Some("original".to_string());
-        let Json(result) = input_action(
-            State(state.clone()),
-            Json(InputAction::ClipboardWrite {
+        let result = dispatch_input_action(
+            &state,
+            InputAction::ClipboardWrite {
                 text: "overwrite".to_string(),
-            }),
+            },
         )
         .await;
 
@@ -4760,12 +4832,12 @@ mod tests {
     #[tokio::test]
     async fn clipboard_write_and_sensitive_read_round_trip() {
         let state = clipboard_enabled_state().await;
-        let Json(write_result) = clipboard_write(
-            State(state.clone()),
-            Json(ClipboardWriteRequest {
+        let write_result = clipboard_write_state(
+            &state,
+            ClipboardWriteRequest {
                 schema_version: SCHEMA_VERSION.to_string(),
                 text: "hello from test".to_string(),
-            }),
+            },
         )
         .await;
         let Json(read_result) = clipboard_read(
@@ -5090,8 +5162,29 @@ mod tests {
         assert!(cursor.get("y").is_some());
         assert!(cursor.get("visible").is_some());
 
+        let owner = unix_result(
+            handle_unix_request(
+                &state,
+                unix_request(
+                    "session.acquire",
+                    serde_json::json!({
+                        "schema_version": SCHEMA_VERSION,
+                        "session_id": "methods-owner",
+                        "client_name": "methods test",
+                        "role": "owner"
+                    }),
+                ),
+            )
+            .await,
+        );
+        assert_eq!(owner["owner_session_id"], "methods-owner");
+
         let pause = unix_result(
-            handle_unix_request(&state, unix_request("control.pause", serde_json::json!({}))).await,
+            handle_unix_request(
+                &state,
+                unix_request_with_session("control.pause", serde_json::json!({}), "methods-owner"),
+            )
+            .await,
         );
         assert_eq!(pause["safety_state"], "paused");
 
@@ -5138,13 +5231,14 @@ mod tests {
         let profile = unix_result(
             handle_unix_request(
                 &state,
-                unix_request(
+                unix_request_with_session(
                     "profile.create",
                     serde_json::json!({
                         "name": "voice",
                         "mode": "supervised",
                         "duration_ms": 60000
                     }),
+                    "methods-owner",
                 ),
             )
             .await,
@@ -5277,32 +5371,157 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn http_write_policy_requires_owner_session() {
-        let state = DaemonState::synthetic("http-write-policy", "token");
+    async fn unix_writes_require_owner_before_any_owner_exists() {
+        let state = DaemonState::synthetic("unix-no-owner", "token");
 
-        let without_owner = state.sessions.authorize_required_owner(None);
-        assert!(without_owner.is_err());
+        let anonymous =
+            handle_unix_request(&state, unix_request("control.pause", serde_json::json!({}))).await;
+        assert_eq!(anonymous["ok"], false);
+        assert_eq!(anonymous["error"]["code"], "session_owner");
+        assert_eq!(
+            anonymous["error"]["message"],
+            "write requires an active owner session"
+        );
+    }
+
+    #[tokio::test]
+    async fn unix_owner_heartbeat_renews_lease() {
+        let state = DaemonState::synthetic("unix-heartbeat", "token");
+
+        let owner = unix_result(
+            handle_unix_request(
+                &state,
+                unix_request(
+                    "session.acquire",
+                    serde_json::json!({
+                        "schema_version": SCHEMA_VERSION,
+                        "session_id": "owner-renew",
+                        "client_name": "owner heartbeat test",
+                        "role": "owner",
+                        "ttl_ms": 1000
+                    }),
+                ),
+            )
+            .await,
+        );
+        let first_expiry = owner["session"]["expires_wall_ms"].as_i64().unwrap();
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let renewed = unix_result(
+            handle_unix_request(
+                &state,
+                unix_request(
+                    "session.heartbeat",
+                    serde_json::json!({
+                        "schema_version": SCHEMA_VERSION,
+                        "session_id": "owner-renew",
+                        "ttl_ms": 60000
+                    }),
+                ),
+            )
+            .await,
+        );
+        let renewed_expiry = renewed["session"]["expires_wall_ms"].as_i64().unwrap();
+        assert!(renewed_expiry > first_expiry);
+
+        let owner_write = unix_result(
+            handle_unix_request(
+                &state,
+                unix_request_with_session("control.pause", serde_json::json!({}), "owner-renew"),
+            )
+            .await,
+        );
+        assert_eq!(owner_write["safety_state"], "paused");
+    }
+
+    #[tokio::test]
+    async fn unix_expired_owner_lease_refuses_writes() {
+        let state = DaemonState::synthetic("unix-expired-owner", "token");
+
+        let owner = unix_result(
+            handle_unix_request(
+                &state,
+                unix_request(
+                    "session.acquire",
+                    serde_json::json!({
+                        "schema_version": SCHEMA_VERSION,
+                        "session_id": "owner-expired",
+                        "client_name": "owner expiry test",
+                        "role": "owner",
+                        "ttl_ms": 1000
+                    }),
+                ),
+            )
+            .await,
+        );
+        assert_eq!(owner["owner_session_id"], "owner-expired");
+
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        let expired_write = handle_unix_request(
+            &state,
+            unix_request_with_session("control.pause", serde_json::json!({}), "owner-expired"),
+        )
+        .await;
+        assert_eq!(expired_write["ok"], false);
+        assert_eq!(expired_write["error"]["code"], "session_owner");
+        assert_eq!(
+            expired_write["error"]["message"],
+            "write requires an active owner session"
+        );
+
+        let heartbeat = handle_unix_request(
+            &state,
+            unix_request(
+                "session.heartbeat",
+                serde_json::json!({
+                    "schema_version": SCHEMA_VERSION,
+                    "session_id": "owner-expired",
+                    "ttl_ms": 60000
+                }),
+            ),
+        )
+        .await;
+        assert_eq!(heartbeat["ok"], false);
+        assert_eq!(heartbeat["error"]["code"], "session_lease");
+    }
+
+    #[tokio::test]
+    async fn http_writes_require_owner_session_header() {
+        let state = DaemonState::synthetic("http-owner", "token");
+        let missing = state.sessions.authorize_required_owner(None).unwrap_err();
+        assert_eq!(missing.0.code, "session_owner_required");
 
         state
             .sessions
             .acquire(SessionLeaseRequest {
                 schema_version: SCHEMA_VERSION.to_string(),
-                session_id: "owner-http".to_string(),
-                client_name: "http policy test".to_string(),
+                session_id: "http-owner-1".to_string(),
+                client_name: "http owner test".to_string(),
                 role: RuntimeSessionRole::Owner,
                 ttl_ms: Some(60_000),
             })
             .unwrap();
+        state
+            .sessions
+            .acquire(SessionLeaseRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                session_id: "http-observer-1".to_string(),
+                client_name: "http observer test".to_string(),
+                role: RuntimeSessionRole::Observer,
+                ttl_ms: Some(60_000),
+            })
+            .unwrap();
 
-        assert!(state.sessions.authorize_required_owner(None).is_err());
-        assert!(state
+        let observer = state
             .sessions
-            .authorize_required_owner(Some("observer-http"))
-            .is_err());
-        assert!(state
+            .authorize_required_owner(Some("http-observer-1"))
+            .unwrap_err();
+        assert_eq!(observer.0.code, "session_owner");
+
+        state
             .sessions
-            .authorize_required_owner(Some("owner-http"))
-            .is_ok());
+            .authorize_required_owner(Some("http-owner-1"))
+            .unwrap();
     }
 
     #[tokio::test]
@@ -5497,18 +5716,18 @@ mod tests {
     #[tokio::test]
     async fn profile_and_control_changes_emit_events() {
         let state = DaemonState::synthetic("test", "token");
-        let Json(_) = profile_create(
-            State(state.clone()),
-            Json(ProfileCreateRequest {
+        let _ = profile_create_state(
+            &state,
+            ProfileCreateRequest {
                 name: "events".to_string(),
                 mode: RuntimeMode::Supervised,
                 capabilities: None,
                 duration_ms: Some(60_000),
-            }),
+            },
         )
         .await;
-        let Json(_) = profile_activate(State(state.clone())).await;
-        let Json(_) = control_pause(State(state.clone())).await;
+        let _ = profile_activate_state(&state).await;
+        let _ = control_pause_state(&state).await;
         tokio::time::sleep(Duration::from_millis(20)).await;
 
         let kinds: Vec<String> = state
@@ -5943,9 +6162,9 @@ mod tests {
 
     async fn clipboard_enabled_state() -> DaemonState {
         let state = DaemonState::synthetic("test", "token");
-        let Json(_) = profile_create(
-            State(state.clone()),
-            Json(ProfileCreateRequest {
+        let _ = profile_create_state(
+            &state,
+            ProfileCreateRequest {
                 name: "clip".to_string(),
                 mode: RuntimeMode::Supervised,
                 capabilities: Some(CapabilityManifest {
@@ -5953,10 +6172,10 @@ mod tests {
                     ..CapabilityManifest::default()
                 }),
                 duration_ms: Some(60_000),
-            }),
+            },
         )
         .await;
-        let Json(_) = profile_activate(State(state.clone())).await;
+        let _ = profile_activate_state(&state).await;
         state
     }
 

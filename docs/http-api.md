@@ -12,6 +12,8 @@ Security:
 - `CUA_HTTP_TOKEN` is honored only for tests or explicit development runs with `CUA_DEV_HTTP_TOKEN_OVERRIDE=1`.
 - The Unix socket uses the same profile token and newline-delimited JSON requests.
 - HTTP write routes require an active owner session. Acquire one with `POST /session/acquire`, then send `x-cua-session-id: <owner-session-id>` on profile mutation, control, input dispatch, and clipboard-write requests.
+- Observer sessions are valid for reads such as status, manifest, schemas, screenshot, context, observe, events, and visual sessions. Observer sessions cannot mutate runtime state.
+- Unix write callers pass `session_id` in the request envelope.
 - `GET /`, `GET /version`, and `GET /healthz` are unauthenticated readiness/discovery endpoints.
 
 Initial endpoints:
@@ -35,6 +37,10 @@ Initial endpoints:
 - `POST /ui/step`: publish an agent-programmed visible HUD step with `label`, optional `task`, `tool`, `source`, `step_index`, `step_total`, and `ttl_ms`
 - `POST /ui/reply`: publish an agent-programmed visible HUD reply flash with `text`, optional `source`, and `ttl_ms`
 - `POST /ui/mode`: switch a running HUD between `headful` and `headless` without changing the underlying computer-use control path
+- `POST /session/acquire`
+- `POST /session/heartbeat`
+- `POST /session/cancel`
+- `GET /session/status`
 - `POST /profile/create`
 - `POST /profile/activate`
 - `GET /profile/status`
@@ -56,14 +62,16 @@ Initial endpoints:
 
 Profile and safety:
 
-- `POST /profile/create` installs an inactive in-daemon policy with mode, expiry, and capability manifest.
-- `POST /profile/activate` activates the current profile unless the daemon generation has been killed.
-- `POST /control/pause` pauses automation.
-- `POST /control/resume` resumes automation unless kill-switch is active.
-- `POST /control/kill-switch` is terminal for the current daemon generation.
+- `POST /session/acquire` accepts `SessionLeaseRequest`. Use `role = "owner"` before calling any write endpoint.
+- `POST /session/heartbeat` accepts `SessionHeartbeatRequest` and renews an active owner or observer lease.
+- `POST /profile/create` installs an inactive in-daemon policy with mode, expiry, and capability manifest. Requires owner.
+- `POST /profile/activate` activates the current profile unless the daemon generation has been killed. Requires owner.
+- `POST /control/pause` pauses automation. Requires owner.
+- `POST /control/resume` resumes automation unless kill-switch is active. Requires owner.
+- `POST /control/kill-switch` is terminal for the current daemon generation. Requires owner.
 
 Clipboard:
 
-- `POST /clipboard/write` accepts `ClipboardWriteRequest` and writes to the daemon-owned clipboard store only when the active profile grants `capabilities.clipboard`.
+- `POST /clipboard/write` accepts `ClipboardWriteRequest` and writes to the daemon-owned clipboard store only when the active profile grants `capabilities.clipboard` and the caller supplies an owner lease.
 - `POST /clipboard/read` accepts `ClipboardReadRequest` and returns clipboard text only when the active profile grants clipboard and `allow_sensitive` is true.
 - Clipboard calls are refused while paused, killed, inactive, or ungranted, with refusal evidence in `ClipboardResult.result`.

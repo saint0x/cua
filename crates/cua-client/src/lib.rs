@@ -1,12 +1,11 @@
-use anyhow::{bail, Context};
 use cua_core::{
-    profile_socket_path, profile_token_path, ClipboardReadRequest, ClipboardResult,
+    profile_socket_path, profile_token_path, ApiErrorBody, ClipboardReadRequest, ClipboardResult,
     ClipboardWriteRequest, ConfigInventory, DesktopContextSnapshot, DesktopState,
     FrameActionRequest, FrameEncoding, FrameEnvelope, FramePayload, HealthReport, InputAction,
     Manifest, RuntimeControlState, RuntimeInventory, RuntimeSessionRole, SchemaBundle,
-    SessionCancelRequest, SessionLeaseRequest, SessionLeaseResult, UiIslandRequest, UiIslandResult,
-    UiIslandState, UiMode, UiModeRequest, UiReplyRequest, UiStepRequest, VisualSessionRequest,
-    SCHEMA_VERSION,
+    SessionCancelRequest, SessionHeartbeatRequest, SessionLeaseRequest, SessionLeaseResult,
+    UiIslandRequest, UiIslandResult, UiIslandState, UiMode, UiModeRequest, UiReplyRequest,
+    UiStepRequest, VisualSessionRequest, SCHEMA_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -17,6 +16,52 @@ use tokio::net::{
     UnixStream,
 };
 
+pub type Result<T> = std::result::Result<T, CuaClientError>;
+
+#[derive(Debug, thiserror::Error)]
+pub enum CuaClientError {
+    #[error("connect {path}: {source}")]
+    Connect {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("write unix request: {0}")]
+    Write(std::io::Error),
+    #[error("flush unix stream: {0}")]
+    Flush(std::io::Error),
+    #[error("read unix response: {0}")]
+    Read(std::io::Error),
+    #[error("empty unix response for {method}")]
+    EmptyResponse { method: String },
+    #[error("decode unix response envelope: {0}")]
+    DecodeEnvelope(serde_json::Error),
+    #[error("unix request {method} failed with {}: {}", error.code, error.message)]
+    Protocol { method: String, error: ApiErrorBody },
+    #[error("decode unix result for {method}: {source}")]
+    DecodeResult {
+        method: String,
+        #[source]
+        source: serde_json::Error,
+    },
+    #[error("encode unix request for {method}: {source}")]
+    EncodeRequest {
+        method: String,
+        #[source]
+        source: serde_json::Error,
+    },
+    #[error("json serialization: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("filesystem operation failed: {0}")]
+    Fs(#[from] std::io::Error),
+    #[error("clipboard actions require explicit clipboard endpoints")]
+    ClipboardActionRequiresEndpoint,
+    #[error("{field} must not be empty")]
+    EmptyField { field: &'static str },
+    #[error(transparent)]
+    Core(#[from] anyhow::Error),
+}
+
 #[derive(Debug, Clone)]
 pub struct CuaClient {
     profile: String,
@@ -25,7 +70,7 @@ pub struct CuaClient {
 }
 
 impl CuaClient {
-    pub async fn connect(profile: impl Into<String>) -> anyhow::Result<Self> {
+    pub async fn connect(profile: impl Into<String>) -> Result<Self> {
         let profile = profile.into();
         let token = load_or_create_profile_token(&profile).await?;
         let socket_path = profile_socket_path(&profile)?;
@@ -36,11 +81,11 @@ impl CuaClient {
         })
     }
 
-    pub async fn new(profile: impl Into<String>) -> anyhow::Result<Self> {
+    pub async fn new(profile: impl Into<String>) -> Result<Self> {
         Self::connect(profile).await
     }
 
-    pub async fn screenshot(&self, include_bytes: bool) -> anyhow::Result<FramePayload> {
+    pub async fn screenshot(&self, include_bytes: bool) -> Result<FramePayload> {
         self.request(
             "capture.screenshot",
             Some(serde_json::json!({
@@ -53,27 +98,27 @@ impl CuaClient {
         .await
     }
 
-    pub async fn status(&self) -> anyhow::Result<HealthReport> {
+    pub async fn status(&self) -> Result<HealthReport> {
         self.request("status", None).await
     }
 
-    pub async fn manifest(&self) -> anyhow::Result<Manifest> {
+    pub async fn manifest(&self) -> Result<Manifest> {
         self.request("manifest", None).await
     }
 
-    pub async fn schemas(&self) -> anyhow::Result<SchemaBundle> {
+    pub async fn schemas(&self) -> Result<SchemaBundle> {
         self.request("schemas", None).await
     }
 
-    pub async fn observe(&self) -> anyhow::Result<DesktopState> {
+    pub async fn observe(&self) -> Result<DesktopState> {
         self.request("observe.desktop", None).await
     }
 
-    pub async fn config_status(&self) -> anyhow::Result<ConfigInventory> {
+    pub async fn config_status(&self) -> Result<ConfigInventory> {
         self.request("config.status", None).await
     }
 
-    pub async fn context(&self, include_bytes: bool) -> anyhow::Result<DesktopContextSnapshot> {
+    pub async fn context(&self, include_bytes: bool) -> Result<DesktopContextSnapshot> {
         self.request(
             "context.snapshot",
             Some(context_request_body(include_bytes)),
@@ -81,11 +126,11 @@ impl CuaClient {
         .await
     }
 
-    pub async fn events(&self) -> anyhow::Result<Vec<Value>> {
+    pub async fn events(&self) -> Result<Vec<Value>> {
         self.request("events.snapshot", None).await
     }
 
-    pub async fn events_after(&self, sequence: u64) -> anyhow::Result<Vec<Value>> {
+    pub async fn events_after(&self, sequence: u64) -> Result<Vec<Value>> {
         self.request(
             "events.after",
             Some(serde_json::json!({ "after_sequence": sequence })),
@@ -93,7 +138,7 @@ impl CuaClient {
         .await
     }
 
-    pub async fn events_wait(&self, sequence: u64, timeout_ms: u64) -> anyhow::Result<Vec<Value>> {
+    pub async fn events_wait(&self, sequence: u64, timeout_ms: u64) -> Result<Vec<Value>> {
         self.request(
             "events.wait",
             Some(serde_json::json!({
@@ -108,7 +153,7 @@ impl CuaClient {
         &self,
         client_name: impl Into<String>,
         ttl_ms: Option<i64>,
-    ) -> anyhow::Result<SessionLeaseResult> {
+    ) -> Result<SessionLeaseResult> {
         self.acquire_session(RuntimeSessionRole::Owner, client_name, ttl_ms)
             .await
     }
@@ -117,7 +162,7 @@ impl CuaClient {
         &self,
         client_name: impl Into<String>,
         ttl_ms: Option<i64>,
-    ) -> anyhow::Result<SessionLeaseResult> {
+    ) -> Result<SessionLeaseResult> {
         self.acquire_session(RuntimeSessionRole::Observer, client_name, ttl_ms)
             .await
     }
@@ -127,7 +172,7 @@ impl CuaClient {
         role: RuntimeSessionRole,
         client_name: impl Into<String>,
         ttl_ms: Option<i64>,
-    ) -> anyhow::Result<SessionLeaseResult> {
+    ) -> Result<SessionLeaseResult> {
         let request = SessionLeaseRequest {
             schema_version: SCHEMA_VERSION.to_string(),
             session_id: uuid::Uuid::new_v4().to_string(),
@@ -143,7 +188,7 @@ impl CuaClient {
         &self,
         session_id: impl Into<String>,
         target_session_id: Option<String>,
-    ) -> anyhow::Result<RuntimeInventory> {
+    ) -> Result<RuntimeInventory> {
         let request = SessionCancelRequest {
             schema_version: SCHEMA_VERSION.to_string(),
             session_id: session_id.into(),
@@ -153,7 +198,21 @@ impl CuaClient {
             .await
     }
 
-    pub async fn session_status(&self) -> anyhow::Result<RuntimeInventory> {
+    pub async fn heartbeat_session(
+        &self,
+        session_id: impl Into<String>,
+        ttl_ms: Option<i64>,
+    ) -> Result<SessionLeaseResult> {
+        let request = SessionHeartbeatRequest {
+            schema_version: SCHEMA_VERSION.to_string(),
+            session_id: session_id.into(),
+            ttl_ms,
+        };
+        self.request("session.heartbeat", Some(serde_json::to_value(request)?))
+            .await
+    }
+
+    pub async fn session_status(&self) -> Result<RuntimeInventory> {
         self.request("session.status", None).await
     }
 
@@ -166,7 +225,7 @@ impl CuaClient {
         step_index: Option<u16>,
         step_total: Option<u16>,
         ttl_ms: Option<u64>,
-    ) -> anyhow::Result<Value> {
+    ) -> Result<Value> {
         self.request(
             "ui.step",
             Some(serde_json::to_value(UiStepRequest {
@@ -188,7 +247,7 @@ impl CuaClient {
         text: impl Into<String>,
         source: Option<String>,
         ttl_ms: Option<u64>,
-    ) -> anyhow::Result<Value> {
+    ) -> Result<Value> {
         self.request(
             "ui.reply",
             Some(serde_json::to_value(UiReplyRequest {
@@ -201,7 +260,7 @@ impl CuaClient {
         .await
     }
 
-    pub async fn ui_mode(&self, mode: UiMode, source: Option<String>) -> anyhow::Result<Value> {
+    pub async fn ui_mode(&self, mode: UiMode, source: Option<String>) -> Result<Value> {
         self.request(
             "ui.mode",
             Some(serde_json::to_value(UiModeRequest {
@@ -217,7 +276,7 @@ impl CuaClient {
         &self,
         state: UiIslandState,
         source: Option<String>,
-    ) -> anyhow::Result<UiIslandResult> {
+    ) -> Result<UiIslandResult> {
         self.request(
             "ui.island",
             Some(serde_json::to_value(UiIslandRequest {
@@ -229,7 +288,7 @@ impl CuaClient {
         .await
     }
 
-    pub async fn clipboard_read(&self, allow_sensitive: bool) -> anyhow::Result<ClipboardResult> {
+    pub async fn clipboard_read(&self, allow_sensitive: bool) -> Result<ClipboardResult> {
         self.request(
             "clipboard.read",
             Some(serde_json::to_value(ClipboardReadRequest {
@@ -243,32 +302,31 @@ impl CuaClient {
     pub async fn clipboard_write(
         &self,
         text: impl Into<String>,
-    ) -> anyhow::Result<ClipboardResult> {
-        self.request(
+        owner_session_id: &str,
+    ) -> Result<ClipboardResult> {
+        self.request_with_session(
             "clipboard.write",
             Some(serde_json::to_value(ClipboardWriteRequest {
                 schema_version: SCHEMA_VERSION.to_string(),
                 text: text.into(),
             })?),
+            Some(owner_session_id),
         )
         .await
     }
 
-    pub async fn pause(&self, session_id: Option<&str>) -> anyhow::Result<RuntimeControlState> {
-        self.request_with_session("control.pause", None, session_id)
+    pub async fn pause(&self, owner_session_id: &str) -> Result<RuntimeControlState> {
+        self.request_with_session("control.pause", None, Some(owner_session_id))
             .await
     }
 
-    pub async fn resume(&self, session_id: Option<&str>) -> anyhow::Result<RuntimeControlState> {
-        self.request_with_session("control.resume", None, session_id)
+    pub async fn resume(&self, owner_session_id: &str) -> Result<RuntimeControlState> {
+        self.request_with_session("control.resume", None, Some(owner_session_id))
             .await
     }
 
-    pub async fn kill_switch(
-        &self,
-        session_id: Option<&str>,
-    ) -> anyhow::Result<RuntimeControlState> {
-        self.request_with_session("control.kill_switch", None, session_id)
+    pub async fn kill_switch(&self, owner_session_id: &str) -> Result<RuntimeControlState> {
+        self.request_with_session("control.kill_switch", None, Some(owner_session_id))
             .await
     }
 
@@ -278,7 +336,7 @@ impl CuaClient {
         fps: Option<u32>,
         include_bytes: bool,
         session_id: Option<&str>,
-    ) -> anyhow::Result<CuaVisualSession> {
+    ) -> Result<CuaVisualSession> {
         self.visual_session_with_options(max_width, fps, include_bytes, session_id, None, None)
             .await
     }
@@ -291,10 +349,13 @@ impl CuaClient {
         session_id: Option<&str>,
         duration_ms: Option<u64>,
         queue_depth: Option<usize>,
-    ) -> anyhow::Result<CuaVisualSession> {
+    ) -> Result<CuaVisualSession> {
         let stream = UnixStream::connect(&self.socket_path)
             .await
-            .with_context(|| format!("connect {}", self.socket_path.display()))?;
+            .map_err(|source| CuaClientError::Connect {
+                path: self.socket_path.clone(),
+                source,
+            })?;
         let (read, mut write) = stream.into_split();
         let request = serde_json::json!({
             "id": uuid::Uuid::new_v4().to_string(),
@@ -313,12 +374,12 @@ impl CuaClient {
         write
             .write_all(request.to_string().as_bytes())
             .await
-            .context("write visual session request")?;
+            .map_err(CuaClientError::Write)?;
         write
             .write_all(b"\n")
             .await
-            .context("flush visual session request")?;
-        write.flush().await.context("flush visual session stream")?;
+            .map_err(CuaClientError::Write)?;
+        write.flush().await.map_err(CuaClientError::Flush)?;
         Ok(CuaVisualSession {
             read: BufReader::new(read),
             write,
@@ -326,30 +387,36 @@ impl CuaClient {
         })
     }
 
-    pub async fn dispatch(&self, action: &InputAction) -> anyhow::Result<Value> {
+    pub async fn dispatch(&self, action: &InputAction, owner_session_id: &str) -> Result<Value> {
         ensure_dispatchable(action)?;
-        self.request("input.dispatch", Some(serde_json::to_value(action)?))
-            .await
+        self.request_with_session(
+            "input.dispatch",
+            Some(serde_json::to_value(action)?),
+            Some(owner_session_id),
+        )
+        .await
     }
 
     pub async fn dispatch_frame(
         &self,
         source_frame: FrameEnvelope,
         action: &InputAction,
-    ) -> anyhow::Result<Value> {
+        owner_session_id: &str,
+    ) -> Result<Value> {
         ensure_dispatchable(action)?;
-        self.request(
+        self.request_with_session(
             "input.dispatch_frame",
             Some(serde_json::to_value(FrameActionRequest {
                 schema_version: SCHEMA_VERSION.to_string(),
                 source_frame,
                 action: action.clone(),
             })?),
+            Some(owner_session_id),
         )
         .await
     }
 
-    pub async fn session(&self) -> anyhow::Result<CuaSession> {
+    pub async fn session(&self) -> Result<CuaSession> {
         CuaSession::connect(self).await
     }
 
@@ -357,7 +424,7 @@ impl CuaClient {
         &self,
         method: &str,
         body: Option<Value>,
-    ) -> anyhow::Result<T> {
+    ) -> Result<T> {
         self.request_with_session(method, body, None).await
     }
 
@@ -366,10 +433,13 @@ impl CuaClient {
         method: &str,
         body: Option<Value>,
         session_id: Option<&str>,
-    ) -> anyhow::Result<T> {
+    ) -> Result<T> {
         let stream = UnixStream::connect(&self.socket_path)
             .await
-            .with_context(|| format!("connect {}", self.socket_path.display()))?;
+            .map_err(|source| CuaClientError::Connect {
+                path: self.socket_path.clone(),
+                source,
+            })?;
         let (read, mut write) = stream.into_split();
         let mut lines = BufReader::new(read).lines();
         let request = serde_json::json!({
@@ -382,14 +452,19 @@ impl CuaClient {
         write
             .write_all(request.to_string().as_bytes())
             .await
-            .context("write unix request")?;
-        write.write_all(b"\n").await.context("flush unix request")?;
-        write.flush().await.context("flush unix stream")?;
+            .map_err(CuaClientError::Write)?;
+        write
+            .write_all(b"\n")
+            .await
+            .map_err(CuaClientError::Write)?;
+        write.flush().await.map_err(CuaClientError::Flush)?;
         let line = lines
             .next_line()
             .await
-            .context("read unix response")?
-            .ok_or_else(|| anyhow::anyhow!("empty unix response for {method}"))?;
+            .map_err(CuaClientError::Read)?
+            .ok_or_else(|| CuaClientError::EmptyResponse {
+                method: method.to_string(),
+            })?;
         decode_unix_response(method, &line)
     }
 
@@ -411,30 +486,38 @@ pub struct CuaVisualSession {
 }
 
 impl CuaVisualSession {
-    pub async fn next_message(&mut self) -> anyhow::Result<Option<VisualSessionMessage>> {
+    pub async fn next_message(&mut self) -> Result<Option<VisualSessionMessage>> {
         let mut line = String::new();
         let bytes = self
             .read
             .read_line(&mut line)
             .await
-            .context("read visual session message")?;
+            .map_err(CuaClientError::Read)?;
         if bytes == 0 {
             return Ok(None);
         }
         if line.trim().is_empty() {
             return Ok(Some(VisualSessionMessage::Empty));
         }
-        Ok(Some(serde_json::from_str(&line).with_context(|| {
-            format!("decode visual session message {}", line.trim())
-        })?))
+        Ok(Some(
+            serde_json::from_str(&line).map_err(CuaClientError::DecodeEnvelope)?,
+        ))
     }
 
-    pub async fn next_frame(&mut self) -> anyhow::Result<Option<Value>> {
+    pub async fn next_frame(&mut self) -> Result<Option<Value>> {
         while let Some(message) = self.next_message().await? {
             match message {
                 VisualSessionMessage::Frame { frame, .. } => return Ok(Some(frame)),
                 VisualSessionMessage::Error { error, .. } => {
-                    anyhow::bail!("visual session error: {error}");
+                    return Err(CuaClientError::Protocol {
+                        method: "visual.session".to_string(),
+                        error: ApiErrorBody {
+                            schema_version: SCHEMA_VERSION.to_string(),
+                            code: "visual_session".to_string(),
+                            message: error,
+                            details: Default::default(),
+                        },
+                    });
                 }
                 VisualSessionMessage::Closed { .. } => return Ok(None),
                 VisualSessionMessage::Started { .. } | VisualSessionMessage::Empty => {}
@@ -443,7 +526,7 @@ impl CuaVisualSession {
         Ok(None)
     }
 
-    pub async fn close(&mut self) -> anyhow::Result<()> {
+    pub async fn close(&mut self) -> Result<()> {
         if self.closed {
             return Ok(());
         }
@@ -455,20 +538,17 @@ impl CuaVisualSession {
         self.write
             .write_all(request.to_string().as_bytes())
             .await
-            .context("write visual close request")?;
+            .map_err(CuaClientError::Write)?;
         self.write
             .write_all(b"\n")
             .await
-            .context("flush visual close request")?;
-        self.write
-            .flush()
-            .await
-            .context("flush visual close stream")?;
+            .map_err(CuaClientError::Write)?;
+        self.write.flush().await.map_err(CuaClientError::Flush)?;
         self.closed = true;
         Ok(())
     }
 
-    pub async fn cancel(&mut self) -> anyhow::Result<()> {
+    pub async fn cancel(&mut self) -> Result<()> {
         self.close().await
     }
 }
@@ -496,10 +576,13 @@ pub enum VisualSessionMessage {
 }
 
 impl CuaSession {
-    async fn connect(client: &CuaClient) -> anyhow::Result<Self> {
+    async fn connect(client: &CuaClient) -> Result<Self> {
         let stream = UnixStream::connect(&client.socket_path)
             .await
-            .with_context(|| format!("connect {}", client.socket_path.display()))?;
+            .map_err(|source| CuaClientError::Connect {
+                path: client.socket_path.clone(),
+                source,
+            })?;
         let (read, write) = stream.into_split();
         Ok(Self {
             token: client.token.clone(),
@@ -508,7 +591,7 @@ impl CuaSession {
         })
     }
 
-    pub async fn context(&mut self, include_bytes: bool) -> anyhow::Result<DesktopContextSnapshot> {
+    pub async fn context(&mut self, include_bytes: bool) -> Result<DesktopContextSnapshot> {
         self.request(
             "context.snapshot",
             Some(context_request_body(include_bytes)),
@@ -516,30 +599,40 @@ impl CuaSession {
         .await
     }
 
-    pub async fn dispatch(&mut self, action: &InputAction) -> anyhow::Result<Value> {
+    pub async fn dispatch(
+        &mut self,
+        action: &InputAction,
+        owner_session_id: &str,
+    ) -> Result<Value> {
         ensure_dispatchable(action)?;
-        self.request("input.dispatch", Some(serde_json::to_value(action)?))
-            .await
+        self.request_with_session(
+            "input.dispatch",
+            Some(serde_json::to_value(action)?),
+            Some(owner_session_id),
+        )
+        .await
     }
 
     pub async fn dispatch_frame(
         &mut self,
         source_frame: FrameEnvelope,
         action: &InputAction,
-    ) -> anyhow::Result<Value> {
+        owner_session_id: &str,
+    ) -> Result<Value> {
         ensure_dispatchable(action)?;
-        self.request(
+        self.request_with_session(
             "input.dispatch_frame",
             Some(serde_json::to_value(FrameActionRequest {
                 schema_version: SCHEMA_VERSION.to_string(),
                 source_frame,
                 action: action.clone(),
             })?),
+            Some(owner_session_id),
         )
         .await
     }
 
-    pub async fn events_after(&mut self, sequence: u64) -> anyhow::Result<Vec<Value>> {
+    pub async fn events_after(&mut self, sequence: u64) -> Result<Vec<Value>> {
         self.request(
             "events.after",
             Some(serde_json::json!({ "after_sequence": sequence })),
@@ -547,15 +640,11 @@ impl CuaSession {
         .await
     }
 
-    pub async fn events_snapshot(&mut self) -> anyhow::Result<Vec<Value>> {
+    pub async fn events_snapshot(&mut self) -> Result<Vec<Value>> {
         self.request("events.snapshot", None).await
     }
 
-    pub async fn events_wait(
-        &mut self,
-        sequence: u64,
-        timeout_ms: u64,
-    ) -> anyhow::Result<Vec<Value>> {
+    pub async fn events_wait(&mut self, sequence: u64, timeout_ms: u64) -> Result<Vec<Value>> {
         self.request(
             "events.wait",
             Some(serde_json::json!({
@@ -575,7 +664,7 @@ impl CuaSession {
         step_index: Option<u16>,
         step_total: Option<u16>,
         ttl_ms: Option<u64>,
-    ) -> anyhow::Result<Value> {
+    ) -> Result<Value> {
         self.request(
             "ui.step",
             Some(serde_json::to_value(UiStepRequest {
@@ -597,7 +686,7 @@ impl CuaSession {
         text: impl Into<String>,
         source: Option<String>,
         ttl_ms: Option<u64>,
-    ) -> anyhow::Result<Value> {
+    ) -> Result<Value> {
         self.request(
             "ui.reply",
             Some(serde_json::to_value(UiReplyRequest {
@@ -610,7 +699,7 @@ impl CuaSession {
         .await
     }
 
-    pub async fn ui_mode(&mut self, mode: UiMode, source: Option<String>) -> anyhow::Result<Value> {
+    pub async fn ui_mode(&mut self, mode: UiMode, source: Option<String>) -> Result<Value> {
         self.request(
             "ui.mode",
             Some(serde_json::to_value(UiModeRequest {
@@ -626,50 +715,64 @@ impl CuaSession {
         &mut self,
         method: &str,
         body: Option<Value>,
-    ) -> anyhow::Result<T> {
+    ) -> Result<T> {
+        self.request_with_session(method, body, None).await
+    }
+
+    pub async fn request_with_session<T: serde::de::DeserializeOwned>(
+        &mut self,
+        method: &str,
+        body: Option<Value>,
+        session_id: Option<&str>,
+    ) -> Result<T> {
         let request = serde_json::json!({
             "id": uuid::Uuid::new_v4().to_string(),
             "token": self.token,
+            "session_id": session_id,
             "method": method,
             "params": body.unwrap_or_else(|| serde_json::json!({}))
         });
         self.write
             .write_all(request.to_string().as_bytes())
             .await
-            .context("write unix request")?;
+            .map_err(CuaClientError::Write)?;
         self.write
             .write_all(b"\n")
             .await
-            .context("flush unix request")?;
-        self.write.flush().await.context("flush unix stream")?;
+            .map_err(CuaClientError::Write)?;
+        self.write.flush().await.map_err(CuaClientError::Flush)?;
         let mut line = String::new();
         self.read
             .read_line(&mut line)
             .await
-            .context("read unix response")?;
+            .map_err(CuaClientError::Read)?;
         if line.trim().is_empty() {
-            bail!("empty unix response for {method}");
+            return Err(CuaClientError::EmptyResponse {
+                method: method.to_string(),
+            });
         }
         decode_unix_response(method, &line)
     }
 }
 
-fn decode_unix_response<T: serde::de::DeserializeOwned>(
-    method: &str,
-    line: &str,
-) -> anyhow::Result<T> {
+fn decode_unix_response<T: serde::de::DeserializeOwned>(method: &str, line: &str) -> Result<T> {
     let response: UnixResponse =
-        serde_json::from_str(line).context("decode unix response envelope")?;
+        serde_json::from_str(line).map_err(CuaClientError::DecodeEnvelope)?;
     if !response.ok {
-        let error = response.error.unwrap_or_else(|| serde_json::json!({}));
-        bail!("unix request {method} failed: {error}");
+        return Err(CuaClientError::Protocol {
+            method: method.to_string(),
+            error: decode_api_error(response.error),
+        });
     }
-    Ok(serde_json::from_value(
-        response.result.unwrap_or(Value::Null),
-    )?)
+    serde_json::from_value(response.result.unwrap_or(Value::Null)).map_err(|source| {
+        CuaClientError::DecodeResult {
+            method: method.to_string(),
+            source,
+        }
+    })
 }
 
-fn ensure_dispatchable(action: &InputAction) -> anyhow::Result<()> {
+fn ensure_dispatchable(action: &InputAction) -> Result<()> {
     match action {
         InputAction::MouseMove { .. }
         | InputAction::MouseClick { .. }
@@ -684,10 +787,21 @@ fn ensure_dispatchable(action: &InputAction) -> anyhow::Result<()> {
         | InputAction::Ctx { .. } => {}
         InputAction::Pause | InputAction::Resume | InputAction::KillSwitch => {}
         InputAction::ClipboardRead { .. } | InputAction::ClipboardWrite { .. } => {
-            bail!("clipboard actions require explicit clipboard endpoints")
+            return Err(CuaClientError::ClipboardActionRequiresEndpoint)
         }
     }
     Ok(())
+}
+
+fn decode_api_error(error: Option<Value>) -> ApiErrorBody {
+    error
+        .and_then(|value| serde_json::from_value::<ApiErrorBody>(value).ok())
+        .unwrap_or_else(|| ApiErrorBody {
+            schema_version: SCHEMA_VERSION.to_string(),
+            code: "protocol_error".to_string(),
+            message: "daemon returned an unstructured protocol error".to_string(),
+            details: Default::default(),
+        })
 }
 
 fn context_request_body(include_bytes: bool) -> Value {
@@ -706,7 +820,7 @@ struct UnixResponse {
     error: Option<Value>,
 }
 
-async fn load_or_create_profile_token(profile: &str) -> anyhow::Result<String> {
+async fn load_or_create_profile_token(profile: &str) -> Result<String> {
     if http_token_override_allowed() {
         if let Ok(token) = std::env::var("CUA_HTTP_TOKEN") {
             if !token.trim().is_empty() {
@@ -748,5 +862,30 @@ mod tests {
         assert_eq!(body["encoding"], "jpeg");
         assert_eq!(body["force_fresh"], true);
         assert_eq!(body["include_bytes"], true);
+    }
+
+    #[test]
+    fn unix_protocol_errors_decode_to_typed_client_error() {
+        let line = serde_json::json!({
+            "id": "test",
+            "ok": false,
+            "error": {
+                "schema_version": SCHEMA_VERSION,
+                "code": "session_owner",
+                "message": "write requires an active owner session",
+                "details": {}
+            }
+        })
+        .to_string();
+
+        let error = decode_unix_response::<Value>("control.pause", &line).unwrap_err();
+        match error {
+            CuaClientError::Protocol { method, error } => {
+                assert_eq!(method, "control.pause");
+                assert_eq!(error.code, "session_owner");
+                assert_eq!(error.message, "write requires an active owner session");
+            }
+            other => panic!("expected protocol error, got {other:?}"),
+        }
     }
 }

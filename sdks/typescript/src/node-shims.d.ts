@@ -49,6 +49,8 @@ declare module "node:net" {
     setEncoding(encoding: string): void;
     on(event: "data", callback: (chunk: string) => void): void;
     on(event: "end" | "close", callback: () => void): void;
+    on(event: "connect", callback: () => void): void;
+    on(event: "error", callback: (error: Error & { code?: string }) => void): void;
     once(event: "connect", callback: () => void): void;
     once(event: "error", callback: (error: Error) => void): void;
     write(data: string): void;

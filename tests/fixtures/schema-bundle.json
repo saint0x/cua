@@ -5117,6 +5117,30 @@
       "title": "SessionCancelRequest",
       "type": "object"
     },
+    "SessionHeartbeatRequest": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "schema_version": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "ttl_ms": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "schema_version",
+        "session_id"
+      ],
+      "title": "SessionHeartbeatRequest",
+      "type": "object"
+    },
     "SessionLeaseRequest": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "definitions": {

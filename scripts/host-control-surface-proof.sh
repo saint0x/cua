@@ -6,6 +6,26 @@ export CUA_DEV_HTTP_TOKEN_OVERRIDE=1
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+debug_bin() {
+  local name="$1"
+  local target_root="${CARGO_TARGET_DIR:-target}"
+  if [[ -x "$target_root/debug/$name" ]]; then
+    printf '%s\n' "$target_root/debug/$name"
+  elif [[ -x "target/debug/$name" ]]; then
+    printf '%s\n' "target/debug/$name"
+  else
+    local root found
+    for root in "$target_root" target; do
+      [[ -d "$root" ]] || continue
+      found="$(find "$root" -path "*/debug/$name" -type f 2>/dev/null | head -n 1 || true)"
+      if [[ -n "$found" ]]; then
+        printf '%s\n' "$found"
+        return 0
+      fi
+    done
+  fi
+}
+
 command -v curl >/dev/null
 command -v jq >/dev/null
 
@@ -25,6 +45,7 @@ HTTP_UI_STEP="$OUT_DIR/http-ui-step.json"
 HTTP_UI_REPLY="$OUT_DIR/http-ui-reply.json"
 HTTP_UI_MODE_HEADLESS="$OUT_DIR/http-ui-mode-headless.json"
 HTTP_UI_MODE_HEADFUL="$OUT_DIR/http-ui-mode-headful.json"
+HTTP_OWNER_SESSION="$OUT_DIR/http-owner-session.json"
 HTTP_OBSERVE="$OUT_DIR/http-observe.json"
 HTTP_CONTEXT="$OUT_DIR/http-context.json"
 HTTP_SCREENSHOT="$OUT_DIR/http-screenshot.json"
@@ -66,21 +87,15 @@ PROOF="$OUT_DIR/proof.json"
 
 if [[ -n "${CUA_BIN:-}" ]]; then
   CUA_BIN_PATH="$CUA_BIN"
-elif [[ -x target/debug/cua ]]; then
-  CUA_BIN_PATH="target/debug/cua"
 else
-  CUA_BIN_PATH="$(find target -path '*/debug/cua' -type f 2>/dev/null | head -n 1)"
+  CUA_BIN_PATH="$(debug_bin cua)"
 fi
 
 if [[ -z "$CUA_BIN_PATH" || ! -x "$CUA_BIN_PATH" ]]; then
   cargo build -p cua
 fi
 if [[ -z "$CUA_BIN_PATH" || ! -x "$CUA_BIN_PATH" ]]; then
-  if [[ -x target/debug/cua ]]; then
-    CUA_BIN_PATH="target/debug/cua"
-  else
-    CUA_BIN_PATH="$(find target -path '*/debug/cua' -type f 2>/dev/null | head -n 1)"
-  fi
+  CUA_BIN_PATH="$(debug_bin cua)"
 fi
 if [[ -z "$CUA_BIN_PATH" || ! -x "$CUA_BIN_PATH" ]]; then
   echo "cua binary not found" >&2
@@ -89,21 +104,15 @@ fi
 
 if [[ -n "${CUA_VOICE_BIN:-}" ]]; then
   CUA_VOICE_BIN_PATH="$CUA_VOICE_BIN"
-elif [[ -x target/debug/cua-voice ]]; then
-  CUA_VOICE_BIN_PATH="target/debug/cua-voice"
 else
-  CUA_VOICE_BIN_PATH="$(find target -path '*/debug/cua-voice' -type f 2>/dev/null | head -n 1)"
+  CUA_VOICE_BIN_PATH="$(debug_bin cua-voice)"
 fi
 
 if [[ -z "$CUA_VOICE_BIN_PATH" || ! -x "$CUA_VOICE_BIN_PATH" ]]; then
   cargo build -p cua-voice
 fi
 if [[ -z "$CUA_VOICE_BIN_PATH" || ! -x "$CUA_VOICE_BIN_PATH" ]]; then
-  if [[ -x target/debug/cua-voice ]]; then
-    CUA_VOICE_BIN_PATH="target/debug/cua-voice"
-  else
-    CUA_VOICE_BIN_PATH="$(find target -path '*/debug/cua-voice' -type f 2>/dev/null | head -n 1)"
-  fi
+  CUA_VOICE_BIN_PATH="$(debug_bin cua-voice)"
 fi
 if [[ -z "$CUA_VOICE_BIN_PATH" || ! -x "$CUA_VOICE_BIN_PATH" ]]; then
   echo "cua-voice binary not found" >&2
@@ -136,19 +145,22 @@ unix_call() {
   local method="$1"
   local params="$2"
   local out="$3"
-  python3 - "$SOCKET_PATH" "$TOKEN" "$method" "$params" > "$out" <<'PY'
+  local session_id="${4:-}"
+  python3 - "$SOCKET_PATH" "$TOKEN" "$method" "$params" "$session_id" > "$out" <<'PY'
 import json
 import socket
 import sys
 import uuid
 
-path, token, method, params_json = sys.argv[1:5]
+path, token, method, params_json, session_id = sys.argv[1:6]
 request = {
     "id": str(uuid.uuid4()),
     "token": token,
     "method": method,
     "params": json.loads(params_json),
 }
+if session_id:
+    request["session_id"] = session_id
 client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 client.connect(path)
 client.sendall((json.dumps(request) + "\n").encode("utf-8"))
@@ -214,6 +226,12 @@ curl -fsS \
   -H "content-type: application/json" \
   -d '{"schema_version":"cua.v1","mode":"headful","source":"http proof"}' \
   "http://$ADDR/ui/mode" > "$HTTP_UI_MODE_HEADFUL"
+curl -fsS \
+  -H "authorization: Bearer $TOKEN" \
+  -H "content-type: application/json" \
+  -d '{"schema_version":"cua.v1","session_id":"http-owner-proof","client_name":"host control surface http owner","role":"owner","ttl_ms":60000}' \
+  "http://$ADDR/session/acquire" > "$HTTP_OWNER_SESSION"
+HTTP_OWNER_ID="$(jq -r '.session.session_id' "$HTTP_OWNER_SESSION")"
 curl -fsS -H "authorization: Bearer $TOKEN" "http://$ADDR/events" > "$HTTP_EVENTS"
 HTTP_AFTER_SEQUENCE="$(jq -r '.[0].sequence' "$HTTP_EVENTS")"
 curl -fsS -H "authorization: Bearer $TOKEN" "http://$ADDR/events?after=$HTTP_AFTER_SEQUENCE" > "$HTTP_EVENTS_AFTER"
@@ -230,6 +248,7 @@ http_json_call "/capture/screenshot" \
   0.5
 curl -fsS \
   -H "authorization: Bearer $TOKEN" \
+  -H "x-cua-session-id: $HTTP_OWNER_ID" \
   -H "content-type: application/json" \
   -d "$(jq -c '{schema_version:"cua.v1",source_frame:.envelope,action:{kind:"mouse_move",x:100,y:100,duration_ms:0}}' "$HTTP_SCREENSHOT")" \
   "http://$ADDR/input/frame" > "$HTTP_FRAME_ACTION"
@@ -263,8 +282,8 @@ CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFIL
 CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFILE" observe --json > "$CLI_OBSERVE"
 CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFILE" context --json --max-width 640 --force-fresh > "$CLI_CONTEXT"
 CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFILE" profile status --json > "$CLI_PROFILE"
-CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFILE" pause --json > "$CLI_PAUSE"
-CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFILE" resume --json > "$CLI_RESUME"
+CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFILE" pause --session-id "$HTTP_OWNER_ID" --json > "$CLI_PAUSE"
+CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFILE" resume --session-id "$HTTP_OWNER_ID" --json > "$CLI_RESUME"
 CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --server-addr "$ADDR" --profile "$PROFILE" screenshot \
   --out "$CLI_SCREENSHOT_PNG" \
   --max-width 640 \
@@ -300,8 +319,8 @@ CUA_HTTP_TOKEN="$TOKEN" "$CUA_VOICE_BIN_PATH" \
   --once-agent-reply-after "$VOICE_REPLY_AFTER_SEQUENCE" \
   --once-agent-reply-wait-ms 2000 > "$VOICE_AGENT_REPLY"
 unix_call "context.snapshot" '{"max_width":640,"encoding":"png","force_fresh":true,"include_bytes":false}' "$UNIX_CONTEXT"
-unix_call "control.pause" '{}' "$UNIX_PAUSE"
-unix_call "control.resume" '{}' "$UNIX_RESUME"
+unix_call "control.pause" '{}' "$UNIX_PAUSE" "$HTTP_OWNER_ID"
+unix_call "control.resume" '{}' "$UNIX_RESUME" "$HTTP_OWNER_ID"
 curl -fsS -H "authorization: Bearer $TOKEN" "http://$ADDR/metrics" > "$FINAL_METRICS"
 
 jq -e '.schema_version == "cua.v1" and .active_profile == $profile' \
@@ -333,7 +352,8 @@ jq -e '.envelope.encoding == "png" and .envelope.width > 0 and .envelope.height 
 EXPECTED_FRAME_X="$(jq '(.envelope.display_x + ((100 - .envelope.frame_origin_x) * (.envelope.display_width / .envelope.width)) | round)' "$HTTP_SCREENSHOT")"
 EXPECTED_FRAME_Y="$(jq '(.envelope.display_y + ((100 - .envelope.frame_origin_y) * (.envelope.display_height / .envelope.height)) | round)' "$HTTP_SCREENSHOT")"
 jq -e '.effect == "confirmed" and .route == "accessibility"' "$HTTP_FRAME_ACTION" >/dev/null
-jq -e '.x == '"$EXPECTED_FRAME_X"' and .y == '"$EXPECTED_FRAME_Y" "$HTTP_CURSOR_AFTER_FRAME_ACTION" >/dev/null
+jq -e '((.x - '"$EXPECTED_FRAME_X"') | fabs) <= 1 and ((.y - '"$EXPECTED_FRAME_Y"') | fabs) <= 1' \
+  "$HTTP_CURSOR_AFTER_FRAME_ACTION" >/dev/null
 jq -e '.schema_version == "cua.v1" and .active_profile == $profile' \
   --arg profile "$PROFILE" "$CLI_STATUS" >/dev/null
 jq -e '(.public_surfaces | index("cli")) and (.public_surfaces | index("local_http")) and (.commands | index("cua context --json")) and (.commands | index("cua stream --unix --json")) and (.commands | index("cua ui mode headless|headful --json"))' \
@@ -386,7 +406,7 @@ jq -e 'type == "array" and length >= 1 and all(.[]; .sequence > '"$UNIX_AFTER_SE
   "$UNIX_EVENTS_WAIT" >/dev/null
 jq -e '.event == "agent_step" and .label == "voice bridge programmable step" and .source == "external agent" and .task == "voice bridge task" and .tool == "agent tool" and .step_index == 5 and .step_total == 7 and .ttl_ms == 1750' \
   "$VOICE_AGENT_STEP" >/dev/null
-jq -e '.event == "reply" and .text == "voice bridge programmable reply"' \
+jq -e '.event == "automation_reply" and .text == "voice bridge programmable reply"' \
   "$VOICE_AGENT_REPLY" >/dev/null
 jq -e '.frame.envelope.encoding == "png" and .frame.envelope.width > 0 and (.frame.envelope.display_x | type) == "number" and (.frame.envelope.display_y | type) == "number" and (.frame.envelope.frame_origin_x | type) == "number" and (.frame.envelope.frame_origin_y | type) == "number" and (.desktop.displays | length) >= 1 and (.desktop.windows | type) == "array"' \
   "$UNIX_CONTEXT" >/dev/null

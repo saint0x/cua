@@ -896,19 +896,29 @@ async fn dispatch_plan(
             )
             .await;
         let dispatch_started = Instant::now();
+        let owner = local
+            .acquire_owner("cua voice dispatch", Some(60_000))
+            .await
+            .context("acquire voice dispatch owner session")?;
+        let owner_session_id = owner.session.session_id.clone();
         let result = match session.as_mut() {
             Some(session) => match source_frame.clone() {
-                Some(frame) => session.dispatch_frame(frame, action).await,
-                None => session.dispatch(action).await,
+                Some(frame) => {
+                    session
+                        .dispatch_frame(frame, action, &owner_session_id)
+                        .await
+                }
+                None => session.dispatch(action, &owner_session_id).await,
             },
             None => match source_frame {
-                Some(frame) => local.dispatch_frame(frame, action).await,
-                None => local.dispatch(action).await,
+                Some(frame) => local.dispatch_frame(frame, action, &owner_session_id).await,
+                None => local.dispatch(action, &owner_session_id).await,
             },
         };
         let result = match result {
             Ok(result) => result,
             Err(error) => {
+                let _ = local.cancel_session(owner_session_id.clone(), None).await;
                 trace
                     .append(
                         "dispatch_error",
@@ -919,9 +929,10 @@ async fn dispatch_plan(
                         }),
                     )
                     .await;
-                return Err(error);
+                return Err(error.into());
             }
         };
+        let _ = local.cancel_session(owner_session_id, None).await;
         send_metric(&tx, "dispatch_ms", dispatch_started.elapsed());
         trace
             .append(
@@ -1484,7 +1495,13 @@ async fn preflight_local_client(profile: &str) -> anyhow::Result<LocalReady> {
     spawn_profile_daemon(profile).context("start bundled cua daemon")?;
     wait_until_ready(Duration::from_secs(2), || {
         let local = local.clone();
-        async move { local.session().await.map(|_| ()) }
+        async move {
+            local
+                .session()
+                .await
+                .map(|_| ())
+                .map_err(anyhow::Error::from)
+        }
     })
     .await
     .context("voice requires a running cua daemon on the profile Unix socket")?;

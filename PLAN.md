@@ -49,36 +49,6 @@ Done means:
 - Host proof covers key persistence and signed package attestation claims.
 - `docs/attestation.md` explains threat model, what attestation proves, and what it does not authorize.
 
-Agent E: Transport, Session, Permissions, And SDK Semantics Owner
-
-Scope:
-- Owns Unix/HTTP transport policy, owner/observer sessions, SDK mutation semantics, permission request behavior, and typed client errors.
-- Primary files: `crates/cua-client`, `crates/cua-daemon`, `crates/cua-cli`, `sdks/typescript`, `sdks/python`, `docs/http-api.md`.
-
-Must coordinate with:
-- Agent B for attestation session claims.
-- Agent C for observer visual sessions.
-- Agent H for SDK docs/examples.
-
-Work:
-- Finish `cua-client` as a reusable Rust SDK crate with typed errors instead of generic `anyhow` strings for protocol errors.
-- Preserve idempotency support for input requests. SDK callers must not accidentally create untraceable duplicate actions.
-- Prefer Unix socket transport by default.
-- Keep HTTP optional for operator/debug and enforce owner-session ids on HTTP write routes.
-- Use `session.acquire` for every SDK code path that mutates state.
-- Require owner sessions for writes: input dispatch, frame input dispatch, profile create/activate, pause/resume/kill, and clipboard write.
-- Allow observer sessions for reads: status, manifest, schemas, screenshot, context, observe, events, and visual session.
-- Keep HTTP write-route policy aligned with the implemented `x-cua-session-id` owner-session requirement.
-- Keep `CUA_HTTP_TOKEN` as a dev/test-only override gated by `CUA_DEV_HTTP_TOKEN_OVERRIDE=1`.
-- Add owner-session heartbeat/lease renewal, lease expiry tests, and explicit refusal evidence for writes attempted without an owner lease.
-- Finish advanced TypeScript/Python SDK parity: local Unix where supported, HTTP fallback where practical, generated/checked-in protocol types, attestation helpers, event streaming, visual streaming, trace verify/replay helpers, and model eval helper.
-
-Done means:
-- SDK default mode is read-only until explicit owner acquisition.
-- Unauthorized writes fail consistently on all supported transports.
-- Lease expiry and heartbeat behavior are tested.
-- TypeScript, Python, Rust client APIs align on names and semantics.
-
 Agent F: Config Home, ctx, Chat DB, Memory, And Scratchpad Owner
 
 Scope:

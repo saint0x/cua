@@ -545,6 +545,13 @@ pub struct SessionLeaseResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct SessionHeartbeatRequest {
+    pub schema_version: String,
+    pub session_id: String,
+    pub ttl_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct SessionCancelRequest {
     pub schema_version: String,
     pub session_id: String,
@@ -1002,6 +1009,10 @@ pub fn schema_bundle() -> SchemaBundle {
     schemas.insert(
         "SessionLeaseResult".to_string(),
         serde_json::json!(schema_for!(SessionLeaseResult)),
+    );
+    schemas.insert(
+        "SessionHeartbeatRequest".to_string(),
+        serde_json::json!(schema_for!(SessionHeartbeatRequest)),
     );
     schemas.insert(
         "SessionCancelRequest".to_string(),

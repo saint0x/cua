@@ -7,6 +7,7 @@ export interface CuaOptions {
     profile?: string;
     bin?: string;
     env?: CuaEnv;
+    transport?: "unix" | "cli";
 }
 export interface RunebookOptions {
     traceDir?: string;
@@ -42,6 +43,7 @@ export interface VisualSessionOptions {
     includeBytes?: boolean;
     durationMs?: number;
     queueDepth?: number;
+    frames?: number;
     session?: OwnerSession | string;
 }
 export interface WindowCaptureOptions {
@@ -75,16 +77,22 @@ export interface ProfileCreateOptions {
     capabilities?: Json;
 }
 export interface DispatchOptions {
-    session?: OwnerSession | string;
+    session: OwnerSession | string;
 }
 export interface DispatchFrameOptions extends DispatchOptions {
     sourceFrame: Json;
     action: Json;
 }
+export interface ModelEvalOptions {
+    live?: boolean;
+    maxCalls?: number;
+    maxOutputTokens?: number;
+}
 export declare class Cua {
     private readonly profile;
     private readonly bin;
     private readonly env;
+    private readonly transport;
     private constructor();
     static connect(options?: CuaOptions): Promise<Cua>;
     run(file: string, options?: RunebookOptions): Promise<Json>;
@@ -96,36 +104,49 @@ export declare class Cua {
     metrics(): Promise<Json>;
     status(): Promise<Json>;
     configStatus(): Promise<Json>;
+    attest(audience: string, nonce: string, session?: OwnerSession | string): Promise<Json>;
     acquireOwner(clientName?: string, ttlMs?: number): Promise<OwnerSession>;
     cancelSession(session: OwnerSession | string, targetSessionId?: string): Promise<Json>;
+    heartbeatOwner(session: OwnerSession | string, ttlMs?: number): Promise<OwnerSession>;
     sessionStatus(): Promise<Json>;
     profileStatus(): Promise<Json>;
-    createProfile(options: ProfileCreateOptions, session?: OwnerSession | string): Promise<Json>;
-    activateProfile(session?: OwnerSession | string): Promise<Json>;
+    createProfile(options: ProfileCreateOptions, session: OwnerSession | string): Promise<Json>;
+    activateProfile(session: OwnerSession | string): Promise<Json>;
     requestAccessibility(): Promise<Json>;
     observe(): Promise<Json>;
     screenshot(options?: ScreenshotOptions): Promise<Json>;
     windowCapture(options: WindowCaptureOptions): Promise<Json>;
     context(options?: ScreenshotOptions): Promise<Json>;
     events(options?: EventsOptions): Promise<Json>;
+    visualFrames(options?: VisualSessionOptions): Promise<Json>;
     uiStep(options: UiStepOptions): Promise<Json>;
     uiIsland(state: "expanded" | "collapsed" | "toggle", source?: string): Promise<Json>;
     uiReply(options: UiReplyOptions): Promise<Json>;
     uiMode(mode: "headful" | "headless", source?: string): Promise<Json>;
     clipboardRead(allowSensitive?: boolean): Promise<Json>;
-    clipboardWrite(text: string, session?: OwnerSession | string): Promise<Json>;
+    clipboardWrite(text: string, session: OwnerSession | string): Promise<Json>;
     pause(session: OwnerSession | string): Promise<Json>;
     resume(session: OwnerSession | string): Promise<Json>;
     killSwitch(session: OwnerSession | string): Promise<Json>;
-    dispatch(action: Json, options?: DispatchOptions): Promise<Json>;
+    dispatch(action: Json, options: DispatchOptions): Promise<Json>;
     dispatchFrame(options: DispatchFrameOptions): Promise<Json>;
     visualSession(options?: VisualSessionOptions): Promise<CuaVisualSession>;
-    openApp(app: string, options?: DispatchOptions): Promise<Json>;
-    shell(command: string, options?: DispatchOptions): Promise<Json>;
-    aegis(args: string[], options?: DispatchOptions): Promise<Json>;
-    ctx(args: string[], options?: DispatchOptions): Promise<Json>;
+    openApp(app: string, options: DispatchOptions): Promise<Json>;
+    shell(command: string, options: DispatchOptions): Promise<Json>;
+    aegis(args: string[], options: DispatchOptions): Promise<Json>;
+    ctx(args: string[], options: DispatchOptions): Promise<Json>;
+    traceVerify(dir: string): Promise<Json>;
+    traceReplay(dir: string, dryRun?: boolean): Promise<Json>;
+    modelEval(options?: ModelEvalOptions): Promise<Json>;
     private step;
     private execJson;
+    private unixRpc;
+    private loadToken;
+}
+export declare class CuaProtocolError extends Error {
+    readonly method: string;
+    readonly error: Json;
+    constructor(method: string, error: Json);
 }
 export declare class CuaVisualSession {
     private readonly socket;
