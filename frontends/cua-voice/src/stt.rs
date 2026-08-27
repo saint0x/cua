@@ -17,6 +17,8 @@ const DEFAULT_STT_ATTEMPTS: usize = 3;
 const DEFAULT_STT_RETRY_BACKOFF_MS: u64 = 180;
 const DEFAULT_STT_LANGUAGE: &str = "en";
 const LOCAL_WHISPER_INITIAL_PROMPT: &str = "Short spoken macOS computer control command.";
+const LOCAL_STT_PATH_PREFIXES: [&str; 4] =
+    ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"];
 
 #[derive(Debug, Clone)]
 pub struct SttClient {
@@ -134,7 +136,7 @@ fn transcribe_wav_with_local_whisper(
     fs::create_dir_all(&temp_dir).context("create local speech-to-text temp directory")?;
     let wav_path = temp_dir.join("input.wav");
     fs::write(&wav_path, wav_bytes).context("write local speech-to-text wav")?;
-    let output = Command::new(&whisper)
+    let output = local_whisper_command(&whisper)
         .arg(&wav_path)
         .arg("--model")
         .arg(model)
@@ -174,6 +176,34 @@ fn transcribe_wav_with_local_whisper(
     let value = read_local_whisper_json(&temp_dir, &wav_path, &output)?;
     let _ = fs::remove_dir_all(&temp_dir);
     parse_transcription_value(SttBackend::Local.as_str(), model, None, value)
+}
+
+fn local_whisper_command(whisper: &str) -> Command {
+    let mut command = Command::new(whisper);
+    command.env("PATH", local_stt_path());
+    command
+}
+
+fn local_stt_path() -> String {
+    let existing = std::env::var("PATH").unwrap_or_default();
+    let mut parts = LOCAL_STT_PATH_PREFIXES
+        .iter()
+        .map(|part| (*part).to_string())
+        .collect::<Vec<_>>();
+    parts.extend(
+        existing
+            .split(':')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .map(ToString::to_string),
+    );
+    let mut deduped = Vec::<String>::new();
+    for part in parts {
+        if !deduped.iter().any(|existing| existing == &part) {
+            deduped.push(part);
+        }
+    }
+    deduped.join(":")
 }
 
 fn transcribe_wav_with_local_whisper_retry(
@@ -575,6 +605,14 @@ mod tests {
         assert_eq!(transcript.backend, "local");
         assert_eq!(transcript.model, DEFAULT_STT_MODEL);
         assert_eq!(transcript.text, "open safari");
+    }
+
+    #[test]
+    fn local_stt_path_includes_homebrew_for_packaged_app_launches() {
+        let path = local_stt_path();
+
+        assert!(path.split(':').any(|part| part == "/opt/homebrew/bin"));
+        assert!(path.split(':').any(|part| part == "/usr/local/bin"));
     }
 
     #[test]

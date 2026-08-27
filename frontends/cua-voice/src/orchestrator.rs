@@ -359,6 +359,10 @@ fn user_visible_turn_error(error: &anyhow::Error) -> String {
     let message = format!("{error:#}");
     if is_missed_speech_message(&message) {
         "Didn't catch a command.".to_string()
+    } else if message.contains("local speech-to-text")
+        || message.contains("No such file or directory: 'ffmpeg'")
+    {
+        "Local speech-to-text needs attention.".to_string()
     } else if message.contains("planning model returned empty content")
         || message.contains("parse plan JSON")
     {
@@ -1086,6 +1090,18 @@ mod tests {
         assert_eq!(
             user_visible_turn_error(&error),
             "I couldn't get a usable model response."
+        );
+    }
+
+    #[test]
+    fn user_visible_error_hides_local_stt_tracebacks() {
+        let error = anyhow::anyhow!(
+            "local speech-to-text fallback after primary failure: No such file or directory: 'ffmpeg'"
+        );
+
+        assert_eq!(
+            user_visible_turn_error(&error),
+            "Local speech-to-text needs attention."
         );
     }
 
