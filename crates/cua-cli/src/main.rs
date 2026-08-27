@@ -1476,6 +1476,14 @@ fn remap_action_coordinates(
     recorded_frame: Option<&serde_json::Value>,
     current_frame: Option<&serde_json::Value>,
 ) {
+    if let Some(actions) = action
+        .get_mut("actions")
+        .and_then(|actions| actions.as_array_mut())
+    {
+        for action in actions {
+            remap_action_coordinates(action, recorded_frame, current_frame);
+        }
+    }
     let Some((scale_x, scale_y)) = coordinate_scale(recorded_frame, current_frame) else {
         return;
     };
@@ -1622,6 +1630,42 @@ mod tests {
         assert_eq!(action["from_y"], 25);
         assert_eq!(action["to_x"], 400);
         assert_eq!(action["to_y"], 50);
+    }
+
+    #[test]
+    fn remaps_sequence_mouse_coordinates_between_frame_sizes() {
+        let mut action = serde_json::json!({
+            "kind": "sequence",
+            "actions": [
+                {
+                    "kind": "mouse_click",
+                    "x": 100,
+                    "y": 50,
+                    "button": "left",
+                    "count": 1
+                },
+                {
+                    "kind": "mouse_drag",
+                    "from_x": 100,
+                    "from_y": 50,
+                    "to_x": 200,
+                    "to_y": 100,
+                    "duration_ms": 10
+                }
+            ],
+            "inter_action_delay_ms": 0
+        });
+        let recorded = serde_json::json!({ "width": 400, "height": 200 });
+        let current = serde_json::json!({ "width": 800, "height": 100 });
+
+        remap_action_coordinates(&mut action, Some(&recorded), Some(&current));
+
+        assert_eq!(action["actions"][0]["x"], 200);
+        assert_eq!(action["actions"][0]["y"], 25);
+        assert_eq!(action["actions"][1]["from_x"], 200);
+        assert_eq!(action["actions"][1]["from_y"], 25);
+        assert_eq!(action["actions"][1]["to_x"], 400);
+        assert_eq!(action["actions"][1]["to_y"], 50);
     }
 
     #[test]

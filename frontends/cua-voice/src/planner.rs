@@ -410,6 +410,14 @@ fn normalize_action_value(value: &mut serde_json::Value) {
             object
                 .entry("inter_action_delay_ms")
                 .or_insert_with(|| serde_json::json!(120));
+            if let Some(actions) = object
+                .get_mut("actions")
+                .and_then(|value| value.as_array_mut())
+            {
+                for action in actions {
+                    normalize_action_value(action);
+                }
+            }
         }
         "shell_exec" => {
             object
@@ -712,7 +720,7 @@ mod tests {
 
     #[test]
     fn parses_model_sequence_actions_with_default_delay() {
-        let raw = r#"{"response":"Opening and preparing.","action":{"kind":"sequence","actions":[{"kind":"open_app","app_name":"Messages"},{"kind":"key_press","combo":"cmd+n"}]}}"#;
+        let raw = r#"{"response":"Opening and preparing.","action":{"kind":"sequence","actions":[{"kind":"open_app","app_name":"Messages"},{"kind":"mouse_click","x":10,"y":20},{"kind":"key_press","combo":"cmd+n"}]}}"#;
         let plan = parse_model_plan(raw).unwrap();
 
         assert!(matches!(
@@ -724,6 +732,12 @@ mod tests {
                 actions.as_slice(),
                 [
                     InputAction::OpenApp { app_name },
+                    InputAction::MouseClick {
+                        x: 10,
+                        y: 20,
+                        button: MouseButton::Left,
+                        count: 1
+                    },
                     InputAction::KeyPress { combo },
                 ] if app_name == "Messages" && combo == "cmd+n"
             )
