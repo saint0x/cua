@@ -23,8 +23,8 @@ const VOICE_STEP_TIMEOUT_MS: u64 = 500;
 const VOICE_STEP_FLUSH_TIMEOUT_MS: u64 = 2_000;
 const DEFAULT_CONTEXT_PREFETCH_TIMEOUT_MS: u64 = 2_500;
 const MIN_RECORDING_DURATION: Duration = Duration::from_millis(250);
-const MIN_RECORDING_RMS: f32 = 0.0025;
-const MIN_RECORDING_PEAK: i16 = 420;
+const MIN_RECORDING_RMS: f32 = 0.0002;
+const MIN_RECORDING_PEAK: i16 = 80;
 
 struct PrefetchedContext {
     session: Option<CuaSession>,
@@ -216,7 +216,12 @@ fn validate_recorded_audio(audio: &RecordedAudio) -> anyhow::Result<()> {
         anyhow::bail!("recording was too short to contain a clear command");
     }
     if audio.peak_amplitude < MIN_RECORDING_PEAK || audio.rms_amplitude < MIN_RECORDING_RMS {
-        anyhow::bail!("no clear speech detected from the microphone");
+        anyhow::bail!(
+            "microphone captured near-silence: duration={}ms peak={} rms={:.5}",
+            audio.duration.as_millis(),
+            audio.peak_amplitude,
+            audio.rms_amplitude
+        );
     }
     Ok(())
 }
@@ -599,10 +604,18 @@ mod tests {
             peak_amplitude: 2_000,
             rms_amplitude: 0.01,
         };
+        let quiet_but_real_speech = RecordedAudio {
+            sample_rate: 48_000,
+            wav_bytes: vec![0; 44],
+            duration: Duration::from_millis(800),
+            peak_amplitude: 106,
+            rms_amplitude: 0.00095,
+        };
 
         assert!(validate_recorded_audio(&short).is_err());
         assert!(validate_recorded_audio(&silent).is_err());
         assert!(validate_recorded_audio(&speech).is_ok());
+        assert!(validate_recorded_audio(&quiet_but_real_speech).is_ok());
     }
 
     #[test]

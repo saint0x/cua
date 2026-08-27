@@ -158,7 +158,7 @@ impl DaemonState {
                 .lock()
                 .map(|value| value.clone())
                 .unwrap_or_default(),
-            hud_pid: self.hud_supervisor.pid(),
+            hud_pid: self.hud_supervisor.pid().or_else(discover_hud_pid),
             connected_clients: session_snapshot.sessions.len() as u32,
             owner_session_id: session_snapshot.owner_session_id,
             sessions: session_snapshot.sessions,
@@ -531,6 +531,50 @@ fn hud_binary_candidates(current: &Path) -> Vec<PathBuf> {
         );
     }
     candidates
+}
+
+fn parse_hud_pid_from_ps(ps_output: &str, candidates: &[PathBuf], current_pid: u32) -> Option<u32> {
+    let candidates: Vec<String> = candidates
+        .iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect();
+    ps_output.lines().find_map(|line| {
+        let trimmed = line.trim_start();
+        let split_at = trimmed.find(char::is_whitespace)?;
+        let (pid, command) = trimmed.split_at(split_at);
+        let command = command.trim_start();
+        let pid = pid.parse::<u32>().ok()?;
+        if pid == current_pid {
+            return None;
+        }
+        candidates
+            .iter()
+            .any(|candidate| command == candidate || command.starts_with(&format!("{candidate} ")))
+            .then_some(pid)
+    })
+}
+
+#[cfg(not(test))]
+fn discover_hud_pid() -> Option<u32> {
+    let current = std::env::current_exe().ok()?;
+    let candidates = hud_binary_candidates(&current);
+    if candidates.is_empty() {
+        return None;
+    }
+    let output = std::process::Command::new("/bin/ps")
+        .args(["-axo", "pid=,command="])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let ps_output = String::from_utf8_lossy(&output.stdout);
+    parse_hud_pid_from_ps(&ps_output, &candidates, std::process::id())
+}
+
+#[cfg(test)]
+fn discover_hud_pid() -> Option<u32> {
+    None
 }
 
 #[derive(Clone)]
@@ -1607,6 +1651,22 @@ async fn handle_unix_request(state: &DaemonState, request: UnixRequest) -> serde
                 }
             }
         }
+        "capture.window" => {
+            let params = request.params.unwrap_or_else(|| serde_json::json!({}));
+            match serde_json::from_value::<WindowCaptureRequest>(params) {
+                Ok(request) => capture_window_payload(state, request)
+                    .await
+                    .map(serde_json::to_value),
+                Err(error) => {
+                    return unix_error(
+                        id,
+                        "bad_request",
+                        error.to_string(),
+                        Some(StatusCode::BAD_REQUEST),
+                    )
+                }
+            }
+        }
         "status" => Ok(serde_json::to_value(state.health().await)),
         "manifest" => Ok(serde_json::to_value(manifest_payload())),
         "metrics" => Ok(serde_json::to_value(metrics_snapshot(state))),
@@ -1699,6 +1759,41 @@ async fn handle_unix_request(state: &DaemonState, request: UnixRequest) -> serde
                 Ok(request) => context_snapshot_payload(state, request)
                     .await
                     .map(serde_json::to_value),
+                Err(error) => {
+                    return unix_error(
+                        id,
+                        "bad_request",
+                        error.to_string(),
+                        Some(StatusCode::BAD_REQUEST),
+                    )
+                }
+            }
+        }
+        "clipboard.read" => {
+            let params = request.params.unwrap_or_else(|| serde_json::json!({}));
+            match serde_json::from_value::<ClipboardReadRequest>(params) {
+                Ok(request) => Ok(serde_json::to_value(
+                    clipboard_read_state(state, request).await,
+                )),
+                Err(error) => {
+                    return unix_error(
+                        id,
+                        "bad_request",
+                        error.to_string(),
+                        Some(StatusCode::BAD_REQUEST),
+                    )
+                }
+            }
+        }
+        "clipboard.write" => {
+            if let Err(error) = state.sessions.authorize_write(session_id.as_deref()) {
+                return unix_api_error(id, error);
+            }
+            let params = request.params.unwrap_or_else(|| serde_json::json!({}));
+            match serde_json::from_value::<ClipboardWriteRequest>(params) {
+                Ok(request) => Ok(serde_json::to_value(
+                    clipboard_write_state(state, request).await,
+                )),
                 Err(error) => {
                     return unix_error(
                         id,
@@ -2066,19 +2161,26 @@ async fn capture_window(
     State(state): State<DaemonState>,
     Json(request): Json<WindowCaptureRequest>,
 ) -> Result<Json<FramePayload>, ApiError> {
+    Ok(Json(capture_window_payload(&state, request).await?))
+}
+
+async fn capture_window_payload(
+    state: &DaemonState,
+    request: WindowCaptureRequest,
+) -> Result<FramePayload, ApiError> {
     let started = Instant::now();
     publish_protocol_step(
-        &state,
+        state,
         1,
         1,
         format!("Capturing window {}", request.window_id),
-        "HTTP API",
+        "Unix socket",
         2_500,
     );
     let capture_request = CaptureRequest {
-        max_width: None,
+        max_width: request.max_width,
         encoding: FrameEncoding::Png,
-        force_fresh: true,
+        force_fresh: false,
     };
     let window_id = request.window_id;
     let timeout = window_capture_timeout();
@@ -2121,7 +2223,7 @@ async fn capture_window(
             ApiError::busy(format!("encode lane unavailable: {error:?}"))
         })?;
     observe_encode_result(&state.metrics, &encoded);
-    Ok(Json(encoded.value))
+    Ok(encoded.value)
 }
 
 fn window_capture_timeout() -> Duration {
@@ -3286,21 +3388,28 @@ async fn clipboard_read(
     State(state): State<DaemonState>,
     Json(request): Json<ClipboardReadRequest>,
 ) -> Json<ClipboardResult> {
+    Json(clipboard_read_state(&state, request).await)
+}
+
+async fn clipboard_read_state(
+    state: &DaemonState,
+    request: ClipboardReadRequest,
+) -> ClipboardResult {
     let started = Instant::now();
     let action = "clipboard_read";
     let turn_id = Uuid::new_v4().to_string();
     let action_json = serde_json::to_value(&request).unwrap_or_else(|_| serde_json::json!(null));
-    let before = trace_snapshot(&state, &turn_id, "before").await;
+    let before = trace_snapshot(state, &turn_id, "before").await;
     if request.schema_version != SCHEMA_VERSION {
         state.metrics.increment(CounterKind::ClipboardRefusals);
         state
             .metrics
             .observe(MetricKind::ClipboardRead, started.elapsed());
         let result = clipboard_refusal(action, "schema_version must match the daemon schema");
-        let after = trace_snapshot(&state, &turn_id, "after").await;
-        append_clipboard_turn(&state, turn_id, action_json, &result, before, after).await;
-        publish_clipboard_event(&state, &result);
-        return Json(result);
+        let after = trace_snapshot(state, &turn_id, "after").await;
+        append_clipboard_turn(state, turn_id, action_json, &result, before, after).await;
+        publish_clipboard_event(state, &result);
+        return result;
     }
     if !request.allow_sensitive {
         state.metrics.increment(CounterKind::ClipboardRefusals);
@@ -3308,21 +3417,21 @@ async fn clipboard_read(
             .metrics
             .observe(MetricKind::ClipboardRead, started.elapsed());
         let result = clipboard_refusal(action, "clipboard read requires allow_sensitive=true");
-        let after = trace_snapshot(&state, &turn_id, "after").await;
-        append_clipboard_turn(&state, turn_id, action_json, &result, before, after).await;
-        publish_clipboard_event(&state, &result);
-        return Json(result);
+        let after = trace_snapshot(state, &turn_id, "after").await;
+        append_clipboard_turn(state, turn_id, action_json, &result, before, after).await;
+        publish_clipboard_event(state, &result);
+        return result;
     }
-    if let Some(message) = clipboard_refusal_reason(&state).await {
+    if let Some(message) = clipboard_refusal_reason(state).await {
         state.metrics.increment(CounterKind::ClipboardRefusals);
         state
             .metrics
             .observe(MetricKind::ClipboardRead, started.elapsed());
         let result = clipboard_refusal(action, message);
-        let after = trace_snapshot(&state, &turn_id, "after").await;
-        append_clipboard_turn(&state, turn_id, action_json, &result, before, after).await;
-        publish_clipboard_event(&state, &result);
-        return Json(result);
+        let after = trace_snapshot(state, &turn_id, "after").await;
+        append_clipboard_turn(state, turn_id, action_json, &result, before, after).await;
+        publish_clipboard_event(state, &result);
+        return result;
     }
     let text = state.clipboard.read().await.clone();
     state
@@ -3340,42 +3449,49 @@ async fn clipboard_read(
         ),
         text,
     };
-    let after = trace_snapshot(&state, &turn_id, "after").await;
-    append_clipboard_turn(&state, turn_id, action_json, &result, before, after).await;
-    publish_clipboard_event(&state, &result);
-    Json(result)
+    let after = trace_snapshot(state, &turn_id, "after").await;
+    append_clipboard_turn(state, turn_id, action_json, &result, before, after).await;
+    publish_clipboard_event(state, &result);
+    result
 }
 
 async fn clipboard_write(
     State(state): State<DaemonState>,
     Json(request): Json<ClipboardWriteRequest>,
 ) -> Json<ClipboardResult> {
+    Json(clipboard_write_state(&state, request).await)
+}
+
+async fn clipboard_write_state(
+    state: &DaemonState,
+    request: ClipboardWriteRequest,
+) -> ClipboardResult {
     let started = Instant::now();
     let action = "clipboard_write";
     let turn_id = Uuid::new_v4().to_string();
     let action_json = serde_json::to_value(&request).unwrap_or_else(|_| serde_json::json!(null));
-    let before = trace_snapshot(&state, &turn_id, "before").await;
+    let before = trace_snapshot(state, &turn_id, "before").await;
     if request.schema_version != SCHEMA_VERSION {
         state.metrics.increment(CounterKind::ClipboardRefusals);
         state
             .metrics
             .observe(MetricKind::ClipboardWrite, started.elapsed());
         let result = clipboard_refusal(action, "schema_version must match the daemon schema");
-        let after = trace_snapshot(&state, &turn_id, "after").await;
-        append_clipboard_turn(&state, turn_id, action_json, &result, before, after).await;
-        publish_clipboard_event(&state, &result);
-        return Json(result);
+        let after = trace_snapshot(state, &turn_id, "after").await;
+        append_clipboard_turn(state, turn_id, action_json, &result, before, after).await;
+        publish_clipboard_event(state, &result);
+        return result;
     }
-    if let Some(message) = clipboard_refusal_reason(&state).await {
+    if let Some(message) = clipboard_refusal_reason(state).await {
         state.metrics.increment(CounterKind::ClipboardRefusals);
         state
             .metrics
             .observe(MetricKind::ClipboardWrite, started.elapsed());
         let result = clipboard_refusal(action, message);
-        let after = trace_snapshot(&state, &turn_id, "after").await;
-        append_clipboard_turn(&state, turn_id, action_json, &result, before, after).await;
-        publish_clipboard_event(&state, &result);
-        return Json(result);
+        let after = trace_snapshot(state, &turn_id, "after").await;
+        append_clipboard_turn(state, turn_id, action_json, &result, before, after).await;
+        publish_clipboard_event(state, &result);
+        return result;
     }
     *state.clipboard.write().await = Some(request.text);
     state
@@ -3393,10 +3509,10 @@ async fn clipboard_write(
         ),
         text: None,
     };
-    let after = trace_snapshot(&state, &turn_id, "after").await;
-    append_clipboard_turn(&state, turn_id, action_json, &result, before, after).await;
-    publish_clipboard_event(&state, &result);
-    Json(result)
+    let after = trace_snapshot(state, &turn_id, "after").await;
+    append_clipboard_turn(state, turn_id, action_json, &result, before, after).await;
+    publish_clipboard_event(state, &result);
+    result
 }
 
 fn publish_input_event(state: &DaemonState, kind: &'static str, result: &InputResult) {
@@ -3954,6 +4070,21 @@ impl IntoResponse for ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hud_pid_parser_matches_exact_voice_executable() {
+        let candidate = PathBuf::from("/Applications/cua.app/Contents/MacOS/cua-voice");
+        let ps_output = "\
+        42 /bin/zsh -c ps ax | rg /Applications/cua.app/Contents/MacOS/cua-voice
+        99 /Applications/cua.app/Contents/MacOS/cua-voice
+       101 /Applications/cua.app/Contents/MacOS/cua --profile default serve
+";
+
+        assert_eq!(
+            parse_hud_pid_from_ps(ps_output, &[candidate], 101),
+            Some(99)
+        );
+    }
 
     #[tokio::test]
     async fn clipboard_write_requires_profile_grant() {

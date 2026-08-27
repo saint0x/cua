@@ -457,94 +457,35 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().with_env_filter("info").init();
     let cli = Cli::parse();
     match cli.command {
-        None => print_usage_and_status(cli.server_addr).await,
+        None => print_usage_and_status().await,
         Some(Command::Serve(args)) => {
             cua_daemon::serve(args.addr, cli.profile, args.allow_lan, args.hud_mode.into()).await
         }
-        Some(Command::Status(flag)) => {
-            get_json(cli.server_addr, &cli.profile, "/status", flag.json).await
-        }
+        Some(Command::Status(flag)) => unix_get(&cli.profile, "status", flag.json).await,
         Some(Command::Doctor(flag)) => doctor(flag.json).await,
         Some(Command::Permissions { command }) => permissions(&cli.profile, command).await,
-        Some(Command::Perf { command }) => perf(cli.server_addr, &cli.profile, command).await,
-        Some(Command::Context(args)) => context(cli.server_addr, &cli.profile, args).await,
-        Some(Command::Manifest(flag)) => {
-            get_json(cli.server_addr, &cli.profile, "/manifest", flag.json).await
-        }
-        Some(Command::Metrics(flag)) => {
-            get_json(cli.server_addr, &cli.profile, "/metrics", flag.json).await
-        }
-        Some(Command::Events(args)) => {
-            let path = match args.after {
-                Some(sequence) => format!("/events?after={sequence}"),
-                None => "/events".to_string(),
-            };
-            get_json(cli.server_addr, &cli.profile, &path, args.json).await
-        }
-        Some(Command::Session { command }) => session(cli.server_addr, &cli.profile, command).await,
+        Some(Command::Perf { command }) => perf(&cli.profile, command).await,
+        Some(Command::Context(args)) => context(&cli.profile, args).await,
+        Some(Command::Manifest(flag)) => unix_get(&cli.profile, "manifest", flag.json).await,
+        Some(Command::Metrics(flag)) => unix_get(&cli.profile, "metrics", flag.json).await,
+        Some(Command::Events(args)) => events(&cli.profile, args).await,
+        Some(Command::Session { command }) => session(&cli.profile, command).await,
         Some(Command::Stream(args)) => stream(&cli.profile, args).await,
         Some(Command::Ui { command }) => ui(cli.server_addr, &cli.profile, command).await,
-        Some(Command::Screenshot(args)) => screenshot(cli.server_addr, &cli.profile, args).await,
-        Some(Command::WindowCapture(args)) => {
-            window_capture(cli.server_addr, &cli.profile, args).await
-        }
-        Some(Command::Observe(flag)) => {
-            get_json(cli.server_addr, &cli.profile, "/observe/desktop", flag.json).await
-        }
-        Some(Command::Mouse { command }) => {
-            daemon_input(
-                cli.server_addr,
-                &cli.profile,
-                "/input/mouse",
-                mouse_action(command),
-            )
-            .await
-        }
-        Some(Command::Key { command }) => {
-            daemon_input(
-                cli.server_addr,
-                &cli.profile,
-                "/input/keyboard",
-                key_action(command),
-            )
-            .await
-        }
-        Some(Command::Clipboard { command }) => {
-            clipboard(cli.server_addr, &cli.profile, command).await
-        }
+        Some(Command::Screenshot(args)) => screenshot(&cli.profile, args).await,
+        Some(Command::WindowCapture(args)) => window_capture(&cli.profile, args).await,
+        Some(Command::Observe(flag)) => unix_get(&cli.profile, "observe.desktop", flag.json).await,
+        Some(Command::Mouse { command }) => daemon_input(&cli.profile, mouse_action(command)).await,
+        Some(Command::Key { command }) => daemon_input(&cli.profile, key_action(command)).await,
+        Some(Command::Clipboard { command }) => clipboard(&cli.profile, command).await,
         Some(Command::Model { command }) => model(command).await,
         Some(Command::Schema { command }) => schema(command).await,
-        Some(Command::Trace { command }) => trace(cli.server_addr, &cli.profile, command).await,
-        Some(Command::Profile { command }) => profile(cli.server_addr, &cli.profile, command).await,
-        Some(Command::Pause(flag)) => {
-            post_json(
-                cli.server_addr,
-                &cli.profile,
-                "/control/pause",
-                serde_json::json!({}),
-                flag.json,
-            )
-            .await
-        }
-        Some(Command::Resume(flag)) => {
-            post_json(
-                cli.server_addr,
-                &cli.profile,
-                "/control/resume",
-                serde_json::json!({}),
-                flag.json,
-            )
-            .await
-        }
+        Some(Command::Trace { command }) => trace(&cli.profile, command).await,
+        Some(Command::Profile { command }) => profile(&cli.profile, command).await,
+        Some(Command::Pause(flag)) => unix_get(&cli.profile, "control.pause", flag.json).await,
+        Some(Command::Resume(flag)) => unix_get(&cli.profile, "control.resume", flag.json).await,
         Some(Command::KillSwitch(flag)) => {
-            post_json(
-                cli.server_addr,
-                &cli.profile,
-                "/control/kill-switch",
-                serde_json::json!({}),
-                flag.json,
-            )
-            .await
+            unix_get(&cli.profile, "control.kill_switch", flag.json).await
         }
     }
 }
@@ -571,9 +512,9 @@ fn load_dotenv_path(path: &Path) {
     }
 }
 
-async fn print_usage_and_status(server_addr: SocketAddr) -> anyhow::Result<()> {
-    println!("cua: CLI/local-HTTP computer-use runtime");
-    println!("usage: cua serve --addr {server_addr} --hud-mode headful");
+async fn print_usage_and_status() -> anyhow::Result<()> {
+    println!("cua: CLI/profile-socket computer-use runtime");
+    println!("usage: cua serve --addr 127.0.0.1:0 --hud-mode headful");
     println!("       cua status --json");
     println!("       cua manifest --json");
     println!("       cua metrics --json");
@@ -670,9 +611,24 @@ async fn ui(_addr: SocketAddr, profile: &str, command: UiCommand) -> anyhow::Res
     }
 }
 
-async fn get_json(addr: SocketAddr, profile: &str, path: &str, json: bool) -> anyhow::Result<()> {
-    let value = request_json(addr, profile, reqwest::Method::GET, path, None).await?;
+async fn unix_get(profile: &str, method: &str, json: bool) -> anyhow::Result<()> {
+    let value = unix_request_json(profile, method, None).await?;
     print_json_value(&value, json)
+}
+
+async fn events(profile: &str, args: EventsArgs) -> anyhow::Result<()> {
+    let value = match args.after {
+        Some(sequence) => {
+            unix_request_json(
+                profile,
+                "events.after",
+                Some(serde_json::json!({ "after_sequence": sequence })),
+            )
+            .await?
+        }
+        None => unix_request_json(profile, "events.snapshot", None).await?,
+    };
+    print_json_value(&value, args.json)
 }
 
 fn print_json_value(value: &serde_json::Value, json: bool) -> anyhow::Result<()> {
@@ -682,45 +638,6 @@ fn print_json_value(value: &serde_json::Value, json: bool) -> anyhow::Result<()>
         println!("{value}");
     }
     Ok(())
-}
-
-async fn post_json(
-    addr: SocketAddr,
-    profile: &str,
-    path: &str,
-    body: serde_json::Value,
-    json: bool,
-) -> anyhow::Result<()> {
-    let value = request_json(addr, profile, reqwest::Method::POST, path, Some(body)).await?;
-    if json {
-        println!("{}", serde_json::to_string_pretty(&value)?);
-    } else {
-        println!("{value}");
-    }
-    Ok(())
-}
-
-async fn request_json(
-    addr: SocketAddr,
-    profile: &str,
-    method: reqwest::Method,
-    path: &str,
-    body: Option<serde_json::Value>,
-) -> anyhow::Result<serde_json::Value> {
-    let url = format!("http://{addr}{path}");
-    let token = cua_daemon::load_or_create_profile_token(profile).await?;
-    let client = reqwest::Client::new();
-    let mut request = client.request(method, url).bearer_auth(token);
-    if let Some(body) = body {
-        request = request.json(&body);
-    }
-    let response = request.send().await?;
-    let status = response.status();
-    let value = response.json().await?;
-    if !status.is_success() {
-        anyhow::bail!("daemon request {path} failed with {status}: {value}");
-    }
-    Ok(value)
 }
 
 async fn doctor(json: bool) -> anyhow::Result<()> {
@@ -805,7 +722,55 @@ async fn stream(profile: &str, args: StreamArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn session(addr: SocketAddr, profile: &str, command: SessionCommand) -> anyhow::Result<()> {
+async fn unix_visual_first_frame(
+    profile: &str,
+    max_width: Option<u32>,
+    fps: Option<u32>,
+    include_bytes: bool,
+) -> anyhow::Result<serde_json::Value> {
+    let token = load_profile_token(profile).await?;
+    let socket_path = profile_socket_path(profile)?;
+    let stream = UnixStream::connect(&socket_path)
+        .await
+        .with_context(|| format!("connect {}", socket_path.display()))?;
+    let (read, mut write) = stream.into_split();
+    let mut lines = BufReader::new(read).lines();
+    let request = serde_json::json!({
+        "id": uuid::Uuid::new_v4().to_string(),
+        "token": token,
+        "method": "visual.session",
+        "params": {
+            "schema_version": SCHEMA_VERSION,
+            "max_width": max_width,
+            "fps": fps,
+            "include_bytes": include_bytes
+        }
+    });
+    write.write_all(request.to_string().as_bytes()).await?;
+    write.write_all(b"\n").await?;
+    write.flush().await?;
+    while let Some(line) = tokio::time::timeout(Duration::from_millis(750), lines.next_line())
+        .await
+        .context("timed out waiting for unix visual frame")??
+    {
+        let value: serde_json::Value = serde_json::from_str(&line)?;
+        if value.get("type").and_then(|kind| kind.as_str()) == Some("frame") {
+            let close = serde_json::json!({
+                "id": uuid::Uuid::new_v4().to_string(),
+                "token": token,
+                "method": "visual.close",
+                "params": {}
+            });
+            write.write_all(close.to_string().as_bytes()).await?;
+            write.write_all(b"\n").await?;
+            write.flush().await?;
+            return Ok(value);
+        }
+    }
+    anyhow::bail!("unix visual session closed before first frame")
+}
+
+async fn session(profile: &str, command: SessionCommand) -> anyhow::Result<()> {
     match command {
         SessionCommand::Acquire {
             session_id,
@@ -821,14 +786,13 @@ async fn session(addr: SocketAddr, profile: &str, command: SessionCommand) -> an
                 role: role.into(),
                 ttl_ms,
             };
-            post_json(
-                addr,
+            let value = unix_request_json(
                 profile,
-                "/session/acquire",
-                serde_json::to_value(request)?,
-                json,
+                "session.acquire",
+                Some(serde_json::to_value(request)?),
             )
-            .await
+            .await?;
+            print_json_value(&value, json)
         }
         SessionCommand::Cancel {
             session_id,
@@ -840,16 +804,15 @@ async fn session(addr: SocketAddr, profile: &str, command: SessionCommand) -> an
                 session_id,
                 target_session_id,
             };
-            post_json(
-                addr,
+            let value = unix_request_json(
                 profile,
-                "/session/cancel",
-                serde_json::to_value(request)?,
-                json,
+                "session.cancel",
+                Some(serde_json::to_value(request)?),
             )
-            .await
+            .await?;
+            print_json_value(&value, json)
         }
-        SessionCommand::Status { json } => get_json(addr, profile, "/session/status", json).await,
+        SessionCommand::Status { json } => unix_get(profile, "session.status", json).await,
     }
 }
 
@@ -971,14 +934,14 @@ async fn unix_request_json(
         .unwrap_or(serde_json::Value::Null))
 }
 
-async fn perf(addr: SocketAddr, profile: &str, command: PerfCommand) -> anyhow::Result<()> {
+async fn perf(profile: &str, command: PerfCommand) -> anyhow::Result<()> {
     match command {
-        PerfCommand::Live(flag) => get_json(addr, profile, "/metrics", flag.json).await,
-        PerfCommand::Bench(args) => perf_bench(addr, profile, args).await,
+        PerfCommand::Live(flag) => unix_get(profile, "metrics", flag.json).await,
+        PerfCommand::Bench(args) => perf_bench(profile, args).await,
     }
 }
 
-async fn perf_bench(addr: SocketAddr, profile: &str, args: PerfBenchArgs) -> anyhow::Result<()> {
+async fn perf_bench(profile: &str, args: PerfBenchArgs) -> anyhow::Result<()> {
     let iterations = args.iterations.max(1);
     let warmup = args.warmup;
     let budget_ms = args.budget_ms.unwrap_or(match args.target {
@@ -987,63 +950,51 @@ async fn perf_bench(addr: SocketAddr, profile: &str, args: PerfBenchArgs) -> any
         PerfBenchTarget::Input => 250,
         PerfBenchTarget::ModelPrep => 5_000,
     });
-    let token = cua_daemon::load_or_create_profile_token(profile).await?;
-    let client = reqwest::Client::new();
     let mut samples = Vec::with_capacity(iterations);
     for index in 0..(iterations + warmup) {
         let started = Instant::now();
         match args.target {
             PerfBenchTarget::Screenshot => {
-                let _: FramePayload = client
-                    .post(format!("http://{addr}/capture/screenshot"))
-                    .bearer_auth(&token)
-                    .json(&serde_json::json!({
+                let value = unix_request_json(
+                    profile,
+                    "capture.screenshot",
+                    Some(serde_json::json!({
                         "max_width": 1280,
                         "encoding": FrameEncoding::Png,
                         "force_fresh": true,
                         "include_bytes": false
-                    }))
-                    .send()
-                    .await?
-                    .json()
-                    .await?;
+                    })),
+                )
+                .await?;
+                let _: FramePayload = serde_json::from_value(value)?;
             }
             PerfBenchTarget::Stream => {
-                let mut response = client
-                    .get(format!("http://{addr}/capture/stream.mjpeg"))
-                    .bearer_auth(&token)
-                    .send()
-                    .await?;
-                let _ = tokio::time::timeout(Duration::from_millis(500), response.chunk()).await;
+                let _frame = unix_visual_first_frame(profile, Some(1280), Some(30), false).await?;
             }
             PerfBenchTarget::Input => {
-                let _: serde_json::Value = client
-                    .post(format!("http://{addr}/input/mouse"))
-                    .bearer_auth(&token)
-                    .json(&InputAction::MouseMove {
+                let _: serde_json::Value = unix_request_json(
+                    profile,
+                    "input.dispatch",
+                    Some(serde_json::to_value(InputAction::MouseMove {
                         x: 5,
                         y: 5,
                         duration_ms: 0,
-                    })
-                    .send()
-                    .await?
-                    .json()
-                    .await?;
+                    })?),
+                )
+                .await?;
             }
             PerfBenchTarget::ModelPrep => {
-                let _: serde_json::Value = client
-                    .post(format!("http://{addr}/capture/screenshot"))
-                    .bearer_auth(&token)
-                    .json(&serde_json::json!({
+                let _: serde_json::Value = unix_request_json(
+                    profile,
+                    "capture.screenshot",
+                    Some(serde_json::json!({
                         "max_width": 640,
                         "encoding": FrameEncoding::Png,
                         "force_fresh": true,
                         "include_bytes": true
-                    }))
-                    .send()
-                    .await?
-                    .json()
-                    .await?;
+                    })),
+                )
+                .await?;
                 let _payload = serde_json::json!({
                     "model": "openai/gpt-5-mini",
                     "messages": [{
@@ -1095,12 +1046,10 @@ async fn perf_bench(addr: SocketAddr, profile: &str, args: PerfBenchArgs) -> any
     Ok(())
 }
 
-async fn context(addr: SocketAddr, profile: &str, args: ContextArgs) -> anyhow::Result<()> {
-    let value = request_json(
-        addr,
+async fn context(profile: &str, args: ContextArgs) -> anyhow::Result<()> {
+    let value = unix_request_json(
         profile,
-        reqwest::Method::POST,
-        "/context/snapshot",
+        "context.snapshot",
         Some(serde_json::json!({
             "max_width": args.max_width,
             "encoding": FrameEncoding::Png,
@@ -1125,49 +1074,35 @@ async fn context(addr: SocketAddr, profile: &str, args: ContextArgs) -> anyhow::
     Ok(())
 }
 
-async fn screenshot(addr: SocketAddr, profile: &str, args: ScreenshotArgs) -> anyhow::Result<()> {
-    let url = format!("http://{addr}/capture/screenshot");
-    let token = cua_daemon::load_or_create_profile_token(profile).await?;
-    let frame: FramePayload = reqwest::Client::new()
-        .post(url)
-        .bearer_auth(token)
-        .json(&serde_json::json!({
+async fn screenshot(profile: &str, args: ScreenshotArgs) -> anyhow::Result<()> {
+    let value = unix_request_json(
+        profile,
+        "capture.screenshot",
+        Some(serde_json::json!({
             "max_width": args.max_width,
             "encoding": FrameEncoding::Png,
             "force_fresh": args.force_fresh,
             "include_bytes": true
-        }))
-        .send()
-        .await?
-        .error_for_status()
-        .context("screenshot request failed")?
-        .json()
-        .await?;
+        })),
+    )
+    .await?;
+    let frame: FramePayload = serde_json::from_value(value)?;
     write_frame_payload(&frame, &args.out, args.json, "screenshot").await
 }
 
-async fn window_capture(
-    addr: SocketAddr,
-    profile: &str,
-    args: WindowCaptureArgs,
-) -> anyhow::Result<()> {
-    let url = format!("http://{addr}/capture/window");
-    let token = cua_daemon::load_or_create_profile_token(profile).await?;
-    let frame: FramePayload = reqwest::Client::new()
-        .post(url)
-        .bearer_auth(token)
-        .json(&serde_json::json!({
+async fn window_capture(profile: &str, args: WindowCaptureArgs) -> anyhow::Result<()> {
+    let value = unix_request_json(
+        profile,
+        "capture.window",
+        Some(serde_json::json!({
             "window_id": args.window_id,
             "max_width": args.max_width,
             "encoding": FrameEncoding::Png,
             "include_bytes": true
-        }))
-        .send()
-        .await?
-        .error_for_status()
-        .context("window capture request failed")?
-        .json()
-        .await?;
+        })),
+    )
+    .await?;
+    let frame: FramePayload = serde_json::from_value(value)?;
     write_frame_payload(&frame, &args.out, args.json, "window").await
 }
 
@@ -1233,49 +1168,44 @@ fn key_action(command: KeyCommand) -> InputAction {
     }
 }
 
-async fn daemon_input(
-    addr: SocketAddr,
-    profile: &str,
-    path: &str,
-    action: InputAction,
-) -> anyhow::Result<()> {
-    post_json(addr, profile, path, serde_json::to_value(action)?, true).await
+async fn daemon_input(profile: &str, action: InputAction) -> anyhow::Result<()> {
+    let value = unix_request_json(
+        profile,
+        "input.dispatch",
+        Some(serde_json::to_value(action)?),
+    )
+    .await?;
+    print_json_value(&value, true)
 }
 
-async fn clipboard(
-    addr: SocketAddr,
-    profile: &str,
-    command: ClipboardCommand,
-) -> anyhow::Result<()> {
+async fn clipboard(profile: &str, command: ClipboardCommand) -> anyhow::Result<()> {
     match command {
         ClipboardCommand::Read {
             allow_sensitive,
             json,
         } => {
-            post_json(
-                addr,
+            let value = unix_request_json(
                 profile,
-                "/clipboard/read",
-                serde_json::to_value(ClipboardReadRequest {
+                "clipboard.read",
+                Some(serde_json::to_value(ClipboardReadRequest {
                     schema_version: SCHEMA_VERSION.to_string(),
                     allow_sensitive,
-                })?,
-                json,
+                })?),
             )
-            .await
+            .await?;
+            print_json_value(&value, json)
         }
         ClipboardCommand::Write { text, json } => {
-            post_json(
-                addr,
+            let value = unix_request_json(
                 profile,
-                "/clipboard/write",
-                serde_json::to_value(ClipboardWriteRequest {
+                "clipboard.write",
+                Some(serde_json::to_value(ClipboardWriteRequest {
                     schema_version: SCHEMA_VERSION.to_string(),
                     text,
-                })?,
-                json,
+                })?),
             )
-            .await
+            .await?;
+            print_json_value(&value, json)
         }
     }
 }
@@ -1340,7 +1270,7 @@ async fn schema(command: SchemaCommand) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn trace(addr: SocketAddr, profile: &str, command: TraceCommand) -> anyhow::Result<()> {
+async fn trace(profile: &str, command: TraceCommand) -> anyhow::Result<()> {
     match command {
         TraceCommand::Start { dir } => {
             let writer = TraceWriter::create(&dir).await?;
@@ -1356,13 +1286,12 @@ async fn trace(addr: SocketAddr, profile: &str, command: TraceCommand) -> anyhow
         TraceCommand::Inspect { dir, json } => inspect_trace(dir, json, false).await,
         TraceCommand::Verify { dir, json } => inspect_trace(dir, json, true).await,
         TraceCommand::Replay { dir, dry_run, json } => {
-            replay_trace(addr, profile, dir, dry_run, json).await
+            replay_trace(profile, dir, dry_run, json).await
         }
     }
 }
 
 async fn replay_trace(
-    addr: SocketAddr,
     profile: &str,
     dir: PathBuf,
     dry_run: bool,
@@ -1373,13 +1302,13 @@ async fn replay_trace(
     let mut skipped = Vec::new();
     let mut resnapshots = 0usize;
     for turn in turns {
-        let before = fresh_frame(addr, profile).await?;
+        let before = fresh_frame(profile).await?;
         resnapshots += 1;
         let mut action = turn.action.clone();
         remap_action_coordinates(&mut action, turn.before.as_ref(), before.get("envelope"));
         if !dry_run {
-            if let Some((path, body)) = replay_request(&turn, action)? {
-                request_json(addr, profile, reqwest::Method::POST, path, Some(body)).await?;
+            if let Some((method, body)) = replay_request(&turn, action)? {
+                unix_request_json(profile, method, Some(body)).await?;
                 replayed += 1;
             } else {
                 skipped.push(turn.turn_id.clone());
@@ -1389,7 +1318,7 @@ async fn replay_trace(
         } else {
             skipped.push(turn.turn_id.clone());
         }
-        let _after = fresh_frame(addr, profile).await?;
+        let _after = fresh_frame(profile).await?;
         resnapshots += 1;
     }
     let report = serde_json::json!({
@@ -1432,12 +1361,10 @@ async fn read_action_turns(dir: &PathBuf) -> anyhow::Result<Vec<ActionTurnRecord
     Ok(turns)
 }
 
-async fn fresh_frame(addr: SocketAddr, profile: &str) -> anyhow::Result<serde_json::Value> {
-    request_json(
-        addr,
+async fn fresh_frame(profile: &str) -> anyhow::Result<serde_json::Value> {
+    unix_request_json(
         profile,
-        reqwest::Method::POST,
-        "/capture/screenshot",
+        "capture.screenshot",
         Some(serde_json::json!({
             "max_width": 1280,
             "include_bytes": false,
@@ -1454,23 +1381,28 @@ fn replay_request(
 ) -> anyhow::Result<Option<(&'static str, serde_json::Value)>> {
     if action.get("kind").and_then(|kind| kind.as_str()).is_some() {
         let input = serde_json::from_value::<InputAction>(action)?;
-        let path = match input {
+        match input {
             InputAction::MouseMove { .. }
             | InputAction::MouseClick { .. }
-            | InputAction::MouseDrag { .. } => "/input/mouse",
-            InputAction::KeyPress { .. }
+            | InputAction::MouseDrag { .. }
+            | InputAction::KeyPress { .. }
             | InputAction::KeyType { .. }
-            | InputAction::KeyPaste { .. } => "/input/keyboard",
+            | InputAction::KeyPaste { .. } => {
+                return Ok(Some(("input.dispatch", serde_json::to_value(input)?)));
+            }
             InputAction::ClipboardRead { .. } | InputAction::ClipboardWrite { .. } => {
                 return Ok(None);
             }
-            InputAction::Pause | InputAction::Resume | InputAction::KillSwitch => "/input/keyboard",
-        };
-        return Ok(Some((path, serde_json::to_value(input)?)));
+            InputAction::Pause => return Ok(Some(("control.pause", serde_json::json!({})))),
+            InputAction::Resume => return Ok(Some(("control.resume", serde_json::json!({})))),
+            InputAction::KillSwitch => {
+                return Ok(Some(("control.kill_switch", serde_json::json!({}))));
+            }
+        }
     }
     match turn.result.get("action").and_then(|action| action.as_str()) {
-        Some("clipboard_read") => Ok(Some(("/clipboard/read", action))),
-        Some("clipboard_write") => Ok(Some(("/clipboard/write", action))),
+        Some("clipboard_read") => Ok(Some(("clipboard.read", action))),
+        Some("clipboard_write") => Ok(Some(("clipboard.write", action))),
         _ => Ok(None),
     }
 }
@@ -1516,11 +1448,7 @@ fn remap_i32(action: &mut serde_json::Value, key: &str, scale: f64) {
     }
 }
 
-async fn profile(
-    addr: SocketAddr,
-    active_profile: &str,
-    command: ProfileCommand,
-) -> anyhow::Result<()> {
+async fn profile(active_profile: &str, command: ProfileCommand) -> anyhow::Result<()> {
     match command {
         ProfileCommand::Create {
             name,
@@ -1531,33 +1459,24 @@ async fn profile(
         } => {
             let mut capabilities = CapabilityManifest::default();
             capabilities.clipboard = clipboard;
-            post_json(
-                addr,
+            let value = unix_request_json(
                 active_profile,
-                "/profile/create",
-                serde_json::json!({
+                "profile.create",
+                Some(serde_json::json!({
                     "name": name,
                     "mode": RuntimeMode::from(mode),
                     "duration_ms": duration_ms,
                     "capabilities": capabilities,
-                }),
-                json,
+                })),
             )
-            .await
+            .await?;
+            print_json_value(&value, json)
         }
         ProfileCommand::Activate { json } => {
-            post_json(
-                addr,
-                active_profile,
-                "/profile/activate",
-                serde_json::json!({}),
-                json,
-            )
-            .await
+            let value = unix_request_json(active_profile, "profile.activate", None).await?;
+            print_json_value(&value, json)
         }
-        ProfileCommand::Status { json } => {
-            get_json(addr, active_profile, "/profile/status", json).await
-        }
+        ProfileCommand::Status { json } => unix_get(active_profile, "profile.status", json).await,
     }
 }
 

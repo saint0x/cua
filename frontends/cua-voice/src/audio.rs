@@ -218,10 +218,9 @@ fn push_interleaved<T>(
     let mut guard = samples.lock().unwrap();
     let mut peak = 0i16;
     for frame in data.chunks(channels) {
-        if let Some(sample) = frame.first() {
-            let sample = (*sample).to_sample::<i16>();
-            peak = peak.max(sample.saturating_abs());
-            guard.push(sample);
+        if let Some((mixed, frame_peak)) = mix_interleaved_frame(frame) {
+            peak = peak.max(frame_peak);
+            guard.push(mixed);
         }
     }
     drop(guard);
@@ -229,6 +228,28 @@ fn push_interleaved<T>(
         .lock()
         .unwrap()
         .observe_peak(Instant::now(), peak, policy.speech_threshold);
+}
+
+fn mix_interleaved_frame<T>(frame: &[T]) -> Option<(i16, i16)>
+where
+    T: cpal::Sample,
+    i16: cpal::FromSample<T>,
+{
+    if frame.is_empty() {
+        return None;
+    }
+    let mut sum = 0i32;
+    let mut peak = 0i16;
+    for sample in frame {
+        let sample = (*sample).to_sample::<i16>();
+        sum += i32::from(sample);
+        peak = peak.max(sample.saturating_abs());
+    }
+    let mixed = sum / i32::try_from(frame.len()).unwrap_or(1);
+    Some((
+        mixed.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16,
+        peak,
+    ))
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]
@@ -368,5 +389,29 @@ mod tests {
         assert_eq!(stats.duration, Duration::from_millis(4));
         assert_eq!(stats.peak_amplitude, 2_000);
         assert!(stats.rms_amplitude > 0.03);
+    }
+
+    #[test]
+    fn interleaved_input_uses_all_channels_for_mono_capture() {
+        let frame = [0i16, 1_000i16];
+
+        assert_eq!(mix_interleaved_frame(&frame), Some((500, 1_000)));
+    }
+
+    #[test]
+    fn interleaved_peak_detects_speech_outside_first_channel() {
+        let policy = RecordingPolicy {
+            max_duration: Duration::from_secs(1),
+            min_duration: Duration::from_millis(100),
+            silence_duration: Duration::from_millis(120),
+            speech_threshold: 500,
+        };
+        let samples = Arc::new(Mutex::new(Vec::<i16>::new()));
+        let state = Arc::new(Mutex::new(RecordingState::new(Instant::now())));
+
+        push_interleaved(&[0i16, 800i16, 0, 900], 2, &samples, &state, policy);
+
+        assert_eq!(*samples.lock().unwrap(), vec![400, 450]);
+        assert!(state.lock().unwrap().heard_voice);
     }
 }
