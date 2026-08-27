@@ -445,6 +445,81 @@ pub struct RuntimeInventory {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct AttestationChallengeRequest {
+    pub schema_version: String,
+    pub audience: String,
+    pub profile: Option<String>,
+    pub requested_claims: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct AttestationChallenge {
+    pub schema_version: String,
+    pub challenge_id: String,
+    pub nonce: String,
+    pub audience: String,
+    pub issued_wall_ms: i64,
+    pub expires_wall_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MachineKeyBackend {
+    SecureEnclave,
+    Keychain,
+    FileForTests,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct MachineIdentity {
+    pub schema_version: String,
+    pub machine_key_id: String,
+    pub machine_public_key: String,
+    pub machine_id_hash: String,
+    pub created_wall_ms: i64,
+    pub key_backend: MachineKeyBackend,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct RuntimeIdentityClaims {
+    pub schema_version: String,
+    pub runtime_name: String,
+    pub runtime_version: String,
+    pub daemon_pid: u32,
+    pub profile: String,
+    pub socket_path: String,
+    pub http_addr: String,
+    pub bundle_id: Option<String>,
+    pub designated_requirement: Option<String>,
+    pub code_signature_summary: Option<String>,
+    pub binary_sha256: Option<String>,
+    pub permissions: PermissionReport,
+    pub active_profile: ProfilePolicy,
+    pub safety_state: SafetyState,
+    pub session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AttestationSignatureAlgorithm {
+    Ed25519,
+    P256Sha256,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct MachineAttestation {
+    pub schema_version: String,
+    pub challenge: AttestationChallenge,
+    pub identity: MachineIdentity,
+    pub claims: RuntimeIdentityClaims,
+    pub signature_algorithm: AttestationSignatureAlgorithm,
+    pub signature: String,
+    pub signed_wall_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct SessionLeaseRequest {
     pub schema_version: String,
     pub session_id: String,
@@ -887,6 +962,26 @@ pub fn schema_bundle() -> SchemaBundle {
         serde_json::json!(schema_for!(ConfigInventory)),
     );
     schemas.insert(
+        "AttestationChallengeRequest".to_string(),
+        serde_json::json!(schema_for!(AttestationChallengeRequest)),
+    );
+    schemas.insert(
+        "AttestationChallenge".to_string(),
+        serde_json::json!(schema_for!(AttestationChallenge)),
+    );
+    schemas.insert(
+        "MachineIdentity".to_string(),
+        serde_json::json!(schema_for!(MachineIdentity)),
+    );
+    schemas.insert(
+        "RuntimeIdentityClaims".to_string(),
+        serde_json::json!(schema_for!(RuntimeIdentityClaims)),
+    );
+    schemas.insert(
+        "MachineAttestation".to_string(),
+        serde_json::json!(schema_for!(MachineAttestation)),
+    );
+    schemas.insert(
         "RuntimeSessionInfo".to_string(),
         serde_json::json!(schema_for!(RuntimeSessionInfo)),
     );
@@ -1242,5 +1337,96 @@ mod tests {
             std::env::remove_var("CUA_HOME");
         }
         let _ = std::fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn attestation_schemas_are_exported() {
+        let bundle = schema_bundle();
+
+        for key in [
+            "AttestationChallengeRequest",
+            "AttestationChallenge",
+            "MachineIdentity",
+            "RuntimeIdentityClaims",
+            "MachineAttestation",
+        ] {
+            assert!(bundle.schemas.contains_key(key), "missing schema {key}");
+        }
+    }
+
+    #[test]
+    fn machine_identity_uses_salted_hash_without_raw_hardware_ids() {
+        let identity = MachineIdentity {
+            schema_version: SCHEMA_VERSION.to_string(),
+            machine_key_id: "key_123".to_string(),
+            machine_public_key: "pub_abc".to_string(),
+            machine_id_hash: "audience_salted_hash".to_string(),
+            created_wall_ms: 42,
+            key_backend: MachineKeyBackend::Keychain,
+        };
+
+        let value = serde_json::to_value(identity).unwrap();
+        assert_eq!(value["machine_id_hash"], "audience_salted_hash");
+        assert!(value.get("serial").is_none());
+        assert!(value.get("platform_uuid").is_none());
+        assert!(value.get("hardware_uuid").is_none());
+    }
+
+    #[test]
+    fn machine_attestation_serializes_runtime_claims() {
+        let profile = ProfilePolicy {
+            schema_version: SCHEMA_VERSION.to_string(),
+            name: "default".to_string(),
+            mode: RuntimeMode::Supervised,
+            capabilities: CapabilityManifest::default(),
+            created_wall_ms: 1,
+            expires_wall_ms: None,
+            active: true,
+        };
+        let claims = RuntimeIdentityClaims {
+            schema_version: SCHEMA_VERSION.to_string(),
+            runtime_name: "cua".to_string(),
+            runtime_version: "0.1.0".to_string(),
+            daemon_pid: 123,
+            profile: "default".to_string(),
+            socket_path: "/tmp/cua.sock".to_string(),
+            http_addr: "127.0.0.1:0".to_string(),
+            bundle_id: Some("app.cua".to_string()),
+            designated_requirement: None,
+            code_signature_summary: None,
+            binary_sha256: Some("sha256".to_string()),
+            permissions: PermissionReport::conservative_unknown(),
+            active_profile: profile,
+            safety_state: SafetyState::Running,
+            session_id: Some("session".to_string()),
+        };
+        let attestation = MachineAttestation {
+            schema_version: SCHEMA_VERSION.to_string(),
+            challenge: AttestationChallenge {
+                schema_version: SCHEMA_VERSION.to_string(),
+                challenge_id: "challenge".to_string(),
+                nonce: "nonce".to_string(),
+                audience: "quilt-cloud".to_string(),
+                issued_wall_ms: 1,
+                expires_wall_ms: 2,
+            },
+            identity: MachineIdentity {
+                schema_version: SCHEMA_VERSION.to_string(),
+                machine_key_id: "key".to_string(),
+                machine_public_key: "public".to_string(),
+                machine_id_hash: "hash".to_string(),
+                created_wall_ms: 1,
+                key_backend: MachineKeyBackend::FileForTests,
+            },
+            claims,
+            signature_algorithm: AttestationSignatureAlgorithm::Ed25519,
+            signature: "signature".to_string(),
+            signed_wall_ms: 2,
+        };
+
+        let value = serde_json::to_value(attestation).unwrap();
+        assert_eq!(value["challenge"]["audience"], "quilt-cloud");
+        assert_eq!(value["claims"]["runtime_name"], "cua");
+        assert_eq!(value["signature_algorithm"], "ed25519");
     }
 }

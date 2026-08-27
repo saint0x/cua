@@ -29,6 +29,71 @@
       "title": "ApiErrorBody",
       "type": "object"
     },
+    "AttestationChallenge": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "audience": {
+          "type": "string"
+        },
+        "challenge_id": {
+          "type": "string"
+        },
+        "expires_wall_ms": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "issued_wall_ms": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "nonce": {
+          "type": "string"
+        },
+        "schema_version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "audience",
+        "challenge_id",
+        "expires_wall_ms",
+        "issued_wall_ms",
+        "nonce",
+        "schema_version"
+      ],
+      "title": "AttestationChallenge",
+      "type": "object"
+    },
+    "AttestationChallengeRequest": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "audience": {
+          "type": "string"
+        },
+        "profile": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "requested_claims": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "schema_version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "audience",
+        "requested_claims",
+        "schema_version"
+      ],
+      "title": "AttestationChallengeRequest",
+      "type": "object"
+    },
     "ClipboardReadRequest": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
@@ -3807,6 +3872,390 @@
       "title": "InputResult",
       "type": "object"
     },
+    "MachineAttestation": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "AttestationChallenge": {
+          "properties": {
+            "audience": {
+              "type": "string"
+            },
+            "challenge_id": {
+              "type": "string"
+            },
+            "expires_wall_ms": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "issued_wall_ms": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "nonce": {
+              "type": "string"
+            },
+            "schema_version": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "audience",
+            "challenge_id",
+            "expires_wall_ms",
+            "issued_wall_ms",
+            "nonce",
+            "schema_version"
+          ],
+          "type": "object"
+        },
+        "AttestationSignatureAlgorithm": {
+          "enum": [
+            "ed25519",
+            "p256_sha256",
+            "unknown"
+          ],
+          "type": "string"
+        },
+        "CapabilityManifest": {
+          "properties": {
+            "actions": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "apps": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "clipboard": {
+              "type": "boolean"
+            },
+            "displays": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "max_fps": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "model_egress": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "actions",
+            "apps",
+            "clipboard",
+            "displays",
+            "max_fps",
+            "model_egress"
+          ],
+          "type": "object"
+        },
+        "MachineIdentity": {
+          "properties": {
+            "created_wall_ms": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "key_backend": {
+              "$ref": "#/definitions/MachineKeyBackend"
+            },
+            "machine_id_hash": {
+              "type": "string"
+            },
+            "machine_key_id": {
+              "type": "string"
+            },
+            "machine_public_key": {
+              "type": "string"
+            },
+            "schema_version": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "created_wall_ms",
+            "key_backend",
+            "machine_id_hash",
+            "machine_key_id",
+            "machine_public_key",
+            "schema_version"
+          ],
+          "type": "object"
+        },
+        "MachineKeyBackend": {
+          "enum": [
+            "secure_enclave",
+            "keychain",
+            "file_for_tests",
+            "unknown"
+          ],
+          "type": "string"
+        },
+        "PermissionReport": {
+          "properties": {
+            "accessibility_input": {
+              "$ref": "#/definitions/PermissionState"
+            },
+            "automation": {
+              "$ref": "#/definitions/PermissionState"
+            },
+            "clipboard": {
+              "$ref": "#/definitions/PermissionState"
+            },
+            "input_monitoring": {
+              "$ref": "#/definitions/PermissionState"
+            },
+            "portal": {
+              "$ref": "#/definitions/PermissionState"
+            },
+            "screen_recording": {
+              "$ref": "#/definitions/PermissionState"
+            }
+          },
+          "required": [
+            "accessibility_input",
+            "automation",
+            "clipboard",
+            "input_monitoring",
+            "portal",
+            "screen_recording"
+          ],
+          "type": "object"
+        },
+        "PermissionState": {
+          "enum": [
+            "granted",
+            "missing",
+            "denied",
+            "not_applicable",
+            "unknown"
+          ],
+          "type": "string"
+        },
+        "ProfilePolicy": {
+          "properties": {
+            "active": {
+              "type": "boolean"
+            },
+            "capabilities": {
+              "$ref": "#/definitions/CapabilityManifest"
+            },
+            "created_wall_ms": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "expires_wall_ms": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "mode": {
+              "$ref": "#/definitions/RuntimeMode"
+            },
+            "name": {
+              "type": "string"
+            },
+            "schema_version": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "active",
+            "capabilities",
+            "created_wall_ms",
+            "mode",
+            "name",
+            "schema_version"
+          ],
+          "type": "object"
+        },
+        "RuntimeIdentityClaims": {
+          "properties": {
+            "active_profile": {
+              "$ref": "#/definitions/ProfilePolicy"
+            },
+            "binary_sha256": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "bundle_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "code_signature_summary": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "daemon_pid": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "designated_requirement": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "http_addr": {
+              "type": "string"
+            },
+            "permissions": {
+              "$ref": "#/definitions/PermissionReport"
+            },
+            "profile": {
+              "type": "string"
+            },
+            "runtime_name": {
+              "type": "string"
+            },
+            "runtime_version": {
+              "type": "string"
+            },
+            "safety_state": {
+              "$ref": "#/definitions/SafetyState"
+            },
+            "schema_version": {
+              "type": "string"
+            },
+            "session_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "socket_path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "active_profile",
+            "daemon_pid",
+            "http_addr",
+            "permissions",
+            "profile",
+            "runtime_name",
+            "runtime_version",
+            "safety_state",
+            "schema_version",
+            "socket_path"
+          ],
+          "type": "object"
+        },
+        "RuntimeMode": {
+          "enum": [
+            "observe",
+            "supervised",
+            "autonomous"
+          ],
+          "type": "string"
+        },
+        "SafetyState": {
+          "enum": [
+            "running",
+            "paused",
+            "killed"
+          ],
+          "type": "string"
+        }
+      },
+      "properties": {
+        "challenge": {
+          "$ref": "#/definitions/AttestationChallenge"
+        },
+        "claims": {
+          "$ref": "#/definitions/RuntimeIdentityClaims"
+        },
+        "identity": {
+          "$ref": "#/definitions/MachineIdentity"
+        },
+        "schema_version": {
+          "type": "string"
+        },
+        "signature": {
+          "type": "string"
+        },
+        "signature_algorithm": {
+          "$ref": "#/definitions/AttestationSignatureAlgorithm"
+        },
+        "signed_wall_ms": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "challenge",
+        "claims",
+        "identity",
+        "schema_version",
+        "signature",
+        "signature_algorithm",
+        "signed_wall_ms"
+      ],
+      "title": "MachineAttestation",
+      "type": "object"
+    },
+    "MachineIdentity": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "MachineKeyBackend": {
+          "enum": [
+            "secure_enclave",
+            "keychain",
+            "file_for_tests",
+            "unknown"
+          ],
+          "type": "string"
+        }
+      },
+      "properties": {
+        "created_wall_ms": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "key_backend": {
+          "$ref": "#/definitions/MachineKeyBackend"
+        },
+        "machine_id_hash": {
+          "type": "string"
+        },
+        "machine_key_id": {
+          "type": "string"
+        },
+        "machine_public_key": {
+          "type": "string"
+        },
+        "schema_version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "created_wall_ms",
+        "key_backend",
+        "machine_id_hash",
+        "machine_key_id",
+        "machine_public_key",
+        "schema_version"
+      ],
+      "title": "MachineIdentity",
+      "type": "object"
+    },
     "Manifest": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
@@ -4152,6 +4601,227 @@
         "schema_version"
       ],
       "title": "RuntimeControlState",
+      "type": "object"
+    },
+    "RuntimeIdentityClaims": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "CapabilityManifest": {
+          "properties": {
+            "actions": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "apps": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "clipboard": {
+              "type": "boolean"
+            },
+            "displays": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "max_fps": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "model_egress": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "actions",
+            "apps",
+            "clipboard",
+            "displays",
+            "max_fps",
+            "model_egress"
+          ],
+          "type": "object"
+        },
+        "PermissionReport": {
+          "properties": {
+            "accessibility_input": {
+              "$ref": "#/definitions/PermissionState"
+            },
+            "automation": {
+              "$ref": "#/definitions/PermissionState"
+            },
+            "clipboard": {
+              "$ref": "#/definitions/PermissionState"
+            },
+            "input_monitoring": {
+              "$ref": "#/definitions/PermissionState"
+            },
+            "portal": {
+              "$ref": "#/definitions/PermissionState"
+            },
+            "screen_recording": {
+              "$ref": "#/definitions/PermissionState"
+            }
+          },
+          "required": [
+            "accessibility_input",
+            "automation",
+            "clipboard",
+            "input_monitoring",
+            "portal",
+            "screen_recording"
+          ],
+          "type": "object"
+        },
+        "PermissionState": {
+          "enum": [
+            "granted",
+            "missing",
+            "denied",
+            "not_applicable",
+            "unknown"
+          ],
+          "type": "string"
+        },
+        "ProfilePolicy": {
+          "properties": {
+            "active": {
+              "type": "boolean"
+            },
+            "capabilities": {
+              "$ref": "#/definitions/CapabilityManifest"
+            },
+            "created_wall_ms": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "expires_wall_ms": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "mode": {
+              "$ref": "#/definitions/RuntimeMode"
+            },
+            "name": {
+              "type": "string"
+            },
+            "schema_version": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "active",
+            "capabilities",
+            "created_wall_ms",
+            "mode",
+            "name",
+            "schema_version"
+          ],
+          "type": "object"
+        },
+        "RuntimeMode": {
+          "enum": [
+            "observe",
+            "supervised",
+            "autonomous"
+          ],
+          "type": "string"
+        },
+        "SafetyState": {
+          "enum": [
+            "running",
+            "paused",
+            "killed"
+          ],
+          "type": "string"
+        }
+      },
+      "properties": {
+        "active_profile": {
+          "$ref": "#/definitions/ProfilePolicy"
+        },
+        "binary_sha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "bundle_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "code_signature_summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "daemon_pid": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "designated_requirement": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "http_addr": {
+          "type": "string"
+        },
+        "permissions": {
+          "$ref": "#/definitions/PermissionReport"
+        },
+        "profile": {
+          "type": "string"
+        },
+        "runtime_name": {
+          "type": "string"
+        },
+        "runtime_version": {
+          "type": "string"
+        },
+        "safety_state": {
+          "$ref": "#/definitions/SafetyState"
+        },
+        "schema_version": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "socket_path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "active_profile",
+        "daemon_pid",
+        "http_addr",
+        "permissions",
+        "profile",
+        "runtime_name",
+        "runtime_version",
+        "safety_state",
+        "schema_version",
+        "socket_path"
+      ],
+      "title": "RuntimeIdentityClaims",
       "type": "object"
     },
     "RuntimeInventory": {

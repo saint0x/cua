@@ -66,17 +66,7 @@
     - HTTP routes currently appear bearer-token-only and do not have the same owner-session write gate.
     - SDK mutation should prefer Unix until HTTP has equivalent session semantics.
 
-11. Add first-class machine attestation types to `cua-core`.
-    - Add `AttestationChallengeRequest` with `schema_version`, `audience`, optional `profile`, and optional requested claims.
-    - Add `AttestationChallenge` with `schema_version`, `challenge_id`, `nonce`, `audience`, `issued_wall_ms`, and `expires_wall_ms`.
-    - Add `MachineIdentity` with `schema_version`, `machine_key_id`, `machine_public_key`, `machine_id_hash`, `created_wall_ms`, and `key_backend`.
-    - Add `RuntimeIdentityClaims` with `schema_version`, `runtime_name`, `runtime_version`, `daemon_pid`, `profile`, `socket_path`, `http_addr`, `bundle_id`, `designated_requirement`, `code_signature_summary`, `binary_sha256`, `permissions`, `active_profile`, `safety_state`, and `session_id`.
-    - Add `MachineAttestation` with `schema_version`, `challenge`, `identity`, `claims`, `signature_algorithm`, `signature`, and `signed_wall_ms`.
-    - Add all attestation types to `schema_bundle()`.
-    - Update `tests/fixtures/schema-bundle.json`.
-    - Do not expose raw hardware serials or platform UUIDs. Use a tenant/project/audience-salted machine hash.
-
-12. Implement local machine identity storage.
+11. Implement local machine identity storage.
     - Create a machine identity concern under `~/.cua/identity/`.
     - Store non-secret metadata in `~/.cua/identity/machine.json`.
     - Store the private key in macOS Keychain when possible.
@@ -89,7 +79,7 @@
     - Add host-backed tests that prove the key persists across daemon restarts.
     - Use suggested config paths: `~/.cua/identity/machine.json`, `~/.cua/identity/keys/current.json`, and `~/.cua/identity/keys/previous/<key_id>.json`.
 
-13. Add attestation protocol methods to the daemon.
+12. Add attestation protocol methods to the daemon.
     - Add HTTP endpoints: `POST /attestation/challenge`, `POST /attestation/sign`, and `GET /attestation/identity`.
     - Add Unix socket RPC methods: `attestation.challenge`, `attestation.sign`, and `attestation.identity`.
     - Add CLI commands: `cua attestation challenge --audience <audience> --json`, `cua attestation sign --audience <audience> --nonce <nonce> --json`, `cua attestation identity --json`, and `cua attestation verify <attestation.json> --json`.
@@ -101,7 +91,7 @@
     - Keep challenge nonces single-use where practical.
     - Do not treat attestation as authorization by itself. It proves machine/runtime identity; profile/session policy still controls action authority.
 
-14. Use existing package proof as attestation evidence.
+13. Use existing package proof as attestation evidence.
     - Reuse the facts already proven by `scripts/host-package-proof.sh`: app path, bundle id, executable, code signature, designated requirement, daemon binary signature, voice binary signature, ctx binary signature, and usage descriptions.
     - Move the reusable proof logic into Rust or a small shared script that the daemon can call safely.
     - Add a `CodeIdentityClaims` type to `cua-core`.
@@ -110,7 +100,7 @@
     - Add a clear `runtime_integrity_level` field with `packaged_signed`, `development_signed`, `development_unsigned`, `unknown`.
     - Make verification policies able to require `packaged_signed` for cloud enrollment.
 
-15. Add cloud enrollment and verification flow.
+14. Add cloud enrollment and verification flow.
     - Add `cua enroll --audience quilt-cloud --json`.
     - Enrollment should generate or load machine identity, request a cloud challenge, sign the challenge locally, submit public key and attestation, receive an enrollment id, and store enrollment metadata under `~/.cua/cloud/`.
     - Store cloud enrollment data at `~/.cua/cloud/enrollments/<audience>.json`.
@@ -120,7 +110,7 @@
     - Add SDK method `client.attest({ audience, nonce })`.
     - Add Quilt-side verifier design: verify nonce, verify signature, verify public key enrollment, verify code identity policy, verify profile/capability policy, and verify timestamp freshness.
 
-16. Define the public TypeScript SDK.
+15. Define the public TypeScript SDK.
     - Decide the package name: `@quilt/cua`, `@cua/sdk`, or `cua-sdk`.
     - Connect to local Unix socket on macOS where supported.
     - Fall back to loopback HTTP where Unix socket is not practical.
@@ -148,11 +138,11 @@
       });
       ```
 
-17. Define the public Python SDK.
+16. Define the public Python SDK.
     - Use the same transport and session semantics as TypeScript.
     - Include examples for local agent scripts and notebook use.
 
-18. Normalize all config under `~/.cua/{concern}/**/*`.
+17. Normalize all config under `~/.cua/{concern}/**/*`.
     - Keep all durable cua runtime/config state under `~/.cua` by concern.
     - Do not assemble production paths ad hoc in each crate.
     - Use target layout:
@@ -214,7 +204,7 @@
     - Make blocking memory reads explicit only when the next action truly depends on that memory.
     - Keep scratchpads profile-scoped by default, with path shapes `~/.cua/profiles/<profile>/scratchpads/ephemeral/` and `~/.cua/profiles/<profile>/scratchpads/durable/`.
 
-19. Fix current config/path gaps.
+18. Fix current config/path gaps.
     - In `crates/cua-cli/src/main.rs`, decide whether current directory `.env` should remain development-only.
     - In `crates/cua-platform-macos/src/lib.rs`, keep external `aegis_binary()` discovery for `~/.local/bin/aegis`, Homebrew, and `/usr/local/bin`, but make any cua-owned tool resolve under `~/.cua/bin/` or packaged sibling first.
     - In `crates/cua-platform-macos/src/lib.rs`, update `ctx_binary()` so production prefers packaged sibling or `~/.cua/bin/ctx` instead of falling back to `vendor/ctx/ctx`.
@@ -225,7 +215,7 @@
     - In host proof scripts, keep repo-local outputs under `artifacts/cua/...` for development tests, but add `CUA_HOME` support and/or mirror final proof artifacts under `~/.cua/artifacts/proofs/...` for installed runtime flows.
     - Update `docs/http-api.md` and `cua.md` to document the canonical `~/.cua/{concern}/**/*` layout.
 
-20. Harden profile/session semantics for SDK users.
+19. Harden profile/session semantics for SDK users.
     - Make owner-session write enforcement consistent across transports.
     - Add HTTP session id support for write routes, or mark HTTP writes as development/operator-only.
     - Add SDK defaults: read-only observer by default and explicit `acquireOwner()` before mutations.
@@ -234,7 +224,7 @@
     - Add explicit refusal evidence for writes attempted without owner lease.
     - Add docs explaining profile policy vs bearer token vs owner session: bearer token authenticates local profile access, owner session authorizes mutation, profile policy controls capabilities, and attestation proves runtime/machine identity.
 
-21. Make all documented functionality scriptable through the SDK.
+20. Make all documented functionality scriptable through the SDK.
     - Support screenshot and window capture.
     - Support visual session streaming.
     - Support accessibility permission request.
@@ -244,14 +234,14 @@
     - Support trace verify/replay helpers.
     - Support attestation identity/challenge/sign/verify.
 
-22. Add SDK and architecture docs.
+21. Add SDK and architecture docs.
     - Add `docs/attestation.md`.
     - Add `docs/config-home.md`.
     - Update `docs/http-api.md`.
     - Update `cua.md`.
     - Update `README.md`.
 
-23. Add SDK examples.
+22. Add SDK examples.
     - Add a minimal local status check example.
     - Add an observe screenshot/context example.
     - Add a click using frame-relative coordinates example.
@@ -264,12 +254,10 @@
     - Add a use Aegis through cua example.
     - Add a use ctx through cua example.
 
-24. Add validation and release tests.
+23. Add validation and release tests.
     - Add unit tests for shared path helpers with `CUA_HOME`.
     - Add unit tests for env loading precedence.
-    - Add unit tests for attestation schema serialization.
     - Add unit tests for challenge expiry and audience mismatch.
-    - Add unit tests for machine id hashing without raw hardware ids.
     - Add host proof for machine key persistence.
     - Add host proof for signed package attestation claims.
     - Add host proof for SDK owner-session mutation.
@@ -278,7 +266,7 @@
     - Add Fozzy deterministic scenario covering SDK status/context/dispatch.
     - Add Fozzy trace recording and replay for SDK action path.
 
-25. Run required shipping commands before release.
+24. Run required shipping commands before release.
 
     ```sh
     cargo fmt --check
@@ -296,23 +284,23 @@
     fozzy replay ~/.cua/artifacts/fozzy/cua-smoke.fozzy --json
     ```
 
-26. Resolve SDK package naming.
+25. Resolve SDK package naming.
     - Choose between `@quilt/cua`, `@cua/sdk`, and `cua-sdk`.
 
-27. Resolve attestation backend policy.
+26. Resolve attestation backend policy.
     - Choose Secure Enclave first, Keychain first, or file key only for tests.
 
-28. Resolve HTTP write-route policy.
+27. Resolve HTTP write-route policy.
     - Decide whether HTTP write routes should remain supported after SDK launch.
 
-29. Resolve token override policy.
+28. Resolve token override policy.
     - Decide whether `CUA_HTTP_TOKEN` should remain a production override or become dev/test only.
 
-30. Resolve current-directory environment loading policy.
+29. Resolve current-directory environment loading policy.
     - Decide whether current-directory `.env` loading should be removed entirely or kept as dev-only behavior.
 
-31. Resolve ctx installation policy.
+30. Resolve ctx installation policy.
     - Decide whether `ctx` should be installed into `~/.cua/bin/ctx` or only resolved as a packaged sibling.
 
-32. Resolve cloud enrollment ownership.
+31. Resolve cloud enrollment ownership.
     - Decide whether cloud enrollment belongs in this repo or in Quilt cloud with a local cua client.
