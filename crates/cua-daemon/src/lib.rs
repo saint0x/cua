@@ -1932,6 +1932,10 @@ async fn handle_unix_request(state: &DaemonState, request: UnixRequest) -> serde
             }
         }
         "observe.desktop" => desktop_state(state).await.map(serde_json::to_value),
+        "observe.displays" => cua_platform_macos::displays()
+            .map_err(ApiError::internal)
+            .map(serde_json::to_value),
+        "observe.cursor" => Ok(serde_json::to_value(cua_platform_macos::cursor_state())),
         "context.snapshot" => {
             let params = request.params.unwrap_or_else(|| serde_json::json!({}));
             match serde_json::from_value::<ContextSnapshotRequest>(params) {
@@ -5065,6 +5069,26 @@ mod tests {
             .unwrap()
             .contains("unix-methods"));
         assert!(config.get("profile_token").is_none());
+
+        let displays = unix_result(
+            handle_unix_request(
+                &state,
+                unix_request("observe.displays", serde_json::json!({})),
+            )
+            .await,
+        );
+        assert!(displays.as_array().is_some());
+
+        let cursor = unix_result(
+            handle_unix_request(
+                &state,
+                unix_request("observe.cursor", serde_json::json!({})),
+            )
+            .await,
+        );
+        assert!(cursor.get("x").is_some());
+        assert!(cursor.get("y").is_some());
+        assert!(cursor.get("visible").is_some());
 
         let pause = unix_result(
             handle_unix_request(&state, unix_request("control.pause", serde_json::json!({}))).await,

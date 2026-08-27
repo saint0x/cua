@@ -12,38 +12,6 @@ Shared coordination rules for every agent:
 - When a section is done and verified, delete that section from this file with no replacement prose.
 - Before committing, run `cargo fmt --check`, `git diff --check`, and the strongest focused tests that prove the section.
 
-Agent A: Runebook Runtime Owner
-
-Scope:
-- Owns `crates/cua-cli/src/main.rs` runebook parsing/execution, `sample-cua-runebook.md`, runebook fixtures under `tests/fixtures/`, and runebook Fozzy scenarios.
-- Turns runebooks into the canonical compact scripting surface over the daemon protocol.
-
-Must coordinate with:
-- Agent B for attestation runebook nodes.
-- Agent C for visual/watch-session nodes.
-- Agent D for model/STT/planner turn nodes.
-- Agent E for session/transport rules.
-- Agent H for docs/examples once behavior is verified.
-
-Work:
-- Support the remaining top-level runebook shape from `sample-cua-runebook.md`: `[daemon]`, `[attest]`, `[stt.<name>]`, `[planner.<name>]`, and `[memory]`.
-- Finish raw `rpc` escape hatch for HTTP protocol coverage.
-- Support `$result.path` references and result-based interpolation beyond simple saved scalars.
-- Add remaining direct protocol steps: doctor, permissions status/preflight, visual session, observe displays/cursor, trace start/inspect/verify/replay, perf bench, model eval, and schema export.
-- Add workflow nodes: `parallel`, `race`, `batch`, `foreach`, `run`, and `spawn_run`.
-- Add control-flow/timing nodes: `if`, `if_present`, result-based branching, sleep, timers, delayed messages, and first-class waits.
-- Implement global and step-level `on_error = "ask" | "rollback"`.
-- `ask` must pause execution and request an operator decision through HUD/CLI.
-- `rollback` must run explicit rollback steps when present; otherwise stop with a clear unsupported rollback error.
-- Trace every step start/complete/error, error-policy decision, rollback action, child runebook, and replay-relevant output.
-- Add runebook-level trace verify/replay and shrinking.
-
-Done means:
-- `sample-cua-runebook.md` no longer describes unimplemented runebook constructs.
-- Every runebook node listed above has a direct passing fixture or unit test.
-- At least one deterministic Fozzy scenario records, verifies, and replays a runebook trace.
-- The runebook executor has no "not implemented yet" branches for documented runebook features.
-
 Agent B: Identity, Attestation, And Enrollment Owner
 
 Scope:

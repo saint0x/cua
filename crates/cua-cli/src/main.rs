@@ -521,7 +521,7 @@ async fn main() -> anyhow::Result<()> {
         Some(Command::Permissions { command }) => permissions(&cli.profile, command).await,
         Some(Command::Perf { command }) => perf(&cli.profile, command).await,
         Some(Command::Context(args)) => context(&cli.profile, args).await,
-        Some(Command::Run(args)) => runebook_command(&cli.profile, args).await,
+        Some(Command::Run(args)) => runebook_command(&cli.profile, cli.server_addr, args).await,
         Some(Command::Manifest(flag)) => unix_get(&cli.profile, "manifest", flag.json).await,
         Some(Command::Metrics(flag)) => unix_get(&cli.profile, "metrics", flag.json).await,
         Some(Command::Config { command }) => config(&cli.profile, command).await,
@@ -702,7 +702,17 @@ fn print_json_value(value: &serde_json::Value, json: bool) -> anyhow::Result<()>
 }
 
 async fn doctor(json: bool) -> anyhow::Result<()> {
-    let report = serde_json::json!({
+    let report = doctor_report();
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!("{report}");
+    }
+    Ok(())
+}
+
+fn doctor_report() -> serde_json::Value {
+    serde_json::json!({
         "schema_version": SCHEMA_VERSION,
         "status": "degraded",
         "checks": {
@@ -712,13 +722,7 @@ async fn doctor(json: bool) -> anyhow::Result<()> {
             "openrouter_configured": std::env::var("OPENROUTER_API_KEY").is_ok(),
             "public_surfaces": ["cli", "local_http", "local_unix_socket"]
         }
-    });
-    if json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-    } else {
-        println!("{report}");
-    }
-    Ok(())
+    })
 }
 
 async fn stream(profile: &str, args: StreamArgs) -> anyhow::Result<()> {
@@ -854,8 +858,18 @@ async fn permissions(profile: &str, command: PermissionCommand) -> anyhow::Resul
     if preflight {
         request_missing_desktop_permissions();
     }
+    let report = permission_report_json(false);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!("{report}");
+    }
+    Ok(())
+}
+
+fn permission_report_json(preflight: bool) -> serde_json::Value {
     let permission_report = cua_platform_macos::permission_report();
-    let report = serde_json::json!({
+    serde_json::json!({
         "schema_version": SCHEMA_VERSION,
         "screen_recording": permission_report.screen_recording,
         "accessibility_input": permission_report.accessibility_input,
@@ -863,14 +877,9 @@ async fn permissions(profile: &str, command: PermissionCommand) -> anyhow::Resul
         "automation": permission_report.automation,
         "clipboard": permission_report.clipboard,
         "portal": permission_report.portal,
-        "ready_for_zero_touch_agent": false
-    });
-    if json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-    } else {
-        println!("{report}");
-    }
-    Ok(())
+        "ready_for_zero_touch_agent": false,
+        "preflight": preflight
+    })
 }
 
 fn request_missing_desktop_permissions() {
@@ -927,7 +936,12 @@ async fn config(profile: &str, command: ConfigCommand) -> anyhow::Result<()> {
 struct Runebook {
     schema: String,
     run: Option<RunebookRun>,
+    daemon: Option<RunebookDaemon>,
     session: Option<RunebookSession>,
+    attest: Option<RunebookAttest>,
+    stt: Option<BTreeMap<String, RunebookNamedConfig>>,
+    planner: Option<BTreeMap<String, RunebookNamedConfig>>,
+    memory: Option<RunebookMemory>,
     trace: Option<RunebookTraceConfig>,
     vars: Option<BTreeMap<String, toml::Value>>,
     #[serde(default, rename = "macro")]
@@ -944,10 +958,38 @@ struct RunebookRun {
 }
 
 #[derive(Debug, Deserialize)]
+struct RunebookDaemon {
+    ensure: Option<bool>,
+    addr: Option<String>,
+    hud: Option<String>,
+    allow_lan: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
 struct RunebookSession {
     role: Option<SessionRoleArg>,
     client: Option<String>,
     ttl_ms: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RunebookAttest {
+    required: Option<bool>,
+    audience: Option<String>,
+    save_as: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RunebookNamedConfig {
+    #[serde(flatten)]
+    fields: BTreeMap<String, toml::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RunebookMemory {
+    chat: Option<bool>,
+    ctx: Option<bool>,
+    workspace: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -956,7 +998,7 @@ struct RunebookTraceConfig {
     verify_on_complete: Option<bool>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct RunebookMacro {
     #[serde(default)]
     items: Vec<RunebookStep>,
@@ -994,14 +1036,17 @@ struct RunebookReport {
     results: BTreeMap<String, serde_json::Value>,
 }
 
+#[derive(Clone)]
 struct RunebookRuntime {
     profile: String,
+    server_addr: SocketAddr,
     session_id: Option<String>,
     vars: HashMap<String, serde_json::Value>,
     results: BTreeMap<String, serde_json::Value>,
     trace: Option<RunebookTrace>,
 }
 
+#[derive(Clone)]
 struct RunebookTrace {
     path: PathBuf,
 }
@@ -1016,7 +1061,11 @@ struct RunebookTraceRecord<'a> {
     data: serde_json::Value,
 }
 
-async fn runebook_command(default_profile: &str, args: RunebookArgs) -> anyhow::Result<()> {
+async fn runebook_command(
+    default_profile: &str,
+    default_server_addr: SocketAddr,
+    args: RunebookArgs,
+) -> anyhow::Result<()> {
     let content = tokio::fs::read_to_string(&args.file)
         .await
         .with_context(|| format!("read runebook {}", args.file.display()))?;
@@ -1045,6 +1094,14 @@ async fn runebook_command(default_profile: &str, args: RunebookArgs) -> anyhow::
         .as_ref()
         .and_then(|run| run.trace)
         .unwrap_or(true);
+    let server_addr = runebook
+        .daemon
+        .as_ref()
+        .and_then(|daemon| daemon.addr.as_deref())
+        .map(str::parse)
+        .transpose()
+        .context("parse runebook [daemon].addr")?
+        .unwrap_or(default_server_addr);
     let trace = runebook_trace(
         &profile,
         &name,
@@ -1055,11 +1112,21 @@ async fn runebook_command(default_profile: &str, args: RunebookArgs) -> anyhow::
     .await?;
     let mut runtime = RunebookRuntime {
         profile: profile.clone(),
+        server_addr,
         session_id: None,
         vars: runebook_vars(runebook.vars.as_ref())?,
         results: BTreeMap::new(),
         trace,
     };
+    if let Some(trace) = runtime.trace.as_ref() {
+        runtime.results.insert(
+            "trace".to_string(),
+            serde_json::json!({
+                "path": trace.path,
+                "dir": trace.path.parent().map(|path| path.display().to_string()),
+            }),
+        );
+    }
     runtime
         .trace(
             "run_start",
@@ -1069,6 +1136,47 @@ async fn runebook_command(default_profile: &str, args: RunebookArgs) -> anyhow::
             serde_json::json!({"file": args.file.display().to_string()}),
         )
         .await?;
+
+    if let Some(daemon) = runebook.daemon.as_ref() {
+        runtime
+            .trace(
+                "daemon_config",
+                None,
+                None,
+                true,
+                serde_json::json!({
+                    "ensure": daemon.ensure.unwrap_or(false),
+                    "addr": daemon.addr,
+                    "hud": daemon.hud,
+                    "allow_lan": daemon.allow_lan.unwrap_or(false)
+                }),
+            )
+            .await?;
+        if daemon.ensure.unwrap_or(false) {
+            runtime.request("status", None, None).await?;
+        }
+    }
+
+    if let Some(stt) = runebook.stt.as_ref() {
+        runtime
+            .results
+            .insert("stt".to_string(), named_config_json(stt)?);
+    }
+    if let Some(planner) = runebook.planner.as_ref() {
+        runtime
+            .results
+            .insert("planner".to_string(), named_config_json(planner)?);
+    }
+    if let Some(memory) = runebook.memory.as_ref() {
+        runtime.results.insert(
+            "memory".to_string(),
+            serde_json::json!({
+                "chat": memory.chat.unwrap_or(false),
+                "ctx": memory.ctx.unwrap_or(false),
+                "workspace": memory.workspace.as_deref().unwrap_or("profile")
+            }),
+        );
+    }
 
     if let Some(session) = runebook.session.as_ref() {
         let role = session.role.clone().unwrap_or(SessionRoleArg::Owner);
@@ -1094,43 +1202,26 @@ async fn runebook_command(default_profile: &str, args: RunebookArgs) -> anyhow::
         runtime.results.insert("session".to_string(), result);
     }
 
+    if let Some(attest) = runebook.attest.as_ref() {
+        if attest.required.unwrap_or(false) {
+            let audience = attest
+                .audience
+                .as_deref()
+                .context("[attest].required needs audience")?;
+            let result = runtime.attest(audience).await?;
+            let save_as = attest.save_as.as_deref().unwrap_or("attestation");
+            runtime.results.insert(save_as.to_string(), result);
+        }
+    }
+
     let default_policy = runebook
         .run
         .as_ref()
         .and_then(|run| run.on_error)
         .unwrap_or(RunebookErrorPolicy::Stop);
-    for step in &runebook.steps {
-        let policy = step.on_error.unwrap_or(default_policy);
-        match runtime.execute_step(step, &runebook.macros).await {
-            Ok(value) => {
-                if let Some(save_as) = &step.save_as {
-                    runtime.results.insert(save_as.clone(), value);
-                }
-            }
-            Err(error) => {
-                let error_text = format!("{error:#}");
-                runtime
-                    .trace(
-                        "step_error",
-                        step.id.as_deref(),
-                        Some(&step.action),
-                        false,
-                        serde_json::json!({"error": error_text.clone()}),
-                    )
-                    .await?;
-                match policy {
-                    RunebookErrorPolicy::Continue => continue,
-                    RunebookErrorPolicy::Stop => anyhow::bail!("{error_text}"),
-                    RunebookErrorPolicy::Ask => {
-                        anyhow::bail!("runebook on_error=ask is not implemented yet")
-                    }
-                    RunebookErrorPolicy::Rollback => {
-                        anyhow::bail!("runebook on_error=rollback is not implemented yet")
-                    }
-                }
-            }
-        }
-    }
+    runtime
+        .execute_steps(&runebook.steps, &runebook.macros, default_policy)
+        .await?;
 
     runtime
         .trace(
@@ -1141,6 +1232,25 @@ async fn runebook_command(default_profile: &str, args: RunebookArgs) -> anyhow::
             serde_json::json!({"steps": runebook.steps.len()}),
         )
         .await?;
+    if runebook
+        .trace
+        .as_ref()
+        .and_then(|config| config.verify_on_complete)
+        .unwrap_or(false)
+    {
+        if let Some(trace) = runtime.trace.as_ref() {
+            verify_runebook_trace_path(&trace.path).await?;
+            runtime
+                .trace(
+                    "trace_verified",
+                    None,
+                    Some("trace.verify"),
+                    true,
+                    serde_json::json!({"path": trace.path}),
+                )
+                .await?;
+        }
+    }
     let report = RunebookReport {
         schema_version: "cua.runebook.report.v1".to_string(),
         name,
@@ -1167,11 +1277,146 @@ async fn runebook_command(default_profile: &str, args: RunebookArgs) -> anyhow::
 }
 
 impl RunebookRuntime {
+    async fn execute_steps(
+        &mut self,
+        steps: &[RunebookStep],
+        macros: &BTreeMap<String, RunebookMacro>,
+        default_policy: RunebookErrorPolicy,
+    ) -> anyhow::Result<()> {
+        for step in steps {
+            self.execute_step_with_policy(step, macros, default_policy)
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn execute_step_with_policy(
+        &mut self,
+        step: &RunebookStep,
+        macros: &BTreeMap<String, RunebookMacro>,
+        default_policy: RunebookErrorPolicy,
+    ) -> anyhow::Result<()> {
+        if !self.should_execute(step)? {
+            self.trace(
+                "step_skipped",
+                step.id.as_deref(),
+                Some(&step.action),
+                true,
+                serde_json::json!({"reason": "condition_false"}),
+            )
+            .await?;
+            return Ok(());
+        }
+        let policy = step.on_error.unwrap_or(default_policy);
+        match self.execute_step(step, macros).await {
+            Ok(value) => {
+                if let Some(save_as) = &step.save_as {
+                    self.results.insert(save_as.clone(), value);
+                }
+                Ok(())
+            }
+            Err(error) => {
+                let error_text = format!("{error:#}");
+                self.trace(
+                    "step_error",
+                    step.id.as_deref(),
+                    Some(&step.action),
+                    false,
+                    serde_json::json!({"error": error_text.clone()}),
+                )
+                .await?;
+                self.handle_step_error(step, macros, default_policy, policy, error_text)
+                    .await
+            }
+        }
+    }
+
+    fn handle_step_error<'a>(
+        &'a mut self,
+        step: &'a RunebookStep,
+        macros: &'a BTreeMap<String, RunebookMacro>,
+        default_policy: RunebookErrorPolicy,
+        policy: RunebookErrorPolicy,
+        error_text: String,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            self.trace(
+                "error_policy",
+                step.id.as_deref(),
+                Some(&step.action),
+                false,
+                serde_json::json!({"policy": format!("{policy:?}"), "error": error_text}),
+            )
+            .await?;
+            match policy {
+                RunebookErrorPolicy::Continue => Ok(()),
+                RunebookErrorPolicy::Stop => anyhow::bail!("{error_text}"),
+                RunebookErrorPolicy::Ask => match ask_operator_decision(step, &error_text).await? {
+                    OperatorDecision::Continue => Ok(()),
+                    OperatorDecision::Stop => anyhow::bail!("{error_text}"),
+                    OperatorDecision::Retry => {
+                        self.execute_step_with_policy(step, macros, default_policy)
+                            .await
+                    }
+                    OperatorDecision::Rollback => {
+                        self.rollback_step(step, macros, default_policy).await?;
+                        anyhow::bail!("{error_text}")
+                    }
+                },
+                RunebookErrorPolicy::Rollback => {
+                    self.rollback_step(step, macros, default_policy).await?;
+                    anyhow::bail!("{error_text}")
+                }
+            }
+        })
+    }
+
+    async fn rollback_step(
+        &mut self,
+        step: &RunebookStep,
+        macros: &BTreeMap<String, RunebookMacro>,
+        default_policy: RunebookErrorPolicy,
+    ) -> anyhow::Result<()> {
+        let rollback = step_array_optional(step, "rollback")?;
+        if rollback.is_empty() {
+            self.trace(
+                "rollback_unsupported",
+                step.id.as_deref(),
+                Some(&step.action),
+                false,
+                serde_json::json!({"error": "on_error=rollback requires explicit rollback steps"}),
+            )
+            .await?;
+            anyhow::bail!(
+                "runebook rollback for step {} requires explicit rollback steps",
+                step.id.as_deref().unwrap_or("<anonymous>")
+            );
+        }
+        self.trace(
+            "rollback_start",
+            step.id.as_deref(),
+            Some(&step.action),
+            true,
+            serde_json::json!({"steps": rollback.len()}),
+        )
+        .await?;
+        self.execute_steps(&rollback, macros, default_policy)
+            .await?;
+        self.trace(
+            "rollback_complete",
+            step.id.as_deref(),
+            Some(&step.action),
+            true,
+            serde_json::json!({"steps": rollback.len()}),
+        )
+        .await
+    }
+
     fn execute_step<'a>(
         &'a mut self,
         step: &'a RunebookStep,
         macros: &'a BTreeMap<String, RunebookMacro>,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<serde_json::Value>> + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<serde_json::Value>> + Send + 'a>> {
         Box::pin(async move {
             self.trace(
                 "step_start",
@@ -1235,11 +1480,93 @@ impl RunebookRuntime {
                 }
                 Ok(last)
             }
+            "parallel" => self.execute_parallel(step, macros).await,
+            "race" => self.execute_race(step, macros).await,
+            "foreach" => self.execute_foreach(step, macros).await,
+            "batch" => {
+                let actions = self.json_field(step, "actions")?;
+                let actions = actions
+                    .as_array()
+                    .context("batch actions must be an array")?
+                    .clone();
+                let action = serde_json::json!({
+                    "kind": "sequence",
+                    "actions": actions,
+                    "inter_action_delay_ms": step_u64(step, "delay_ms")?.unwrap_or(0),
+                });
+                self.request("input.dispatch", Some(action), self.session_id.as_deref())
+                    .await
+            }
+            "run" => self.execute_child_run(step).await,
+            "spawn_run" => self.execute_spawn_run(step).await,
+            "sleep" => {
+                let ms = step_u64(step, "ms")?
+                    .or(step_u64(step, "delay_ms")?)
+                    .context("sleep requires ms")?;
+                tokio::time::sleep(Duration::from_millis(ms)).await;
+                Ok(serde_json::json!({"schema_version": "cua.runebook.sleep.v1", "slept_ms": ms}))
+            }
+            "timer" => {
+                let started = Instant::now();
+                if step.fields.contains_key("items") {
+                    let items = step_array(step, "items")?;
+                    self.execute_steps(&items, macros, RunebookErrorPolicy::Stop)
+                        .await?;
+                } else if let Some(ms) = step_u64(step, "ms")? {
+                    tokio::time::sleep(Duration::from_millis(ms)).await;
+                }
+                Ok(serde_json::json!({
+                    "schema_version": "cua.runebook.timer.v1",
+                    "elapsed_ms": started.elapsed().as_millis()
+                }))
+            }
+            "delayed_message" => {
+                let delay_ms = step_u64(step, "delay_ms")?.unwrap_or(0);
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                let method = match self.string_field(step, "kind")?.as_deref() {
+                    Some("step") => "ui.step",
+                    _ => "ui.reply",
+                };
+                let params = if method == "ui.step" {
+                    serde_json::json!({
+                        "schema_version": SCHEMA_VERSION,
+                        "label": self.required_string(step, "label")?,
+                        "source": self.string_field(step, "source")?,
+                        "task": self.string_field(step, "task")?,
+                        "tool": self.string_field(step, "tool")?,
+                        "step_index": step_u64(step, "step_index")?,
+                        "step_total": step_u64(step, "step_total")?,
+                        "ttl_ms": step_u64(step, "ttl_ms")?,
+                    })
+                } else {
+                    serde_json::json!({
+                        "schema_version": SCHEMA_VERSION,
+                        "text": self.required_string(step, "text")?,
+                        "source": self.string_field(step, "source")?,
+                        "ttl_ms": step_u64(step, "ttl_ms")?,
+                    })
+                };
+                self.request(method, Some(params), None).await
+            }
             "status" => self.request("status", None, None).await,
+            "doctor" => Ok(doctor_report()),
             "config.status" | "config" => self.request("config.status", None, None).await,
             "manifest" => self.request("manifest", None, None).await,
             "schemas" => self.request("schemas", None, None).await,
             "metrics" => self.request("metrics", None, None).await,
+            "permissions" => {
+                match self.string_field(step, "action")?.as_deref().unwrap_or("status") {
+                    "status" => Ok(permission_report_json(false)),
+                    "preflight" => {
+                        request_missing_desktop_permissions();
+                        Ok(permission_report_json(true))
+                    }
+                    "request_accessibility" => {
+                        self.request("permissions.request_accessibility", None, None).await
+                    }
+                    other => anyhow::bail!("unsupported permissions action {other}"),
+                }
+            }
             "permissions.request_accessibility" | "permissions.accessibility" => {
                 self.request("permissions.request_accessibility", None, None)
                     .await
@@ -1249,12 +1576,16 @@ impl RunebookRuntime {
                 let params = step
                     .fields
                     .get("params")
-                    .map(toml_value_to_json)
+                    .map(|value| self.interpolate_toml_json(value))
                     .transpose()?;
                 let session_id = self
                     .string_field(step, "session_id")?
                     .or_else(|| self.session_id.clone());
-                self.request(&method, params, session_id.as_deref()).await
+                match self.string_field(step, "transport")?.as_deref().unwrap_or("unix") {
+                    "unix" => self.request(&method, params, session_id.as_deref()).await,
+                    "http" => self.http_rpc(step, &method, params).await,
+                    other => anyhow::bail!("unsupported rpc transport {other}"),
+                }
             }
             "session.acquire" => {
                 let session_id = self
@@ -1304,7 +1635,13 @@ impl RunebookRuntime {
                 self.request("profile.activate", None, self.session_id.as_deref())
                     .await
             }
-            "observe" => self.request("observe.desktop", None, None).await,
+            "observe" => match self.string_field(step, "target")?.as_deref().unwrap_or("desktop") {
+                "desktop" => self.request("observe.desktop", None, None).await,
+                "displays" => self.request("observe.displays", None, None).await,
+                "cursor" => self.request("observe.cursor", None, None).await,
+                other => anyhow::bail!("unsupported observe target {other}"),
+            },
+            "visual" | "visual.session" => self.visual_frames(step).await,
             "screenshot" | "capture.screenshot" => {
                 self.request(
                     "capture.screenshot",
@@ -1365,6 +1702,9 @@ impl RunebookRuntime {
                 } else {
                     self.request("events.snapshot", None, None).await
                 }
+            }
+            "wait_event" | "wait" | "wait_agent_step" | "wait_agent_reply" => {
+                self.wait_event(step).await
             }
             "ui.step" => {
                 self.request(
@@ -1449,13 +1789,13 @@ impl RunebookRuntime {
                     .await
             }
             "input" => {
-                let action = step_json_field(step, "action")?;
+                let action = self.json_field(step, "action")?;
                 self.request("input.dispatch", Some(action), self.session_id.as_deref())
                     .await
             }
             "input.frame" => {
-                let source_frame = step_json_field(step, "source_frame")?;
-                let action = step_json_field(step, "action")?;
+                let source_frame = self.json_field(step, "source_frame")?;
+                let action = self.json_field(step, "action")?;
                 self.request(
                     "input.dispatch_frame",
                     Some(serde_json::json!({
@@ -1473,6 +1813,70 @@ impl RunebookRuntime {
                 self.request("input.dispatch", Some(action), self.session_id.as_deref())
                     .await
             }
+            "trace.start" => {
+                let dir = expand_home_path(&self.required_string(step, "dir")?)?;
+                let writer = TraceWriter::create(&dir).await?;
+                writer
+                    .append(&TraceRecord::Marker {
+                        name: "trace_started".to_string(),
+                        at_wall_ms: cua_core::now_wall_ms(),
+                    })
+                    .await?;
+                Ok(serde_json::json!({"schema_version": SCHEMA_VERSION, "path": dir, "ok": true}))
+            }
+            "trace.inspect" => inspect_runebook_or_daemon_trace(
+                self.profile.as_str(),
+                expand_home_path(&self.required_string(step, "dir")?)?,
+                false,
+                step_bool(step, "dry_run")?.unwrap_or(true),
+            )
+            .await,
+            "trace.verify" => inspect_runebook_or_daemon_trace(
+                self.profile.as_str(),
+                expand_home_path(&self.required_string(step, "dir")?)?,
+                true,
+                step_bool(step, "dry_run")?.unwrap_or(true),
+            )
+            .await,
+            "trace.replay" => replay_runebook_trace(
+                expand_home_path(&self.required_string(step, "dir")?)?,
+                step_bool(step, "dry_run")?.unwrap_or(true),
+            )
+            .await,
+            "trace.shrink" => shrink_runebook_trace(
+                expand_home_path(&self.required_string(step, "dir")?)?,
+            )
+            .await,
+            "perf.bench" => self.perf_bench_step(step).await,
+            "model.eval" => self.model_eval_step(step).await,
+            "schema.export" => {
+                let out = expand_home_path(&self.required_string(step, "out")?)?;
+                if let Some(parent) = out.parent() {
+                    tokio::fs::create_dir_all(parent).await?;
+                }
+                tokio::fs::write(&out, serde_json::to_vec_pretty(&schema_bundle())?).await?;
+                Ok(serde_json::json!({"schema_version": SCHEMA_VERSION, "path": out, "ok": true}))
+            }
+            "identity.status" => self.request("attestation.identity", None, None).await,
+            "attest" => {
+                let audience = self.required_string(step, "audience")?;
+                self.attest(&audience).await
+            }
+            "enroll" => {
+                self.request(
+                    "enrollment.create",
+                    Some(serde_json::json!({
+                        "schema_version": SCHEMA_VERSION,
+                        "audience": self.required_string(step, "audience")?,
+                        "attestation": self.json_field_optional(step, "attestation")?,
+                    })),
+                    self.session_id.as_deref(),
+                )
+                .await
+            }
+            "turn" | "stt" | "planner" | "model" | "dispatch_model_action" => {
+                self.protocol_step(step).await
+            }
             other => anyhow::bail!("unsupported runebook step do={other}"),
         }
     }
@@ -1484,6 +1888,408 @@ impl RunebookRuntime {
         session_id: Option<&str>,
     ) -> anyhow::Result<serde_json::Value> {
         unix_request_json_with_session(&self.profile, method, params, session_id).await
+    }
+
+    async fn http_rpc(
+        &self,
+        step: &RunebookStep,
+        method: &str,
+        params: Option<serde_json::Value>,
+    ) -> anyhow::Result<serde_json::Value> {
+        let path = self
+            .string_field(step, "path")?
+            .unwrap_or_else(|| format!("/{}", method.replace('.', "/")));
+        let url = format!("http://{}{}", self.server_addr, path);
+        let client = reqwest::Client::new();
+        let http_method = self
+            .string_field(step, "http_method")?
+            .unwrap_or_else(|| if params.is_some() { "post" } else { "get" }.to_string());
+        let mut request = match http_method.as_str() {
+            "get" => client.get(url),
+            "post" => client.post(url).json(&params.unwrap_or_default()),
+            other => anyhow::bail!("unsupported rpc http_method {other}"),
+        };
+        if let Ok(token) = std::env::var("CUA_HTTP_TOKEN") {
+            request = request.bearer_auth(token);
+        }
+        let response = request.send().await?;
+        let status = response.status();
+        let value = response.json::<serde_json::Value>().await?;
+        if !status.is_success() {
+            anyhow::bail!("HTTP rpc {method} failed with {status}: {value}");
+        }
+        Ok(value)
+    }
+
+    async fn attest(&self, audience: &str) -> anyhow::Result<serde_json::Value> {
+        let challenge = self
+            .request(
+                "attestation.challenge",
+                Some(serde_json::json!({
+                    "schema_version": SCHEMA_VERSION,
+                    "audience": audience
+                })),
+                None,
+            )
+            .await?;
+        self.request(
+            "attestation.sign",
+            Some(serde_json::json!({
+                "schema_version": SCHEMA_VERSION,
+                "audience": audience,
+                "challenge": challenge
+            })),
+            self.session_id.as_deref(),
+        )
+        .await
+    }
+
+    async fn execute_parallel(
+        &mut self,
+        step: &RunebookStep,
+        macros: &BTreeMap<String, RunebookMacro>,
+    ) -> anyhow::Result<serde_json::Value> {
+        let items = step_array(step, "items")?;
+        let limit = step_u64(step, "limit")?
+            .unwrap_or(items.len() as u64)
+            .max(1) as usize;
+        let mut pending = items.into_iter();
+        let mut join_set = tokio::task::JoinSet::new();
+        let mut values = Vec::new();
+        loop {
+            while join_set.len() < limit {
+                let Some(item) = pending.next() else {
+                    break;
+                };
+                let mut runtime = self.clone();
+                let macros = macros.clone();
+                join_set.spawn(async move {
+                    runtime
+                        .execute_step_with_policy(&item, &macros, RunebookErrorPolicy::Stop)
+                        .await?;
+                    anyhow::Ok((serde_json::Value::Null, runtime.results))
+                });
+            }
+            let Some(result) = join_set.join_next().await else {
+                break;
+            };
+            let (value, child_results) = result??;
+            self.results.extend(child_results);
+            values.push(value);
+        }
+        Ok(serde_json::json!({"schema_version": "cua.runebook.parallel.v1", "results": values}))
+    }
+
+    async fn execute_race(
+        &mut self,
+        step: &RunebookStep,
+        macros: &BTreeMap<String, RunebookMacro>,
+    ) -> anyhow::Result<serde_json::Value> {
+        let items = step_array(step, "items")?;
+        let mut join_set = tokio::task::JoinSet::new();
+        for (index, item) in items.into_iter().enumerate() {
+            let mut runtime = self.clone();
+            let macros = macros.clone();
+            join_set.spawn(async move {
+                runtime
+                    .execute_step_with_policy(&item, &macros, RunebookErrorPolicy::Stop)
+                    .await?;
+                anyhow::Ok((index, serde_json::Value::Null, runtime.results))
+            });
+        }
+        let Some(result) = join_set.join_next().await else {
+            anyhow::bail!("race requires at least one item");
+        };
+        join_set.abort_all();
+        let (index, value, child_results) = result??;
+        self.results.extend(child_results);
+        Ok(
+            serde_json::json!({"schema_version": "cua.runebook.race.v1", "winner": index, "result": value}),
+        )
+    }
+
+    async fn execute_foreach(
+        &mut self,
+        step: &RunebookStep,
+        macros: &BTreeMap<String, RunebookMacro>,
+    ) -> anyhow::Result<serde_json::Value> {
+        let items = self.json_field(step, "items")?;
+        let steps = step_array(step, "steps")?;
+        let name = self
+            .string_field(step, "as")?
+            .unwrap_or_else(|| "item".to_string());
+        let mut out = Vec::new();
+        for item in items.as_array().context("foreach items must be an array")? {
+            self.vars.insert(name.clone(), item.clone());
+            self.execute_steps(&steps, macros, RunebookErrorPolicy::Stop)
+                .await?;
+            out.push(item.clone());
+        }
+        self.vars.remove(&name);
+        Ok(serde_json::json!({"schema_version": "cua.runebook.foreach.v1", "items": out}))
+    }
+
+    async fn execute_child_run(
+        &mut self,
+        step: &RunebookStep,
+    ) -> anyhow::Result<serde_json::Value> {
+        let file = expand_home_path(&self.required_string(step, "file")?)?;
+        let content = tokio::fs::read_to_string(&file).await?;
+        let runebook: Runebook = toml::from_str(&content)?;
+        validate_runebook(&runebook)?;
+        let mut child = self.clone();
+        if let Some(vars) = step.fields.get("vars") {
+            let vars = self.interpolate_toml_json(vars)?;
+            if let Some(map) = vars.as_object() {
+                child
+                    .vars
+                    .extend(map.iter().map(|(key, value)| (key.clone(), value.clone())));
+            }
+        }
+        child
+            .trace(
+                "child_runebook_start",
+                step.id.as_deref(),
+                Some(&step.action),
+                true,
+                serde_json::json!({"file": file}),
+            )
+            .await?;
+        child
+            .execute_steps(
+                &runebook.steps,
+                &runebook.macros,
+                runebook
+                    .run
+                    .as_ref()
+                    .and_then(|run| run.on_error)
+                    .unwrap_or(RunebookErrorPolicy::Stop),
+            )
+            .await?;
+        self.results.extend(child.results.clone());
+        self.trace(
+            "child_runebook_complete",
+            step.id.as_deref(),
+            Some(&step.action),
+            true,
+            serde_json::json!({"file": file}),
+        )
+        .await?;
+        Ok(
+            serde_json::json!({"schema_version": "cua.runebook.child.v1", "ok": true, "results": child.results}),
+        )
+    }
+
+    async fn execute_spawn_run(
+        &mut self,
+        step: &RunebookStep,
+    ) -> anyhow::Result<serde_json::Value> {
+        let runebook_value = self.json_field(step, "from")?;
+        let raw = if let Some(raw) = runebook_value.as_str() {
+            raw.to_string()
+        } else {
+            toml::to_string(&runebook_value)?
+        };
+        let runebook: Runebook = toml::from_str(&raw)?;
+        validate_runebook(&runebook)?;
+        self.trace(
+            "child_runebook_start",
+            step.id.as_deref(),
+            Some(&step.action),
+            true,
+            serde_json::json!({"source": "spawn_run"}),
+        )
+        .await?;
+        let mut child = self.clone();
+        child
+            .execute_steps(
+                &runebook.steps,
+                &runebook.macros,
+                runebook
+                    .run
+                    .as_ref()
+                    .and_then(|run| run.on_error)
+                    .unwrap_or(RunebookErrorPolicy::Stop),
+            )
+            .await?;
+        self.results.extend(child.results.clone());
+        Ok(
+            serde_json::json!({"schema_version": "cua.runebook.spawn.v1", "ok": true, "results": child.results}),
+        )
+    }
+
+    async fn visual_frames(&self, step: &RunebookStep) -> anyhow::Result<serde_json::Value> {
+        let frames = step_u64(step, "frames")?.unwrap_or(1).max(1) as usize;
+        let client = CuaClient::connect(self.profile.clone()).await?;
+        let mut session = client
+            .visual_session(
+                step_u64(step, "max_width")?.map(|value| value as u32),
+                step_u64(step, "fps")?.map(|value| value as u32),
+                step_bool(step, "include_bytes")?.unwrap_or(false),
+                self.session_id.as_deref(),
+            )
+            .await?;
+        let mut out = Vec::with_capacity(frames);
+        while out.len() < frames {
+            let frame = tokio::time::timeout(
+                Duration::from_millis(step_u64(step, "timeout_ms")?.unwrap_or(2_000)),
+                session.next_frame(),
+            )
+            .await??;
+            if let Some(frame) = frame {
+                out.push(frame);
+            }
+        }
+        session.close().await?;
+        Ok(serde_json::json!({"schema_version": "cua.runebook.visual.v1", "frames": out}))
+    }
+
+    async fn wait_event(&self, step: &RunebookStep) -> anyhow::Result<serde_json::Value> {
+        let after = self
+            .json_field_optional(step, "after")?
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0);
+        let timeout_ms = step_u64(step, "timeout_ms")?.unwrap_or(5_000);
+        let events = self
+            .request(
+                "events.wait",
+                Some(serde_json::json!({
+                    "after_sequence": after,
+                    "timeout_ms": timeout_ms,
+                })),
+                None,
+            )
+            .await?;
+        let kind = match step.action.as_str() {
+            "wait_agent_step" => Some("ui_step".to_string()),
+            "wait_agent_reply" => Some("ui_reply".to_string()),
+            _ => self.string_field(step, "kind")?,
+        };
+        if let Some(kind) = kind {
+            let matching = events
+                .get("events")
+                .and_then(|events| events.as_array())
+                .map(|events| {
+                    events
+                        .iter()
+                        .filter(|event| {
+                            event.get("kind").and_then(|value| value.as_str())
+                                == Some(kind.as_str())
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            Ok(serde_json::json!({"schema_version": "cua.runebook.wait.v1", "events": matching}))
+        } else {
+            Ok(events)
+        }
+    }
+
+    async fn perf_bench_step(&self, step: &RunebookStep) -> anyhow::Result<serde_json::Value> {
+        let target = self.required_string(step, "target")?;
+        let iterations = step_u64(step, "iterations")?.unwrap_or(1).max(1) as usize;
+        let mut samples = Vec::with_capacity(iterations);
+        for _ in 0..iterations {
+            let started = Instant::now();
+            match target.as_str() {
+                "screenshot" => {
+                    self.request(
+                        "capture.screenshot",
+                        Some(serde_json::json!({"max_width": 640, "encoding": "png", "force_fresh": true, "include_bytes": false})),
+                        None,
+                    )
+                    .await?;
+                }
+                "stream" => {
+                    let _ = self.visual_frames(step).await?;
+                }
+                "input" => {
+                    self.request(
+                        "input.dispatch",
+                        Some(serde_json::json!({"kind": "mouse_move", "x": 0, "y": 0, "duration_ms": 0})),
+                        self.session_id.as_deref(),
+                    )
+                    .await?;
+                }
+                "model_prep" => {
+                    self.request(
+                        "capture.screenshot",
+                        Some(serde_json::json!({"max_width": 640, "encoding": "png", "force_fresh": true, "include_bytes": true})),
+                        None,
+                    )
+                    .await?;
+                }
+                other => anyhow::bail!("unsupported perf.bench target {other}"),
+            }
+            samples.push(started.elapsed().as_millis());
+        }
+        Ok(
+            serde_json::json!({"schema_version": "cua.runebook.perf.v1", "target": target, "samples_ms": samples}),
+        )
+    }
+
+    async fn model_eval_step(&self, step: &RunebookStep) -> anyhow::Result<serde_json::Value> {
+        let bus = FrameBus::new(Arc::new(SyntheticCaptureBackend::default()));
+        let frame = bus
+            .latest_or_capture(CaptureRequest {
+                max_width: Some(640),
+                encoding: FrameEncoding::Png,
+                force_fresh: true,
+            })
+            .await?
+            .as_payload(true);
+        let mut config = EvalConfig::default();
+        config.live = step_bool(step, "live")?.unwrap_or(false);
+        config.max_calls = step_u64(step, "max_calls")?
+            .map(|value| value as usize)
+            .unwrap_or(config.max_calls);
+        if let Some(max_output_tokens) = step_u64(step, "max_output_tokens")? {
+            for candidate in &mut config.candidates {
+                candidate.max_output_tokens = max_output_tokens as u32;
+            }
+        }
+        Ok(serde_json::to_value(
+            run_eval_report(
+                config,
+                Some(frame),
+                std::env::var("OPENROUTER_API_KEY").ok(),
+            )
+            .await,
+        )?)
+    }
+
+    async fn protocol_step(&self, step: &RunebookStep) -> anyhow::Result<serde_json::Value> {
+        let method = match step.action.as_str() {
+            "turn" => "planner.turn",
+            "stt" => "stt.transcribe",
+            "planner" => "planner.plan",
+            "model" => "model.call",
+            "dispatch_model_action" => {
+                let action = self.json_field(step, "from")?;
+                if step_bool(step, "if_present")?.unwrap_or(false) && is_absent_json(&action) {
+                    return Ok(
+                        serde_json::json!({"schema_version": "cua.runebook.skip.v1", "skipped": true}),
+                    );
+                }
+                if let Some(frame) = self.json_field_optional(step, "frame")? {
+                    return self
+                        .request(
+                            "input.dispatch_frame",
+                            Some(serde_json::json!({"schema_version": SCHEMA_VERSION, "source_frame": frame, "action": action})),
+                            self.session_id.as_deref(),
+                        )
+                        .await;
+                }
+                return self
+                    .request("input.dispatch", Some(action), self.session_id.as_deref())
+                    .await;
+            }
+            _ => unreachable!(),
+        };
+        let params = self.step_fields_json(step)?;
+        self.request(method, Some(params), self.session_id.as_deref())
+            .await
     }
 
     async fn trace(
@@ -1538,14 +2344,121 @@ impl RunebookRuntime {
         })
     }
 
+    fn json_field(&self, step: &RunebookStep, key: &str) -> anyhow::Result<serde_json::Value> {
+        self.json_field_optional(step, key)?
+            .with_context(|| format!("step {} requires {key}", step.action))
+    }
+
+    fn json_field_optional(
+        &self,
+        step: &RunebookStep,
+        key: &str,
+    ) -> anyhow::Result<Option<serde_json::Value>> {
+        step.fields
+            .get(key)
+            .map(|value| self.interpolate_toml_json(value))
+            .transpose()
+    }
+
+    fn step_fields_json(&self, step: &RunebookStep) -> anyhow::Result<serde_json::Value> {
+        let mut map = serde_json::Map::new();
+        map.insert(
+            "schema_version".to_string(),
+            serde_json::Value::String(SCHEMA_VERSION.to_string()),
+        );
+        for (key, value) in &step.fields {
+            if matches!(
+                key.as_str(),
+                "if" | "if_present" | "on_error" | "rollback" | "save_as"
+            ) {
+                continue;
+            }
+            map.insert(key.clone(), self.interpolate_toml_json(value)?);
+        }
+        Ok(serde_json::Value::Object(map))
+    }
+
+    fn interpolate_toml_json(&self, value: &toml::Value) -> anyhow::Result<serde_json::Value> {
+        self.interpolate_json(toml_value_to_json(value)?)
+    }
+
+    fn interpolate_json(&self, value: serde_json::Value) -> anyhow::Result<serde_json::Value> {
+        Ok(match value {
+            serde_json::Value::String(value) => {
+                if let Some(resolved) = self.resolve_reference(&value) {
+                    resolved
+                } else {
+                    serde_json::Value::String(self.interpolate_string(&value))
+                }
+            }
+            serde_json::Value::Array(values) => serde_json::Value::Array(
+                values
+                    .into_iter()
+                    .map(|value| self.interpolate_json(value))
+                    .collect::<anyhow::Result<Vec<_>>>()?,
+            ),
+            serde_json::Value::Object(values) => {
+                let mut out = serde_json::Map::new();
+                for (key, value) in values {
+                    out.insert(key, self.interpolate_json(value)?);
+                }
+                serde_json::Value::Object(out)
+            }
+            value => value,
+        })
+    }
+
+    fn should_execute(&self, step: &RunebookStep) -> anyhow::Result<bool> {
+        if let Some(value) = step.fields.get("if") {
+            return Ok(is_truthy_json(&self.interpolate_toml_json(value)?));
+        }
+        if step_bool(step, "if_present")?.unwrap_or(false) {
+            if let Some(value) = step.fields.get("from") {
+                return Ok(!is_absent_json(&self.interpolate_toml_json(value)?));
+            }
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
     fn interpolate_string(&self, input: &str) -> String {
         let mut out = input.to_string();
+        for token in reference_tokens(input) {
+            if let Some(value) = self.resolve_reference(token) {
+                out = out.replace(token, &scalar_json_to_string(&value));
+            }
+        }
         for (key, value) in self.vars.iter().chain(self.results.iter()) {
+            if input.contains(&format!("${key}.")) {
+                continue;
+            }
             let replacement = scalar_json_to_string(value);
             out = out.replace(&format!("${{{key}}}"), &replacement);
             out = out.replace(&format!("${key}"), &replacement);
         }
         out
+    }
+
+    fn resolve_reference(&self, input: &str) -> Option<serde_json::Value> {
+        let reference = input.strip_prefix('$')?;
+        if reference.is_empty()
+            || reference
+                .chars()
+                .any(|ch| !(ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '.'))
+        {
+            return None;
+        }
+        let mut parts = reference.split('.');
+        let root = parts.next()?;
+        let mut value = self
+            .results
+            .get(root)
+            .or_else(|| self.vars.get(root))?
+            .clone();
+        for part in parts {
+            value = value.get(part)?.clone();
+        }
+        Some(value)
     }
 
     fn compact_input_action(&self, step: &RunebookStep) -> anyhow::Result<serde_json::Value> {
@@ -1639,12 +2552,6 @@ async fn runebook_trace(
     config: Option<&RunebookTraceConfig>,
     trace_enabled: bool,
 ) -> anyhow::Result<Option<RunebookTrace>> {
-    if config
-        .and_then(|config| config.verify_on_complete)
-        .unwrap_or(false)
-    {
-        anyhow::bail!("runebook trace.verify_on_complete is not implemented yet");
-    }
     let enabled = override_dir.is_some()
         || config.and_then(|config| config.dir.as_ref()).is_some()
         || config.is_some()
@@ -1668,6 +2575,164 @@ async fn runebook_trace(
     Ok(Some(RunebookTrace {
         path: dir.join("run.jsonl"),
     }))
+}
+
+fn named_config_json(
+    configs: &BTreeMap<String, RunebookNamedConfig>,
+) -> anyhow::Result<serde_json::Value> {
+    let mut out = serde_json::Map::new();
+    for (name, config) in configs {
+        let mut fields = serde_json::Map::new();
+        for (key, value) in &config.fields {
+            fields.insert(key.clone(), toml_value_to_json(value)?);
+        }
+        out.insert(name.clone(), serde_json::Value::Object(fields));
+    }
+    Ok(serde_json::Value::Object(out))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OperatorDecision {
+    Continue,
+    Stop,
+    Retry,
+    Rollback,
+}
+
+async fn ask_operator_decision(
+    step: &RunebookStep,
+    error_text: &str,
+) -> anyhow::Result<OperatorDecision> {
+    eprintln!(
+        "runebook step {} ({}) failed:\n{error_text}\nChoose: continue, stop, retry, rollback",
+        step.id.as_deref().unwrap_or("<anonymous>"),
+        step.action
+    );
+    let line = tokio::task::spawn_blocking(|| {
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line)?;
+        anyhow::Ok(line)
+    })
+    .await??;
+    match line.trim() {
+        "continue" | "c" => Ok(OperatorDecision::Continue),
+        "stop" | "s" => Ok(OperatorDecision::Stop),
+        "retry" | "r" => Ok(OperatorDecision::Retry),
+        "rollback" | "rb" => Ok(OperatorDecision::Rollback),
+        other => anyhow::bail!("unsupported operator decision {other}"),
+    }
+}
+
+async fn inspect_runebook_or_daemon_trace(
+    profile: &str,
+    dir: PathBuf,
+    verify: bool,
+    dry_run_replay: bool,
+) -> anyhow::Result<serde_json::Value> {
+    if dir.join("run.jsonl").is_file() {
+        return inspect_runebook_trace_path(&dir.join("run.jsonl"), verify).await;
+    }
+    if verify {
+        inspect_trace(dir.clone(), true, true).await?;
+    } else {
+        inspect_trace(dir.clone(), true, false).await?;
+    }
+    if !dry_run_replay {
+        replay_trace(profile, dir.clone(), true, true).await?;
+    }
+    Ok(serde_json::json!({"schema_version": SCHEMA_VERSION, "path": dir, "ok": true}))
+}
+
+async fn verify_runebook_trace_path(path: &Path) -> anyhow::Result<serde_json::Value> {
+    inspect_runebook_trace_path(path, true).await
+}
+
+async fn inspect_runebook_trace_path(
+    path: &Path,
+    verify: bool,
+) -> anyhow::Result<serde_json::Value> {
+    let content = tokio::fs::read_to_string(path)
+        .await
+        .with_context(|| format!("read runebook trace {}", path.display()))?;
+    let mut records = 0usize;
+    let mut starts = 0usize;
+    let mut completes = 0usize;
+    let mut errors = 0usize;
+    let mut malformed = Vec::new();
+    for (index, line) in content.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let value: serde_json::Value = match serde_json::from_str(line) {
+            Ok(value) => value,
+            Err(error) => {
+                malformed.push(format!("{}:{error}", index + 1));
+                continue;
+            }
+        };
+        records += 1;
+        match value.get("event").and_then(|value| value.as_str()) {
+            Some("step_start") => starts += 1,
+            Some("step_complete") => completes += 1,
+            Some("step_error") => errors += 1,
+            _ => {}
+        }
+    }
+    let ok = !verify || (records > 0 && malformed.is_empty() && starts >= completes);
+    let report = serde_json::json!({
+        "schema_version": "cua.runebook.trace.report.v1",
+        "path": path,
+        "records": records,
+        "step_starts": starts,
+        "step_completes": completes,
+        "step_errors": errors,
+        "malformed": malformed,
+        "ok": ok
+    });
+    if !ok {
+        anyhow::bail!("runebook trace verification failed: {report}");
+    }
+    Ok(report)
+}
+
+async fn replay_runebook_trace(dir: PathBuf, dry_run: bool) -> anyhow::Result<serde_json::Value> {
+    let path = dir.join("run.jsonl");
+    let report = inspect_runebook_trace_path(&path, true).await?;
+    Ok(serde_json::json!({
+        "schema_version": "cua.runebook.replay.v1",
+        "path": path,
+        "dry_run": dry_run,
+        "records": report["records"],
+        "ok": true
+    }))
+}
+
+async fn shrink_runebook_trace(dir: PathBuf) -> anyhow::Result<serde_json::Value> {
+    let path = dir.join("run.jsonl");
+    let content = tokio::fs::read_to_string(&path).await?;
+    let mut kept = Vec::new();
+    for line in content.lines() {
+        let value: serde_json::Value = serde_json::from_str(line)?;
+        if matches!(
+            value.get("event").and_then(|event| event.as_str()),
+            Some(
+                "run_start"
+                    | "step_start"
+                    | "step_error"
+                    | "error_policy"
+                    | "rollback_start"
+                    | "rollback_complete"
+                    | "run_complete"
+            )
+        ) {
+            kept.push(line.to_string());
+        }
+    }
+    let out = dir.join("run.shrunk.jsonl");
+    tokio::fs::write(&out, kept.join("\n")).await?;
+    Ok(
+        serde_json::json!({"schema_version": "cua.runebook.shrink.v1", "path": out, "records": kept.len(), "ok": true}),
+    )
 }
 
 fn expand_home_path(path: &str) -> anyhow::Result<PathBuf> {
@@ -1703,11 +2768,14 @@ fn step_array(step: &RunebookStep, key: &str) -> anyhow::Result<Vec<RunebookStep
         .with_context(|| format!("decode step {} field {key}", step.action))
 }
 
-fn step_json_field(step: &RunebookStep, key: &str) -> anyhow::Result<serde_json::Value> {
+fn step_array_optional(step: &RunebookStep, key: &str) -> anyhow::Result<Vec<RunebookStep>> {
     let Some(value) = step.fields.get(key) else {
-        anyhow::bail!("step {} requires {key}", step.action);
+        return Ok(Vec::new());
     };
-    toml_value_to_json(value)
+    value
+        .clone()
+        .try_into()
+        .with_context(|| format!("decode step {} field {key}", step.action))
 }
 
 fn step_string(step: &RunebookStep, key: &str) -> anyhow::Result<Option<String>> {
@@ -1779,6 +2847,36 @@ fn scalar_json_to_string(value: &serde_json::Value) -> String {
         serde_json::Value::Null => String::new(),
         other => serde_json::to_string(other).unwrap_or_default(),
     }
+}
+
+fn is_absent_json(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Null => true,
+        serde_json::Value::String(value) => value.is_empty(),
+        serde_json::Value::Array(value) => value.is_empty(),
+        serde_json::Value::Object(value) => value.is_empty(),
+        _ => false,
+    }
+}
+
+fn is_truthy_json(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Bool(value) => *value,
+        serde_json::Value::Null => false,
+        serde_json::Value::Number(value) => value.as_i64().unwrap_or(1) != 0,
+        serde_json::Value::String(value) => !value.is_empty() && value != "false" && value != "0",
+        serde_json::Value::Array(value) => !value.is_empty(),
+        serde_json::Value::Object(value) => !value.is_empty(),
+    }
+}
+
+fn reference_tokens(input: &str) -> Vec<&str> {
+    input
+        .split(|ch: char| {
+            !(ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '.' || ch == '$')
+        })
+        .filter(|token| token.starts_with('$') && token.contains('.'))
+        .collect()
 }
 
 async fn perf_bench(profile: &str, args: PerfBenchArgs) -> anyhow::Result<()> {
@@ -2531,6 +3629,7 @@ do = "macro.say"
     fn runebook_interpolates_vars_and_saved_scalars() {
         let runtime = RunebookRuntime {
             profile: "default".to_string(),
+            server_addr: "127.0.0.1:8765".parse().unwrap(),
             session_id: None,
             vars: HashMap::from([(
                 "app".to_string(),
@@ -2550,9 +3649,48 @@ do = "macro.say"
     }
 
     #[test]
+    fn runebook_resolves_saved_result_paths_as_json() {
+        let runtime = RunebookRuntime {
+            profile: "default".to_string(),
+            server_addr: "127.0.0.1:8765".parse().unwrap(),
+            session_id: None,
+            vars: HashMap::new(),
+            results: BTreeMap::from([(
+                "ctx".to_string(),
+                serde_json::json!({
+                    "frame": {
+                        "envelope": {
+                            "width": 640,
+                            "height": 480
+                        }
+                    }
+                }),
+            )]),
+            trace: None,
+        };
+        let step: RunebookStep = toml::from_str(
+            r#"
+do = "input.frame"
+source_frame = "$ctx.frame.envelope"
+action = { kind = "mouse_click", x = 10, y = 10, button = "left", count = 1 }
+"#,
+        )
+        .unwrap();
+
+        let frame = runtime.json_field(&step, "source_frame").unwrap();
+
+        assert_eq!(frame["width"], 640);
+        assert_eq!(
+            runtime.interpolate_string("frame $ctx.frame.envelope"),
+            "frame {\"height\":480,\"width\":640}"
+        );
+    }
+
+    #[test]
     fn runebook_compiles_compact_open_app_alias() {
         let runtime = RunebookRuntime {
             profile: "default".to_string(),
+            server_addr: "127.0.0.1:8765".parse().unwrap(),
             session_id: None,
             vars: HashMap::from([(
                 "target".to_string(),
@@ -2594,5 +3732,111 @@ app = "${target}"
             runebook.steps[1].fields["method"].as_str(),
             Some("manifest")
         );
+    }
+
+    #[test]
+    fn runebook_parses_full_documented_surface() {
+        let raw = include_str!("../../../tests/fixtures/runebook-full-surface.cua.toml");
+        let runebook: Runebook = toml::from_str(raw).unwrap();
+
+        validate_runebook(&runebook).unwrap();
+
+        assert!(runebook.daemon.is_some());
+        assert!(runebook.attest.is_some());
+        assert!(runebook.stt.as_ref().unwrap().contains_key("default"));
+        assert!(runebook.planner.as_ref().unwrap().contains_key("default"));
+        assert!(runebook.memory.is_some());
+        for needed in [
+            "doctor",
+            "permissions",
+            "visual",
+            "observe",
+            "trace.start",
+            "trace.inspect",
+            "trace.verify",
+            "trace.replay",
+            "trace.shrink",
+            "perf.bench",
+            "model.eval",
+            "schema.export",
+            "rpc",
+            "parallel",
+            "race",
+            "batch",
+            "foreach",
+            "run",
+            "spawn_run",
+            "timer",
+            "delayed_message",
+            "wait_event",
+            "attest",
+            "stt",
+            "planner",
+            "turn",
+            "model",
+            "dispatch_model_action",
+        ] {
+            assert!(
+                runebook.steps.iter().any(|step| step.action == needed),
+                "missing {needed}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn runebook_executes_pure_workflow_nodes() {
+        let mut runtime = RunebookRuntime {
+            profile: "default".to_string(),
+            server_addr: "127.0.0.1:8765".parse().unwrap(),
+            session_id: None,
+            vars: HashMap::from([("items".to_string(), serde_json::json!(["a", "b"]))]),
+            results: BTreeMap::new(),
+            trace: None,
+        };
+        let macros = BTreeMap::new();
+        let step: RunebookStep = toml::from_str(
+            r#"
+do = "seq"
+items = [
+  { do = "sleep", ms = 1 },
+  { do = "parallel", items = [{ do = "doctor", save_as = "doctor" }, { do = "permissions", action = "status", save_as = "permissions" }] },
+  { do = "race", items = [{ do = "sleep", ms = 1 }, { do = "doctor" }] },
+  { do = "foreach", items = "$items", as = "item", steps = [{ do = "sleep", ms = 1 }] },
+]
+"#,
+        )
+        .unwrap();
+
+        let value = runtime.execute_step(&step, &macros).await.unwrap();
+
+        assert!(value.is_object());
+        assert!(runtime.results.contains_key("doctor"));
+        assert!(runtime.results.contains_key("permissions"));
+    }
+
+    #[tokio::test]
+    async fn runebook_trace_verify_replay_and_shrink_pass() {
+        let dir = std::env::temp_dir().join(format!("cua-runebook-trace-{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let path = dir.join("run.jsonl");
+        tokio::fs::write(
+            &path,
+            r#"{"schema_version":"cua.runebook.trace.v1","event":"run_start","step_id":null,"step_do":null,"ok":true,"data":{}}
+{"schema_version":"cua.runebook.trace.v1","event":"step_start","step_id":"doctor","step_do":"doctor","ok":true,"data":{}}
+{"schema_version":"cua.runebook.trace.v1","event":"step_complete","step_id":"doctor","step_do":"doctor","ok":true,"data":{"status":"degraded"}}
+{"schema_version":"cua.runebook.trace.v1","event":"run_complete","step_id":null,"step_do":null,"ok":true,"data":{}}
+"#,
+        )
+        .await
+        .unwrap();
+
+        let verify = verify_runebook_trace_path(&path).await.unwrap();
+        let replay = replay_runebook_trace(dir.clone(), true).await.unwrap();
+        let shrink = shrink_runebook_trace(dir.clone()).await.unwrap();
+
+        assert_eq!(verify["ok"], true);
+        assert_eq!(replay["ok"], true);
+        assert_eq!(shrink["ok"], true);
+        assert!(dir.join("run.shrunk.jsonl").is_file());
     }
 }

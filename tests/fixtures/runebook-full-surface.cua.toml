@@ -1,0 +1,265 @@
+schema = "cua.runebook.v1"
+
+[run]
+name = "runebook-full-surface"
+profile = "default"
+mode = "supervised"
+timeout_ms = 120000
+trace = true
+on_error = "stop"
+
+[daemon]
+ensure = false
+addr = "127.0.0.1:8765"
+hud = "headful"
+allow_lan = false
+
+[session]
+role = "owner"
+client = "runebook full surface"
+ttl_ms = 300000
+
+[attest]
+required = false
+audience = "quilt-cloud"
+save_as = "machine_attestation"
+
+[stt.default]
+backend = "local"
+model = "tiny.en"
+timeout_ms = 15000
+
+[planner.default]
+provider = "openrouter"
+model = "google/gemini-2.5-flash-lite"
+timeout_ms = 12000
+max_tokens = 180
+
+[memory]
+chat = true
+ctx = true
+workspace = "profile"
+
+[trace]
+dir = "~/.cua/profiles/default/traces/runebooks/runebook-full-surface"
+verify_on_complete = true
+
+[vars]
+url = "https://docs.quilt.sh"
+enabled = true
+
+[[steps]]
+id = "doctor"
+do = "doctor"
+
+[[steps]]
+id = "permissions-status"
+do = "permissions"
+action = "status"
+
+[[steps]]
+id = "permissions-preflight"
+do = "permissions"
+action = "preflight"
+
+[[steps]]
+id = "visual"
+do = "visual"
+fps = 10
+max_width = 640
+frames = 1
+
+[[steps]]
+id = "observe-displays"
+do = "observe"
+target = "displays"
+
+[[steps]]
+id = "observe-cursor"
+do = "observe"
+target = "cursor"
+
+[[steps]]
+id = "trace-start"
+do = "trace.start"
+dir = "$trace.dir"
+
+[[steps]]
+id = "trace-inspect"
+do = "trace.inspect"
+dir = "$trace.dir"
+
+[[steps]]
+id = "trace-verify"
+do = "trace.verify"
+dir = "$trace.dir"
+
+[[steps]]
+id = "trace-replay"
+do = "trace.replay"
+dir = "$trace.dir"
+dry_run = true
+
+[[steps]]
+id = "trace-shrink"
+do = "trace.shrink"
+dir = "$trace.dir"
+
+[[steps]]
+id = "perf"
+do = "perf.bench"
+target = "model_prep"
+iterations = 1
+
+[[steps]]
+id = "eval"
+do = "model.eval"
+live = false
+max_calls = 1
+
+[[steps]]
+id = "schema"
+do = "schema.export"
+out = "~/.cua/artifacts/schema/schema-bundle.json"
+
+[[steps]]
+id = "rpc"
+do = "rpc"
+transport = "unix"
+method = "status"
+
+[[steps]]
+id = "rpc-http"
+do = "rpc"
+transport = "http"
+http_method = "get"
+method = "status"
+path = "/status"
+
+[[steps]]
+id = "parallel"
+do = "parallel"
+items = [
+  { do = "doctor", save_as = "doctor_a" },
+  { do = "permissions", action = "status", save_as = "permissions_a" },
+]
+
+[[steps]]
+id = "race"
+do = "race"
+items = [
+  { do = "sleep", ms = 1 },
+  { do = "doctor" },
+]
+
+[[steps]]
+id = "batch"
+do = "batch"
+delay_ms = 1
+actions = [
+  { kind = "key_press", combo = "cmd+l" },
+  { kind = "key_type", text = "${url}" },
+]
+
+[[steps]]
+id = "foreach"
+do = "foreach"
+items = ["one", "two"]
+as = "item"
+steps = [
+  { do = "sleep", ms = 1 },
+]
+
+[[steps]]
+id = "child"
+do = "run"
+file = "./tests/fixtures/runebook-smoke.cua.toml"
+vars = { url = "${url}" }
+
+[[steps]]
+id = "spawn"
+do = "spawn_run"
+from = "$generated.runebook"
+
+[[steps]]
+id = "if"
+do = "sleep"
+ms = 1
+if = "$enabled"
+
+[[steps]]
+id = "if-present"
+do = "sleep"
+ms = 1
+from = "$generated.runebook"
+if_present = true
+
+[[steps]]
+id = "timer"
+do = "timer"
+items = [
+  { do = "sleep", ms = 1 },
+]
+
+[[steps]]
+id = "delayed-message"
+do = "delayed_message"
+delay_ms = 1
+text = "delayed hello"
+source = "runebook"
+
+[[steps]]
+id = "wait"
+do = "wait_event"
+after = 0
+kind = "ui_reply"
+timeout_ms = 10
+
+[[steps]]
+id = "attest-step"
+do = "attest"
+audience = "quilt-cloud"
+
+[[steps]]
+id = "stt"
+do = "stt"
+wav = "~/.cua/profiles/default/uploads/input.wav"
+
+[[steps]]
+id = "planner"
+do = "planner"
+transcript = "$stt.text"
+
+[[steps]]
+id = "turn"
+do = "turn"
+input_kind = "text"
+input = "Open ${url}"
+
+[[steps]]
+id = "model"
+do = "model"
+provider = "openrouter"
+model = "google/gemini-2.5-flash-lite"
+message = "Return JSON"
+
+[[steps]]
+id = "dispatch-model"
+do = "dispatch_model_action"
+from = "$decision.action"
+if_present = true
+
+[[steps]]
+id = "rollback-policy"
+do = "rpc"
+method = "status"
+on_error = "rollback"
+rollback = [
+  { do = "doctor" },
+]
+
+[[steps]]
+id = "ask-policy"
+do = "rpc"
+method = "status"
+on_error = "ask"

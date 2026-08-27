@@ -1,8 +1,8 @@
 # Sample cua Runebook
 
-This file is a design reference for the proposed `cua run <file>.toml` runebook system.
+This file is the reference for the implemented `cua run <file>.toml` runebook system.
 
-The runebook is not implemented yet. It should be implemented in full as the canonical compact scripting surface over the existing cua daemon, Unix socket protocol, HTTP API, voice/text/wav planner path, STT path, traces, profile/session policy, model calls, and future machine attestation.
+Runebooks are the canonical compact scripting surface over the cua daemon protocol. The executor compiles structured TOML steps to Unix socket protocol calls by default, with an explicit HTTP `rpc` escape hatch for operator/debug coverage.
 
 The intended command:
 
@@ -217,12 +217,12 @@ on_error = "stop"
 trace = true
 ```
 
-`on_error` is proposed and not implemented today. Required enum:
+`on_error` controls how the executor handles step failures:
 
 - `stop`: stop execution immediately.
 - `continue`: record the error and continue to the next step.
-- `ask`: pause and ask the user/operator what to do.
-- `rollback`: run rollback handlers or trace replay rollback hooks where available.
+- `ask`: pause and ask the user/operator whether to continue, stop, retry, or roll back.
+- `rollback`: run explicit rollback steps from the failed step's `rollback = [...]` field.
 
 ### `[daemon]`
 
@@ -825,7 +825,7 @@ out = "~/.cua/artifacts/schema/schema-bundle.json"
 
 ## Attestation And Enrollment
 
-These are proposed features and are not implemented in the current source.
+Attestation and enrollment runebook steps route through the canonical daemon protocol methods. The attestation owner provides the concrete identity and enrollment semantics.
 
 ```toml
 [[steps]]
@@ -856,22 +856,6 @@ params = { kind = "key_press", combo = "enter" }
 save_as = "raw_result"
 ```
 
-## Required Implementation Notes
+## Verification Fixtures
 
-1. Add a runebook parser and validator.
-2. Add `cua run <file>` to the CLI.
-3. Add typed runebook structs, probably in `cua-core` or a new `cua-runebook` crate.
-4. Compile compact aliases to existing cua protocol calls.
-5. Support raw RPC escape hatch.
-6. Support `save_as` result binding.
-7. Support `${var}` interpolation.
-8. Support `$result.path` references.
-9. Support `seq`, `parallel`, `race`, `batch`, and `foreach`.
-10. Support child runebook spawning.
-11. Support model calls that can return actions or child runebooks.
-12. Support built-in text/wav/record turns through the existing voice planner path.
-13. Implement `on_error = stop|continue|ask|rollback`.
-14. Write traces for runebook execution.
-15. Verify traces and support replay.
-16. Add fozzy coverage for deterministic runebook execution.
-
+The implemented surface is covered by runebook unit tests and fixtures under `tests/fixtures/`, including `runebook-smoke.cua.toml`, `runebook-protocol.cua.toml`, `runebook-owner-protocol.cua.toml`, and `runebook-full-surface.cua.toml`.

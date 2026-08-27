@@ -49,6 +49,10 @@ pub fn input_backend() -> Arc<dyn InputBackend> {
     Arc::new(MacosInputBackend)
 }
 
+pub fn displays() -> anyhow::Result<Vec<DisplayInfo>> {
+    native_displays()
+}
+
 #[derive(Debug)]
 pub struct MacosCaptureBackend {
     started: Instant,
