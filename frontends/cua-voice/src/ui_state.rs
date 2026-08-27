@@ -2,7 +2,12 @@ use cua_core::UiMode;
 use std::time::{Duration, Instant};
 
 const TRANSCRIPT_VISIBLE_FOR: Duration = Duration::from_millis(1_500);
-const REPLY_VISIBLE_FOR: Duration = Duration::from_secs(5);
+const REPLY_VISIBLE_MIN: Duration = Duration::from_secs(8);
+const REPLY_MARQUEE_VIEWPORT_PX: f32 = 270.0;
+const REPLY_MARQUEE_CHAR_WIDTH_PX: f32 = 6.2;
+const REPLY_MARQUEE_START_DELAY_SECS: f32 = 1.6;
+const REPLY_MARQUEE_END_HOLD_SECS: f32 = 0.9;
+const REPLY_MARQUEE_SCROLL_SPEED_PX_PER_SEC: f32 = 24.0;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HudPhase {
@@ -219,8 +224,8 @@ impl HudSnapshot {
                 self.phase = HudPhase::Reply;
                 self.mark_voice_control();
                 self.step = HudStep::new(4, 4, "Done");
+                self.expanded_until = Some(Instant::now() + reply_visible_for(&text));
                 self.response = Some(text);
-                self.expanded_until = Some(Instant::now() + REPLY_VISIBLE_FOR);
                 self.programmed_step_expires_at = None;
                 self.programmed_step_restore = None;
             }
@@ -228,16 +233,16 @@ impl HudSnapshot {
                 self.phase = HudPhase::Reply;
                 self.mark_automation_control();
                 self.step = HudStep::new(4, 4, "Done");
+                self.expanded_until = Some(Instant::now() + reply_visible_for(&text));
                 self.response = Some(text);
-                self.expanded_until = Some(Instant::now() + REPLY_VISIBLE_FOR);
                 self.programmed_step_expires_at = None;
                 self.programmed_step_restore = None;
             }
             VoiceUiEvent::Error(text) => {
                 self.phase = HudPhase::Error;
                 self.step = HudStep::new(0, 4, "Stopped");
+                self.expanded_until = Some(Instant::now() + reply_visible_for(&text));
                 self.response = Some(text);
-                self.expanded_until = Some(Instant::now() + REPLY_VISIBLE_FOR);
                 self.programmed_step_expires_at = None;
                 self.programmed_step_restore = None;
             }
@@ -305,6 +310,18 @@ impl HudSnapshot {
         self.input_label = "Automation".to_string();
         self.task = "Computer control".to_string();
     }
+}
+
+fn reply_visible_for(text: &str) -> Duration {
+    let text_width = text.chars().count() as f32 * REPLY_MARQUEE_CHAR_WIDTH_PX;
+    let overflow = (text_width - REPLY_MARQUEE_VIEWPORT_PX).max(0.0);
+    if overflow <= 0.0 {
+        return REPLY_VISIBLE_MIN;
+    }
+    let seconds = REPLY_MARQUEE_START_DELAY_SECS
+        + (overflow / REPLY_MARQUEE_SCROLL_SPEED_PX_PER_SEC).max(0.5)
+        + REPLY_MARQUEE_END_HOLD_SECS;
+    REPLY_VISIBLE_MIN.max(Duration::from_secs_f32(seconds))
 }
 
 impl HudStep {
@@ -383,7 +400,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reply_expands_for_a_short_window() {
+    fn reply_expands_for_eight_second_minimum() {
         let mut state = HudSnapshot::default();
         let before = Instant::now();
         state.apply(VoiceUiEvent::Reply("ready".to_string()));
@@ -392,8 +409,20 @@ mod tests {
         assert_eq!(state.phase, HudPhase::Reply);
         assert_eq!(state.input_label, "Voice control");
         let deadline = state.expanded_until.expect("reply deadline");
-        assert!(deadline >= before + Duration::from_millis(4_900));
-        assert!(deadline <= Instant::now() + Duration::from_millis(5_100));
+        assert!(deadline >= before + Duration::from_millis(7_900));
+        assert!(deadline <= Instant::now() + Duration::from_millis(8_100));
+    }
+
+    #[test]
+    fn long_reply_persists_until_collapsed_marquee_can_finish() {
+        let mut state = HudSnapshot::default();
+        let before = Instant::now();
+        let long_reply = "The agent response is intentionally long enough that the collapsed dynamic island center slot must scroll for more than eight seconds before returning to Ready.";
+        state.apply(VoiceUiEvent::Reply(long_reply.to_string()));
+
+        let deadline = state.expanded_until.expect("reply deadline");
+        assert!(deadline > before + Duration::from_secs(8));
+        assert!(deadline >= before + reply_visible_for(long_reply));
     }
 
     #[test]
