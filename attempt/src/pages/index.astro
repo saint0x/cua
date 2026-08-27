@@ -101,6 +101,14 @@ const title = "cua mic diagnostics";
           <div id="runsList" class="runs-list"></div>
         </section>
 
+        <section class="cua-panel" aria-label="CUA ingestion results">
+          <div class="section-title">
+            <span>CUA ingestion</span>
+            <strong id="cuaSummary">No CUA runs yet</strong>
+          </div>
+          <div id="cuaResults" class="cua-results"></div>
+        </section>
+
         <pre id="log" aria-live="polite"></pre>
       </section>
     </main>
@@ -133,6 +141,8 @@ const title = "cua mic diagnostics";
         runsText: document.querySelector("#runsText"),
         sessionSummary: document.querySelector("#sessionSummary"),
         runsList: document.querySelector("#runsList"),
+        cuaSummary: document.querySelector("#cuaSummary"),
+        cuaResults: document.querySelector("#cuaResults"),
         log: document.querySelector("#log"),
       };
 
@@ -148,8 +158,11 @@ const title = "cua mic diagnostics";
       let context;
       let analyser;
       let source;
+      let processor;
+      let silentGain;
       let recorder;
       let chunks = [];
+      let pcmChunks = [];
       let raf = 0;
       let stats = resetStats();
 
@@ -173,6 +186,8 @@ const title = "cua mic diagnostics";
           longestSpeechLikeMs: 0,
           currentSpeechLikeMs: 0,
           samplesPerFrame: 0,
+          captureSampleRate: 0,
+          pcmFrameCount: 0,
           deviceLabel: "",
           settings: {},
           constraints: {},
@@ -243,6 +258,19 @@ const title = "cua mic diagnostics";
         analyser.fftSize = 2048;
         analyser.smoothingTimeConstant = 0.08;
         source.connect(analyser);
+        processor = context.createScriptProcessor(4096, 1, 1);
+        silentGain = context.createGain();
+        silentGain.gain.value = 0;
+        stats.captureSampleRate = context.sampleRate;
+        pcmChunks = [];
+        processor.onaudioprocess = (event) => {
+          const input = event.inputBuffer.getChannelData(0);
+          pcmChunks.push(new Float32Array(input));
+          stats.pcmFrameCount += input.length;
+        };
+        source.connect(processor);
+        processor.connect(silentGain);
+        silentGain.connect(context.destination);
 
         chunks = [];
         const mimeType = pickMimeType();
@@ -267,12 +295,16 @@ const title = "cua mic diagnostics";
         cancelAnimationFrame(raf);
         raf = 0;
         if (recorder && recorder.state !== "inactive") recorder.stop();
+        if (processor) processor.disconnect();
+        if (silentGain) silentGain.disconnect();
         if (stream) stream.getTracks().forEach((track) => track.stop());
         if (context && context.state !== "closed") await context.close();
         stream = undefined;
         context = undefined;
         analyser = undefined;
         source = undefined;
+        processor = undefined;
+        silentGain = undefined;
         els.startBtn.disabled = false;
         els.stopBtn.disabled = true;
         if (announce) {
@@ -362,6 +394,7 @@ const title = "cua mic diagnostics";
 
       function finalizeRecording() {
         const audioBlob = new Blob(chunks, { type: stats.mimeType || "audio/webm" });
+        const wavBlob = encodeWavFromFloatChunks(pcmChunks, stats.captureSampleRate || stats.settings.sampleRate || 48000);
         const durationMs = Math.round((stats.stoppedAtMs || performance.now()) - stats.startedAtMs);
         const report = {
           schema: "cua.mic_diagnostics.run.v1",
@@ -378,6 +411,8 @@ const title = "cua mic diagnostics";
           capabilities: stats.capabilities,
           frames: stats.frames,
           samplesPerFrame: stats.samplesPerFrame,
+          captureSampleRate: stats.captureSampleRate || stats.settings.sampleRate || 48000,
+          pcmFrameCount: stats.pcmFrameCount,
           peak: round(stats.peak),
           maxRms: round(stats.maxRms),
           meanRms: round(stats.rmsSum / Math.max(1, stats.frames)),
@@ -395,11 +430,20 @@ const title = "cua mic diagnostics";
           longestSpeechLikeMs: Math.round(stats.longestSpeechLikeMs),
           mimeType: stats.mimeType,
           audioBytes: audioBlob.size,
+          wavBytes: wavBlob.size,
           timeline: stats.timeline,
         };
 
-        session.runs.push({ report, audioBlob });
+        const run = { report, audioBlob, wavBlob, cua: null, cuaStatus: "queued" };
+        session.runs.push(run);
         renderRuns();
+        runCuaForRun(run).catch((error) => {
+          run.cuaStatus = "error";
+          run.cua = { ok: false, error: error.message || String(error) };
+          renderRuns();
+          renderCuaResults();
+          log(`CUA run ${report.index} failed: ${error.message || String(error)}.`);
+        });
         log(
           `Run ${report.index} ready: peak=${report.peak}, meanRms=${report.meanRms}, p90=${report.p90Rms}, speechLike=${report.speechLikeRatio}.`
         );
@@ -413,7 +457,10 @@ const title = "cua mic diagnostics";
         els.sessionSummary.textContent = summarizeSession();
         els.runsList.replaceChildren();
 
-        for (const { report, audioBlob } of session.runs.slice().reverse()) {
+        renderCuaResults();
+
+        for (const run of session.runs.slice().reverse()) {
+          const { report, audioBlob, wavBlob } = run;
           const row = document.createElement("article");
           row.className = "run";
           row.innerHTML = `
@@ -429,6 +476,10 @@ const title = "cua mic diagnostics";
               <span>speech / clip</span>
               <strong>${Math.round(report.speechLikeRatio * 100)}% / ${report.clippedFrames}</strong>
             </div>
+            <div>
+              <span>CUA</span>
+              <strong>${escapeHtml(run.cuaStatus || "idle")}</strong>
+            </div>
           `;
           const buttons = document.createElement("div");
           buttons.className = "run-actions";
@@ -440,9 +491,72 @@ const title = "cua mic diagnostics";
           jsonButton.type = "button";
           jsonButton.textContent = "JSON";
           jsonButton.addEventListener("click", () => downloadBlob(`cua-mic-run-${report.index}.json`, jsonBlob(report)));
-          buttons.append(audioButton, jsonButton);
+          const wavButton = document.createElement("button");
+          wavButton.type = "button";
+          wavButton.textContent = "WAV";
+          wavButton.addEventListener("click", () => downloadBlob(`cua-mic-run-${report.index}.wav`, wavBlob));
+          const cuaButton = document.createElement("button");
+          cuaButton.type = "button";
+          cuaButton.textContent = run.cuaStatus === "running" ? "CUA..." : "CUA";
+          cuaButton.disabled = run.cuaStatus === "running";
+          cuaButton.addEventListener("click", () => runCuaForRun(run));
+          buttons.append(audioButton, wavButton, jsonButton, cuaButton);
           row.append(buttons);
           els.runsList.append(row);
+        }
+      }
+
+      async function runCuaForRun(run) {
+        run.cuaStatus = "running";
+        renderRuns();
+        renderCuaResults();
+        log(`Sending run ${run.report.index} WAV into installed CUA.`);
+        const startedAt = performance.now();
+        const response = await fetch("/api/cua-stt", {
+          method: "POST",
+          headers: { "content-type": "audio/wav" },
+          body: run.wavBlob,
+        });
+        const result = await response.json();
+        run.cuaStatus = result.ok ? "ok" : "error";
+        run.cua = {
+          ...result,
+          browserRoundTripMs: Math.round(performance.now() - startedAt),
+        };
+        renderRuns();
+        renderCuaResults();
+        const transcript = result.summary?.transcript || "(no transcript)";
+        const error = result.summary?.error ? ` error=${result.summary.error}` : "";
+        log(`CUA run ${run.report.index}: ${run.cuaStatus}, transcript=${transcript}.${error}`);
+      }
+
+      function renderCuaResults() {
+        const completed = session.runs.filter((run) => run.cua).length;
+        els.cuaSummary.textContent = completed
+          ? `${completed} CUA ingestion result(s)`
+          : "No CUA runs yet";
+        els.cuaResults.replaceChildren();
+        for (const run of session.runs.filter((entry) => entry.cua).slice().reverse()) {
+          const result = run.cua;
+          const summary = result.summary || {};
+          const row = document.createElement("article");
+          row.className = "cua-result";
+          row.innerHTML = `
+            <div>
+              <span>Run ${run.report.index} / ${escapeHtml(run.cuaStatus)}</span>
+              <strong>${escapeHtml(summary.transcript || summary.error || "no transcript")}</strong>
+            </div>
+            <div>
+              <span>STT</span>
+              <strong>${escapeHtml(formatStt(summary.stt))}</strong>
+            </div>
+            <div>
+              <span>timing</span>
+              <strong>${escapeHtml(formatMetrics(summary.metrics, result))}</strong>
+            </div>
+            <pre>${escapeHtml(JSON.stringify(result.events || [], null, 2))}</pre>
+          `;
+          els.cuaResults.append(row);
         }
       }
 
@@ -459,8 +573,61 @@ const title = "cua mic diagnostics";
         return {
           ...session,
           exportedAt: new Date().toISOString(),
-          runs: session.runs.map((run) => run.report),
+          runs: session.runs.map((run) => ({
+            ...run.report,
+            cua: run.cua,
+          })),
         };
+      }
+
+      function encodeWavFromFloatChunks(chunks, sampleRate) {
+        const sampleCount = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+        const bytes = new ArrayBuffer(44 + sampleCount * 2);
+        const view = new DataView(bytes);
+        writeAscii(view, 0, "RIFF");
+        view.setUint32(4, 36 + sampleCount * 2, true);
+        writeAscii(view, 8, "WAVE");
+        writeAscii(view, 12, "fmt ");
+        view.setUint32(16, 16, true);
+        view.setUint16(20, 1, true);
+        view.setUint16(22, 1, true);
+        view.setUint32(24, sampleRate, true);
+        view.setUint32(28, sampleRate * 2, true);
+        view.setUint16(32, 2, true);
+        view.setUint16(34, 16, true);
+        writeAscii(view, 36, "data");
+        view.setUint32(40, sampleCount * 2, true);
+        let offset = 44;
+        for (const chunk of chunks) {
+          for (const sample of chunk) {
+            const clamped = Math.max(-1, Math.min(1, sample));
+            view.setInt16(offset, clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff, true);
+            offset += 2;
+          }
+        }
+        return new Blob([bytes], { type: "audio/wav" });
+      }
+
+      function writeAscii(view, offset, text) {
+        for (let index = 0; index < text.length; index += 1) {
+          view.setUint8(offset + index, text.charCodeAt(index));
+        }
+      }
+
+      function formatStt(stt) {
+        if (!stt) return "none";
+        return [stt.backend, stt.model, stt.transcript_class].filter(Boolean).join(" / ");
+      }
+
+      function formatMetrics(metrics, result) {
+        const values = metrics || {};
+        return [
+          result.durationMs ? `api ${result.durationMs}ms` : null,
+          result.browserRoundTripMs ? `round ${result.browserRoundTripMs}ms` : null,
+          values.stt_preflight_overlap_ms ? `stt ${values.stt_preflight_overlap_ms}ms` : null,
+          values.plan_ms ? `plan ${values.plan_ms}ms` : null,
+          values.turn_total_ms ? `turn ${values.turn_total_ms}ms` : null,
+        ].filter(Boolean).join(" / ") || "none";
       }
 
       function pickMimeType() {
@@ -728,11 +895,13 @@ const title = "cua mic diagnostics";
     margin-top: 16px;
   }
 
-  .runs {
+  .runs,
+  .cua-panel {
     margin-top: 16px;
   }
 
-  .runs-list {
+  .runs-list,
+  .cua-results {
     display: grid;
     gap: 1px;
     margin-top: 10px;
@@ -741,8 +910,21 @@ const title = "cua mic diagnostics";
 
   .run {
     min-height: 58px;
-    grid-template-columns: 1.25fr 1fr 0.7fr auto;
+    grid-template-columns: 1.25fr 1fr 0.7fr 0.45fr auto;
     align-items: center;
+  }
+
+  .cua-result {
+    grid-template-columns: 1.25fr 1fr 1fr;
+    align-items: stretch;
+  }
+
+  .cua-result pre {
+    grid-column: 1 / -1;
+    min-height: 86px;
+    max-height: 260px;
+    margin: 0;
+    background: rgba(255, 255, 255, 0.035);
   }
 
   .run-actions {
@@ -776,7 +958,8 @@ const title = "cua mic diagnostics";
     label,
     .meters,
     .grid,
-    .run {
+    .run,
+    .cua-result {
       width: 100%;
       grid-template-columns: 1fr;
     }
