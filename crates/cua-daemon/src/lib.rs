@@ -3252,10 +3252,14 @@ async fn dispatch_input_action(state: &DaemonState, action: InputAction) -> cua_
             "tool": "Unix socket",
         }),
     );
+    let initial_step_total = match &action {
+        InputAction::Sequence { actions, .. } => sequence_step_total(actions.len()).unwrap_or(3),
+        _ => 3,
+    };
     publish_protocol_step(
         state,
         1,
-        3,
+        initial_step_total,
         format!("Preparing {action_label}"),
         "Unix socket",
         5_000,
@@ -3308,6 +3312,23 @@ async fn dispatch_input_action(state: &DaemonState, action: InputAction) -> cua_
         .await;
         publish_input_event(state, "input_refused", &result);
         return result;
+    }
+    if let InputAction::Sequence {
+        actions,
+        inter_action_delay_ms,
+    } = action
+    {
+        return dispatch_sequence_action(
+            state,
+            actions,
+            inter_action_delay_ms,
+            turn_id,
+            action_json,
+            before,
+            capture_trace_snapshots,
+            started,
+        )
+        .await;
     }
     let dispatch_started = Instant::now();
     publish_protocol_step(
@@ -3365,6 +3386,181 @@ async fn dispatch_input_action(state: &DaemonState, action: InputAction) -> cua_
     );
     publish_input_event(state, "input_completed", &result);
     result
+}
+
+async fn dispatch_sequence_action(
+    state: &DaemonState,
+    actions: Vec<InputAction>,
+    inter_action_delay_ms: u64,
+    turn_id: String,
+    action_json: serde_json::Value,
+    before: Option<TraceSnapshot>,
+    capture_trace_snapshots: bool,
+    started: Instant,
+) -> cua_core::InputResult {
+    let action_count = actions.len();
+    if action_count == 0 {
+        return refused_traced_input(
+            state,
+            turn_id,
+            action_json,
+            before,
+            capture_trace_snapshots,
+            "sequence must contain at least one action",
+            started,
+        )
+        .await;
+    }
+    if actions
+        .iter()
+        .any(|action| matches!(action, InputAction::Sequence { .. }))
+    {
+        return refused_traced_input(
+            state,
+            turn_id,
+            action_json,
+            before,
+            capture_trace_snapshots,
+            "nested sequences are not supported",
+            started,
+        )
+        .await;
+    }
+
+    let step_total = sequence_step_total(action_count);
+    let delay = Duration::from_millis(inter_action_delay_ms.min(2_000));
+    let last_index = action_count.saturating_sub(1);
+    let mut aggregate = input_result_with_id(
+        Uuid::new_v4(),
+        Effect::Confirmed,
+        InputRoute::SystemApi,
+        DeliveryMode::NotApplicable,
+        EvidenceKind::ValueReadback,
+        format!("sequence {action_count} actions"),
+    );
+    aggregate.started_mono_ns = 0;
+    aggregate.evidence.clear();
+
+    for (index, action) in actions.into_iter().enumerate() {
+        let action_label = input_action_label(&action);
+        if let Some(step_total) = step_total {
+            publish_protocol_step(
+                state,
+                (index + 2).min(u16::MAX as usize) as u16,
+                step_total,
+                format!("Dispatching {}/{} {action_label}", index + 1, action_count),
+                "Unix socket",
+                5_000,
+            );
+        }
+        let dispatch_started = Instant::now();
+        let (queue_wait, result) = state
+            .input_lane
+            .execute(InputRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                idempotency_key: Uuid::new_v4(),
+                deadline_mono_ns: None,
+                action,
+            })
+            .await;
+        state
+            .metrics
+            .observe(MetricKind::InputQueueWait, queue_wait);
+        state
+            .metrics
+            .observe(MetricKind::InputDispatch, dispatch_started.elapsed());
+        if result.effect == Effect::Refused {
+            state.metrics.increment(CounterKind::InputRefusals);
+            aggregate.effect = Effect::Refused;
+        }
+        aggregate.route = result.route;
+        aggregate.delivery_mode = result.delivery_mode;
+        aggregate.evidence.extend(result.evidence);
+        if index < last_index && !delay.is_zero() {
+            tokio::time::sleep(delay).await;
+        }
+    }
+
+    aggregate.ended_mono_ns = started.elapsed().as_nanos();
+    let after = if capture_trace_snapshots {
+        trace_snapshot(state, &turn_id, "after").await
+    } else {
+        None
+    };
+    append_action_turn(
+        state,
+        turn_id,
+        action_json,
+        serde_json::to_value(&aggregate).unwrap_or_else(|_| serde_json::json!(null)),
+        before,
+        after,
+    )
+    .await;
+    state
+        .metrics
+        .observe(MetricKind::InputDispatch, started.elapsed());
+    let final_prefix = if aggregate.effect == Effect::Refused {
+        "Refused"
+    } else {
+        "Confirmed"
+    };
+    publish_protocol_step(
+        state,
+        step_total.unwrap_or(3),
+        step_total.unwrap_or(3),
+        format!("{final_prefix} sequence {action_count} actions"),
+        "Unix socket",
+        3_500,
+    );
+    publish_input_event(state, "input_completed", &aggregate);
+    aggregate
+}
+
+async fn refused_traced_input(
+    state: &DaemonState,
+    turn_id: String,
+    action_json: serde_json::Value,
+    before: Option<TraceSnapshot>,
+    capture_trace_snapshots: bool,
+    message: impl Into<String>,
+    started: Instant,
+) -> cua_core::InputResult {
+    let message = message.into();
+    publish_protocol_step(
+        state,
+        3,
+        3,
+        format!("Refused {message}"),
+        "Unix socket",
+        3_500,
+    );
+    state.metrics.increment(CounterKind::InputRefusals);
+    state
+        .metrics
+        .observe(MetricKind::InputDispatch, started.elapsed());
+    let result = refused_input_result(message);
+    let after = if capture_trace_snapshots {
+        trace_snapshot(state, &turn_id, "after").await
+    } else {
+        None
+    };
+    append_action_turn(
+        state,
+        turn_id,
+        action_json,
+        serde_json::to_value(&result).unwrap_or_else(|_| serde_json::json!(null)),
+        before,
+        after,
+    )
+    .await;
+    publish_input_event(state, "input_refused", &result);
+    result
+}
+
+fn sequence_step_total(action_count: usize) -> Option<u16> {
+    action_count
+        .checked_add(2)
+        .and_then(|total| u16::try_from(total).ok())
 }
 
 async fn dispatch_control_action(
@@ -5070,6 +5266,63 @@ mod tests {
             .expect("ui_island event");
         assert_eq!(island["data"]["state"], "expanded");
         assert_eq!(island["data"]["source"], "automation");
+    }
+
+    #[tokio::test]
+    async fn sequence_dispatch_emits_leaf_protocol_steps() {
+        let state = DaemonState::synthetic("test", "token");
+
+        let result = dispatch_input_action(
+            &state,
+            InputAction::Sequence {
+                actions: vec![
+                    InputAction::ShellExec {
+                        command: "printf one".to_string(),
+                        timeout_ms: 1_000,
+                    },
+                    InputAction::ShellExec {
+                        command: "printf two".to_string(),
+                        timeout_ms: 1_000,
+                    },
+                ],
+                inter_action_delay_ms: 0,
+            },
+        )
+        .await;
+
+        assert_eq!(result.effect, Effect::Confirmed);
+        assert_eq!(result.evidence.len(), 2);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let events = state.events.snapshot().await;
+        let labels = events
+            .iter()
+            .filter(|event| event["kind"] == "ui_step")
+            .filter_map(|event| event["data"]["label"].as_str())
+            .collect::<Vec<_>>();
+        assert!(
+            labels
+                .iter()
+                .any(|label| *label == "Preparing sequence 2 actions"),
+            "{labels:?}"
+        );
+        assert!(
+            labels
+                .iter()
+                .any(|label| label.starts_with("Dispatching 1/2 shell printf one")),
+            "{labels:?}"
+        );
+        assert!(
+            labels
+                .iter()
+                .any(|label| label.starts_with("Dispatching 2/2 shell printf two")),
+            "{labels:?}"
+        );
+        assert!(
+            labels
+                .iter()
+                .any(|label| *label == "Confirmed sequence 2 actions"),
+            "{labels:?}"
+        );
     }
 
     #[test]
