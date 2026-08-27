@@ -2434,6 +2434,21 @@ fn resident_frame_freshness() -> Duration {
     env_duration_ms("CUA_RESIDENT_FRAME_FRESH_MS", 1_000, 50, 30_000)
 }
 
+fn trace_frame_artifacts_enabled() -> bool {
+    env_flag_enabled(std::env::var("CUA_TRACE_FRAME_ARTIFACTS").ok().as_deref())
+}
+
+fn env_flag_enabled(value: Option<&str>) -> bool {
+    matches!(
+        value.map(|value| value.trim().to_ascii_lowercase()),
+        Some(value)
+            if matches!(
+                value.as_str(),
+                "1" | "true" | "yes" | "on" | "frames" | "artifacts"
+            )
+    )
+}
+
 fn env_duration_ms(key: &str, default_ms: u64, min_ms: u64, max_ms: u64) -> Duration {
     let ms = std::env::var(key)
         .ok()
@@ -3104,6 +3119,9 @@ struct TraceSnapshot {
 
 async fn trace_snapshot(state: &DaemonState, turn_id: &str, phase: &str) -> Option<TraceSnapshot> {
     let trace_lane = state.trace_lane.as_ref()?;
+    if !trace_frame_artifacts_enabled() {
+        return None;
+    }
     let lookup = state
         .frame_bus
         .latest_or_capture_timed(CaptureRequest {
@@ -4788,6 +4806,18 @@ mod tests {
             ],
             inter_action_delay_ms: 120,
         }));
+    }
+
+    #[test]
+    fn trace_frame_artifacts_are_explicitly_opt_in() {
+        assert!(!env_flag_enabled(None));
+        assert!(!env_flag_enabled(Some("")));
+        assert!(!env_flag_enabled(Some("0")));
+        assert!(!env_flag_enabled(Some("false")));
+        assert!(env_flag_enabled(Some("1")));
+        assert!(env_flag_enabled(Some("true")));
+        assert!(env_flag_enabled(Some("frames")));
+        assert!(env_flag_enabled(Some(" artifacts ")));
     }
 
     #[test]
