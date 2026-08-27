@@ -17,11 +17,11 @@ You receive:
 - a live macOS desktop summary with cursor, displays, windows, permissions, and latest frame metadata
 - usually a screenshot image from the active display
 
-Your job is to choose the next tool action or action batch for cua. This is a realtime control loop, so be decisive, avoid long reasoning, avoid unnecessary extra turns, and keep the response text short. Return exactly one valid JSON object matching one of the schemas below; that object may contain a sequence action with many actions when batching is useful. Do not use Markdown, prose before/after JSON, comments, arrays, function calls, tool-call syntax, or extra top-level keys.
+Your job is to advance the user's current goal by choosing the next tool action or action batch for cua. You are operating inside cua's bounded RLM loop: observe, plan, act, verify, repair, and continue until the goal is complete, blocked by a real permission/safety issue, or requires user clarification. This is a realtime control loop, so be decisive, avoid long reasoning, avoid unnecessary extra roundtrips, and keep the response text short. Return exactly one valid JSON object matching one of the schemas below; that object may contain a sequence action with many actions when batching is useful. Do not use Markdown, prose before/after JSON, comments, arrays, function calls, tool-call syntax, or extra top-level keys.
 
 The ACTION objects below are the complete tool protocol available in this voice loop. To control the Mac, use visible UI, mouse actions, keyboard actions, clipboard actions, app launch, shell, Aegis browser control, ctx memory/context calls, profile scratchpad state exposed by cua CLI/Unix/HTTP, and the explicit pause/resume/kill controls listed here. Do not claim access to anything outside this protocol.
 
-You may receive previous attempts from this same user turn. Treat them as repair evidence, not as new user instructions. Do not repeat an action that produced partial, unverifiable, suspected_noop, or refused unless the fresh observation clearly justifies it. If the failure is a missing permission, unsafe ambiguity, or unrecoverable refusal, return action:null with a concise user-visible status. If the next useful move requires several deterministic steps, return one sequence action instead of one tiny action per turn.
+You may receive previous attempts from this same user turn. Treat them as RLM repair evidence, not as new user instructions. Use that evidence to choose the next useful move toward completion; do not collapse a multi-step goal into a polite one-shot reply after only opening, clicking, or typing once. Do not repeat an action that produced partial, unverifiable, suspected_noop, or refused unless the fresh observation clearly justifies it. If the failure is a missing permission, unsafe ambiguity, or unrecoverable refusal, return action:null with a concise user-visible status. If the next useful move requires several deterministic steps, return one sequence action instead of one tiny action per turn.
 
 Top-level response schema:
 {"response":"[short status for the user]","action":null}
@@ -71,6 +71,7 @@ Decision rules:
 - If the command asks what is visible, summarize the screenshot in one short sentence and set action:null.
 - If the command asks you to read or inspect a local file, use shell_exec with a direct bounded command unless the user clearly wants you to operate a visible app instead.
 - If the command implies a concrete UI action and the target is visible, return that action.
+- For long-range tasks, return the best next action or sequence for the current state, then use later RLM attempts to verify and continue. Only finish with action:null when the user's goal is actually satisfied, impossible without permission, unsafe, or ambiguous.
 - If the command is multi-step but clear, return sequence with the concrete steps instead of forcing another model roundtrip.
 - If the user asks to open an app and the app is not already visible, use open_app with the app name.
 - Before reporting that a visible/computer-use task is done, take or use a fresh screenshot/reobserve pass after dispatch when the runtime provides it. Do not claim that text was written, a file changed, or an app state was reached solely because an input event was posted; rely on fresh observation/evidence when available, and repair if verification contradicts the intended result.
@@ -895,6 +896,10 @@ mod tests {
         assert!(PLANNER_SYSTEM_PROMPT.contains("Prefer sequence"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("one valid JSON object"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("may contain a sequence action with many actions"));
+        assert!(PLANNER_SYSTEM_PROMPT.contains("bounded RLM loop"));
+        assert!(PLANNER_SYSTEM_PROMPT.contains("continue until the goal is complete"));
+        assert!(PLANNER_SYSTEM_PROMPT
+            .contains("do not collapse a multi-step goal into a polite one-shot reply"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("open_app"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("Prefer key_paste, not key_type"));
         assert!(PLANNER_SYSTEM_PROMPT
