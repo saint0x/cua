@@ -2,7 +2,7 @@ use crate::audio::{record_default_input_until, RecordedAudio};
 use crate::client::{CuaClient, CuaSession};
 use crate::daemon::{spawn_profile_daemon, wait_until_ready};
 use crate::planner::{parse_fast_command, PlannedTurn, Planner};
-use crate::stt::SttClient;
+use crate::stt::{SttClient, SttTranscript, DEFAULT_STT_MODEL};
 use crate::ui_state::VoiceUiEvent;
 use anyhow::Context;
 use cua_core::{DesktopState, FrameEnvelope, FramePayload};
@@ -44,7 +44,7 @@ impl Default for VoiceConfig {
         Self {
             profile: "default".to_string(),
             record_ms: 4_500,
-            stt_model: "openai/whisper-1".to_string(),
+            stt_model: DEFAULT_STT_MODEL.to_string(),
             planner_model: "anthropic/claude-sonnet-5".to_string(),
         }
     }
@@ -162,17 +162,19 @@ async fn transcribe_and_run_turn_after_local(
     let context_task = spawn_context_prefetch(local.clone());
     step_publisher.publish("prefetching screen context");
     let transcript = stt_task.await.context("join speech to text")??;
-    validate_transcript(&transcript)?;
+    publish_stt_diagnostic(&tx, &transcript);
+    validate_stt_transcript(&transcript)?;
     send_metric(
         &tx,
         "context_stt_overlap_ms",
         context_overlap_started.elapsed(),
     );
-    tx.send(VoiceUiEvent::Transcript(transcript.clone())).ok();
-    step_publisher.publish(voice_step_label("transcript", &transcript));
+    tx.send(VoiceUiEvent::Transcript(transcript.text.clone()))
+        .ok();
+    step_publisher.publish(voice_step_label("transcript", &transcript.text));
     plan_and_dispatch(
         config,
-        transcript,
+        transcript.text,
         Some(api_key),
         local,
         Some(context_task),
@@ -216,12 +218,17 @@ fn validate_recorded_audio(audio: &RecordedAudio) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn validate_transcript(transcript: &str) -> anyhow::Result<()> {
-    let normalized = normalized_transcript(transcript);
-    if normalized.split_whitespace().count() < 2 || is_common_silence_hallucination(&normalized) {
-        anyhow::bail!("transcript was not a clear command: {transcript}");
+fn validate_stt_transcript(transcript: &SttTranscript) -> anyhow::Result<()> {
+    let class = transcript_class(&transcript.text);
+    if class == "command_candidate" {
+        return Ok(());
     }
-    Ok(())
+    anyhow::bail!(
+        "speech-to-text did not produce a command: model={} generation_id={} class={}",
+        transcript.model,
+        transcript.generation_id.as_deref().unwrap_or("unknown"),
+        class
+    )
 }
 
 fn normalized_transcript(transcript: &str) -> String {
@@ -244,6 +251,33 @@ fn is_common_silence_hallucination(transcript: &str) -> bool {
             | "thank you for watching"
             | "subscribe"
     )
+}
+
+fn transcript_class(transcript: &str) -> &'static str {
+    let normalized = normalized_transcript(transcript);
+    if normalized.is_empty() {
+        "empty"
+    } else if is_common_silence_hallucination(&normalized) {
+        "silence_hallucination"
+    } else if normalized.split_whitespace().count() < 2 {
+        "too_short"
+    } else {
+        "command_candidate"
+    }
+}
+
+fn publish_stt_diagnostic(tx: &Sender<VoiceUiEvent>, transcript: &SttTranscript) {
+    tx.send(VoiceUiEvent::SttDiagnostic {
+        model: transcript.model.clone(),
+        generation_id: transcript.generation_id.clone(),
+        audio_ms: transcript
+            .usage
+            .as_ref()
+            .and_then(|usage| usage.seconds)
+            .map(|seconds| (seconds * 1_000.0).round().max(0.0) as u64),
+        transcript_class: transcript_class(&transcript.text).to_string(),
+    })
+    .ok();
 }
 
 async fn plan_and_dispatch(
@@ -617,10 +651,54 @@ mod tests {
     }
 
     #[test]
-    fn transcript_validation_rejects_common_silence_hallucinations() {
-        assert!(validate_transcript("you").is_err());
-        assert!(validate_transcript("Thank you.").is_err());
-        assert!(validate_transcript("click the center target").is_ok());
+    fn transcript_class_identifies_command_candidates_and_hallucinations() {
+        assert_eq!(transcript_class("you"), "silence_hallucination");
+        assert_eq!(transcript_class("Thank you."), "silence_hallucination");
+        assert_eq!(transcript_class("settings"), "too_short");
+        assert_eq!(
+            transcript_class("click the center target"),
+            "command_candidate"
+        );
+    }
+
+    #[test]
+    fn stt_validation_classifies_you_as_silence_hallucination() {
+        let transcript = SttTranscript {
+            text: "You.".to_string(),
+            model: DEFAULT_STT_MODEL.to_string(),
+            generation_id: Some("gen_test".to_string()),
+            usage: None,
+        };
+        let error = validate_stt_transcript(&transcript).unwrap_err();
+        let message = format!("{error:#}");
+
+        assert!(message.contains("model=openai/gpt-4o-mini-transcribe"));
+        assert!(message.contains("generation_id=gen_test"));
+        assert!(message.contains("class=silence_hallucination"));
+        assert!(!message.contains("You"));
+    }
+
+    #[test]
+    fn stt_diagnostic_uses_class_without_promoting_transcript() {
+        let transcript = SttTranscript {
+            text: "you".to_string(),
+            model: DEFAULT_STT_MODEL.to_string(),
+            generation_id: None,
+            usage: None,
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        publish_stt_diagnostic(&tx, &transcript);
+
+        assert_eq!(
+            rx.recv().unwrap(),
+            VoiceUiEvent::SttDiagnostic {
+                model: DEFAULT_STT_MODEL.to_string(),
+                generation_id: None,
+                audio_ms: None,
+                transcript_class: "silence_hallucination".to_string(),
+            }
+        );
     }
 
     #[tokio::test]

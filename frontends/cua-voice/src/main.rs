@@ -55,7 +55,7 @@ struct Args {
     profile: String,
     #[arg(long, default_value_t = 4500)]
     record_ms: u64,
-    #[arg(long, default_value = "openai/whisper-1")]
+    #[arg(long, default_value = "openai/gpt-4o-mini-transcribe")]
     stt_model: String,
     #[arg(long, default_value = "anthropic/claude-sonnet-5")]
     planner_model: String,
@@ -1236,6 +1236,18 @@ fn print_headless_events(rx: Receiver<VoiceUiEvent>) {
                 serde_json::json!({"event": "automation_reply", "text": text})
             }
             VoiceUiEvent::Error(text) => serde_json::json!({"event": "error", "text": text}),
+            VoiceUiEvent::SttDiagnostic {
+                model,
+                generation_id,
+                audio_ms,
+                transcript_class,
+            } => serde_json::json!({
+                "event": "stt_diagnostic",
+                "model": model,
+                "generation_id": generation_id,
+                "audio_ms": audio_ms,
+                "transcript_class": transcript_class
+            }),
             VoiceUiEvent::Metric { name, ms } => {
                 serde_json::json!({"event": "metric", "name": name, "ms": ms})
             }

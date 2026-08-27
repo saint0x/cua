@@ -224,6 +224,7 @@ impl HudSnapshot {
                 self.programmed_step_expires_at = None;
                 self.programmed_step_restore = None;
             }
+            VoiceUiEvent::SttDiagnostic { .. } => {}
             VoiceUiEvent::Metric { .. } => {}
             VoiceUiEvent::ToggleExpanded => {}
             VoiceUiEvent::SetExpanded(_) => {}
@@ -320,6 +321,12 @@ pub enum VoiceUiEvent {
     Reply(String),
     AutomationReply(String),
     Error(String),
+    SttDiagnostic {
+        model: String,
+        generation_id: Option<String>,
+        audio_ms: Option<u64>,
+        transcript_class: String,
+    },
     Metric {
         name: String,
         ms: u64,

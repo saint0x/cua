@@ -1,17 +1,27 @@
 use anyhow::{bail, Context};
 use base64::Engine;
-use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, REFERER};
+use reqwest::header::{HeaderMap, AUTHORIZATION, CONTENT_TYPE, REFERER};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
+pub const DEFAULT_STT_MODEL: &str = "openai/gpt-4o-mini-transcribe";
 const DEFAULT_STT_TIMEOUT_MS: u64 = 15_000;
 const DEFAULT_STT_ATTEMPTS: usize = 3;
 const DEFAULT_STT_RETRY_BACKOFF_MS: u64 = 180;
+const DEFAULT_STT_LANGUAGE: &str = "en";
 
 #[derive(Debug, Clone)]
 pub struct SttClient {
     client: reqwest::Client,
     model: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SttTranscript {
+    pub text: String,
+    pub model: String,
+    pub generation_id: Option<String>,
+    pub usage: Option<SttUsage>,
 }
 
 impl SttClient {
@@ -22,32 +32,70 @@ impl SttClient {
         }
     }
 
-    pub async fn transcribe_wav(&self, api_key: &str, wav_bytes: &[u8]) -> anyhow::Result<String> {
+    pub async fn transcribe_wav(
+        &self,
+        api_key: &str,
+        wav_bytes: &[u8],
+    ) -> anyhow::Result<SttTranscript> {
         let body = SttRequest {
             model: &self.model,
             input_audio: InputAudio {
                 data: base64::engine::general_purpose::STANDARD.encode(wav_bytes),
                 format: "wav",
             },
+            language: DEFAULT_STT_LANGUAGE,
             temperature: 0.0,
         };
         let response = self.send_transcription_request(api_key, &body).await?;
         let status = response.status();
+        let generation_id = generation_id(response.headers());
         let value: serde_json::Value = response.json().await.context("decode transcription")?;
         if !status.is_success() {
             bail!("transcription failed with {status}: {value}");
         }
-        let text = value["text"]
-            .as_str()
-            .unwrap_or_default()
-            .trim()
-            .to_string();
-        if text.is_empty() {
-            bail!("transcription returned empty text");
-        }
-        Ok(text)
+        parse_transcription_value(&self.model, generation_id, value)
     }
 
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+}
+
+fn generation_id(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get("x-generation-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn parse_transcription_value(
+    model: &str,
+    generation_id: Option<String>,
+    value: serde_json::Value,
+) -> anyhow::Result<SttTranscript> {
+    let text = value["text"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if text.is_empty() {
+        bail!("transcription returned empty text");
+    }
+    let usage = value
+        .get("usage")
+        .cloned()
+        .and_then(|usage| serde_json::from_value::<SttUsage>(usage).ok());
+    Ok(SttTranscript {
+        text,
+        model: model.to_string(),
+        generation_id,
+        usage,
+    })
+}
+
+impl SttClient {
     async fn send_transcription_request(
         &self,
         api_key: &str,
@@ -135,6 +183,7 @@ fn retryable_status(status: reqwest::StatusCode) -> bool {
 struct SttRequest<'a> {
     model: &'a str,
     input_audio: InputAudio,
+    language: &'static str,
     temperature: f32,
 }
 
@@ -144,7 +193,7 @@ struct InputAudio {
     format: &'static str,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct SttUsage {
     pub seconds: Option<f64>,
     pub total_tokens: Option<u64>,
@@ -198,5 +247,48 @@ mod tests {
         assert!(retryable_status(reqwest::StatusCode::TOO_MANY_REQUESTS));
         assert!(retryable_status(reqwest::StatusCode::BAD_GATEWAY));
         assert!(!retryable_status(reqwest::StatusCode::BAD_REQUEST));
+    }
+
+    #[test]
+    fn stt_request_pins_current_model_and_english_language() {
+        let body = SttRequest {
+            model: DEFAULT_STT_MODEL,
+            input_audio: InputAudio {
+                data: "UklGRg==".to_string(),
+                format: "wav",
+            },
+            language: DEFAULT_STT_LANGUAGE,
+            temperature: 0.0,
+        };
+        let value = serde_json::to_value(body).unwrap();
+
+        assert_eq!(value["model"], DEFAULT_STT_MODEL);
+        assert_eq!(value["language"], "en");
+        assert_eq!(value["input_audio"]["format"], "wav");
+        assert_eq!(value["temperature"], 0.0);
+    }
+
+    #[test]
+    fn parse_transcription_preserves_provider_evidence() {
+        let transcript = parse_transcription_value(
+            DEFAULT_STT_MODEL,
+            Some("gen_123".to_string()),
+            serde_json::json!({
+                "text": " click the center target ",
+                "usage": {
+                    "seconds": 1.2,
+                    "total_tokens": 42,
+                    "input_tokens": 40,
+                    "output_tokens": 2,
+                    "cost": 0.00001
+                }
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(transcript.text, "click the center target");
+        assert_eq!(transcript.model, DEFAULT_STT_MODEL);
+        assert_eq!(transcript.generation_id.as_deref(), Some("gen_123"));
+        assert_eq!(transcript.usage.unwrap().seconds, Some(1.2));
     }
 }
