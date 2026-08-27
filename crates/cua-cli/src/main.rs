@@ -140,6 +140,10 @@ struct StreamArgs {
     #[arg(long)]
     include_bytes: bool,
     #[arg(long)]
+    duration_ms: Option<u64>,
+    #[arg(long)]
+    queue_depth: Option<usize>,
+    #[arg(long)]
     json: bool,
 }
 
@@ -723,11 +727,13 @@ async fn stream(profile: &str, args: StreamArgs) -> anyhow::Result<()> {
     }
     let client = CuaClient::connect(profile.to_string()).await?;
     let mut session = client
-        .visual_session(
+        .visual_session_with_options(
             Some(args.max_width),
             Some(args.fps),
             args.include_bytes,
             None,
+            args.duration_ms,
+            args.queue_depth,
         )
         .await?;
     let mut frames = 0usize;
@@ -767,7 +773,7 @@ async fn unix_visual_first_frame(
 ) -> anyhow::Result<serde_json::Value> {
     let client = CuaClient::connect(profile.to_string()).await?;
     let mut session = client
-        .visual_session(max_width, fps, include_bytes, None)
+        .visual_session_with_options(max_width, fps, include_bytes, None, None, Some(1))
         .await?;
     loop {
         let frame = tokio::time::timeout(Duration::from_millis(750), session.next_frame())

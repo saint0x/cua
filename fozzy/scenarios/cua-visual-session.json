@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "name": "cua-visual-session",
+  "steps": [
+    {
+      "type": "proc_when",
+      "cmd": "scripts/host-visual-session-action-proof.sh",
+      "args": [],
+      "exit_code": 0,
+      "stdout": "artifacts/cua/visual-action-proof-",
+      "stderr": "",
+      "times": 1
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "scripts/host-visual-session-action-proof.sh",
+      "args": [],
+      "expect_exit": 0,
+      "expect_stdout": "artifacts/cua/visual-action-proof-"
+    }
+  ]
+}

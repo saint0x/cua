@@ -1558,6 +1558,8 @@ async fn handle_visual_session(
         }
     };
     let fps = visual.fps.unwrap_or(10).clamp(1, 30);
+    let queue_depth = visual.queue_depth.unwrap_or(2).clamp(1, 8);
+    let duration = visual.duration_ms.map(Duration::from_millis);
     let session_id = request
         .session_id
         .as_ref()
@@ -1584,6 +1586,8 @@ async fn handle_visual_session(
             "fps": fps,
             "max_width": visual.max_width,
             "include_bytes": visual.include_bytes,
+            "duration_ms": visual.duration_ms,
+            "queue_depth": queue_depth,
         }),
     );
     publish_protocol_step(
@@ -1603,7 +1607,54 @@ async fn handle_visual_session(
     )
     .await?;
     let mut announced_first_frame = false;
+    let (frame_tx, mut frame_rx) = mpsc::channel(queue_depth);
+    let frame_bus = state.frame_bus.clone();
+    let metrics = state.metrics.clone();
+    let max_width = visual.max_width;
+    let include_bytes = visual.include_bytes;
+    let _producer = TaskAbortGuard::new(tokio::spawn(async move {
+        loop {
+            interval.tick().await;
+            let started = Instant::now();
+            let message = match frame_bus
+                .latest_or_capture_timed(CaptureRequest {
+                    max_width: max_width.or(Some(1280)),
+                    encoding: FrameEncoding::Jpeg,
+                    force_fresh: false,
+                })
+                .await
+            {
+                Ok(lookup) => {
+                    observe_frame_lookup(&metrics, &lookup);
+                    metrics.observe(MetricKind::StreamUnixTick, started.elapsed());
+                    metrics.increment(CounterKind::UnixFrames);
+                    VisualSessionMessage::Frame {
+                        schema_version: SCHEMA_VERSION.to_string(),
+                        frame: lookup.frame.as_payload(include_bytes),
+                    }
+                }
+                Err(error) => VisualSessionMessage::Error {
+                    schema_version: SCHEMA_VERSION.to_string(),
+                    error: error.to_string(),
+                },
+            };
+            if frame_tx.try_send(message).is_err() {
+                metrics.increment(CounterKind::UnixFrameDrops);
+            }
+        }
+    }));
+    let close_at = duration.map(|duration| Instant::now() + duration);
     loop {
+        if close_at.is_some_and(|close_at| Instant::now() >= close_at) {
+            write_json_line(
+                &mut write,
+                &VisualSessionMessage::Closed {
+                    schema_version: SCHEMA_VERSION.to_string(),
+                },
+            )
+            .await?;
+            return Ok(());
+        }
         tokio::select! {
             maybe_line = lines.next_line() => {
                 let Some(line) = maybe_line? else {
@@ -1628,52 +1679,28 @@ async fn handle_visual_session(
                 write.write_all(response.to_string().as_bytes()).await?;
                 write.write_all(b"\n").await?;
             }
-            _ = interval.tick() => {
-                let started = Instant::now();
-                let message = match state
-                    .frame_bus
-                    .latest_or_capture_timed(CaptureRequest {
-                        max_width: visual.max_width.or(Some(1280)),
-                        encoding: FrameEncoding::Jpeg,
-                        force_fresh: false,
-                    })
-                    .await
-                {
-                    Ok(lookup) => {
-                        observe_frame_lookup(&state.metrics, &lookup);
-                        state.metrics.observe(MetricKind::StreamUnixTick, started.elapsed());
-                        state.metrics.increment(CounterKind::UnixFrames);
-                        if !announced_first_frame {
-                            announced_first_frame = true;
-                            publish_protocol_step(
-                                state,
-                                2,
-                                2,
-                                format!(
-                                    "Streaming desktop frames at {} fps",
-                                    fps
-                                ),
-                                "Unix socket",
-                                5_000,
-                            );
-                        }
-                        VisualSessionMessage::Frame {
-                            schema_version: SCHEMA_VERSION.to_string(),
-                            frame: lookup.frame.as_payload(visual.include_bytes),
-                        }
-                    }
-                    Err(error) => VisualSessionMessage::Error {
-                        schema_version: SCHEMA_VERSION.to_string(),
-                        error: error.to_string(),
-                    },
-                };
+            Some(message) = frame_rx.recv() => {
+                if matches!(message, VisualSessionMessage::Frame { .. }) && !announced_first_frame {
+                    announced_first_frame = true;
+                    publish_protocol_step(
+                        state,
+                        2,
+                        2,
+                        format!(
+                            "Streaming desktop frames at {} fps",
+                            fps
+                        ),
+                        "Unix socket",
+                        5_000,
+                    );
+                }
                 write_json_line(&mut write, &message).await?;
             }
         }
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum VisualSessionMessage {
     Started {
@@ -1691,6 +1718,22 @@ enum VisualSessionMessage {
     Closed {
         schema_version: String,
     },
+}
+
+struct TaskAbortGuard {
+    handle: tokio::task::JoinHandle<()>,
+}
+
+impl TaskAbortGuard {
+    fn new(handle: tokio::task::JoinHandle<()>) -> Self {
+        Self { handle }
+    }
+}
+
+impl Drop for TaskAbortGuard {
+    fn drop(&mut self) {
+        self.handle.abort();
+    }
 }
 
 struct SessionGuard {
@@ -4271,10 +4314,11 @@ enum CounterKind {
     TraceDrops,
     ModelDrops,
     EncodeDrops,
+    UnixFrameDrops,
 }
 
 impl CounterKind {
-    const ALL: [Self; 13] = [
+    const ALL: [Self; 14] = [
         Self::MjpegFrames,
         Self::WsFrames,
         Self::UnixFrames,
@@ -4288,6 +4332,7 @@ impl CounterKind {
         Self::TraceDrops,
         Self::ModelDrops,
         Self::EncodeDrops,
+        Self::UnixFrameDrops,
     ];
 
     fn index(self) -> usize {
@@ -4305,6 +4350,7 @@ impl CounterKind {
             Self::TraceDrops => 10,
             Self::ModelDrops => 11,
             Self::EncodeDrops => 12,
+            Self::UnixFrameDrops => 13,
         }
     }
 
@@ -4323,6 +4369,7 @@ impl CounterKind {
             Self::TraceDrops => "trace.dropped",
             Self::ModelDrops => "model.dropped",
             Self::EncodeDrops => "encode.dropped",
+            Self::UnixFrameDrops => "stream.unix.dropped_frames",
         }
     }
 }

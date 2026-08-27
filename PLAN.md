@@ -81,33 +81,6 @@ Done means:
 - Host proof covers key persistence and signed package attestation claims.
 - `docs/attestation.md` explains threat model, what attestation proves, and what it does not authorize.
 
-Agent C: Visual Stream, Watch Session, And Low-Latency Observation Owner
-
-Scope:
-- Owns visual sessions, persistent screen streams, watch-session lifecycle, backpressure/cancellation, and model-facing visual sampling.
-- Primary files: `crates/cua-client`, `crates/cua-daemon`, `crates/cua-cli`, SDK visual streaming helpers, host visual proof scripts.
-
-Must coordinate with:
-- Agent D for feeding sampled frames into planner/model loops.
-- Agent E for observer-session semantics.
-- Agent G for performance/latency proof.
-- Agent H for visual session examples.
-
-Work:
-- Expose model-facing watch sessions that can be opened, closed, or bounded by duration.
-- Keep Unix `visual.session` as the hot transport path.
-- Add explicit cancellation, backpressure, and bounded frame queues.
-- Support visual session streaming in TypeScript and Python SDKs.
-- Feed sampled visual frames into planner loops without blocking low-latency action dispatch.
-- Verify final actions against fresh stream/screenshot evidence before completion.
-- Add trace/Fozzy coverage for visual stream open, frame receive, action dispatch, verification screenshot, and close.
-
-Done means:
-- A headless agent can keep a persistent stream open while dispatching actions on the same profile.
-- Stream close/cancel is reliable and does not leak sessions or daemon tasks.
-- SDK examples can consume frames and dispatch frame-relative actions.
-- Host visual-session action proof passes.
-
 Agent E: Transport, Session, Permissions, And SDK Semantics Owner
 
 Scope:

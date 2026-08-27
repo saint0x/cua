@@ -28,15 +28,33 @@ declare module "node:crypto" {
 }
 
 declare module "node:fs/promises" {
+  export function mkdir(path: string, options: { recursive: boolean }): Promise<void>;
   export function mkdtemp(prefix: string): Promise<string>;
+  export function readFile(path: string, encoding: string): Promise<string>;
   export function rm(path: string, options: { force: boolean; recursive: boolean }): Promise<void>;
   export function writeFile(path: string, data: string, encoding: string): Promise<void>;
 }
 
 declare module "node:os" {
+  export function homedir(): string;
   export function tmpdir(): string;
 }
 
 declare module "node:path" {
   export function join(...parts: string[]): string;
+}
+
+declare module "node:net" {
+  export interface Socket {
+    setEncoding(encoding: string): void;
+    on(event: "data", callback: (chunk: string) => void): void;
+    on(event: "end" | "close", callback: () => void): void;
+    once(event: "connect", callback: () => void): void;
+    once(event: "error", callback: (error: Error) => void): void;
+    write(data: string): void;
+    end(): void;
+    destroy(): void;
+  }
+
+  export function createConnection(path: string): Socket;
 }

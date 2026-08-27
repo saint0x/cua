@@ -855,6 +855,8 @@ pub struct VisualSessionRequest {
     pub max_width: Option<u32>,
     pub fps: Option<u32>,
     pub include_bytes: bool,
+    pub duration_ms: Option<u64>,
+    pub queue_depth: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -1445,5 +1447,22 @@ mod tests {
         assert_eq!(value["challenge"]["audience"], "quilt-cloud");
         assert_eq!(value["claims"]["runtime_name"], "cua");
         assert_eq!(value["signature_algorithm"], "ed25519");
+    }
+
+    #[test]
+    fn visual_session_request_carries_lifecycle_and_backpressure_options() {
+        let request = VisualSessionRequest {
+            schema_version: SCHEMA_VERSION.to_string(),
+            max_width: Some(640),
+            fps: Some(20),
+            include_bytes: false,
+            duration_ms: Some(1_500),
+            queue_depth: Some(1),
+        };
+
+        let value = serde_json::to_value(request).unwrap();
+
+        assert_eq!(value["duration_ms"], 1_500);
+        assert_eq!(value["queue_depth"], 1);
     }
 }

@@ -1,7 +1,8 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { createConnection, Socket } from "node:net";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
@@ -45,6 +46,15 @@ export interface ScreenshotOptions {
   encoding?: "png" | "jpeg";
   forceFresh?: boolean;
   includeBytes?: boolean;
+}
+
+export interface VisualSessionOptions {
+  maxWidth?: number;
+  fps?: number;
+  includeBytes?: boolean;
+  durationMs?: number;
+  queueDepth?: number;
+  session?: OwnerSession | string;
 }
 
 export interface WindowCaptureOptions {
@@ -374,6 +384,30 @@ export class Cua {
     );
   }
 
+  async visualSession(options: VisualSessionOptions = {}): Promise<CuaVisualSession> {
+    const socketPath = profileSocketPath(this.profile, this.env);
+    const token = await profileToken(this.profile, this.env);
+    const socket = await connectUnix(socketPath);
+    const session = new CuaVisualSession(socket);
+    socket.write(
+      `${JSON.stringify({
+        id: randomUUID(),
+        token,
+        session_id: options.session ? sessionIdOf(options.session) : undefined,
+        method: "visual.session",
+        params: compact({
+          schema_version: "cua.v1",
+          max_width: options.maxWidth,
+          fps: options.fps,
+          include_bytes: options.includeBytes ?? false,
+          duration_ms: options.durationMs,
+          queue_depth: options.queueDepth,
+        }),
+      })}\n`,
+    );
+    return session;
+  }
+
   async openApp(app: string, options: DispatchOptions = {}): Promise<Json> {
     return this.dispatch({ schema_version: "cua.v1", action: "open_app", app }, options);
   }
@@ -404,6 +438,104 @@ export class Cua {
       return JSON.parse(result.stdout) as Json;
     } catch (error) {
       throw new Error(`cua returned non-JSON output: ${(error as Error).message}\n${result.stdout}`);
+    }
+  }
+}
+
+export class CuaVisualSession {
+  private buffer = "";
+  private messages: Json[] = [];
+  private waiters: Array<(message: Json | null) => void> = [];
+  private ended = false;
+  private closeSent = false;
+
+  constructor(private readonly socket: Socket) {
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk: string) => this.receive(chunk));
+    socket.on("end", () => this.finish());
+    socket.on("close", () => this.finish());
+  }
+
+  async nextMessage(): Promise<Json | null> {
+    const message = this.messages.shift();
+    if (message !== undefined) {
+      return message;
+    }
+    if (this.ended) {
+      return null;
+    }
+    return new Promise((resolve) => this.waiters.push(resolve));
+  }
+
+  async nextFrame(): Promise<Json | null> {
+    for (;;) {
+      const message = await this.nextMessage();
+      if (message === null) {
+        return null;
+      }
+      if (isObject(message) && message.type === "frame") {
+        return message.frame ?? null;
+      }
+      if (isObject(message) && message.type === "error") {
+        throw new Error(`visual session error: ${String(message.error)}`);
+      }
+      if (isObject(message) && message.type === "closed") {
+        return null;
+      }
+    }
+  }
+
+  async close(): Promise<void> {
+    if (this.closeSent) {
+      return;
+    }
+    this.closeSent = true;
+    this.socket.write(`${JSON.stringify({ id: randomUUID(), method: "visual.close", params: {} })}\n`);
+    for (;;) {
+      const message = await this.nextMessage();
+      if (message === null || (isObject(message) && message.type === "closed")) {
+        this.socket.end();
+        return;
+      }
+    }
+  }
+
+  async cancel(): Promise<void> {
+    this.socket.destroy();
+    this.finish();
+  }
+
+  private receive(chunk: string): void {
+    this.buffer += chunk;
+    for (;;) {
+      const newline = this.buffer.indexOf("\n");
+      if (newline < 0) {
+        return;
+      }
+      const line = this.buffer.slice(0, newline).trim();
+      this.buffer = this.buffer.slice(newline + 1);
+      if (line.length > 0) {
+        this.push(JSON.parse(line) as Json);
+      }
+    }
+  }
+
+  private push(message: Json): void {
+    const waiter = this.waiters.shift();
+    if (waiter) {
+      waiter(message);
+    } else {
+      this.messages.push(message);
+    }
+  }
+
+  private finish(): void {
+    if (this.ended) {
+      return;
+    }
+    this.ended = true;
+    for (const waiter of this.waiters.splice(0)) {
+      waiter(null);
     }
   }
 }
@@ -461,6 +593,46 @@ function execFile(
   });
 }
 
+function connectUnix(path: string): Promise<Socket> {
+  return new Promise((resolve, reject) => {
+    const socket = createConnection(path);
+    socket.once("connect", () => resolve(socket));
+    socket.once("error", reject);
+  });
+}
+
+async function profileToken(profile: string, env: CuaEnv): Promise<string> {
+  const token = env.CUA_HTTP_TOKEN;
+  if (token && token.trim().length > 0) {
+    return token;
+  }
+  const path = profileTokenPath(profile, env);
+  try {
+    const existing = (await readFile(path, "utf8")).trim();
+    if (existing.length > 0) {
+      return existing;
+    }
+  } catch {
+    // Created below for parity with the Rust client.
+  }
+  await mkdir(join(cuaHome(env), "profiles", profile), { recursive: true });
+  const created = `cua-${randomUUID()}`;
+  await writeFile(path, `${created}\n`, "utf8");
+  return created;
+}
+
+function profileSocketPath(profile: string, env: CuaEnv): string {
+  return join(cuaHome(env), "profiles", profile, "daemon.sock");
+}
+
+function profileTokenPath(profile: string, env: CuaEnv): string {
+  return join(cuaHome(env), "profiles", profile, "http.token");
+}
+
+function cuaHome(env: CuaEnv): string {
+  return env.CUA_HOME && env.CUA_HOME.length > 0 ? env.CUA_HOME : join(homedir(), ".cua");
+}
+
 function readSessionId(value: Json): string {
   if (value && typeof value === "object" && !Array.isArray(value)) {
     const session = value.session;
@@ -490,6 +662,10 @@ function sessionIdOf(session: OwnerSession | string): string {
 
 function rpcSession(options: DispatchOptions): RpcOptions {
   return options.session ? { sessionId: sessionIdOf(options.session) } : {};
+}
+
+function isObject(value: Json): value is { [key: string]: Json } {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function compact(value: Record<string, Json | undefined>): Record<string, Json> {

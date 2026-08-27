@@ -1,3 +1,4 @@
+import { Socket } from "node:net";
 export type Json = null | boolean | number | string | Json[] | {
     [key: string]: Json;
 };
@@ -34,6 +35,14 @@ export interface ScreenshotOptions {
     encoding?: "png" | "jpeg";
     forceFresh?: boolean;
     includeBytes?: boolean;
+}
+export interface VisualSessionOptions {
+    maxWidth?: number;
+    fps?: number;
+    includeBytes?: boolean;
+    durationMs?: number;
+    queueDepth?: number;
+    session?: OwnerSession | string;
 }
 export interface WindowCaptureOptions {
     windowId: number;
@@ -110,10 +119,27 @@ export declare class Cua {
     killSwitch(session: OwnerSession | string): Promise<Json>;
     dispatch(action: Json, options?: DispatchOptions): Promise<Json>;
     dispatchFrame(options: DispatchFrameOptions): Promise<Json>;
+    visualSession(options?: VisualSessionOptions): Promise<CuaVisualSession>;
     openApp(app: string, options?: DispatchOptions): Promise<Json>;
     shell(command: string, options?: DispatchOptions): Promise<Json>;
     aegis(args: string[], options?: DispatchOptions): Promise<Json>;
     ctx(args: string[], options?: DispatchOptions): Promise<Json>;
     private step;
     private execJson;
+}
+export declare class CuaVisualSession {
+    private readonly socket;
+    private buffer;
+    private messages;
+    private waiters;
+    private ended;
+    private closeSent;
+    constructor(socket: Socket);
+    nextMessage(): Promise<Json | null>;
+    nextFrame(): Promise<Json | null>;
+    close(): Promise<void>;
+    cancel(): Promise<void>;
+    private receive;
+    private push;
+    private finish;
 }

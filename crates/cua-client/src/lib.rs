@@ -279,6 +279,19 @@ impl CuaClient {
         include_bytes: bool,
         session_id: Option<&str>,
     ) -> anyhow::Result<CuaVisualSession> {
+        self.visual_session_with_options(max_width, fps, include_bytes, session_id, None, None)
+            .await
+    }
+
+    pub async fn visual_session_with_options(
+        &self,
+        max_width: Option<u32>,
+        fps: Option<u32>,
+        include_bytes: bool,
+        session_id: Option<&str>,
+        duration_ms: Option<u64>,
+        queue_depth: Option<usize>,
+    ) -> anyhow::Result<CuaVisualSession> {
         let stream = UnixStream::connect(&self.socket_path)
             .await
             .with_context(|| format!("connect {}", self.socket_path.display()))?;
@@ -293,6 +306,8 @@ impl CuaClient {
                 max_width,
                 fps,
                 include_bytes,
+                duration_ms,
+                queue_depth,
             }
         });
         write
@@ -451,6 +466,10 @@ impl CuaVisualSession {
             .context("flush visual close stream")?;
         self.closed = true;
         Ok(())
+    }
+
+    pub async fn cancel(&mut self) -> anyhow::Result<()> {
+        self.close().await
     }
 }
 

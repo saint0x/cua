@@ -104,6 +104,32 @@ def wait_for_frame(reader):
         if message.get("type") == "error":
             raise RuntimeError(message)
 
+def wait_for_closed(reader):
+    while True:
+        message = reader.recv_json()
+        if message.get("type") == "closed":
+            return message
+        if message.get("type") == "error":
+            raise RuntimeError(message)
+
+def unix_call(method, params=None):
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.settimeout(float(os.environ.get("CUA_VISUAL_ACTION_PROOF_TIMEOUT_SECS", "45")))
+    try:
+        client.connect(str(socket_path))
+        request_id = send_request(client, method, params)
+        reader = LineReader(client)
+        while True:
+            message = reader.recv_json()
+            if message.get("id") == request_id:
+                if not message.get("ok"):
+                    raise RuntimeError(message)
+                return message["result"]
+            if message.get("type") == "error":
+                raise RuntimeError(message)
+    finally:
+        client.close()
+
 def frame_to_display(frame, x, y):
     envelope = frame["frame"]["envelope"]
     expected_x = round(
@@ -143,6 +169,7 @@ try:
             "max_width": 640,
             "fps": 20,
             "include_bytes": False,
+            "queue_depth": 1,
         },
     )
     started = reader.recv_json()
@@ -172,8 +199,26 @@ try:
     observe_id = send_request(stream, "observe.desktop", {})
     desktop = wait_for_response(reader, observe_id, frames_seen_during_action)
     post_action_frame = wait_for_frame(reader)
+    screenshot_id = send_request(
+        stream,
+        "capture.screenshot",
+        {
+            "max_width": 640,
+            "encoding": "jpeg",
+            "force_fresh": True,
+            "include_bytes": False,
+        },
+    )
+    verification_screenshot = wait_for_response(reader, screenshot_id, frames_seen_during_action)
     close_id = send_request(stream, "visual.close", {})
-    closed = reader.recv_json()
+    closed = wait_for_closed(reader)
+    for _ in range(200):
+        status = unix_call("status", {})
+        if status.get("active_streams") == 0:
+            break
+        time.sleep(0.01)
+    else:
+        raise RuntimeError(f"visual session leaked active stream: {status.get('active_streams')}")
 
     cursor = desktop["cursor"]
     cursor_x = round(cursor["x"])
@@ -212,7 +257,9 @@ try:
             "visible": cursor["visible"],
         },
         "post_action_frame_id": post_action_frame["frame"]["envelope"]["frame_id"],
+        "verification_screenshot_frame_id": verification_screenshot["envelope"]["frame_id"],
         "frames_seen_during_action": len(frames_seen_during_action),
+        "active_streams_after_close": status["active_streams"],
     }
     proof["ok"] = (
         proof["started_type"] == "started"
@@ -222,6 +269,8 @@ try:
         and proof["cursor_after_action"]["x"] == expected_x
         and proof["cursor_after_action"]["y"] == expected_y
         and proof["post_action_frame_id"] >= proof["first_frame"]["frame_id"]
+        and proof["verification_screenshot_frame_id"] >= proof["first_frame"]["frame_id"]
+        and proof["active_streams_after_close"] == 0
     )
     pathlib.Path(proof_path).write_text(json.dumps(proof, indent=2) + "\n")
     print(pathlib.Path(proof_path).parent)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import subprocess
 import tempfile
 import uuid
@@ -304,6 +305,40 @@ class Cua:
             session_id=_session_id(session) if session is not None else None,
         )
 
+    def visual_session(
+        self,
+        *,
+        max_width: int | None = None,
+        fps: int | None = None,
+        include_bytes: bool = False,
+        duration_ms: int | None = None,
+        queue_depth: int | None = None,
+        session: OwnerSession | str | None = None,
+        timeout: float | None = None,
+    ) -> "VisualSession":
+        stream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        if timeout is not None:
+            stream.settimeout(timeout)
+        stream.connect(_profile_socket_path(self.profile, self.env))
+        request = {
+            "id": str(uuid.uuid4()),
+            "token": _profile_token(self.profile, self.env),
+            "session_id": _session_id(session) if session is not None else None,
+            "method": "visual.session",
+            "params": _compact(
+                {
+                    "schema_version": "cua.v1",
+                    "max_width": max_width,
+                    "fps": fps,
+                    "include_bytes": include_bytes,
+                    "duration_ms": duration_ms,
+                    "queue_depth": queue_depth,
+                }
+            ),
+        }
+        stream.sendall((json.dumps(request) + "\n").encode("utf-8"))
+        return VisualSession(stream)
+
     def open_app(self, app: str, session: OwnerSession | str | None = None) -> Json:
         return self.dispatch({"schema_version": "cua.v1", "action": "open_app", "app": app}, session=session)
 
@@ -371,8 +406,89 @@ def _render_runebook(
     return "\n".join(lines)
 
 
+class VisualSession:
+    def __init__(self, stream: socket.socket) -> None:
+        self._stream = stream
+        self._buffer = b""
+        self._closed = False
+
+    def next_message(self) -> Json | None:
+        while b"\n" not in self._buffer:
+            chunk = self._stream.recv(1 << 20)
+            if not chunk:
+                return None
+            self._buffer += chunk
+        line, self._buffer = self._buffer.split(b"\n", 1)
+        if not line.strip():
+            return {}
+        return json.loads(line.decode("utf-8"))
+
+    def next_frame(self) -> Json | None:
+        while True:
+            message = self.next_message()
+            if message is None:
+                return None
+            message_type = message.get("type")
+            if message_type == "frame":
+                return message["frame"]
+            if message_type == "error":
+                raise RuntimeError(f"visual session error: {message.get('error')}")
+            if message_type == "closed":
+                return None
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._stream.sendall((json.dumps({"id": str(uuid.uuid4()), "method": "visual.close", "params": {}}) + "\n").encode("utf-8"))
+        while True:
+            message = self.next_message()
+            if message is None or message.get("type") == "closed":
+                self._stream.close()
+                return
+
+    def cancel(self) -> None:
+        self._closed = True
+        self._stream.close()
+
+    def __enter__(self) -> "VisualSession":
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
+
+
 def _session_id(session: OwnerSession | str) -> str:
     return session if isinstance(session, str) else session.session_id
+
+
+def _cua_home(env: dict[str, str]) -> str:
+    return env.get("CUA_HOME") or str(Path.home() / ".cua")
+
+
+def _profile_socket_path(profile: str, env: dict[str, str]) -> str:
+    return str(Path(_cua_home(env)) / "profiles" / profile / "daemon.sock")
+
+
+def _profile_token_path(profile: str, env: dict[str, str]) -> Path:
+    return Path(_cua_home(env)) / "profiles" / profile / "http.token"
+
+
+def _profile_token(profile: str, env: dict[str, str]) -> str:
+    token = env.get("CUA_HTTP_TOKEN")
+    if token and token.strip():
+        return token
+    path = _profile_token_path(profile, env)
+    try:
+        existing = path.read_text(encoding="utf-8").strip()
+        if existing:
+            return existing
+    except FileNotFoundError:
+        pass
+    path.parent.mkdir(parents=True, exist_ok=True)
+    created = f"cua-{uuid.uuid4()}"
+    path.write_text(f"{created}\n", encoding="utf-8")
+    return created
 
 
 def _compact(value: dict[str, Json | None]) -> dict[str, Json]:
