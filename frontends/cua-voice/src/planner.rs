@@ -115,6 +115,9 @@ impl Planner {
         let raw = value["choices"][0]["message"]["content"]
             .as_str()
             .unwrap_or_default();
+        if raw.trim().is_empty() {
+            bail!("planning model returned empty content");
+        }
         parse_model_plan(raw)
     }
 

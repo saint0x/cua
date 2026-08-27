@@ -2,7 +2,7 @@ use crate::audio::{record_default_input_until, RecordedAudio};
 use crate::client::{CuaClient, CuaSession};
 use crate::daemon::{spawn_profile_daemon, wait_until_ready};
 use crate::planner::{parse_fast_command, PlannedTurn, Planner};
-use crate::stt::{SttClient, SttTranscript, DEFAULT_STT_MODEL};
+use crate::stt::{SttClient, SttTranscript, DEFAULT_STT_BACKEND, DEFAULT_STT_MODEL};
 use crate::ui_state::VoiceUiEvent;
 use anyhow::Context;
 use cua_core::{DesktopState, FrameEnvelope, FramePayload};
@@ -22,7 +22,7 @@ const VOICE_STEP_LABEL_MAX: usize = 96;
 const VOICE_STEP_TIMEOUT_MS: u64 = 500;
 const VOICE_STEP_FLUSH_TIMEOUT_MS: u64 = 2_000;
 const DEFAULT_CONTEXT_PREFETCH_TIMEOUT_MS: u64 = 2_500;
-const MIN_RECORDING_DURATION: Duration = Duration::from_millis(250);
+const MIN_RECORDING_DURATION: Duration = Duration::from_millis(650);
 
 struct PrefetchedContext {
     session: Option<CuaSession>,
@@ -35,6 +35,7 @@ struct PrefetchedContext {
 pub struct VoiceConfig {
     pub profile: String,
     pub record_ms: u64,
+    pub stt_backend: String,
     pub stt_model: String,
     pub planner_model: String,
 }
@@ -44,6 +45,7 @@ impl Default for VoiceConfig {
         Self {
             profile: "default".to_string(),
             record_ms: 4_500,
+            stt_backend: DEFAULT_STT_BACKEND.to_string(),
             stt_model: DEFAULT_STT_MODEL.to_string(),
             planner_model: "anthropic/claude-sonnet-5".to_string(),
         }
@@ -53,7 +55,7 @@ impl Default for VoiceConfig {
 pub async fn run_voice_turn(config: VoiceConfig, tx: Sender<VoiceUiEvent>) {
     if let Err(error) = run_voice_turn_checked(config, tx.clone()).await {
         eprintln!("cua voice turn failed: {error:#}");
-        let _ = tx.send(VoiceUiEvent::Error(error.to_string()));
+        let _ = tx.send(VoiceUiEvent::Error(user_visible_turn_error(&error)));
     }
 }
 
@@ -64,21 +66,21 @@ pub async fn run_voice_turn_until(
 ) {
     if let Err(error) = run_voice_turn_checked_until(config, tx.clone(), stop_requested).await {
         eprintln!("cua voice turn failed: {error:#}");
-        let _ = tx.send(VoiceUiEvent::Error(error.to_string()));
+        let _ = tx.send(VoiceUiEvent::Error(user_visible_turn_error(&error)));
     }
 }
 
 pub async fn run_text_turn(config: VoiceConfig, transcript: String, tx: Sender<VoiceUiEvent>) {
     if let Err(error) = run_text_turn_checked(config, transcript, tx.clone()).await {
         eprintln!("cua voice scripted turn failed: {error:#}");
-        let _ = tx.send(VoiceUiEvent::Error(error.to_string()));
+        let _ = tx.send(VoiceUiEvent::Error(user_visible_turn_error(&error)));
     }
 }
 
 pub async fn run_wav_turn(config: VoiceConfig, wav_bytes: Vec<u8>, tx: Sender<VoiceUiEvent>) {
     if let Err(error) = run_wav_turn_checked(config, wav_bytes, tx.clone()).await {
         eprintln!("cua voice wav turn failed: {error:#}");
-        let _ = tx.send(VoiceUiEvent::Error(error.to_string()));
+        let _ = tx.send(VoiceUiEvent::Error(user_visible_turn_error(&error)));
     }
 }
 
@@ -133,6 +135,7 @@ async fn record_and_run_turn(
     progress_task.abort();
     let audio = record_result??;
     validate_recorded_audio(&audio)?;
+    publish_audio_diagnostic(&tx, &audio);
     tx.send(VoiceUiEvent::Accepted).ok();
     transcribe_and_run_turn_after_local(config, audio.wav_bytes, local_task, tx).await
 }
@@ -146,10 +149,11 @@ async fn transcribe_and_run_turn_after_local(
     let turn_started = Instant::now();
     let api_key = std::env::var("OPENROUTER_API_KEY").context("OPENROUTER_API_KEY is required")?;
     tx.send(VoiceUiEvent::Transcribing).ok();
+    let stt_backend = config.stt_backend.clone();
     let stt_model = config.stt_model.clone();
     let stt_api_key = api_key.clone();
     let stt_task = tokio::spawn(async move {
-        SttClient::new(stt_model)
+        SttClient::new(stt_backend, stt_model)?
             .transcribe_wav(&stt_api_key, &wav_bytes)
             .await
     });
@@ -161,9 +165,21 @@ async fn transcribe_and_run_turn_after_local(
     let context_overlap_started = Instant::now();
     let context_task = spawn_context_prefetch(local.clone());
     step_publisher.publish("prefetching screen context");
-    let transcript = stt_task.await.context("join speech to text")??;
+    let transcript = match stt_task.await.context("join speech to text")? {
+        Ok(transcript) => transcript,
+        Err(error) if is_missed_speech_error(&error) => {
+            tx.send(VoiceUiEvent::Error(user_visible_turn_error(&error)))
+                .ok();
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
     publish_stt_diagnostic(&tx, &transcript);
-    validate_stt_transcript(&transcript)?;
+    if let Err(error) = validate_stt_transcript(&transcript) {
+        tx.send(VoiceUiEvent::Error(user_visible_turn_error(&error)))
+            .ok();
+        return Ok(());
+    }
     send_metric(
         &tx,
         "context_stt_overlap_ms",
@@ -231,6 +247,29 @@ fn validate_stt_transcript(transcript: &SttTranscript) -> anyhow::Result<()> {
     )
 }
 
+fn user_visible_turn_error(error: &anyhow::Error) -> String {
+    let message = format!("{error:#}");
+    if is_missed_speech_message(&message) {
+        "Didn't catch a command.".to_string()
+    } else if message.contains("planning model returned empty content")
+        || message.contains("parse plan JSON")
+    {
+        "I couldn't get a usable model response.".to_string()
+    } else {
+        message
+    }
+}
+
+fn is_missed_speech_error(error: &anyhow::Error) -> bool {
+    is_missed_speech_message(&format!("{error:#}"))
+}
+
+fn is_missed_speech_message(message: &str) -> bool {
+    message.contains("missed_speech")
+        || message.contains("speech-to-text returned empty text")
+        || message.contains("speech-to-text did not produce a command")
+}
+
 fn normalized_transcript(transcript: &str) -> String {
     transcript
         .trim()
@@ -241,7 +280,7 @@ fn normalized_transcript(transcript: &str) -> String {
         .to_ascii_lowercase()
 }
 
-fn is_common_silence_hallucination(transcript: &str) -> bool {
+fn is_common_missed_speech(transcript: &str) -> bool {
     matches!(
         transcript,
         "" | "you"
@@ -257,8 +296,8 @@ fn transcript_class(transcript: &str) -> &'static str {
     let normalized = normalized_transcript(transcript);
     if normalized.is_empty() {
         "empty"
-    } else if is_common_silence_hallucination(&normalized) {
-        "silence_hallucination"
+    } else if is_common_missed_speech(&normalized) {
+        "missed_speech"
     } else if normalized.split_whitespace().count() < 2 {
         "too_short"
     } else {
@@ -268,6 +307,7 @@ fn transcript_class(transcript: &str) -> &'static str {
 
 fn publish_stt_diagnostic(tx: &Sender<VoiceUiEvent>, transcript: &SttTranscript) {
     tx.send(VoiceUiEvent::SttDiagnostic {
+        backend: transcript.backend.clone(),
         model: transcript.model.clone(),
         generation_id: transcript.generation_id.clone(),
         audio_ms: transcript
@@ -276,6 +316,20 @@ fn publish_stt_diagnostic(tx: &Sender<VoiceUiEvent>, transcript: &SttTranscript)
             .and_then(|usage| usage.seconds)
             .map(|seconds| (seconds * 1_000.0).round().max(0.0) as u64),
         transcript_class: transcript_class(&transcript.text).to_string(),
+    })
+    .ok();
+}
+
+fn publish_audio_diagnostic(tx: &Sender<VoiceUiEvent>, audio: &RecordedAudio) {
+    tx.send(VoiceUiEvent::AudioDiagnostic {
+        device_name: audio.device_name.clone(),
+        channels: audio.channels,
+        sample_format: audio.sample_format.clone(),
+        sample_rate: audio.sample_rate,
+        duration_ms: audio.duration.as_millis().min(u128::from(u64::MAX)) as u64,
+        peak_amplitude: audio.peak_amplitude,
+        rms_amplitude_ppm: (audio.rms_amplitude * 1_000_000.0).round().max(0.0) as u32,
+        wav_bytes: audio.wav_bytes.len(),
     })
     .ok();
 }
@@ -608,13 +662,19 @@ mod tests {
     #[test]
     fn recorded_audio_validation_rejects_only_short_audio() {
         let short = RecordedAudio {
+            device_name: "test".to_string(),
+            channels: 1,
+            sample_format: "I16".to_string(),
             sample_rate: 16_000,
             wav_bytes: vec![0; 44],
-            duration: Duration::from_millis(120),
+            duration: Duration::from_millis(500),
             peak_amplitude: 2_000,
             rms_amplitude: 0.05,
         };
         let silent = RecordedAudio {
+            device_name: "test".to_string(),
+            channels: 1,
+            sample_format: "I16".to_string(),
             sample_rate: 16_000,
             wav_bytes: vec![0; 44],
             duration: Duration::from_millis(800),
@@ -622,6 +682,9 @@ mod tests {
             rms_amplitude: 0.00001,
         };
         let low_rms_but_audible_peak = RecordedAudio {
+            device_name: "test".to_string(),
+            channels: 1,
+            sample_format: "I16".to_string(),
             sample_rate: 48_000,
             wav_bytes: vec![0; 44],
             duration: Duration::from_millis(800),
@@ -629,6 +692,9 @@ mod tests {
             rms_amplitude: 0.00001,
         };
         let speech = RecordedAudio {
+            device_name: "test".to_string(),
+            channels: 1,
+            sample_format: "I16".to_string(),
             sample_rate: 16_000,
             wav_bytes: vec![0; 44],
             duration: Duration::from_millis(800),
@@ -636,6 +702,9 @@ mod tests {
             rms_amplitude: 0.01,
         };
         let quiet_but_real_speech = RecordedAudio {
+            device_name: "test".to_string(),
+            channels: 1,
+            sample_format: "I16".to_string(),
             sample_rate: 48_000,
             wav_bytes: vec![0; 44],
             duration: Duration::from_millis(800),
@@ -652,8 +721,8 @@ mod tests {
 
     #[test]
     fn transcript_class_identifies_command_candidates_and_hallucinations() {
-        assert_eq!(transcript_class("you"), "silence_hallucination");
-        assert_eq!(transcript_class("Thank you."), "silence_hallucination");
+        assert_eq!(transcript_class("you"), "missed_speech");
+        assert_eq!(transcript_class("Thank you."), "missed_speech");
         assert_eq!(transcript_class("settings"), "too_short");
         assert_eq!(
             transcript_class("click the center target"),
@@ -662,9 +731,10 @@ mod tests {
     }
 
     #[test]
-    fn stt_validation_classifies_you_as_silence_hallucination() {
+    fn stt_validation_classifies_you_as_missed_speech() {
         let transcript = SttTranscript {
             text: "You.".to_string(),
+            backend: "openrouter".to_string(),
             model: DEFAULT_STT_MODEL.to_string(),
             generation_id: Some("gen_test".to_string()),
             usage: None,
@@ -672,16 +742,28 @@ mod tests {
         let error = validate_stt_transcript(&transcript).unwrap_err();
         let message = format!("{error:#}");
 
-        assert!(message.contains("model=openai/gpt-4o-mini-transcribe"));
+        assert!(message.contains("model=tiny.en"));
         assert!(message.contains("generation_id=gen_test"));
-        assert!(message.contains("class=silence_hallucination"));
+        assert!(message.contains("class=missed_speech"));
         assert!(!message.contains("You"));
+        assert_eq!(user_visible_turn_error(&error), "Didn't catch a command.");
+    }
+
+    #[test]
+    fn user_visible_error_hides_internal_planner_parse_detail() {
+        let error = anyhow::anyhow!("parse plan JSON: expected value");
+
+        assert_eq!(
+            user_visible_turn_error(&error),
+            "I couldn't get a usable model response."
+        );
     }
 
     #[test]
     fn stt_diagnostic_uses_class_without_promoting_transcript() {
         let transcript = SttTranscript {
             text: "you".to_string(),
+            backend: "openrouter".to_string(),
             model: DEFAULT_STT_MODEL.to_string(),
             generation_id: None,
             usage: None,
@@ -693,10 +775,11 @@ mod tests {
         assert_eq!(
             rx.recv().unwrap(),
             VoiceUiEvent::SttDiagnostic {
+                backend: "openrouter".to_string(),
                 model: DEFAULT_STT_MODEL.to_string(),
                 generation_id: None,
                 audio_ms: None,
-                transcript_class: "silence_hallucination".to_string(),
+                transcript_class: "missed_speech".to_string(),
             }
         );
     }

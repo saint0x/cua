@@ -9,6 +9,9 @@ use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone)]
 pub struct RecordedAudio {
+    pub device_name: String,
+    pub channels: u16,
+    pub sample_format: String,
     pub sample_rate: u32,
     pub wav_bytes: Vec<u8>,
     pub duration: Duration,
@@ -19,78 +22,11 @@ pub struct RecordedAudio {
 #[derive(Debug, Copy, Clone)]
 struct RecordingPolicy {
     max_duration: Duration,
-    min_duration: Duration,
-    silence_duration: Duration,
-    speech_threshold: i16,
 }
 
 impl RecordingPolicy {
     fn from_max_duration(max_duration: Duration) -> Self {
-        Self {
-            max_duration,
-            min_duration: duration_from_env("CUA_VOICE_RECORD_MIN_MS", 350, 100..=2_000),
-            silence_duration: duration_from_env("CUA_VOICE_RECORD_SILENCE_MS", 420, 120..=2_000),
-            speech_threshold: i16_from_env("CUA_VOICE_RECORD_THRESHOLD", 48, 8..=6_000),
-        }
-    }
-}
-
-fn duration_from_env(
-    name: &str,
-    default_ms: u64,
-    valid_range: std::ops::RangeInclusive<u64>,
-) -> Duration {
-    Duration::from_millis(
-        std::env::var(name)
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-            .filter(|value| valid_range.contains(value))
-            .unwrap_or(default_ms),
-    )
-}
-
-fn i16_from_env(name: &str, default_value: i16, valid_range: std::ops::RangeInclusive<i16>) -> i16 {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.parse::<i16>().ok())
-        .filter(|value| valid_range.contains(value))
-        .unwrap_or(default_value)
-}
-
-#[derive(Debug, Clone)]
-struct RecordingState {
-    started_at: Instant,
-    last_voice_at: Option<Instant>,
-    heard_voice: bool,
-}
-
-impl RecordingState {
-    fn new(started_at: Instant) -> Self {
-        Self {
-            started_at,
-            last_voice_at: None,
-            heard_voice: false,
-        }
-    }
-
-    fn observe_peak(&mut self, now: Instant, peak: i16, threshold: i16) {
-        if peak >= threshold {
-            self.heard_voice = true;
-            self.last_voice_at = Some(now);
-        }
-    }
-
-    fn should_stop(&self, now: Instant, policy: RecordingPolicy) -> bool {
-        let elapsed = now.duration_since(self.started_at);
-        if elapsed >= policy.max_duration {
-            return true;
-        }
-        if elapsed < policy.min_duration || !self.heard_voice {
-            return false;
-        }
-        self.last_voice_at
-            .map(|last_voice_at| now.duration_since(last_voice_at) >= policy.silence_duration)
-            .unwrap_or(false)
+        Self { max_duration }
     }
 }
 
@@ -131,63 +67,62 @@ fn record_default_input_with_policy(
     stop_requested: Arc<AtomicBool>,
 ) -> anyhow::Result<RecordedAudio> {
     let host = cpal::default_host();
-    let device = host
-        .default_input_device()
-        .context("no default input device available")?;
+    let device = select_input_device(&host)?;
+    let device_name = device.to_string();
     let config = device
         .default_input_config()
-        .context("read default input config")?;
+        .with_context(|| format!("read default input config {device_name}"))?;
     let sample_rate = config.sample_rate();
     let channels = config.channels();
+    let sample_format = format!("{:?}", config.sample_format());
     let samples = Arc::new(Mutex::new(Vec::<i16>::new()));
     let captured = samples.clone();
-    let state = Arc::new(Mutex::new(RecordingState::new(Instant::now())));
-    let i16_state = state.clone();
-    let u16_state = state.clone();
-    let f32_state = state.clone();
-    let err_fn = |err| eprintln!("cua voice input stream error: {err}");
+    let err_device = device_name.clone();
+    let err_fn = move |err| eprintln!("cua voice input stream error on {err_device}: {err}");
     let stream_config: cpal::StreamConfig = config.clone().into();
     let stream = match config.sample_format() {
         cpal::SampleFormat::I16 => device.build_input_stream(
             stream_config.clone(),
-            move |data: &[i16], _| push_interleaved(data, channels, &captured, &i16_state, policy),
+            move |data: &[i16], _| push_interleaved(data, channels, &captured),
             err_fn,
             None,
         ),
         cpal::SampleFormat::U16 => device.build_input_stream(
             stream_config.clone(),
-            move |data: &[u16], _| push_interleaved(data, channels, &captured, &u16_state, policy),
+            move |data: &[u16], _| push_interleaved(data, channels, &captured),
             err_fn,
             None,
         ),
         cpal::SampleFormat::F32 => device.build_input_stream(
             stream_config,
-            move |data: &[f32], _| push_interleaved(data, channels, &captured, &f32_state, policy),
+            move |data: &[f32], _| push_interleaved(data, channels, &captured),
             err_fn,
             None,
         ),
         sample_format => bail!("unsupported input sample format {sample_format:?}"),
     }
-    .context("build input stream")?;
-    stream.play().context("start input stream")?;
+    .with_context(|| format!("build input stream {device_name}"))?;
+    stream
+        .play()
+        .with_context(|| format!("start input stream {device_name}"))?;
+    let started_at = Instant::now();
     loop {
         std::thread::sleep(Duration::from_millis(20));
-        let should_stop = {
-            let state = state.lock().unwrap();
-            should_stop_recording(&state, Instant::now(), policy, &stop_requested)
-        };
-        if should_stop {
+        if should_stop_recording(started_at, Instant::now(), policy, &stop_requested) {
             break;
         }
     }
     drop(stream);
     let samples = samples.lock().unwrap().clone();
     if samples.is_empty() {
-        bail!("no samples captured from input device");
+        bail!("no samples captured from input device {device_name}");
     }
     let stats = audio_stats(sample_rate, &samples);
     let wav_samples = normalize_quiet_samples_for_stt(&samples, stats.peak_amplitude);
     Ok(RecordedAudio {
+        device_name,
+        channels,
+        sample_format,
         sample_rate,
         wav_bytes: encode_wav_mono(sample_rate, &wav_samples)?,
         duration: stats.duration,
@@ -196,39 +131,52 @@ fn record_default_input_with_policy(
     })
 }
 
+fn select_input_device(host: &cpal::Host) -> anyhow::Result<cpal::Device> {
+    let requested = std::env::var("CUA_VOICE_INPUT_DEVICE")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    if let Some(requested) = requested {
+        return select_named_input_device(host, &requested);
+    }
+    select_named_input_device(host, "MacBook Pro Microphone").or_else(|_| {
+        host.default_input_device()
+            .context("no default input device available")
+    })
+}
+
+fn select_named_input_device(host: &cpal::Host, requested: &str) -> anyhow::Result<cpal::Device> {
+    let requested_lower = requested.to_lowercase();
+    for device in host.input_devices().context("list input devices")? {
+        let name = device.to_string();
+        if name == requested || name.to_lowercase().contains(&requested_lower) {
+            return Ok(device);
+        }
+    }
+    bail!("input device not found: {requested}");
+}
+
 fn should_stop_recording(
-    state: &RecordingState,
+    started_at: Instant,
     now: Instant,
     policy: RecordingPolicy,
     stop_requested: &AtomicBool,
 ) -> bool {
-    stop_requested.load(Ordering::Acquire) || state.should_stop(now, policy)
+    stop_requested.load(Ordering::Acquire) || now.duration_since(started_at) >= policy.max_duration
 }
 
-fn push_interleaved<T>(
-    data: &[T],
-    channels: u16,
-    samples: &Arc<Mutex<Vec<i16>>>,
-    state: &Arc<Mutex<RecordingState>>,
-    policy: RecordingPolicy,
-) where
+fn push_interleaved<T>(data: &[T], channels: u16, samples: &Arc<Mutex<Vec<i16>>>)
+where
     T: cpal::Sample,
     i16: cpal::FromSample<T>,
 {
     let channels = usize::from(channels.max(1));
     let mut guard = samples.lock().unwrap();
-    let mut peak = 0i16;
     for frame in data.chunks(channels) {
-        if let Some((mixed, frame_peak)) = mix_interleaved_frame(frame) {
-            peak = peak.max(frame_peak);
+        if let Some((mixed, _frame_peak)) = mix_interleaved_frame(frame) {
             guard.push(mixed);
         }
     }
-    drop(guard);
-    state
-        .lock()
-        .unwrap()
-        .observe_peak(Instant::now(), peak, policy.speech_threshold);
 }
 
 fn mix_interleaved_frame<T>(frame: &[T]) -> Option<(i16, i16)>
@@ -310,39 +258,25 @@ mod tests {
     }
 
     #[test]
-    fn recorder_waits_for_speech_before_silence_stop() {
-        let start = Instant::now();
-        let policy = RecordingPolicy {
-            max_duration: Duration::from_secs(5),
-            min_duration: Duration::from_millis(200),
-            silence_duration: Duration::from_millis(300),
-            speech_threshold: 100,
-        };
-        let mut state = RecordingState::new(start);
-
-        assert!(!state.should_stop(start + Duration::from_secs(1), policy));
-        state.observe_peak(
-            start + Duration::from_millis(250),
-            120,
-            policy.speech_threshold,
-        );
-        assert!(!state.should_stop(start + Duration::from_millis(400), policy));
-        assert!(state.should_stop(start + Duration::from_millis(560), policy));
-    }
-
-    #[test]
     fn recorder_stops_at_max_duration_without_speech() {
         let start = Instant::now();
         let policy = RecordingPolicy {
             max_duration: Duration::from_secs(2),
-            min_duration: Duration::from_millis(200),
-            silence_duration: Duration::from_millis(300),
-            speech_threshold: 100,
         };
-        let state = RecordingState::new(start);
+        let stop_requested = AtomicBool::new(false);
 
-        assert!(!state.should_stop(start + Duration::from_millis(1999), policy));
-        assert!(state.should_stop(start + Duration::from_secs(2), policy));
+        assert!(!should_stop_recording(
+            start,
+            start + Duration::from_millis(1999),
+            policy,
+            &stop_requested
+        ));
+        assert!(should_stop_recording(
+            start,
+            start + Duration::from_secs(2),
+            policy,
+            &stop_requested
+        ));
     }
 
     #[test]
@@ -350,15 +284,11 @@ mod tests {
         let start = Instant::now();
         let policy = RecordingPolicy {
             max_duration: Duration::from_secs(5),
-            min_duration: Duration::from_millis(200),
-            silence_duration: Duration::from_millis(300),
-            speech_threshold: 100,
         };
-        let state = RecordingState::new(start);
         let stop_requested = AtomicBool::new(true);
 
         assert!(should_stop_recording(
-            &state,
+            start,
             start + Duration::from_millis(20),
             policy,
             &stop_requested
@@ -369,32 +299,7 @@ mod tests {
     fn recording_policy_defaults_are_latency_oriented() {
         let policy = RecordingPolicy::from_max_duration(Duration::from_secs(5));
 
-        assert_eq!(policy.min_duration, Duration::from_millis(350));
-        assert_eq!(policy.silence_duration, Duration::from_millis(420));
-        assert_eq!(policy.speech_threshold, 48);
-    }
-
-    #[test]
-    fn recording_policy_env_bounds_ignore_invalid_values() {
-        let name = "__CUA_VOICE_TEST_DURATION";
-        std::env::set_var(name, "5");
-        assert_eq!(
-            duration_from_env(name, 250, 100..=1_000),
-            Duration::from_millis(250)
-        );
-        std::env::set_var(name, "900");
-        assert_eq!(
-            duration_from_env(name, 250, 100..=1_000),
-            Duration::from_millis(900)
-        );
-        std::env::remove_var(name);
-
-        let threshold_name = "__CUA_VOICE_TEST_THRESHOLD";
-        std::env::set_var(threshold_name, "4");
-        assert_eq!(i16_from_env(threshold_name, 48, 8..=6_000), 48);
-        std::env::set_var(threshold_name, "850");
-        assert_eq!(i16_from_env(threshold_name, 48, 8..=6_000), 850);
-        std::env::remove_var(threshold_name);
+        assert_eq!(policy.max_duration, Duration::from_secs(5));
     }
 
     #[test]
@@ -421,20 +326,12 @@ mod tests {
     }
 
     #[test]
-    fn interleaved_peak_detects_speech_outside_first_channel() {
-        let policy = RecordingPolicy {
-            max_duration: Duration::from_secs(1),
-            min_duration: Duration::from_millis(100),
-            silence_duration: Duration::from_millis(120),
-            speech_threshold: 500,
-        };
+    fn interleaved_capture_keeps_loudest_channel() {
         let samples = Arc::new(Mutex::new(Vec::<i16>::new()));
-        let state = Arc::new(Mutex::new(RecordingState::new(Instant::now())));
 
-        push_interleaved(&[0i16, 800i16, 0, 900], 2, &samples, &state, policy);
+        push_interleaved(&[0i16, 800i16, 0, 900], 2, &samples);
 
         assert_eq!(*samples.lock().unwrap(), vec![800, 900]);
-        assert!(state.lock().unwrap().heard_voice);
     }
 
     #[test]

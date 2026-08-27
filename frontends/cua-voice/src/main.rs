@@ -1,4 +1,5 @@
 use clap::Parser;
+use cpal::traits::{DeviceTrait, HostTrait};
 use cua_core::{PermissionState, UiMode};
 use cua_voice::activation::ControlDoubleTap;
 use cua_voice::agent_events::{
@@ -12,6 +13,7 @@ use cua_voice::hud::{
     WINDOW_HEIGHT, WINDOW_WIDTH,
 };
 use cua_voice::orb::paint_orb;
+use cua_voice::stt::{DEFAULT_STT_BACKEND, DEFAULT_STT_MODEL};
 use cua_voice::ui_state::{HudPhase, HudSnapshot, VoiceUiEvent};
 use cua_voice::{
     run_text_turn_checked, run_voice_turn_checked, run_voice_turn_until, run_wav_turn_checked,
@@ -55,7 +57,11 @@ struct Args {
     profile: String,
     #[arg(long, default_value_t = 4500)]
     record_ms: u64,
-    #[arg(long, default_value = "openai/gpt-4o-mini-transcribe")]
+    #[arg(long)]
+    list_input_devices: bool,
+    #[arg(long, default_value = DEFAULT_STT_BACKEND)]
+    stt_backend: String,
+    #[arg(long, default_value = DEFAULT_STT_MODEL)]
     stt_model: String,
     #[arg(long, default_value = "anthropic/claude-sonnet-5")]
     planner_model: String,
@@ -1057,6 +1063,10 @@ impl Render for VoiceHud {
 fn main() -> anyhow::Result<()> {
     load_cua_dotenv();
     let args = Args::parse();
+    if args.list_input_devices {
+        print_input_devices()?;
+        return Ok(());
+    }
     let demo = demo_should_run(args.demo);
     let ui_mode = ui_mode_from_flags(args.headful, args.headless);
     let once_transcript = args.once_transcript;
@@ -1069,6 +1079,7 @@ fn main() -> anyhow::Result<()> {
     let config = VoiceConfig {
         profile: args.profile,
         record_ms: args.record_ms,
+        stt_backend: args.stt_backend,
         stt_model: args.stt_model,
         planner_model: args.planner_model,
     };
@@ -1155,6 +1166,35 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn print_input_devices() -> anyhow::Result<()> {
+    let host = cpal::default_host();
+    let default_name = host.default_input_device().map(|device| device.to_string());
+    let devices = host
+        .input_devices()?
+        .map(|device| {
+            let name = device.to_string();
+            let default = default_name.as_deref() == Some(name.as_str());
+            let config = device.default_input_config().ok();
+            serde_json::json!({
+                "name": name,
+                "default": default,
+                "channels": config.as_ref().map(|config| config.channels()),
+                "sample_rate": config.as_ref().map(|config| config.sample_rate()),
+                "sample_format": config.as_ref().map(|config| format!("{:?}", config.sample_format())),
+            })
+        })
+        .collect::<Vec<_>>();
+    println!(
+        "{}",
+        serde_json::json!({
+            "event": "input_devices",
+            "default": default_name,
+            "devices": devices
+        })
+    );
+    Ok(())
+}
+
 fn ui_mode_from_flags(headful: bool, headless: bool) -> UiMode {
     match (headful, headless) {
         (_, true) => UiMode::Headless,
@@ -1236,13 +1276,35 @@ fn print_headless_events(rx: Receiver<VoiceUiEvent>) {
                 serde_json::json!({"event": "automation_reply", "text": text})
             }
             VoiceUiEvent::Error(text) => serde_json::json!({"event": "error", "text": text}),
+            VoiceUiEvent::AudioDiagnostic {
+                device_name,
+                channels,
+                sample_format,
+                sample_rate,
+                duration_ms,
+                peak_amplitude,
+                rms_amplitude_ppm,
+                wav_bytes,
+            } => serde_json::json!({
+                "event": "audio_diagnostic",
+                "device_name": device_name,
+                "channels": channels,
+                "sample_format": sample_format,
+                "sample_rate": sample_rate,
+                "duration_ms": duration_ms,
+                "peak_amplitude": peak_amplitude,
+                "rms_amplitude_ppm": rms_amplitude_ppm,
+                "wav_bytes": wav_bytes
+            }),
             VoiceUiEvent::SttDiagnostic {
+                backend,
                 model,
                 generation_id,
                 audio_ms,
                 transcript_class,
             } => serde_json::json!({
                 "event": "stt_diagnostic",
+                "backend": backend,
                 "model": model,
                 "generation_id": generation_id,
                 "audio_ms": audio_ms,

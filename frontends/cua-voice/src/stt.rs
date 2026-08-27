@@ -2,9 +2,15 @@ use anyhow::{bail, Context};
 use base64::Engine;
 use reqwest::header::{HeaderMap, AUTHORIZATION, CONTENT_TYPE, REFERER};
 use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::Duration;
+use uuid::Uuid;
 
-pub const DEFAULT_STT_MODEL: &str = "openai/gpt-4o-mini-transcribe";
+pub const DEFAULT_STT_BACKEND: &str = "local";
+pub const DEFAULT_STT_MODEL: &str = "tiny.en";
+pub const DEFAULT_OPENROUTER_STT_MODEL: &str = "openai/gpt-4o-mini-transcribe";
 const DEFAULT_STT_TIMEOUT_MS: u64 = 15_000;
 const DEFAULT_STT_ATTEMPTS: usize = 3;
 const DEFAULT_STT_RETRY_BACKOFF_MS: u64 = 180;
@@ -13,26 +19,67 @@ const DEFAULT_STT_LANGUAGE: &str = "en";
 #[derive(Debug, Clone)]
 pub struct SttClient {
     client: reqwest::Client,
+    backend: SttBackend,
     model: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SttTranscript {
     pub text: String,
+    pub backend: String,
     pub model: String,
     pub generation_id: Option<String>,
     pub usage: Option<SttUsage>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SttBackend {
+    Local,
+    OpenRouter,
+}
+
 impl SttClient {
-    pub fn new(model: impl Into<String>) -> Self {
-        Self {
+    pub fn new(backend: impl AsRef<str>, model: impl Into<String>) -> anyhow::Result<Self> {
+        let backend = match backend.as_ref() {
+            "local" => SttBackend::Local,
+            "openrouter" => SttBackend::OpenRouter,
+            value => bail!("unsupported speech-to-text backend: {value}"),
+        };
+        Ok(Self {
             client: reqwest::Client::new(),
+            backend,
             model: model.into(),
-        }
+        })
     }
 
     pub async fn transcribe_wav(
+        &self,
+        api_key: &str,
+        wav_bytes: &[u8],
+    ) -> anyhow::Result<SttTranscript> {
+        match self.backend {
+            SttBackend::Local => self.transcribe_wav_local(wav_bytes).await,
+            SttBackend::OpenRouter => self.transcribe_wav_openrouter(api_key, wav_bytes).await,
+        }
+    }
+
+    pub fn backend(&self) -> &'static str {
+        self.backend.as_str()
+    }
+
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
+    async fn transcribe_wav_local(&self, wav_bytes: &[u8]) -> anyhow::Result<SttTranscript> {
+        let model = self.model.clone();
+        let wav_bytes = wav_bytes.to_vec();
+        tokio::task::spawn_blocking(move || transcribe_wav_with_local_whisper(&model, &wav_bytes))
+            .await
+            .context("join local speech-to-text")?
+    }
+
+    async fn transcribe_wav_openrouter(
         &self,
         api_key: &str,
         wav_bytes: &[u8],
@@ -53,12 +100,77 @@ impl SttClient {
         if !status.is_success() {
             bail!("transcription failed with {status}: {value}");
         }
-        parse_transcription_value(&self.model, generation_id, value)
+        parse_transcription_value(
+            SttBackend::OpenRouter.as_str(),
+            &self.model,
+            generation_id,
+            value,
+        )
     }
+}
 
-    pub fn model(&self) -> &str {
-        &self.model
+impl SttBackend {
+    fn as_str(self) -> &'static str {
+        match self {
+            SttBackend::Local => "local",
+            SttBackend::OpenRouter => "openrouter",
+        }
     }
+}
+
+fn transcribe_wav_with_local_whisper(
+    model: &str,
+    wav_bytes: &[u8],
+) -> anyhow::Result<SttTranscript> {
+    let whisper = std::env::var("CUA_VOICE_LOCAL_WHISPER")
+        .ok()
+        .filter(|path| !path.trim().is_empty())
+        .unwrap_or_else(|| "/opt/homebrew/bin/whisper".to_string());
+    let temp_dir = std::env::temp_dir().join(format!("cua-stt-{}", Uuid::new_v4()));
+    fs::create_dir_all(&temp_dir).context("create local speech-to-text temp directory")?;
+    let wav_path = temp_dir.join("input.wav");
+    fs::write(&wav_path, wav_bytes).context("write local speech-to-text wav")?;
+    let output = Command::new(&whisper)
+        .arg(&wav_path)
+        .arg("--model")
+        .arg(model)
+        .arg("--language")
+        .arg(DEFAULT_STT_LANGUAGE)
+        .arg("--output_format")
+        .arg("json")
+        .arg("--output_dir")
+        .arg(&temp_dir)
+        .arg("--verbose")
+        .arg("False")
+        .arg("--fp16")
+        .arg("False")
+        .output()
+        .with_context(|| format!("run local speech-to-text executable {whisper}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let _ = fs::remove_dir_all(&temp_dir);
+        bail!(
+            "local speech-to-text failed with status {}: {}{}",
+            output.status,
+            stdout.trim(),
+            stderr.trim()
+        );
+    }
+    let value = read_local_whisper_json(&temp_dir, &wav_path)?;
+    let _ = fs::remove_dir_all(&temp_dir);
+    parse_transcription_value(SttBackend::Local.as_str(), model, None, value)
+}
+
+fn read_local_whisper_json(temp_dir: &Path, wav_path: &Path) -> anyhow::Result<serde_json::Value> {
+    let stem = wav_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .context("local speech-to-text wav path has no stem")?;
+    let json_path: PathBuf = temp_dir.join(format!("{stem}.json"));
+    let bytes = fs::read(&json_path)
+        .with_context(|| format!("read local speech-to-text json {}", json_path.display()))?;
+    serde_json::from_slice(&bytes).context("decode local speech-to-text json")
 }
 
 fn generation_id(headers: &HeaderMap) -> Option<String> {
@@ -71,6 +183,7 @@ fn generation_id(headers: &HeaderMap) -> Option<String> {
 }
 
 fn parse_transcription_value(
+    backend: &str,
     model: &str,
     generation_id: Option<String>,
     value: serde_json::Value,
@@ -81,7 +194,7 @@ fn parse_transcription_value(
         .trim()
         .to_string();
     if text.is_empty() {
-        bail!("transcription returned empty text");
+        bail!("speech-to-text returned empty text: backend={backend} model={model}");
     }
     let usage = value
         .get("usage")
@@ -89,6 +202,7 @@ fn parse_transcription_value(
         .and_then(|usage| serde_json::from_value::<SttUsage>(usage).ok());
     Ok(SttTranscript {
         text,
+        backend: backend.to_string(),
         model: model.to_string(),
         generation_id,
         usage,
@@ -252,7 +366,7 @@ mod tests {
     #[test]
     fn stt_request_pins_current_model_and_english_language() {
         let body = SttRequest {
-            model: DEFAULT_STT_MODEL,
+            model: DEFAULT_OPENROUTER_STT_MODEL,
             input_audio: InputAudio {
                 data: "UklGRg==".to_string(),
                 format: "wav",
@@ -262,7 +376,7 @@ mod tests {
         };
         let value = serde_json::to_value(body).unwrap();
 
-        assert_eq!(value["model"], DEFAULT_STT_MODEL);
+        assert_eq!(value["model"], DEFAULT_OPENROUTER_STT_MODEL);
         assert_eq!(value["language"], "en");
         assert_eq!(value["input_audio"]["format"], "wav");
         assert_eq!(value["temperature"], 0.0);
@@ -271,7 +385,8 @@ mod tests {
     #[test]
     fn parse_transcription_preserves_provider_evidence() {
         let transcript = parse_transcription_value(
-            DEFAULT_STT_MODEL,
+            SttBackend::OpenRouter.as_str(),
+            DEFAULT_OPENROUTER_STT_MODEL,
             Some("gen_123".to_string()),
             serde_json::json!({
                 "text": " click the center target ",
@@ -287,8 +402,26 @@ mod tests {
         .unwrap();
 
         assert_eq!(transcript.text, "click the center target");
-        assert_eq!(transcript.model, DEFAULT_STT_MODEL);
+        assert_eq!(transcript.backend, "openrouter");
+        assert_eq!(transcript.model, DEFAULT_OPENROUTER_STT_MODEL);
         assert_eq!(transcript.generation_id.as_deref(), Some("gen_123"));
         assert_eq!(transcript.usage.unwrap().seconds, Some(1.2));
+    }
+
+    #[test]
+    fn local_transcription_parser_uses_trimmed_text() {
+        let transcript = parse_transcription_value(
+            SttBackend::Local.as_str(),
+            DEFAULT_STT_MODEL,
+            None,
+            serde_json::json!({
+                "text": " open safari "
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(transcript.backend, "local");
+        assert_eq!(transcript.model, DEFAULT_STT_MODEL);
+        assert_eq!(transcript.text, "open safari");
     }
 }

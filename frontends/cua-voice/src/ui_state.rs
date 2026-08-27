@@ -224,6 +224,7 @@ impl HudSnapshot {
                 self.programmed_step_expires_at = None;
                 self.programmed_step_restore = None;
             }
+            VoiceUiEvent::AudioDiagnostic { .. } => {}
             VoiceUiEvent::SttDiagnostic { .. } => {}
             VoiceUiEvent::Metric { .. } => {}
             VoiceUiEvent::ToggleExpanded => {}
@@ -321,7 +322,18 @@ pub enum VoiceUiEvent {
     Reply(String),
     AutomationReply(String),
     Error(String),
+    AudioDiagnostic {
+        device_name: String,
+        channels: u16,
+        sample_format: String,
+        sample_rate: u32,
+        duration_ms: u64,
+        peak_amplitude: i16,
+        rms_amplitude_ppm: u32,
+        wav_bytes: usize,
+    },
     SttDiagnostic {
+        backend: String,
         model: String,
         generation_id: Option<String>,
         audio_ms: Option<u64>,
