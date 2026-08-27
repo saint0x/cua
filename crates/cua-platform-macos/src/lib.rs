@@ -152,13 +152,19 @@ async fn execute_macos_input_action(action: InputAction) -> Result<MacosActionOu
             }
             let delay = Duration::from_millis(inter_action_delay_ms.min(2_000));
             let last_index = actions.len().saturating_sub(1);
+            let action_count = actions.len();
+            let mut messages = Vec::with_capacity(action_count);
             for (index, action) in actions.into_iter().enumerate() {
-                execute_macos_input_leaf(action).await?;
+                let outcome = execute_macos_input_leaf(action).await?;
+                messages.push(outcome.message);
                 if index < last_index && !delay.is_zero() {
                     tokio::time::sleep(delay).await;
                 }
             }
-            Ok(MacosActionOutcome::system("sequence posted"))
+            Ok(MacosActionOutcome::system(sequence_message(
+                action_count,
+                &messages,
+            )))
         }
         action => execute_macos_input_leaf(action).await,
     }
@@ -309,6 +315,28 @@ fn compact_command_output(bytes: &[u8]) -> String {
     let text = String::from_utf8_lossy(bytes);
     let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let limit = 1_200;
+    if compact.chars().count() <= limit {
+        return compact;
+    }
+    let mut truncated = compact.chars().take(limit).collect::<String>();
+    truncated.push_str("...");
+    truncated
+}
+
+fn sequence_message(action_count: usize, messages: &[String]) -> String {
+    let joined = messages
+        .iter()
+        .map(|message| compact_text(message, 160))
+        .collect::<Vec<_>>()
+        .join(" | ");
+    compact_text(
+        &format!("sequence posted {action_count} actions: {joined}"),
+        1_200,
+    )
+}
+
+fn compact_text(value: &str, limit: usize) -> String {
+    let compact = value.split_whitespace().collect::<Vec<_>>().join(" ");
     if compact.chars().count() <= limit {
         return compact;
     }
@@ -1699,6 +1727,22 @@ mod tests {
         assert!(compact.ends_with("..."));
     }
 
+    #[test]
+    fn sequence_message_reports_bounded_leaf_evidence() {
+        let message = sequence_message(
+            2,
+            &[
+                "opened app Messages".to_string(),
+                format!("shell exited 0; stdout={}; stderr=", "x ".repeat(200)),
+            ],
+        );
+
+        assert!(
+            message.starts_with("sequence posted 2 actions: opened app Messages | shell exited 0")
+        );
+        assert!(message.chars().count() <= 1_200);
+    }
+
     #[tokio::test]
     async fn shell_exec_uses_system_route() {
         let backend = MacosInputBackend;
@@ -1718,6 +1762,39 @@ mod tests {
         assert_eq!(result.route, InputRoute::SystemApi);
         assert_eq!(result.delivery_mode, DeliveryMode::Background);
         assert!(result.evidence[0].message.contains("cua-shell-ok"));
+    }
+
+    #[tokio::test]
+    async fn sequence_reports_leaf_evidence() {
+        let backend = MacosInputBackend;
+        let result = backend
+            .execute(InputRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                idempotency_key: uuid::Uuid::new_v4(),
+                deadline_mono_ns: None,
+                action: InputAction::Sequence {
+                    actions: vec![
+                        InputAction::ShellExec {
+                            command: "printf one".to_string(),
+                            timeout_ms: 2_000,
+                        },
+                        InputAction::ShellExec {
+                            command: "printf two".to_string(),
+                            timeout_ms: 2_000,
+                        },
+                    ],
+                    inter_action_delay_ms: 0,
+                },
+            })
+            .await;
+
+        assert_eq!(result.effect, Effect::Confirmed);
+        assert_eq!(result.route, InputRoute::SystemApi);
+        assert!(result.evidence[0]
+            .message
+            .contains("sequence posted 2 actions"));
+        assert!(result.evidence[0].message.contains("stdout=one"));
+        assert!(result.evidence[0].message.contains("stdout=two"));
     }
 
     #[test]
