@@ -2802,6 +2802,8 @@ fn input_action_label(action: &InputAction) -> String {
         InputAction::KeyPress { combo } => format!("key press {combo}"),
         InputAction::KeyType { text } => format!("typing {} chars", text.chars().count()),
         InputAction::KeyPaste { text } => format!("pasting {} chars", text.chars().count()),
+        InputAction::Sequence { actions, .. } => format!("sequence {} actions", actions.len()),
+        InputAction::OpenApp { app_name } => format!("open app {app_name}"),
         InputAction::ClipboardRead { .. } => "clipboard read".to_string(),
         InputAction::ClipboardWrite { text } => {
             format!("clipboard write {} chars", text.chars().count())

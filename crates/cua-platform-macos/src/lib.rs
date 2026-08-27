@@ -86,33 +86,7 @@ impl InputBackend for MacosInputBackend {
     async fn execute(&self, request: InputRequest) -> InputResult {
         let started = Instant::now();
         let idempotency_key = request.idempotency_key;
-        let result = match request.action {
-            InputAction::MouseMove { x, y, .. } => post_mouse_move(x, y),
-            InputAction::MouseClick {
-                x,
-                y,
-                button,
-                count,
-            } => post_mouse_click(x, y, button, count),
-            InputAction::MouseDrag {
-                from_x,
-                from_y,
-                to_x,
-                to_y,
-                ..
-            } => post_mouse_drag(from_x, from_y, to_x, to_y),
-            InputAction::KeyPress { combo } => post_key_combo(&combo),
-            InputAction::KeyType { text } => post_text(&text),
-            InputAction::Pause | InputAction::Resume | InputAction::KillSwitch => {
-                Ok("safety action accepted by local coordinator".to_string())
-            }
-            InputAction::KeyPaste { .. }
-            | InputAction::ClipboardRead { .. }
-            | InputAction::ClipboardWrite { .. } => Err(
-                "clipboard and paste actions must use explicit clipboard/profile endpoints"
-                    .to_string(),
-            ),
-        };
+        let result = execute_macos_input_action(request.action).await;
         match result {
             Ok(message) => input_result(
                 idempotency_key,
@@ -138,6 +112,77 @@ impl InputBackend for MacosInputBackend {
     fn name(&self) -> &'static str {
         "macos-cgevent"
     }
+}
+
+async fn execute_macos_input_action(action: InputAction) -> Result<String, String> {
+    match action {
+        InputAction::Sequence {
+            actions,
+            inter_action_delay_ms,
+        } => {
+            if actions.is_empty() {
+                return Err("sequence must contain at least one action".to_string());
+            }
+            let delay = Duration::from_millis(inter_action_delay_ms.min(2_000));
+            for action in actions {
+                execute_macos_input_leaf(action)?;
+                if !delay.is_zero() {
+                    tokio::time::sleep(delay).await;
+                }
+            }
+            Ok("sequence posted".to_string())
+        }
+        action => execute_macos_input_leaf(action),
+    }
+}
+
+fn execute_macos_input_leaf(action: InputAction) -> Result<String, String> {
+    match action {
+        InputAction::MouseMove { x, y, .. } => post_mouse_move(x, y),
+        InputAction::MouseClick {
+            x,
+            y,
+            button,
+            count,
+        } => post_mouse_click(x, y, button, count),
+        InputAction::MouseDrag {
+            from_x,
+            from_y,
+            to_x,
+            to_y,
+            ..
+        } => post_mouse_drag(from_x, from_y, to_x, to_y),
+        InputAction::KeyPress { combo } => post_key_combo(&combo),
+        InputAction::KeyType { text } => post_text(&text),
+        InputAction::KeyPaste { text } => post_text(&text),
+        InputAction::OpenApp { app_name } => open_app(&app_name),
+        InputAction::Pause | InputAction::Resume | InputAction::KillSwitch => {
+            Ok("safety action accepted by local coordinator".to_string())
+        }
+        InputAction::Sequence { .. } => Err("nested sequences are not supported".to_string()),
+        InputAction::ClipboardRead { .. } | InputAction::ClipboardWrite { .. } => {
+            Err("clipboard actions must use explicit clipboard/profile endpoints".to_string())
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn open_app(app_name: &str) -> Result<String, String> {
+    let status = std::process::Command::new("/usr/bin/open")
+        .arg("-a")
+        .arg(app_name)
+        .status()
+        .map_err(|error| format!("open app failed to launch /usr/bin/open: {error}"))?;
+    if status.success() {
+        Ok(format!("opened app {app_name}"))
+    } else {
+        Err(format!("open app failed for {app_name}: {status}"))
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn open_app(_app_name: &str) -> Result<String, String> {
+    Err("open_app is only available on macOS".to_string())
 }
 
 pub fn permission_report() -> PermissionReport {

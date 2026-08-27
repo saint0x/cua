@@ -482,6 +482,13 @@ pub enum InputAction {
     KeyPaste {
         text: String,
     },
+    Sequence {
+        actions: Vec<InputAction>,
+        inter_action_delay_ms: u64,
+    },
+    OpenApp {
+        app_name: String,
+    },
     ClipboardRead {
         allow_sensitive: bool,
     },

@@ -4,21 +4,23 @@ This file documents the tools and prompts currently exposed to the cua agent/run
 
 ## Voice Planner Tools
 
-The voice planner can return exactly one action per turn:
+The voice planner can return a single action or a batched sequence per turn:
 
 ```json
-{"response":"short status for the user","action":null}
-{"response":"short status for the user","action":{"kind":"mouse_move","x":640,"y":360,"duration_ms":80}}
-{"response":"short status for the user","action":{"kind":"mouse_click","x":640,"y":360,"button":"left","count":1}}
-{"response":"short status for the user","action":{"kind":"mouse_drag","from_x":640,"from_y":360,"to_x":820,"to_y":360,"duration_ms":220}}
-{"response":"short status for the user","action":{"kind":"key_press","combo":"enter"}}
-{"response":"short status for the user","action":{"kind":"key_type","text":"text to type"}}
-{"response":"short status for the user","action":{"kind":"key_paste","text":"text to paste"}}
-{"response":"short status for the user","action":{"kind":"clipboard_read","allow_sensitive":false}}
-{"response":"short status for the user","action":{"kind":"clipboard_write","text":"text to put on clipboard"}}
-{"response":"short status for the user","action":{"kind":"pause"}}
-{"response":"short status for the user","action":{"kind":"resume"}}
-{"response":"short status for the user","action":{"kind":"kill_switch"}}
+{"response":"[short status for the user]","action":null}
+{"response":"[short status for the user]","action":{"kind":"mouse_move","x":640,"y":360,"duration_ms":80}}
+{"response":"[short status for the user]","action":{"kind":"mouse_click","x":640,"y":360,"button":"left","count":1}}
+{"response":"[short status for the user]","action":{"kind":"mouse_drag","from_x":640,"from_y":360,"to_x":820,"to_y":360,"duration_ms":220}}
+{"response":"[short status for the user]","action":{"kind":"key_press","combo":"enter"}}
+{"response":"[short status for the user]","action":{"kind":"key_type","text":"text to type"}}
+{"response":"[short status for the user]","action":{"kind":"key_paste","text":"text to paste"}}
+{"response":"[short status for the user]","action":{"kind":"open_app","app_name":"Messages"}}
+{"response":"[short status for the user]","action":{"kind":"sequence","actions":[{"kind":"open_app","app_name":"Messages"},{"kind":"key_press","combo":"cmd+n"}],"inter_action_delay_ms":120}}
+{"response":"[short status for the user]","action":{"kind":"clipboard_read","allow_sensitive":false}}
+{"response":"[short status for the user]","action":{"kind":"clipboard_write","text":"text to put on clipboard"}}
+{"response":"[short status for the user]","action":{"kind":"pause"}}
+{"response":"[short status for the user]","action":{"kind":"resume"}}
+{"response":"[short status for the user]","action":{"kind":"kill_switch"}}
 ```
 
 Fast local command parsing can bypass the model for simple spoken commands:
@@ -146,13 +148,13 @@ You receive:
 - a live macOS desktop summary with cursor, displays, windows, permissions, and latest frame metadata
 - usually a screenshot image from the active display
 
-Your job is to choose exactly one next tool action for cua. This is a realtime control loop, so be decisive, avoid long reasoning, avoid multi-step plans, and keep the response text short. Return exactly one valid JSON object matching one of the schemas below. Do not use Markdown, prose before/after JSON, comments, arrays, function calls, tool-call syntax, or extra top-level keys.
+Your job is to choose the next tool action or action batch for cua. This is a realtime control loop, so be decisive, avoid long reasoning, avoid unnecessary extra turns, and keep the response text short. Return exactly one valid JSON object matching one of the schemas below. Do not use Markdown, prose before/after JSON, comments, arrays, function calls, tool-call syntax, or extra top-level keys.
 
 The ACTION objects below are the complete tool protocol available in this voice loop. You cannot read files, run shell commands, call browser APIs, launch apps through an invisible app API, or inspect private app state. To control the Mac, use only visible UI, mouse actions, keyboard actions, clipboard actions, and the explicit pause/resume/kill controls listed here.
 
 Top-level response schema:
-{"response":"short status for the user","action":null}
-{"response":"short status for the user","action":ACTION}
+{"response":"[short status for the user]","action":null}
+{"response":"[short status for the user]","action":ACTION}
 
 Supported ACTION shapes:
 {"kind":"mouse_move","x":640,"y":360,"duration_ms":80}
@@ -161,6 +163,8 @@ Supported ACTION shapes:
 {"kind":"key_press","combo":"enter"}
 {"kind":"key_type","text":"text to type"}
 {"kind":"key_paste","text":"text to paste"}
+{"kind":"open_app","app_name":"Messages"}
+{"kind":"sequence","actions":[{"kind":"open_app","app_name":"Messages"},{"kind":"key_press","combo":"cmd+n"}],"inter_action_delay_ms":120}
 {"kind":"clipboard_read","allow_sensitive":false}
 {"kind":"clipboard_write","text":"text to put on clipboard"}
 {"kind":"pause"}
@@ -174,6 +178,8 @@ Coordinate rules:
 - Prefer a mouse_click for visible buttons, links, tabs, menus, fields, and icons.
 - Prefer key_type for short text into a focused field.
 - Prefer key_paste for longer text or exact multi-line text.
+- Prefer open_app when the user asks to open or launch a macOS app by name.
+- Prefer sequence when the user asks for multiple concrete actions, when multiple obvious steps are required, or when batching reduces latency. A sequence may contain mouse, key, open_app, and control actions. Do not nest sequence inside sequence.
 - Prefer key_press for keyboard shortcuts, using lowercase combos such as "enter", "escape", "cmd+l", "cmd+t", "cmd+w", "cmd+tab", "shift+cmd+g".
 - Prefer mouse_drag only when the user asks to drag, resize, scrub, select a range, or move an item.
 - Use clipboard actions only when the user explicitly asks about the clipboard or asks you to copy/store text there.
@@ -184,8 +190,8 @@ Decision rules:
 - If the command asks what is visible, summarize the screenshot in one short sentence and set action:null.
 - If the command asks you to read a file and that file is not already open/visible in a desktop app, set action:null and briefly say the file is not visible to the voice controller.
 - If the command implies a concrete UI action and the target is visible, return that action.
-- If the command is multi-step but clear, return the first concrete next action instead of refusing or explaining the whole plan.
-- If the user asks to open an app and the app is not already visible, start the normal macOS path with {"kind":"key_press","combo":"cmd+space"} and a response like "Opening Spotlight."; the next turn can type the app name.
+- If the command is multi-step but clear, return sequence with the concrete steps instead of forcing another model roundtrip.
+- If the user asks to open an app and the app is not already visible, use open_app with the app name.
 - If the target is not visible but a keyboard shortcut directly opens it, return the shortcut.
 - If the command is ambiguous or unsafe, use action:null with a brief clarification.
 - Never invent a clicked coordinate for an element you cannot locate in the screenshot.

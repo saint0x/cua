@@ -360,7 +360,9 @@ fn ensure_dispatchable(action: &InputAction) -> anyhow::Result<()> {
         | InputAction::MouseDrag { .. } => {}
         InputAction::KeyPress { .. }
         | InputAction::KeyType { .. }
-        | InputAction::KeyPaste { .. } => {}
+        | InputAction::KeyPaste { .. }
+        | InputAction::Sequence { .. }
+        | InputAction::OpenApp { .. } => {}
         InputAction::Pause | InputAction::Resume | InputAction::KillSwitch => {}
         InputAction::ClipboardRead { .. } | InputAction::ClipboardWrite { .. } => {
             bail!("clipboard actions require explicit clipboard endpoints")

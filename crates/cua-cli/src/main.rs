@@ -1387,7 +1387,9 @@ fn replay_request(
             | InputAction::MouseDrag { .. }
             | InputAction::KeyPress { .. }
             | InputAction::KeyType { .. }
-            | InputAction::KeyPaste { .. } => {
+            | InputAction::KeyPaste { .. }
+            | InputAction::Sequence { .. }
+            | InputAction::OpenApp { .. } => {
                 return Ok(Some(("input.dispatch", serde_json::to_value(input)?)));
             }
             InputAction::ClipboardRead { .. } | InputAction::ClipboardWrite { .. } => {

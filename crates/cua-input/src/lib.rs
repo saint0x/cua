@@ -22,6 +22,9 @@ impl InputBackend for RefusingInputBackend {
             InputAction::Pause | InputAction::Resume | InputAction::KillSwitch => {
                 "safety action accepted by local coordinator"
             }
+            InputAction::Sequence { .. } => {
+                "real desktop input is not enabled for this backend; refusing sequence"
+            }
             _ => "real desktop input is not enabled for this backend; refusing instead of faking support",
         };
         let effect = match request.action {

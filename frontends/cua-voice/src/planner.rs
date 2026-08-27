@@ -14,13 +14,13 @@ You receive:
 - a live macOS desktop summary with cursor, displays, windows, permissions, and latest frame metadata
 - usually a screenshot image from the active display
 
-Your job is to choose exactly one next tool action for cua. This is a realtime control loop, so be decisive, avoid long reasoning, avoid multi-step plans, and keep the response text short. Return exactly one valid JSON object matching one of the schemas below. Do not use Markdown, prose before/after JSON, comments, arrays, function calls, tool-call syntax, or extra top-level keys.
+Your job is to choose the next tool action or action batch for cua. This is a realtime control loop, so be decisive, avoid long reasoning, avoid unnecessary extra turns, and keep the response text short. Return exactly one valid JSON object matching one of the schemas below. Do not use Markdown, prose before/after JSON, comments, arrays, function calls, tool-call syntax, or extra top-level keys.
 
 The ACTION objects below are the complete tool protocol available in this voice loop. You cannot read files, run shell commands, call browser APIs, launch apps through an invisible app API, or inspect private app state. To control the Mac, use only visible UI, mouse actions, keyboard actions, clipboard actions, and the explicit pause/resume/kill controls listed here.
 
 Top-level response schema:
-{"response":"short status for the user","action":null}
-{"response":"short status for the user","action":ACTION}
+{"response":"[short status for the user]","action":null}
+{"response":"[short status for the user]","action":ACTION}
 
 Supported ACTION shapes:
 {"kind":"mouse_move","x":640,"y":360,"duration_ms":80}
@@ -29,6 +29,8 @@ Supported ACTION shapes:
 {"kind":"key_press","combo":"enter"}
 {"kind":"key_type","text":"text to type"}
 {"kind":"key_paste","text":"text to paste"}
+{"kind":"open_app","app_name":"Messages"}
+{"kind":"sequence","actions":[{"kind":"open_app","app_name":"Messages"},{"kind":"key_press","combo":"cmd+n"}],"inter_action_delay_ms":120}
 {"kind":"clipboard_read","allow_sensitive":false}
 {"kind":"clipboard_write","text":"text to put on clipboard"}
 {"kind":"pause"}
@@ -42,6 +44,8 @@ Coordinate rules:
 - Prefer a mouse_click for visible buttons, links, tabs, menus, fields, and icons.
 - Prefer key_type for short text into a focused field.
 - Prefer key_paste for longer text or exact multi-line text.
+- Prefer open_app when the user asks to open or launch a macOS app by name.
+- Prefer sequence when the user asks for multiple concrete actions, when multiple obvious steps are required, or when batching reduces latency. A sequence may contain mouse, key, open_app, and control actions. Do not nest sequence inside sequence.
 - Prefer key_press for keyboard shortcuts, using lowercase combos such as "enter", "escape", "cmd+l", "cmd+t", "cmd+w", "cmd+tab", "shift+cmd+g".
 - Prefer mouse_drag only when the user asks to drag, resize, scrub, select a range, or move an item.
 - Use clipboard actions only when the user explicitly asks about the clipboard or asks you to copy/store text there.
@@ -52,8 +56,8 @@ Decision rules:
 - If the command asks what is visible, summarize the screenshot in one short sentence and set action:null.
 - If the command asks you to read a file and that file is not already open/visible in a desktop app, set action:null and briefly say the file is not visible to the voice controller.
 - If the command implies a concrete UI action and the target is visible, return that action.
-- If the command is multi-step but clear, return the first concrete next action instead of refusing or explaining the whole plan.
-- If the user asks to open an app and the app is not already visible, start the normal macOS path with {"kind":"key_press","combo":"cmd+space"} and a response like "Opening Spotlight."; the next turn can type the app name.
+- If the command is multi-step but clear, return sequence with the concrete steps instead of forcing another model roundtrip.
+- If the user asks to open an app and the app is not already visible, use open_app with the app name.
 - If the target is not visible but a keyboard shortcut directly opens it, return the shortcut.
 - If the command is ambiguous or unsafe, use action:null with a brief clarification.
 - Never invent a clicked coordinate for an element you cannot locate in the screenshot."#;
@@ -393,6 +397,11 @@ fn normalize_action_value(value: &mut serde_json::Value) {
                 .entry("duration_ms")
                 .or_insert_with(|| serde_json::json!(220));
         }
+        "sequence" => {
+            object
+                .entry("inter_action_delay_ms")
+                .or_insert_with(|| serde_json::json!(120));
+        }
         _ => {}
     }
     if let Some(button) = object.get_mut("button").and_then(|button| button.as_str()) {
@@ -421,8 +430,8 @@ pub fn parse_fast_command(transcript: &str) -> Option<PlannedTurn> {
     if let Some(app_name) = fast_open_app_name(&words) {
         return Some(turn(
             format!("Opening {app_name}."),
-            Some(InputAction::KeyPress {
-                combo: "cmd+space".to_string(),
+            Some(InputAction::OpenApp {
+                app_name: app_name.to_string(),
             }),
         ));
     }
@@ -480,7 +489,10 @@ pub fn parse_fast_command(transcript: &str) -> Option<PlannedTurn> {
 }
 
 fn fast_open_app_name(words: &[String]) -> Option<&'static str> {
-    if !matches!(words.first().map(String::as_str), Some("open" | "launch")) {
+    if !words
+        .iter()
+        .any(|word| matches!(word.as_str(), "open" | "launch"))
+    {
         return None;
     }
     if words
@@ -602,7 +614,8 @@ mod tests {
         assert!(PLANNER_SYSTEM_PROMPT.contains("no filesystem read/write tool"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("file is not already open/visible"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("complete tool protocol"));
-        assert!(PLANNER_SYSTEM_PROMPT.contains("cmd+space"));
+        assert!(PLANNER_SYSTEM_PROMPT.contains("Prefer sequence"));
+        assert!(PLANNER_SYSTEM_PROMPT.contains("open_app"));
     }
 
     #[test]
@@ -668,6 +681,26 @@ mod tests {
     }
 
     #[test]
+    fn parses_model_sequence_actions_with_default_delay() {
+        let raw = r#"{"response":"Opening and preparing.","action":{"kind":"sequence","actions":[{"kind":"open_app","app_name":"Messages"},{"kind":"key_press","combo":"cmd+n"}]}}"#;
+        let plan = parse_model_plan(raw).unwrap();
+
+        assert!(matches!(
+            plan.action,
+            Some(InputAction::Sequence {
+                ref actions,
+                inter_action_delay_ms: 120
+            }) if matches!(
+                actions.as_slice(),
+                [
+                    InputAction::OpenApp { app_name },
+                    InputAction::KeyPress { combo },
+                ] if app_name == "Messages" && combo == "cmd+n"
+            )
+        ));
+    }
+
+    #[test]
     fn parse_model_plan_error_includes_raw_preview_context() {
         let error = parse_model_plan("not json at all").unwrap_err();
 
@@ -688,13 +721,26 @@ mod tests {
     }
 
     #[test]
-    fn parses_fast_open_app_commands_to_spotlight() {
+    fn parses_fast_open_app_commands_to_open_app() {
         let plan = parse_fast_command("Open the messages app at the bottom").unwrap();
 
         assert_eq!(plan.response, "Opening Messages.");
-        assert!(
-            matches!(plan.action, Some(InputAction::KeyPress { ref combo }) if combo == "cmd+space")
-        );
+        assert!(matches!(
+            plan.action,
+            Some(InputAction::OpenApp { ref app_name }) if app_name == "Messages"
+        ));
+    }
+
+    #[test]
+    fn parses_fast_open_app_when_open_is_not_first_word() {
+        let plan =
+            parse_fast_command("Use your tool to open the messages app at the bottom").unwrap();
+
+        assert_eq!(plan.response, "Opening Messages.");
+        assert!(matches!(
+            plan.action,
+            Some(InputAction::OpenApp { ref app_name }) if app_name == "Messages"
+        ));
     }
 
     #[test]
