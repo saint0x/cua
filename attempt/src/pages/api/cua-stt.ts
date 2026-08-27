@@ -12,7 +12,7 @@ const DEFAULT_STT_BACKEND = "local";
 const DEFAULT_STT_MODEL = "tiny.en";
 const DEFAULT_PLANNER_MODEL = "anthropic/claude-sonnet-5";
 
-export const POST: APIRoute = async ({ request }) => {
+export const POST: APIRoute = async ({ request, url }) => {
   const startedAt = performance.now();
   const bytes = Buffer.from(await request.arrayBuffer());
   if (bytes.length < 44) {
@@ -24,7 +24,12 @@ export const POST: APIRoute = async ({ request }) => {
   await writeFile(wavPath, bytes);
 
   try {
-    const result = await runCuaVoice(wavPath);
+    const result = await runCuaVoice(wavPath, {
+      sttBackend: url.searchParams.get("stt_backend") || undefined,
+      sttModel: url.searchParams.get("stt_model") || undefined,
+      plannerModel: url.searchParams.get("planner_model") || undefined,
+      debugTrace: url.searchParams.get("debug_trace") === "1",
+    });
     return json({
       ok: result.exitCode === 0,
       durationMs: Math.round(performance.now() - startedAt),
@@ -36,7 +41,15 @@ export const POST: APIRoute = async ({ request }) => {
   }
 };
 
-function runCuaVoice(wavPath: string): Promise<{
+function runCuaVoice(
+  wavPath: string,
+  options: {
+    sttBackend?: string;
+    sttModel?: string;
+    plannerModel?: string;
+    debugTrace?: boolean;
+  }
+): Promise<{
   command: string[];
   exitCode: number | null;
   signal: NodeJS.Signals | null;
@@ -51,14 +64,15 @@ function runCuaVoice(wavPath: string): Promise<{
     "--profile",
     process.env.CUA_PROFILE || "default",
     "--stt-backend",
-    process.env.CUA_STT_BACKEND || DEFAULT_STT_BACKEND,
+    options.sttBackend || process.env.CUA_STT_BACKEND || DEFAULT_STT_BACKEND,
     "--stt-model",
-    process.env.CUA_STT_MODEL || DEFAULT_STT_MODEL,
+    options.sttModel || process.env.CUA_STT_MODEL || DEFAULT_STT_MODEL,
     "--planner-model",
-    process.env.CUA_PLANNER_MODEL || DEFAULT_PLANNER_MODEL,
+    options.plannerModel || process.env.CUA_PLANNER_MODEL || DEFAULT_PLANNER_MODEL,
     "--once-wav",
     wavPath,
   ];
+  if (options.debugTrace) args.unshift("--debug-trace");
 
   return new Promise((resolve, reject) => {
     const child = spawn(bin, args, {

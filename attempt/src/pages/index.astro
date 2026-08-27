@@ -25,6 +25,26 @@ const title = "cua mic diagnostics";
             Input
             <select id="deviceSelect"></select>
           </label>
+          <label class="expected-label">
+            Expected command
+            <input id="expectedText" value="what do you see on my screen" />
+          </label>
+          <label class="compact-label">
+            STT backend
+            <select id="sttBackend">
+              <option value="local" selected>local</option>
+              <option value="openrouter">openrouter</option>
+            </select>
+          </label>
+          <label class="compact-label">
+            STT model
+            <select id="sttModel">
+              <option value="tiny.en" selected>tiny.en</option>
+              <option value="base.en">base.en</option>
+              <option value="small.en">small.en</option>
+              <option value="openai/gpt-4o-mini-transcribe">gpt-4o-mini-transcribe</option>
+            </select>
+          </label>
           <button id="refreshBtn" type="button">Refresh</button>
           <button id="startBtn" type="button">Record run</button>
           <button id="stopBtn" type="button" disabled>Stop</button>
@@ -118,6 +138,9 @@ const title = "cua mic diagnostics";
       const els = {
         state: document.querySelector("#state"),
         deviceSelect: document.querySelector("#deviceSelect"),
+        expectedText: document.querySelector("#expectedText"),
+        sttBackend: document.querySelector("#sttBackend"),
+        sttModel: document.querySelector("#sttModel"),
         refreshBtn: document.querySelector("#refreshBtn"),
         startBtn: document.querySelector("#startBtn"),
         stopBtn: document.querySelector("#stopBtn"),
@@ -434,7 +457,16 @@ const title = "cua mic diagnostics";
           timeline: stats.timeline,
         };
 
-        const run = { report, audioBlob, wavBlob, cua: null, cuaStatus: "queued" };
+        const run = {
+          report,
+          audioBlob,
+          wavBlob,
+          cua: null,
+          cuaStatus: "queued",
+          expectedText: els.expectedText.value.trim(),
+          sttBackend: els.sttBackend.value,
+          sttModel: els.sttModel.value,
+        };
         session.runs.push(run);
         renderRuns();
         runCuaForRun(run).catch((error) => {
@@ -478,7 +510,7 @@ const title = "cua mic diagnostics";
             </div>
             <div>
               <span>CUA</span>
-              <strong>${escapeHtml(run.cuaStatus || "idle")}</strong>
+              <strong>${escapeHtml(run.cuaStatus || "idle")}${run.cua?.quality ? ` / ${escapeHtml(run.cua.quality.label)}` : ""}</strong>
             </div>
           `;
           const buttons = document.createElement("div");
@@ -512,22 +544,28 @@ const title = "cua mic diagnostics";
         renderCuaResults();
         log(`Sending run ${run.report.index} WAV into installed CUA.`);
         const startedAt = performance.now();
-        const response = await fetch("/api/cua-stt", {
+        const params = new URLSearchParams({
+          stt_backend: run.sttBackend || els.sttBackend.value,
+          stt_model: run.sttModel || els.sttModel.value,
+        });
+        const response = await fetch(`/api/cua-stt?${params}`, {
           method: "POST",
           headers: { "content-type": "audio/wav" },
           body: run.wavBlob,
         });
         const result = await response.json();
+        const transcript = result.summary?.transcript || "";
         run.cuaStatus = result.ok ? "ok" : "error";
         run.cua = {
           ...result,
           browserRoundTripMs: Math.round(performance.now() - startedAt),
+          expectedText: run.expectedText,
+          quality: scoreTranscript(run.expectedText, transcript),
         };
         renderRuns();
         renderCuaResults();
-        const transcript = result.summary?.transcript || "(no transcript)";
         const error = result.summary?.error ? ` error=${result.summary.error}` : "";
-        log(`CUA run ${run.report.index}: ${run.cuaStatus}, transcript=${transcript}.${error}`);
+        log(`CUA run ${run.report.index}: ${run.cuaStatus}, quality=${run.cua.quality.label}, transcript=${transcript || "(no transcript)"}.${error}`);
       }
 
       function renderCuaResults() {
@@ -539,6 +577,7 @@ const title = "cua mic diagnostics";
         for (const run of session.runs.filter((entry) => entry.cua).slice().reverse()) {
           const result = run.cua;
           const summary = result.summary || {};
+          const quality = result.quality || {};
           const row = document.createElement("article");
           row.className = "cua-result";
           row.innerHTML = `
@@ -551,8 +590,16 @@ const title = "cua mic diagnostics";
               <strong>${escapeHtml(formatStt(summary.stt))}</strong>
             </div>
             <div>
+              <span>quality</span>
+              <strong>${escapeHtml(formatQuality(quality))}</strong>
+            </div>
+            <div>
               <span>timing</span>
               <strong>${escapeHtml(formatMetrics(summary.metrics, result))}</strong>
+            </div>
+            <div>
+              <span>expected</span>
+              <strong>${escapeHtml(result.expectedText || "not set")}</strong>
             </div>
             <pre>${escapeHtml(JSON.stringify(result.events || [], null, 2))}</pre>
           `;
@@ -617,6 +664,74 @@ const title = "cua mic diagnostics";
       function formatStt(stt) {
         if (!stt) return "none";
         return [stt.backend, stt.model, stt.transcript_class].filter(Boolean).join(" / ");
+      }
+
+      function formatQuality(quality) {
+        if (!quality) return "none";
+        return [
+          quality.label,
+          quality.wordErrorRate !== undefined ? `WER ${Math.round(quality.wordErrorRate * 100)}%` : null,
+          quality.editDistance !== undefined ? `edit ${quality.editDistance}` : null,
+        ].filter(Boolean).join(" / ");
+      }
+
+      function scoreTranscript(expected, actual) {
+        const expectedNorm = normalizeText(expected);
+        const actualNorm = normalizeText(actual);
+        const expectedWords = expectedNorm ? expectedNorm.split(" ") : [];
+        const actualWords = actualNorm ? actualNorm.split(" ") : [];
+        const editDistance = levenshtein(expectedWords, actualWords);
+        const wordErrorRate = expectedWords.length ? editDistance / expectedWords.length : null;
+        const hallucination = isHallucination(actualNorm);
+        let label = "untested";
+        if (!actualNorm) label = "empty";
+        else if (hallucination) label = "hallucination";
+        else if (expectedNorm && actualNorm === expectedNorm) label = "exact";
+        else if (wordErrorRate !== null && wordErrorRate <= 0.25) label = "close";
+        else label = "mismatch";
+        return {
+          label,
+          expected: expectedNorm,
+          actual: actualNorm,
+          editDistance,
+          wordErrorRate: wordErrorRate === null ? null : round(wordErrorRate),
+          hallucination,
+        };
+      }
+
+      function normalizeText(value) {
+        return String(value || "")
+          .toLowerCase()
+          .replace(/[^a-z0-9\s']/g, " ")
+          .replace(/\s+/g, " ")
+          .trim();
+      }
+
+      function isHallucination(value) {
+        return value === "you"
+          || value === "thanks"
+          || value === "subscribe"
+          || value.startsWith("thank you")
+          || value.startsWith("thanks for")
+          || value.startsWith("you're welcome")
+          || value.startsWith("you are welcome")
+          || value.startsWith("subtitles by");
+      }
+
+      function levenshtein(a, b) {
+        const previous = Array.from({ length: b.length + 1 }, (_, index) => index);
+        for (let i = 0; i < a.length; i += 1) {
+          const current = [i + 1];
+          for (let j = 0; j < b.length; j += 1) {
+            current[j + 1] = Math.min(
+              current[j] + 1,
+              previous[j + 1] + 1,
+              previous[j] + (a[i] === b[j] ? 0 : 1)
+            );
+          }
+          previous.splice(0, previous.length, ...current);
+        }
+        return previous[b.length];
       }
 
       function formatMetrics(metrics, result) {
@@ -781,7 +896,8 @@ const title = "cua mic diagnostics";
 
   .pill,
   button,
-  select {
+  select,
+  input {
     border: 1px solid rgba(255, 255, 255, 0.1);
     border-radius: 8px;
     background: rgba(255, 255, 255, 0.055);
@@ -809,9 +925,18 @@ const title = "cua mic diagnostics";
   }
 
   select,
+  input,
   button {
     height: 32px;
     padding: 0 11px;
+  }
+
+  .expected-label {
+    min-width: 260px;
+  }
+
+  .compact-label {
+    min-width: 130px;
   }
 
   button {
@@ -915,7 +1040,7 @@ const title = "cua mic diagnostics";
   }
 
   .cua-result {
-    grid-template-columns: 1.25fr 1fr 1fr;
+    grid-template-columns: 1.25fr 0.85fr 0.95fr 1fr 1fr;
     align-items: stretch;
   }
 

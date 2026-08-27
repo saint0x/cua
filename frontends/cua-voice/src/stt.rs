@@ -265,15 +265,13 @@ fn local_transcript_needs_retry(text: &str) -> bool {
         .collect::<Vec<_>>()
         .join(" ")
         .to_ascii_lowercase();
-    matches!(
-        normalized.as_str(),
-        "" | "you"
-            | "thank you"
-            | "thanks"
-            | "thanks for watching"
-            | "thank you for watching"
-            | "subscribe"
-    )
+    normalized.is_empty()
+        || matches!(normalized.as_str(), "you" | "thanks" | "subscribe")
+        || normalized.starts_with("thank you")
+        || normalized.starts_with("thanks for")
+        || normalized.starts_with("you're welcome")
+        || normalized.starts_with("you are welcome")
+        || normalized.starts_with("subtitles by")
 }
 
 fn read_local_whisper_json(
@@ -619,6 +617,12 @@ mod tests {
     fn local_retry_only_targets_silence_hallucinations() {
         assert!(local_transcript_needs_retry("You."));
         assert!(local_transcript_needs_retry("thank you"));
+        assert!(local_transcript_needs_retry(
+            "Thank you for joining us today."
+        ));
+        assert!(local_transcript_needs_retry(
+            "You're welcome! Let me know if you need anything."
+        ));
         assert!(!local_transcript_needs_retry("settings"));
         assert!(!local_transcript_needs_retry("open safari"));
     }

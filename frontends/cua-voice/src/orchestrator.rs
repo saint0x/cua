@@ -393,15 +393,13 @@ fn normalized_transcript(transcript: &str) -> String {
 }
 
 fn is_common_missed_speech(transcript: &str) -> bool {
-    matches!(
-        transcript,
-        "" | "you"
-            | "thank you"
-            | "thanks"
-            | "thanks for watching"
-            | "thank you for watching"
-            | "subscribe"
-    )
+    transcript.is_empty()
+        || matches!(transcript, "you" | "thanks" | "subscribe")
+        || transcript.starts_with("thank you")
+        || transcript.starts_with("thanks for")
+        || transcript.starts_with("you're welcome")
+        || transcript.starts_with("you are welcome")
+        || transcript.starts_with("subtitles by")
 }
 
 fn transcript_class(transcript: &str) -> &'static str {
@@ -1057,6 +1055,14 @@ mod tests {
     fn transcript_class_identifies_command_candidates_and_hallucinations() {
         assert_eq!(transcript_class("you"), "missed_speech");
         assert_eq!(transcript_class("Thank you."), "missed_speech");
+        assert_eq!(
+            transcript_class("Thank you for joining us today."),
+            "missed_speech"
+        );
+        assert_eq!(
+            transcript_class("You're welcome! Let me know if you need anything."),
+            "missed_speech"
+        );
         assert_eq!(transcript_class("settings"), "command_candidate");
         assert_eq!(
             transcript_class("click the center target"),
