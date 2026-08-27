@@ -26,7 +26,7 @@ static VOICE_TRACE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 const VOICE_STEP_SOURCE: &str = "voice";
 const VOICE_STEP_TTL_MS: u64 = 5_000;
 const VOICE_STEP_LABEL_MAX: usize = 96;
-const VOICE_STEP_TIMEOUT_MS: u64 = 500;
+const VOICE_STEP_TIMEOUT_MS: u64 = 120;
 const VOICE_STEP_FLUSH_TIMEOUT_MS: u64 = 120;
 const DEFAULT_CONTEXT_PREFETCH_TIMEOUT_MS: u64 = 2_500;
 const MIN_RECORDING_DURATION: Duration = Duration::from_millis(650);
@@ -819,7 +819,10 @@ impl VoiceStepPublisher {
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
         let join = tokio::spawn(async move {
             let mut session = local.session().await.ok();
-            while let Some(label) = rx.recv().await {
+            while let Some(mut label) = rx.recv().await {
+                while let Ok(newer_label) = rx.try_recv() {
+                    label = newer_label;
+                }
                 let request = async {
                     if let Some(session) = session.as_mut() {
                         session
@@ -1565,5 +1568,10 @@ mod tests {
     #[test]
     fn voice_step_flush_does_not_hold_turn_completion() {
         assert!(VOICE_STEP_FLUSH_TIMEOUT_MS <= 150);
+    }
+
+    #[test]
+    fn voice_step_request_timeout_stays_latency_oriented() {
+        assert!(VOICE_STEP_TIMEOUT_MS <= 150);
     }
 }
