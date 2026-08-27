@@ -1,8 +1,11 @@
 use anyhow::{bail, Context};
 use cua_core::{
-    profile_socket_path, profile_token_path, ConfigInventory, DesktopContextSnapshot, DesktopState,
-    FrameActionRequest, FrameEncoding, FrameEnvelope, FramePayload, InputAction, UiMode,
-    UiModeRequest, UiReplyRequest, UiStepRequest, SCHEMA_VERSION,
+    profile_socket_path, profile_token_path, ClipboardReadRequest, ClipboardResult,
+    ClipboardWriteRequest, ConfigInventory, DesktopContextSnapshot, DesktopState,
+    FrameActionRequest, FrameEncoding, FrameEnvelope, FramePayload, HealthReport, InputAction,
+    Manifest, RuntimeControlState, RuntimeInventory, RuntimeSessionRole, SchemaBundle,
+    SessionCancelRequest, SessionLeaseRequest, SessionLeaseResult, UiIslandRequest, UiIslandResult,
+    UiIslandState, UiMode, UiModeRequest, UiReplyRequest, UiStepRequest, SCHEMA_VERSION,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -49,6 +52,18 @@ impl CuaClient {
         .await
     }
 
+    pub async fn status(&self) -> anyhow::Result<HealthReport> {
+        self.request("status", None).await
+    }
+
+    pub async fn manifest(&self) -> anyhow::Result<Manifest> {
+        self.request("manifest", None).await
+    }
+
+    pub async fn schemas(&self) -> anyhow::Result<SchemaBundle> {
+        self.request("schemas", None).await
+    }
+
     pub async fn observe(&self) -> anyhow::Result<DesktopState> {
         self.request("observe.desktop", None).await
     }
@@ -86,6 +101,59 @@ impl CuaClient {
             })),
         )
         .await
+    }
+
+    pub async fn acquire_owner(
+        &self,
+        client_name: impl Into<String>,
+        ttl_ms: Option<i64>,
+    ) -> anyhow::Result<SessionLeaseResult> {
+        self.acquire_session(RuntimeSessionRole::Owner, client_name, ttl_ms)
+            .await
+    }
+
+    pub async fn acquire_observer(
+        &self,
+        client_name: impl Into<String>,
+        ttl_ms: Option<i64>,
+    ) -> anyhow::Result<SessionLeaseResult> {
+        self.acquire_session(RuntimeSessionRole::Observer, client_name, ttl_ms)
+            .await
+    }
+
+    pub async fn acquire_session(
+        &self,
+        role: RuntimeSessionRole,
+        client_name: impl Into<String>,
+        ttl_ms: Option<i64>,
+    ) -> anyhow::Result<SessionLeaseResult> {
+        let request = SessionLeaseRequest {
+            schema_version: SCHEMA_VERSION.to_string(),
+            session_id: uuid::Uuid::new_v4().to_string(),
+            client_name: client_name.into(),
+            role,
+            ttl_ms,
+        };
+        self.request("session.acquire", Some(serde_json::to_value(request)?))
+            .await
+    }
+
+    pub async fn cancel_session(
+        &self,
+        session_id: impl Into<String>,
+        target_session_id: Option<String>,
+    ) -> anyhow::Result<RuntimeInventory> {
+        let request = SessionCancelRequest {
+            schema_version: SCHEMA_VERSION.to_string(),
+            session_id: session_id.into(),
+            target_session_id,
+        };
+        self.request("session.cancel", Some(serde_json::to_value(request)?))
+            .await
+    }
+
+    pub async fn session_status(&self) -> anyhow::Result<RuntimeInventory> {
+        self.request("session.status", None).await
     }
 
     pub async fn ui_step(
@@ -142,6 +210,65 @@ impl CuaClient {
             })?),
         )
         .await
+    }
+
+    pub async fn ui_island(
+        &self,
+        state: UiIslandState,
+        source: Option<String>,
+    ) -> anyhow::Result<UiIslandResult> {
+        self.request(
+            "ui.island",
+            Some(serde_json::to_value(UiIslandRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                state,
+                source,
+            })?),
+        )
+        .await
+    }
+
+    pub async fn clipboard_read(&self, allow_sensitive: bool) -> anyhow::Result<ClipboardResult> {
+        self.request(
+            "clipboard.read",
+            Some(serde_json::to_value(ClipboardReadRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                allow_sensitive,
+            })?),
+        )
+        .await
+    }
+
+    pub async fn clipboard_write(
+        &self,
+        text: impl Into<String>,
+    ) -> anyhow::Result<ClipboardResult> {
+        self.request(
+            "clipboard.write",
+            Some(serde_json::to_value(ClipboardWriteRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                text: text.into(),
+            })?),
+        )
+        .await
+    }
+
+    pub async fn pause(&self, session_id: Option<&str>) -> anyhow::Result<RuntimeControlState> {
+        self.request_with_session("control.pause", None, session_id)
+            .await
+    }
+
+    pub async fn resume(&self, session_id: Option<&str>) -> anyhow::Result<RuntimeControlState> {
+        self.request_with_session("control.resume", None, session_id)
+            .await
+    }
+
+    pub async fn kill_switch(
+        &self,
+        session_id: Option<&str>,
+    ) -> anyhow::Result<RuntimeControlState> {
+        self.request_with_session("control.kill_switch", None, session_id)
+            .await
     }
 
     pub async fn dispatch(&self, action: &InputAction) -> anyhow::Result<Value> {

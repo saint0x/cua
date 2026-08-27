@@ -55,7 +55,7 @@
 
 9. Extract a reusable `cua-client` SDK crate.
    - Keep `cua-core` as the protocol source of truth for request/response types.
-   - Add remaining stable public API methods: `CuaClient::schemas()`, `CuaClient::acquire_owner(client_name, ttl_ms)`, `CuaClient::acquire_observer(client_name, ttl_ms)`, `CuaClient::visual_session(...)`, `CuaClient::pause()`, `CuaClient::resume()`, `CuaClient::kill_switch()`, `CuaClient::clipboard_read(...)`, and `CuaClient::clipboard_write(...)`.
+   - Add remaining stable public API method: `CuaClient::visual_session(...)`.
    - Preserve idempotency support for input requests. Do not let SDK callers accidentally create untraceable duplicate actions.
    - Add typed error handling instead of returning generic `anyhow` strings for protocol errors.
    - Make long-lived CLI visual streaming use shared SDK session helpers instead of local socket glue.

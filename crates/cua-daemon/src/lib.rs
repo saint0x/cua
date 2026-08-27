@@ -1696,6 +1696,7 @@ async fn handle_unix_request(state: &DaemonState, request: UnixRequest) -> serde
             }
         }
         "status" => Ok(serde_json::to_value(state.health().await)),
+        "schemas" => Ok(serde_json::to_value(schema_bundle())),
         "config.status" => Ok(serde_json::to_value(config_inventory_state(state))),
         "manifest" => Ok(serde_json::to_value(manifest_payload())),
         "metrics" => Ok(serde_json::to_value(metrics_snapshot(state))),
@@ -2051,6 +2052,7 @@ fn manifest_payload() -> Manifest {
             "UNIX session.acquire".to_string(),
             "UNIX session.cancel".to_string(),
             "UNIX session.status".to_string(),
+            "UNIX schemas".to_string(),
             "UNIX config.status".to_string(),
             "POST /ui/step".to_string(),
             "POST /ui/reply".to_string(),
@@ -4859,7 +4861,18 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
+            .any(|endpoint| endpoint == "UNIX schemas"));
+        assert!(manifest["endpoints"]
+            .as_array()
+            .unwrap()
+            .iter()
             .any(|endpoint| endpoint == "UNIX config.status"));
+
+        let schemas = unix_result(
+            handle_unix_request(&state, unix_request("schemas", serde_json::json!({}))).await,
+        );
+        assert_eq!(schemas["schema_version"], SCHEMA_VERSION);
+        assert!(schemas["schemas"].get("RuntimeInventory").is_some());
 
         let config = unix_result(
             handle_unix_request(&state, unix_request("config.status", serde_json::json!({}))).await,
