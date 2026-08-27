@@ -1517,6 +1517,7 @@ dependencies = [
  "base64",
  "clap",
  "cua-capture",
+ "cua-client",
  "cua-core",
  "cua-daemon",
  "cua-input",
@@ -1545,6 +1546,18 @@ dependencies = [
  "serde",
  "sha2 0.10.9",
  "tokio",
+]
+
+[[package]]
+name = "cua-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cua-core",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -1655,6 +1668,7 @@ dependencies = [
  "base64",
  "clap",
  "cpal",
+ "cua-client",
  "cua-core",
  "cua-daemon",
  "cua-platform-macos",

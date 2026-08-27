@@ -2,6 +2,7 @@ use anyhow::Context;
 use base64::Engine;
 use clap::{Args, Parser, Subcommand};
 use cua_capture::{CaptureRequest, FrameBus, SyntheticCaptureBackend};
+use cua_client::CuaClient;
 use cua_core::{
     config_env_path, profile_ctx_dir, profile_socket_path, profile_token_path, schema_bundle,
     CapabilityManifest, ClipboardReadRequest, ClipboardWriteRequest, DesktopContextSnapshot,
@@ -955,35 +956,10 @@ async fn unix_request_json_with_session(
     params: Option<serde_json::Value>,
     session_id: Option<&str>,
 ) -> anyhow::Result<serde_json::Value> {
-    let token = load_profile_token(profile).await?;
-    let socket_path = profile_socket_path(profile)?;
-    let stream = UnixStream::connect(&socket_path)
+    let client = CuaClient::connect(profile.to_string()).await?;
+    client
+        .request_with_session(method, params, session_id)
         .await
-        .with_context(|| format!("connect {}", socket_path.display()))?;
-    let (read, mut write) = stream.into_split();
-    let mut lines = BufReader::new(read).lines();
-    let request = serde_json::json!({
-        "id": uuid::Uuid::new_v4().to_string(),
-        "token": token,
-        "session_id": session_id,
-        "method": method,
-        "params": params.unwrap_or_else(|| serde_json::json!({}))
-    });
-    write.write_all(request.to_string().as_bytes()).await?;
-    write.write_all(b"\n").await?;
-    write.flush().await?;
-    let line = lines
-        .next_line()
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("empty unix response for {method}"))?;
-    let response: serde_json::Value = serde_json::from_str(&line)?;
-    if response.get("ok").and_then(|ok| ok.as_bool()) != Some(true) {
-        anyhow::bail!("unix request {method} failed: {}", response["error"]);
-    }
-    Ok(response
-        .get("result")
-        .cloned()
-        .unwrap_or(serde_json::Value::Null))
 }
 
 async fn perf(profile: &str, command: PerfCommand) -> anyhow::Result<()> {

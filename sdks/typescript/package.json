@@ -1,0 +1,17 @@
+{
+  "name": "@cua/sdk",
+  "version": "0.1.0",
+  "description": "Thin TypeScript wrapper over cua runebooks and the local cua protocol.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "files": [
+    "dist"
+  ],
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  }
+}

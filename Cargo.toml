@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
   "crates/cua-cli",
+  "crates/cua-client",
   "crates/cua-core",
   "crates/cua-capture",
   "crates/cua-daemon",

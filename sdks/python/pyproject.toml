@@ -1,0 +1,9 @@
+[project]
+name = "cua-sdk"
+version = "0.1.0"
+description = "Thin Python wrapper over cua runebooks and the local cua protocol."
+requires-python = ">=3.10"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

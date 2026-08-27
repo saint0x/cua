@@ -54,24 +54,14 @@
    - Add first-class waits.
 
 9. Extract a reusable `cua-client` SDK crate.
-   - Add `crates/cua-client` as a workspace member.
-   - Move the Unix socket client from `frontends/cua-voice/src/client.rs` into `crates/cua-client`.
-   - Make `frontends/cua-voice` depend on `cua-client` instead of owning its own copy.
-   - Make `crates/cua-cli` use `cua-client` for Unix socket calls instead of duplicating token/path/request logic in `crates/cua-cli/src/main.rs`.
    - Keep `cua-core` as the protocol source of truth for request/response types.
-   - Add a stable public API: `CuaClient::connect(profile)`, `CuaClient::status()`, `CuaClient::manifest()`, `CuaClient::schemas()`, `CuaClient::context(...)`, `CuaClient::screenshot(...)`, `CuaClient::observe()`, `CuaClient::events()`, `CuaClient::events_after(sequence)`, `CuaClient::events_wait(sequence, timeout_ms)`, `CuaClient::acquire_owner(client_name, ttl_ms)`, `CuaClient::acquire_observer(client_name, ttl_ms)`, `CuaClient::dispatch(action)`, `CuaClient::dispatch_frame(source_frame, action)`, `CuaClient::visual_session(...)`, `CuaClient::pause()`, `CuaClient::resume()`, `CuaClient::kill_switch()`, `CuaClient::ui_step(...)`, `CuaClient::ui_reply(...)`, `CuaClient::ui_mode(...)`, `CuaClient::clipboard_read(...)`, and `CuaClient::clipboard_write(...)`.
+   - Add remaining stable public API methods: `CuaClient::schemas()`, `CuaClient::acquire_owner(client_name, ttl_ms)`, `CuaClient::acquire_observer(client_name, ttl_ms)`, `CuaClient::visual_session(...)`, `CuaClient::pause()`, `CuaClient::resume()`, `CuaClient::kill_switch()`, `CuaClient::clipboard_read(...)`, and `CuaClient::clipboard_write(...)`.
    - Preserve idempotency support for input requests. Do not let SDK callers accidentally create untraceable duplicate actions.
    - Add typed error handling instead of returning generic `anyhow` strings for protocol errors.
-   - Keep the SDK as a thin, reliable client over the existing daemon protocol, not a second runtime.
-   - Make the CLI and voice frontend consumers of the same SDK users get.
-   - Use the SDK crate as the shared protocol source for the TypeScript/Python SDKs.
+   - Make long-lived CLI visual streaming use shared SDK session helpers instead of local socket glue.
 
 10. Prefer Unix socket transport by default.
-    - Make Unix socket the default `cua-client` transport.
     - Keep HTTP as an optional operator/debug transport.
-    - Use the profile-local socket path by default: `~/.cua/profiles/<profile>/daemon.sock`.
-    - Load the profile bearer token by default from `~/.cua/profiles/<profile>/http.token`.
-    - Allow explicit token override through `CUA_HTTP_TOKEN` only as a development/CI override.
     - Use `session.acquire` for any SDK code path that mutates state.
     - Require an owner session for writes: input dispatch, frame input dispatch, profile create/activate, pause/resume/kill, and clipboard write.
     - Allow observer sessions for reads: status, manifest, schemas, screenshot, context, observe, events, and visual session.
@@ -135,7 +125,6 @@
 
 16. Define the public TypeScript SDK.
     - Decide the package name: `@quilt/cua`, `@cua/sdk`, or `cua-sdk`.
-    - Keep it a thin wrapper over runebooks and the cua daemon protocol, not a second runtime.
     - Connect to local Unix socket on macOS where supported.
     - Fall back to loopback HTTP where Unix socket is not practical.
     - Generate types from `/schemas` or checked-in schema bundle.
@@ -163,8 +152,6 @@
       ```
 
 17. Define the public Python SDK.
-    - Use package name `cua-sdk`.
-    - Keep it a thin wrapper over runebooks and the cua daemon protocol, not a second runtime.
     - Use the same transport and session semantics as TypeScript.
     - Include examples for local agent scripts and notebook use.
 
