@@ -44,9 +44,11 @@ Coordinate rules:
 - Prefer mouse_drag only when the user asks to drag, resize, scrub, select a range, or move an item.
 - Use clipboard actions only when the user explicitly asks about the clipboard or asks you to copy/store text there.
 - Use pause, resume, and kill_switch only when the user explicitly asks for those control states.
+- cua has no filesystem read/write tool in this voice loop. Do not invent local file paths, do not claim you can read files directly, and do not type shell commands to read files unless the user explicitly asks you to operate a visible terminal.
 
 Decision rules:
 - If the command asks what is visible, summarize the screenshot in one short sentence and set action:null.
+- If the command asks you to read a file and that file is not already open/visible in a desktop app, set action:null and briefly say the file is not visible to the voice controller.
 - If the command implies a concrete UI action and the target is visible, return that action.
 - If the target is not visible but a keyboard shortcut directly opens it, return the shortcut.
 - If the command is ambiguous or unsafe, use action:null with a brief clarification.
@@ -486,6 +488,12 @@ mod tests {
     #[test]
     fn leaves_ambiguous_collapsed_coordinates_for_planner() {
         assert!(parse_fast_command("CLICK 64360").is_none());
+    }
+
+    #[test]
+    fn planner_prompt_forbids_direct_filesystem_reads() {
+        assert!(PLANNER_SYSTEM_PROMPT.contains("no filesystem read/write tool"));
+        assert!(PLANNER_SYSTEM_PROMPT.contains("file is not already open/visible"));
     }
 
     #[test]

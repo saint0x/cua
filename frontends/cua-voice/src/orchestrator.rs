@@ -6,16 +6,20 @@ use crate::stt::{SttClient, SttTranscript, DEFAULT_STT_BACKEND, DEFAULT_STT_MODE
 use crate::ui_state::VoiceUiEvent;
 use anyhow::Context;
 use cua_core::{DesktopState, FrameEnvelope, FramePayload};
+use serde_json::json;
+use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc,
 };
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 
 type LocalTask = tokio::task::JoinHandle<anyhow::Result<CuaClient>>;
 type ContextTask = tokio::task::JoinHandle<PrefetchedContext>;
+const VOICE_TRACE_FILE: &str = "voice-turns.jsonl";
+static VOICE_TRACE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 const VOICE_STEP_SOURCE: &str = "voice";
 const VOICE_STEP_TTL_MS: u64 = 5_000;
 const VOICE_STEP_LABEL_MAX: usize = 96;
@@ -38,6 +42,7 @@ pub struct VoiceConfig {
     pub stt_backend: String,
     pub stt_model: String,
     pub planner_model: String,
+    pub debug_trace: bool,
 }
 
 impl Default for VoiceConfig {
@@ -48,6 +53,7 @@ impl Default for VoiceConfig {
             stt_backend: DEFAULT_STT_BACKEND.to_string(),
             stt_model: DEFAULT_STT_MODEL.to_string(),
             planner_model: "anthropic/claude-sonnet-5".to_string(),
+            debug_trace: false,
         }
     }
 }
@@ -113,7 +119,14 @@ pub async fn run_wav_turn_checked(
     tx: Sender<VoiceUiEvent>,
 ) -> anyhow::Result<()> {
     let local_task = spawn_local_preflight(config.profile.clone());
-    transcribe_and_run_turn_after_local(config, wav_bytes, local_task, tx).await
+    let trace = VoiceTurnTrace::new(&config);
+    trace
+        .append(
+            "turn_start",
+            json!({"mode": "wav", "config": trace_config(&config)}),
+        )
+        .await;
+    transcribe_and_run_turn_after_local(config, wav_bytes, local_task, tx, trace).await
 }
 
 async fn record_and_run_turn(
@@ -121,9 +134,19 @@ async fn record_and_run_turn(
     tx: Sender<VoiceUiEvent>,
     stop_requested: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
+    let trace = VoiceTurnTrace::new(&config);
+    trace
+        .append(
+            "turn_start",
+            json!({"mode": "live_record", "config": trace_config(&config)}),
+        )
+        .await;
     tx.send(VoiceUiEvent::Armed).ok();
     tx.send(VoiceUiEvent::Listening { ms: 0 }).ok();
     let record_ms = config.record_ms;
+    trace
+        .append("record_start", json!({"record_ms": record_ms}))
+        .await;
     let local_task = spawn_local_preflight(config.profile.clone());
     let progress_flag = Arc::new(AtomicBool::new(true));
     let progress_task = spawn_recording_progress(tx.clone(), progress_flag.clone());
@@ -133,11 +156,36 @@ async fn record_and_run_turn(
     let record_result = record_task.await.context("join audio recorder");
     progress_flag.store(false, Ordering::Release);
     progress_task.abort();
-    let audio = record_result??;
-    validate_recorded_audio(&audio)?;
+    let audio = match record_result {
+        Ok(Ok(audio)) => audio,
+        Ok(Err(error)) => {
+            trace
+                .append("record_error", json!({"error": format!("{error:#}")}))
+                .await;
+            return Err(error);
+        }
+        Err(error) => {
+            trace
+                .append("record_join_error", json!({"error": format!("{error:#}")}))
+                .await;
+            return Err(error).context("join audio recorder");
+        }
+    };
+    trace
+        .append("audio_diagnostic", audio_trace_json(&audio))
+        .await;
+    if let Err(error) = validate_recorded_audio(&audio) {
+        trace
+            .append(
+                "audio_validation_error",
+                json!({"error": format!("{error:#}")}),
+            )
+            .await;
+        return Err(error);
+    }
     publish_audio_diagnostic(&tx, &audio);
     tx.send(VoiceUiEvent::Accepted).ok();
-    transcribe_and_run_turn_after_local(config, audio.wav_bytes, local_task, tx).await
+    transcribe_and_run_turn_after_local(config, audio.wav_bytes, local_task, tx, trace).await
 }
 
 async fn transcribe_and_run_turn_after_local(
@@ -145,10 +193,21 @@ async fn transcribe_and_run_turn_after_local(
     wav_bytes: Vec<u8>,
     local_task: LocalTask,
     tx: Sender<VoiceUiEvent>,
+    trace: VoiceTurnTrace,
 ) -> anyhow::Result<()> {
     let turn_started = Instant::now();
     let api_key = std::env::var("OPENROUTER_API_KEY").context("OPENROUTER_API_KEY is required")?;
     tx.send(VoiceUiEvent::Transcribing).ok();
+    trace
+        .append(
+            "stt_start",
+            json!({
+                "backend": &config.stt_backend,
+                "model": &config.stt_model,
+                "wav_bytes": wav_bytes.len()
+            }),
+        )
+        .await;
     let stt_backend = config.stt_backend.clone();
     let stt_model = config.stt_model.clone();
     let stt_api_key = api_key.clone();
@@ -160,22 +219,50 @@ async fn transcribe_and_run_turn_after_local(
     let overlap_started = Instant::now();
     let local = local_task.await.context("join local daemon preflight")??;
     send_metric(&tx, "stt_preflight_overlap_ms", overlap_started.elapsed());
+    trace
+        .append(
+            "local_preflight_ready",
+            json!({"overlap_ms": elapsed_ms(overlap_started.elapsed())}),
+        )
+        .await;
     let step_publisher = VoiceStepPublisher::start(local.clone());
     step_publisher.publish("transcribing audio");
     let context_overlap_started = Instant::now();
     let context_task = spawn_context_prefetch(local.clone());
     step_publisher.publish("prefetching screen context");
     let transcript = match stt_task.await.context("join speech to text")? {
-        Ok(transcript) => transcript,
+        Ok(transcript) => {
+            trace
+                .append("stt_result", transcript_trace_json(&transcript))
+                .await;
+            transcript
+        }
         Err(error) if is_missed_speech_error(&error) => {
+            trace
+                .append("stt_missed_speech", json!({"error": format!("{error:#}")}))
+                .await;
             tx.send(VoiceUiEvent::Error(user_visible_turn_error(&error)))
                 .ok();
             return Ok(());
         }
-        Err(error) => return Err(error),
+        Err(error) => {
+            trace
+                .append("stt_error", json!({"error": format!("{error:#}")}))
+                .await;
+            return Err(error);
+        }
     };
     publish_stt_diagnostic(&tx, &transcript);
     if let Err(error) = validate_stt_transcript(&transcript) {
+        trace
+            .append(
+                "transcript_validation_error",
+                json!({
+                    "class": transcript_class(&transcript.text),
+                    "error": format!("{error:#}")
+                }),
+            )
+            .await;
         tx.send(VoiceUiEvent::Error(user_visible_turn_error(&error)))
             .ok();
         return Ok(());
@@ -196,9 +283,16 @@ async fn transcribe_and_run_turn_after_local(
         Some(context_task),
         step_publisher,
         tx.clone(),
+        trace.clone(),
     )
     .await?;
     send_metric(&tx, "turn_total_ms", turn_started.elapsed());
+    trace
+        .append(
+            "turn_complete",
+            json!({"total_ms": elapsed_ms(turn_started.elapsed())}),
+        )
+        .await;
     Ok(())
 }
 
@@ -208,6 +302,13 @@ async fn run_transcript_turn(
     tx: Sender<VoiceUiEvent>,
 ) -> anyhow::Result<()> {
     let turn_started = Instant::now();
+    let trace = VoiceTurnTrace::new(&config);
+    trace
+        .append(
+            "turn_start",
+            json!({"mode": "text", "config": trace_config(&config)}),
+        )
+        .await;
     tx.send(VoiceUiEvent::Armed).ok();
     let local = preflight_local_client(&config.profile).await?;
     let step_publisher = VoiceStepPublisher::start(local.clone());
@@ -221,9 +322,16 @@ async fn run_transcript_turn(
         None,
         step_publisher,
         tx.clone(),
+        trace.clone(),
     )
     .await?;
     send_metric(&tx, "turn_total_ms", turn_started.elapsed());
+    trace
+        .append(
+            "turn_complete",
+            json!({"total_ms": elapsed_ms(turn_started.elapsed())}),
+        )
+        .await;
     Ok(())
 }
 
@@ -342,8 +450,12 @@ async fn plan_and_dispatch(
     context_task: Option<ContextTask>,
     step_publisher: VoiceStepPublisher,
     tx: Sender<VoiceUiEvent>,
+    trace: VoiceTurnTrace,
 ) -> anyhow::Result<()> {
     let plan_started = Instant::now();
+    trace
+        .append("planning_start", json!({"transcript": &transcript}))
+        .await;
     let plan = if let Some(plan) = parse_fast_command(&transcript) {
         tx.send(VoiceUiEvent::Planning {
             tool: "Command parser".to_string(),
@@ -354,6 +466,12 @@ async fn plan_and_dispatch(
             context_task.abort();
             send_metric(&tx, "context_prefetch_aborted_ms", plan_started.elapsed());
         }
+        trace
+            .append(
+                "planning_result",
+                plan_trace_json("fast_command", plan_started.elapsed(), &plan),
+            )
+            .await;
         plan
     } else {
         tx.send(VoiceUiEvent::Planning {
@@ -363,20 +481,49 @@ async fn plan_and_dispatch(
         step_publisher.publish("planning from screen context");
         let wait_started = Instant::now();
         let context = resolve_context_for_planning(local.clone(), context_task).await;
+        trace
+            .append(
+                "context_result",
+                json!({
+                    "elapsed_ms": elapsed_ms(context.elapsed),
+                    "has_session": context.session.is_some(),
+                    "has_frame": context.frame.is_some(),
+                    "has_desktop": context.desktop.is_some(),
+                    "frame": context.frame.as_ref().map(frame_trace_json),
+                    "windows": context.desktop.as_ref().map(|desktop| desktop.windows.len()),
+                    "displays": context.desktop.as_ref().map(|desktop| desktop.displays.len()),
+                }),
+            )
+            .await;
         send_metric(&tx, "context_wait_ms", wait_started.elapsed());
         send_metric(&tx, "context_prefetch_ms", context.elapsed);
         let api_key = api_key
             .or_else(|| std::env::var("OPENROUTER_API_KEY").ok())
             .context("OPENROUTER_API_KEY is required for non-fast voice commands")?;
-        let plan = Planner::new(&config.planner_model)
+        let plan = match Planner::new(&config.planner_model)
             .plan(
                 &api_key,
                 &transcript,
                 context.frame.as_ref(),
                 context.desktop.as_ref(),
             )
-            .await?;
+            .await
+        {
+            Ok(plan) => plan,
+            Err(error) => {
+                trace
+                    .append("planning_error", json!({"error": format!("{error:#}")}))
+                    .await;
+                return Err(error);
+            }
+        };
         send_metric(&tx, "plan_ms", plan_started.elapsed());
+        trace
+            .append(
+                "planning_result",
+                plan_trace_json(&config.planner_model, plan_started.elapsed(), &plan),
+            )
+            .await;
         let source_frame = context.frame.as_ref().map(|frame| frame.envelope.clone());
         return dispatch_plan(
             local,
@@ -385,11 +532,12 @@ async fn plan_and_dispatch(
             source_frame,
             step_publisher,
             tx,
+            trace,
         )
         .await;
     };
     send_metric(&tx, "plan_ms", plan_started.elapsed());
-    dispatch_plan(local, None, plan, None, step_publisher, tx).await
+    dispatch_plan(local, None, plan, None, step_publisher, tx, trace).await
 }
 
 async fn prefetch_context(
@@ -431,33 +579,75 @@ async fn dispatch_plan(
     source_frame: Option<FrameEnvelope>,
     step_publisher: VoiceStepPublisher,
     tx: Sender<VoiceUiEvent>,
+    trace: VoiceTurnTrace,
 ) -> anyhow::Result<()> {
     if let Some(action) = &plan.action {
         tx.send(VoiceUiEvent::Dispatching(format!("{action:?}")))
             .ok();
         step_publisher.publish(voice_step_label("dispatch", &format!("{action:?}")));
+        trace
+            .append(
+                "dispatch_start",
+                json!({
+                    "action": action,
+                    "frame_remap": source_frame.is_some(),
+                }),
+            )
+            .await;
         let dispatch_started = Instant::now();
         let result = match session.as_mut() {
             Some(session) => match source_frame.clone() {
-                Some(frame) => session.dispatch_frame(frame, action).await?,
-                None => session.dispatch(action).await?,
+                Some(frame) => session.dispatch_frame(frame, action).await,
+                None => session.dispatch(action).await,
             },
             None => match source_frame {
-                Some(frame) => local.dispatch_frame(frame, action).await?,
-                None => local.dispatch(action).await?,
+                Some(frame) => local.dispatch_frame(frame, action).await,
+                None => local.dispatch(action).await,
             },
         };
+        let result = match result {
+            Ok(result) => result,
+            Err(error) => {
+                trace
+                    .append(
+                        "dispatch_error",
+                        json!({
+                            "elapsed_ms": elapsed_ms(dispatch_started.elapsed()),
+                            "action": action,
+                            "error": format!("{error:#}")
+                        }),
+                    )
+                    .await;
+                return Err(error);
+            }
+        };
         send_metric(&tx, "dispatch_ms", dispatch_started.elapsed());
+        trace
+            .append(
+                "dispatch_result",
+                json!({
+                    "elapsed_ms": elapsed_ms(dispatch_started.elapsed()),
+                    "result": result.clone(),
+                }),
+            )
+            .await;
+        let response_text = plan.response.clone();
         tx.send(VoiceUiEvent::Reply(format!(
             "{} {}",
-            plan.response,
+            response_text,
             result["effect"].as_str().unwrap_or("sent")
         )))
         .ok();
         step_publisher.publish(voice_step_label("reply", &plan.response));
+        trace
+            .append("reply", json!({"text": plan.response, "action": true}))
+            .await;
     } else {
         step_publisher.publish(voice_step_label("reply", &plan.response));
-        tx.send(VoiceUiEvent::Reply(plan.response)).ok();
+        tx.send(VoiceUiEvent::Reply(plan.response.clone())).ok();
+        trace
+            .append("reply", json!({"text": plan.response, "action": false}))
+            .await;
     }
     step_publisher.finish().await;
     Ok(())
@@ -617,6 +807,148 @@ fn send_metric(tx: &Sender<VoiceUiEvent>, name: &'static str, elapsed: Duration)
         ms: elapsed.as_millis().min(u128::from(u64::MAX)) as u64,
     })
     .ok();
+}
+
+#[derive(Debug, Clone)]
+struct VoiceTurnTrace {
+    enabled: bool,
+    path: Option<PathBuf>,
+    turn_id: String,
+}
+
+impl VoiceTurnTrace {
+    fn new(config: &VoiceConfig) -> Self {
+        let sequence = VOICE_TRACE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        Self {
+            enabled: config.debug_trace,
+            path: config
+                .debug_trace
+                .then(|| voice_trace_path(&config.profile))
+                .flatten(),
+            turn_id: format!("{}-{}-{sequence}", std::process::id(), wall_ms()),
+        }
+    }
+
+    async fn append(&self, event: &'static str, data: serde_json::Value) {
+        if !self.enabled {
+            return;
+        }
+        let Some(path) = self.path.as_ref() else {
+            return;
+        };
+        if let Some(parent) = path.parent() {
+            let _ = tokio::fs::create_dir_all(parent).await;
+        }
+        let line = json!({
+            "schema_version": "cua.voice_trace.v1",
+            "turn_id": self.turn_id,
+            "event": event,
+            "at_wall_ms": wall_ms(),
+            "data": data,
+        });
+        if let Ok(mut file) = tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .await
+        {
+            use tokio::io::AsyncWriteExt;
+            let _ = file.write_all(line.to_string().as_bytes()).await;
+            let _ = file.write_all(b"\n").await;
+            let _ = file.flush().await;
+        }
+    }
+}
+
+fn voice_trace_path(profile: &str) -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("CUA_VOICE_TRACE_PATH") {
+        return Some(PathBuf::from(path));
+    }
+    let home = std::env::var_os("HOME")?;
+    Some(
+        PathBuf::from(home)
+            .join(".cua")
+            .join("profiles")
+            .join(profile)
+            .join(VOICE_TRACE_FILE),
+    )
+}
+
+fn wall_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+}
+
+fn elapsed_ms(duration: Duration) -> u64 {
+    duration.as_millis().min(u128::from(u64::MAX)) as u64
+}
+
+fn trace_config(config: &VoiceConfig) -> serde_json::Value {
+    json!({
+        "profile": &config.profile,
+        "record_ms": config.record_ms,
+        "stt_backend": &config.stt_backend,
+        "stt_model": &config.stt_model,
+        "planner_model": &config.planner_model,
+    })
+}
+
+fn audio_trace_json(audio: &RecordedAudio) -> serde_json::Value {
+    json!({
+        "device_name": &audio.device_name,
+        "channels": audio.channels,
+        "sample_format": &audio.sample_format,
+        "sample_rate": audio.sample_rate,
+        "duration_ms": elapsed_ms(audio.duration),
+        "peak_amplitude": audio.peak_amplitude,
+        "rms_amplitude": audio.rms_amplitude,
+        "wav_bytes": audio.wav_bytes.len(),
+    })
+}
+
+fn transcript_trace_json(transcript: &SttTranscript) -> serde_json::Value {
+    let usage = transcript.usage.as_ref().map(|usage| {
+        json!({
+            "seconds": usage.seconds,
+            "cost": usage.cost,
+        })
+    });
+    json!({
+        "text": &transcript.text,
+        "class": transcript_class(&transcript.text),
+        "backend": &transcript.backend,
+        "model": &transcript.model,
+        "generation_id": transcript.generation_id.as_deref(),
+        "usage": usage,
+    })
+}
+
+fn frame_trace_json(frame: &FramePayload) -> serde_json::Value {
+    let envelope = &frame.envelope;
+    json!({
+        "frame_id": envelope.frame_id,
+        "display_id": &envelope.display_id,
+        "timestamp_wall_ms": envelope.timestamp_wall_ms,
+        "width": envelope.width,
+        "height": envelope.height,
+        "display_width": envelope.display_width,
+        "display_height": envelope.display_height,
+        "encoding": &envelope.encoding,
+        "byte_len": envelope.byte_len,
+        "sha256": &envelope.sha256,
+        "has_bytes": frame.bytes_base64.is_some(),
+    })
+}
+
+fn plan_trace_json(model: &str, elapsed: Duration, plan: &PlannedTurn) -> serde_json::Value {
+    json!({
+        "model": model,
+        "elapsed_ms": elapsed_ms(elapsed),
+        "response": &plan.response,
+        "action": &plan.action,
+    })
 }
 
 #[cfg(test)]
@@ -782,6 +1114,47 @@ mod tests {
                 transcript_class: "missed_speech".to_string(),
             }
         );
+    }
+
+    #[tokio::test]
+    async fn debug_trace_is_off_by_default() {
+        let trace_path = std::env::temp_dir().join(format!(
+            "cua-trace-off-{}-{}.jsonl",
+            std::process::id(),
+            wall_ms()
+        ));
+        VoiceTurnTrace {
+            enabled: false,
+            path: Some(trace_path.clone()),
+            turn_id: "test-turn".to_string(),
+        }
+        .append("test_event", json!({"ok": true}))
+        .await;
+
+        assert!(!trace_path.exists());
+    }
+
+    #[tokio::test]
+    async fn debug_trace_writes_jsonl_when_enabled() {
+        let trace_path = std::env::temp_dir().join(format!(
+            "cua-trace-on-{}-{}.jsonl",
+            std::process::id(),
+            wall_ms()
+        ));
+        VoiceTurnTrace {
+            enabled: true,
+            path: Some(trace_path.clone()),
+            turn_id: "test-turn".to_string(),
+        }
+        .append("test_event", json!({"ok": true}))
+        .await;
+
+        let contents = std::fs::read_to_string(&trace_path).unwrap();
+        let value: serde_json::Value = serde_json::from_str(contents.trim()).unwrap();
+        assert_eq!(value["schema_version"], "cua.voice_trace.v1");
+        assert_eq!(value["event"], "test_event");
+        assert_eq!(value["data"]["ok"], true);
+        let _ = std::fs::remove_file(trace_path);
     }
 
     #[tokio::test]

@@ -65,6 +65,8 @@ struct Args {
     stt_model: String,
     #[arg(long, default_value = "anthropic/claude-sonnet-5")]
     planner_model: String,
+    #[arg(long, env = "CUA_VOICE_DEBUG_TRACE")]
+    debug_trace: bool,
     #[arg(long)]
     demo: bool,
     #[arg(long, conflicts_with = "headless")]
@@ -1082,6 +1084,7 @@ fn main() -> anyhow::Result<()> {
         stt_backend: args.stt_backend,
         stt_model: args.stt_model,
         planner_model: args.planner_model,
+        debug_trace: args.debug_trace,
     };
     let model_label = config.planner_model.clone();
     let runtime = Arc::new(tokio::runtime::Runtime::new()?);
