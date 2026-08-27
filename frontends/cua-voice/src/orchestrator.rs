@@ -35,7 +35,7 @@ const VOICE_STEP_FLUSH_TIMEOUT_MS: u64 = 120;
 const DEFAULT_CONTEXT_PREFETCH_TIMEOUT_MS: u64 = 2_500;
 const DEFAULT_AGENT_LOOP_MAX_ATTEMPTS: usize = 3;
 const MIN_RECORDING_DURATION: Duration = Duration::from_millis(650);
-pub const DEFAULT_PLANNER_MODEL: &str = "google/gemini-3.5-flash-lite";
+pub const DEFAULT_PLANNER_MODEL: &str = "anthropic/claude-sonnet-5";
 
 struct PrefetchedContext {
     session: Option<CuaSession>,
@@ -2071,8 +2071,8 @@ mod tests {
     }
 
     #[test]
-    fn default_planner_model_tracks_selected_cheap_large_context_gemini() {
-        assert_eq!(DEFAULT_PLANNER_MODEL, "google/gemini-3.5-flash-lite");
+    fn default_planner_model_tracks_selected_sonnet() {
+        assert_eq!(DEFAULT_PLANNER_MODEL, "anthropic/claude-sonnet-5");
     }
 
     #[test]
