@@ -1,287 +1,300 @@
-1. Implement cua runebooks as the canonical scripting surface.
-   - Use `sample-cua-runebook.md` as the reference design.
-   - Support the remaining top-level runebook shape from `sample-cua-runebook.md`: `[daemon]`, `[attest]`, `[stt.<name>]`, `[planner.<name>]`, and `[memory]`.
-   - Support the raw `rpc` escape hatch for HTTP protocol coverage.
-   - Support `$result.path` references.
-   - Support remaining direct protocol steps: doctor, permissions, window capture, visual session, observe displays/cursor, trace start/inspect/verify/replay, perf bench, model eval, and schema export.
-   - Support workflow nodes: `parallel`, `race`, `batch`, `foreach`, `run`, and `spawn_run`.
-   - Support built-in model/voice turn nodes: text turn, WAV turn, live record turn, STT-only step, planner-only step, generic model call step, dispatch model output as cua action, and spawn child runebook from model output.
-   - Add trace verify/replay support for runebook traces.
-   - Add deterministic fozzy scenarios for remaining runebook trace verification and replay.
+Mission: finish cua for production macOS local use, with no false logic, no dead compatibility paths, and verified end-to-end behavior. Each section below is an independent agent workstream. Agents may work in parallel, but must respect the ownership boundaries and integration contracts here.
 
-2. Implement global and step-level runebook error policy.
-   - Implement `on_error = "ask" | "rollback"`.
-   - Keep localized retry/error behavior for STT, planner, capture, trace verification, and normal command failures, but add a global runebook error policy.
-   - `ask`: pause execution and request an operator decision through the HUD/CLI before proceeding.
-   - `rollback`: run explicit rollback steps when present; otherwise stop with a clear unsupported rollback error.
-   - Include ask/rollback error policy decisions in the runebook trace.
+Shared coordination rules for every agent:
 
-3. Implement workflow composition as runebook functionality.
-   - Add `parallel`, `race`, `batch`, `foreach`, `run`, and `spawn_run`.
-   - Do not treat existing `InputAction::Sequence` as a general workflow engine; it only batches input actions.
+- Work only from current source, tests, docs, and live command output. Do not assume prior work is complete without evidence.
+- Keep `cua-core` as the protocol source of truth. Any public request, response, event, trace, attestation, SDK, or runebook shape belongs there first.
+- Prefer Unix socket hot paths for local runtime control. HTTP remains operator/debug unless an agent explicitly hardens it to the same session semantics as Unix.
+- Do not add backward compatibility, no-op fallback behavior, mock production paths, or unused branches. If a path is false, remove it.
+- Mac only. Do not add Windows/Linux production behavior.
+- Keep CLI and HTTP/API exposure for all core functionality, but never let HTTP drift from the canonical protocol.
+- Run focused tests for the changed area plus at least one relevant Fozzy deterministic scenario when the work changes runtime behavior.
+- When a section is done and verified, delete that section from this file with no replacement prose.
+- Before committing, run `cargo fmt --check`, `git diff --check`, and the strongest focused tests that prove the section.
 
-4. Implement attestation and enrollment runebook fields.
-   - Support `[attest]`.
-   - Support `do = "attest"`.
-   - Support machine identity status.
-   - Support enrollment.
-   - Support signed local-machine proofs.
-   - Support cloud trust metadata.
+Agent A: Runebook Runtime Owner
 
-5. Implement generic model steps in runebooks.
-   - Support `do = "model"`.
-   - Support `dispatch_model_action`.
-   - Support model output spawning a child runebook.
-   - Current source only has voice planner internals and `model eval`; expose the needed model surfaces through the runebook executor.
+Scope:
+- Owns `crates/cua-cli/src/main.rs` runebook parsing/execution, `sample-cua-runebook.md`, runebook fixtures under `tests/fixtures/`, and runebook Fozzy scenarios.
+- Turns runebooks into the canonical compact scripting surface over the daemon protocol.
 
-6. Expose voice/STT/planner turn steps through runebooks.
-   - Existing text, WAV, and live-record turns in `frontends/cua-voice` should become programmable runebook steps.
-   - Existing STT and planner config through voice CLI flags and env vars should be usable from `[stt.<name>]`, `[planner.<name>]`, and `[memory]`.
-   - Add `do = "turn"`, STT-only steps, planner-only steps, and scheduled/programmatic model messages to the runebook executor.
+Must coordinate with:
+- Agent B for attestation runebook nodes.
+- Agent C for visual/watch-session nodes.
+- Agent D for model/STT/planner turn nodes.
+- Agent E for session/transport rules.
+- Agent H for docs/examples once behavior is verified.
 
-7. Implement runebook trace verification and replay.
-   - Existing trace start/inspect/verify/replay is action-trace oriented.
-   - Add runebook-level traces, step-result traces, error-policy traces, verify-on-complete, replay, and shrinking.
+Work:
+- Support the remaining top-level runebook shape from `sample-cua-runebook.md`: `[daemon]`, `[attest]`, `[stt.<name>]`, `[planner.<name>]`, and `[memory]`.
+- Finish raw `rpc` escape hatch for HTTP protocol coverage.
+- Support `$result.path` references and result-based interpolation beyond simple saved scalars.
+- Add remaining direct protocol steps: doctor, permissions status/preflight, visual session, observe displays/cursor, trace start/inspect/verify/replay, perf bench, model eval, and schema export.
+- Add workflow nodes: `parallel`, `race`, `batch`, `foreach`, `run`, and `spawn_run`.
+- Add control-flow/timing nodes: `if`, `if_present`, result-based branching, sleep, timers, delayed messages, and first-class waits.
+- Implement global and step-level `on_error = "ask" | "rollback"`.
+- `ask` must pause execution and request an operator decision through HUD/CLI.
+- `rollback` must run explicit rollback steps when present; otherwise stop with a clear unsupported rollback error.
+- Trace every step start/complete/error, error-policy decision, rollback action, child runebook, and replay-relevant output.
+- Add runebook-level trace verify/replay and shrinking.
 
-8. Implement runebook conditions and timing.
-   - Add `if`.
-   - Add `if_present`.
-   - Add result-based branching.
-   - Add sleeps.
-   - Add timers.
-   - Add delayed messages.
-   - Add first-class waits.
+Done means:
+- `sample-cua-runebook.md` no longer describes unimplemented runebook constructs.
+- Every runebook node listed above has a direct passing fixture or unit test.
+- At least one deterministic Fozzy scenario records, verifies, and replays a runebook trace.
+- The runebook executor has no "not implemented yet" branches for documented runebook features.
 
-9. Extract a reusable `cua-client` SDK crate.
-   - Keep `cua-core` as the protocol source of truth for request/response types.
-   - Preserve idempotency support for input requests. Do not let SDK callers accidentally create untraceable duplicate actions.
-   - Add typed error handling instead of returning generic `anyhow` strings for protocol errors.
+Agent B: Identity, Attestation, And Enrollment Owner
 
-10. Prefer Unix socket transport by default.
-    - Keep HTTP as an optional operator/debug transport.
-    - Use `session.acquire` for any SDK code path that mutates state.
-    - Require an owner session for writes: input dispatch, frame input dispatch, profile create/activate, pause/resume/kill, and clipboard write.
-    - Allow observer sessions for reads: status, manifest, schemas, screenshot, context, observe, events, and visual session.
-    - Unix write paths already enforce session owner checks in `crates/cua-daemon/src/lib.rs`.
-    - HTTP routes currently appear bearer-token-only and do not have the same owner-session write gate.
-    - SDK mutation should prefer Unix until HTTP has equivalent session semantics.
+Scope:
+- Owns local machine identity, signed runtime attestation, enrollment metadata, attestation CLI/HTTP/Unix methods, attestation schemas, and attestation docs.
+- Primary files: `crates/cua-core/src/lib.rs`, `crates/cua-daemon/src/lib.rs`, `crates/cua-cli/src/main.rs`, `tests/fixtures/schema-bundle.json`, `docs/attestation.md`.
 
-11. Implement local machine identity storage.
-    - Create a machine identity concern under `~/.cua/identity/`.
-    - Store non-secret metadata in `~/.cua/identity/machine.json`.
-    - Store the private key in macOS Keychain when possible.
-    - Prefer Secure Enclave-backed keys when practical.
-    - If Secure Enclave is not available, use a Keychain-protected signing key.
-    - Record only public key and key metadata in files.
-    - Add key rotation support: current key, previous keys, creation time, and revocation marker.
-    - Add `cua identity status --json`.
-    - Add `cua identity rotate --json`.
-    - Add host-backed tests that prove the key persists across daemon restarts.
-    - Use suggested config paths: `~/.cua/identity/machine.json`, `~/.cua/identity/keys/current.json`, and `~/.cua/identity/keys/previous/<key_id>.json`.
+Must coordinate with:
+- Agent A for `[attest]` and `do = "attest"` runebook support.
+- Agent E for profile/session semantics in attestation claims.
+- Agent F for canonical `~/.cua/identity` and `~/.cua/cloud` paths.
+- Agent H for docs and examples.
 
-12. Add attestation protocol methods to the daemon.
-    - Add HTTP endpoints: `POST /attestation/challenge`, `POST /attestation/sign`, and `GET /attestation/identity`.
-    - Add Unix socket RPC methods: `attestation.challenge`, `attestation.sign`, and `attestation.identity`.
-    - Add CLI commands: `cua attestation challenge --audience <audience> --json`, `cua attestation sign --audience <audience> --nonce <nonce> --json`, `cua attestation identity --json`, and `cua attestation verify <attestation.json> --json`.
-    - Include nonce, audience, issued/expires timestamps, profile, session id when present, daemon pid, runtime version, socket path, HTTP addr, active profile/capabilities, safety state, permission report, code signing identity where available, binary hash where available, machine public key id, and salted machine id hash in the attestation document.
-    - Refuse expired challenges.
-    - Refuse audience mismatch.
-    - Refuse unsigned or unknown machine keys.
-    - Include freshness checks.
-    - Keep challenge nonces single-use where practical.
-    - Do not treat attestation as authorization by itself. It proves machine/runtime identity; profile/session policy still controls action authority.
+Work:
+- Finish local machine identity storage under `~/.cua/identity/`.
+- Store non-secret metadata in `~/.cua/identity/machine.json`.
+- Implement the resolved private-key backend policy. Prefer Secure Enclave-backed keys when practical; otherwise use macOS Keychain. File keys may exist only for explicit test/dev mode.
+- Record only public key and key metadata in normal files.
+- Support key rotation: current key, previous keys, creation time, and revocation marker.
+- Provide `cua identity status --json` and `cua identity rotate --json`.
+- Add host-backed tests proving key persistence across daemon restarts.
+- Add daemon HTTP endpoints: `POST /attestation/challenge`, `POST /attestation/sign`, and `GET /attestation/identity`.
+- Add Unix RPC methods: `attestation.challenge`, `attestation.sign`, and `attestation.identity`.
+- Add CLI commands: `cua attestation challenge --audience <audience> --json`, `cua attestation sign --audience <audience> --nonce <nonce> --json`, `cua attestation identity --json`, and `cua attestation verify <attestation.json> --json`.
+- Include nonce, audience, issued/expires timestamps, profile, session id when present, daemon pid, runtime version, socket path, HTTP addr, active profile/capabilities, safety state, permission report, code signing identity where available, binary hash where available, machine public key id, and salted machine id hash.
+- Refuse expired challenges, audience mismatch, unsigned/unknown keys, stale timestamps, and reused challenge ids where practical.
+- Reuse facts from `scripts/host-package-proof.sh`: app path, bundle id, executable, code signature, designated requirement, daemon binary signature, voice binary signature, ctx binary signature, and usage descriptions.
+- Add `CodeIdentityClaims` and `runtime_integrity_level = packaged_signed | development_signed | development_unsigned | unknown`.
+- Add cloud enrollment: `cua enroll --audience quilt-cloud --json`, `cua enroll status --json`, local storage at `~/.cua/cloud/enrollments/<audience>.json`, multiple audiences, revocation handling, and SDK `client.attest({ audience, nonce })`.
+- Add Quilt-side verifier design: nonce, signature, public key enrollment, code identity policy, profile/capability policy, and timestamp freshness.
 
-13. Use existing package proof as attestation evidence.
-    - Reuse the facts already proven by `scripts/host-package-proof.sh`: app path, bundle id, executable, code signature, designated requirement, daemon binary signature, voice binary signature, ctx binary signature, and usage descriptions.
-    - Move the reusable proof logic into Rust or a small shared script that the daemon can call safely.
-    - Add a `CodeIdentityClaims` type to `cua-core`.
-    - Include package/code identity claims in attestation when running from the packaged app.
-    - Include a lower-confidence development identity when running from `target/debug`.
-    - Add a clear `runtime_integrity_level` field with `packaged_signed`, `development_signed`, `development_unsigned`, `unknown`.
-    - Make verification policies able to require `packaged_signed` for cloud enrollment.
+Done means:
+- Identity and attestation work through CLI, Unix socket, and HTTP.
+- Verification rejects bad audience, expired challenge, reused challenge id, altered payload, unknown key, and stale timestamp.
+- Packaged and development integrity claims are present and documented.
+- Host proof covers key persistence and signed package attestation claims.
+- `docs/attestation.md` explains threat model, what attestation proves, and what it does not authorize.
 
-14. Add cloud enrollment and verification flow.
-    - Add `cua enroll --audience quilt-cloud --json`.
-    - Enrollment should generate or load machine identity, request a cloud challenge, sign the challenge locally, submit public key and attestation, receive an enrollment id, and store enrollment metadata under `~/.cua/cloud/`.
-    - Store cloud enrollment data at `~/.cua/cloud/enrollments/<audience>.json`.
-    - Support multiple audiences/tenants without overwriting identity.
-    - Add revocation handling.
-    - Add `cua enroll status --json`.
-    - Add SDK method `client.attest({ audience, nonce })`.
-    - Add Quilt-side verifier design: verify nonce, verify signature, verify public key enrollment, verify code identity policy, verify profile/capability policy, and verify timestamp freshness.
+Agent C: Visual Stream, Watch Session, And Low-Latency Observation Owner
 
-15. Finish advanced TypeScript SDK surfaces.
-    - Connect to local Unix socket on macOS where supported.
-    - Fall back to loopback HTTP where Unix socket is not practical.
-    - Generate types from `/schemas` or checked-in schema bundle.
-    - Support visual streaming.
-    - Expose model-facing watch sessions that can be opened, closed, or bounded by duration.
-    - Feed sampled visual frames into the planner loop without blocking low-latency action dispatch.
-    - Keep the Unix visual session as the hot transport path and add explicit cancellation/backpressure.
-    - Verify final actions against fresh stream/screenshot evidence before completion.
-    - Support owner/observer session semantics.
-    - Support attestation.
-    - Support event long-polling/streaming.
+Scope:
+- Owns visual sessions, persistent screen streams, watch-session lifecycle, backpressure/cancellation, and model-facing visual sampling.
+- Primary files: `crates/cua-client`, `crates/cua-daemon`, `crates/cua-cli`, SDK visual streaming helpers, host visual proof scripts.
 
-16. Finish advanced Python SDK surfaces.
-    - Keep advanced surfaces aligned with TypeScript.
-    - Include notebook-focused examples after advanced surfaces land.
+Must coordinate with:
+- Agent D for feeding sampled frames into planner/model loops.
+- Agent E for observer-session semantics.
+- Agent G for performance/latency proof.
+- Agent H for visual session examples.
 
-17. Normalize all config under `~/.cua/{concern}/**/*`.
-    - Keep all durable cua runtime/config state under `~/.cua` by concern.
-    - Do not assemble production paths ad hoc in each crate.
-    - Use target layout:
+Work:
+- Expose model-facing watch sessions that can be opened, closed, or bounded by duration.
+- Keep Unix `visual.session` as the hot transport path.
+- Add explicit cancellation, backpressure, and bounded frame queues.
+- Support visual session streaming in TypeScript and Python SDKs.
+- Feed sampled visual frames into planner loops without blocking low-latency action dispatch.
+- Verify final actions against fresh stream/screenshot evidence before completion.
+- Add trace/Fozzy coverage for visual stream open, frame receive, action dispatch, verification screenshot, and close.
 
-      ```text
-      ~/.cua/
-        config/
-          env
-          settings.json
-        identity/
-          machine.json
-          keys/
-            current.json
-            previous/
-        profiles/
-          <profile>/
-            profile.json
-            http.token
-            daemon.sock
-            chat.db
-            ctx/
-            traces/
-              voice.jsonl
-              daemon/
-            screenshots/
-            downloads/
-            uploads/
-            sessions/
-            scratchpads/
-              ephemeral/
-              durable/
-        cloud/
-          enrollments/
-            <audience>.json
-        logs/
-          daemon/
-          voice/
-        cache/
-          frames/
-          model/
-        artifacts/
-          proofs/
-          release/
-          fozzy/
-        bin/
-          ctx
-      ```
+Done means:
+- A headless agent can keep a persistent stream open while dispatching actions on the same profile.
+- Stream close/cancel is reliable and does not leak sessions or daemon tasks.
+- SDK examples can consume frames and dispatch frame-relative actions.
+- Host visual-session action proof passes.
 
-    - Use profile-local environment loading only.
-    - Add migration from old paths to new paths: `~/.cua/.env` -> `~/.cua/config/env`; `~/.cua/profiles/<profile>/chat.db`, `~/.cua/profiles/<profile>/ctx`, `~/.cua/profiles/<profile>/http.token`, and `~/.cua/profiles/<profile>/daemon.sock` stay valid.
-    - Make scripts use `CUA_HOME` and concern-specific artifact paths.
-    - Add first-class agent-authored scratchpad docs.
-    - Support ephemeral scratchpads for short-lived run/session reasoning.
-    - Support durable scratchpads for longer-standing project/profile notes.
-    - Keep the scratchpad primitive intentionally lightweight for now: files the agent can write, read, and reference.
-    - Update the agent system prompt/runtime instructions so the agent appends useful discoveries, decisions, environment facts, and project context that may help future work.
-    - Keep memory appends selective and work-relevant so scratchpads stay useful instead of becoming noisy transcripts.
-    - Append and retrieve scratchpad memory in parallel with other runtime work whenever possible, so memory hygiene does not add avoidable turn latency.
-    - Make blocking memory reads explicit only when the next action truly depends on that memory.
-    - Keep scratchpads profile-scoped by default, with path shapes `~/.cua/profiles/<profile>/scratchpads/ephemeral/` and `~/.cua/profiles/<profile>/scratchpads/durable/`.
+Agent D: Voice, STT, Planner, Model, And RLM Loop Owner
 
-18. Fix current config/path gaps.
-    - In `crates/cua-cli/src/main.rs`, decide whether current directory `.env` should remain development-only.
-    - In `crates/cua-platform-macos/src/lib.rs`, keep external `aegis_binary()` discovery for `~/.local/bin/aegis`, Homebrew, and `/usr/local/bin`, but make any cua-owned tool resolve under `~/.cua/bin/` or packaged sibling first.
-    - In `crates/cua-platform-macos/src/lib.rs`, update `ctx_binary()` so production prefers packaged sibling or `~/.cua/bin/ctx` instead of falling back to `vendor/ctx/ctx`.
-    - In `scripts/package-macos-app.sh`, allow build output to remain repo-local under `artifacts/cua/macos`, but ensure installed/runtime config does not depend on repo paths.
-    - In `scripts/package-macos-app.sh`, consider copying bundled tools into `~/.cua/bin/` or documenting packaged sibling resolution.
-    - In `scripts/release.sh`, keep `$HOME/Applications` as an install target if desired, but ensure runtime logs/proofs generated by the app use `~/.cua/artifacts/...`.
-    - In `scripts/release.sh`, repo-local release artifacts under `artifacts/cua/release/<run_id>` may remain.
-    - In host proof scripts, keep repo-local outputs under `artifacts/cua/...` for development tests, but add `CUA_HOME` support and/or mirror final proof artifacts under `~/.cua/artifacts/proofs/...` for installed runtime flows.
-    - Update `docs/http-api.md` and `cua.md` to document the canonical `~/.cua/{concern}/**/*` layout.
+Scope:
+- Owns voice frontend pipeline, STT quality path, planner prompts, model tool protocol, thin RLM loop, and model eval surfaces.
+- Primary files: `frontends/cua-voice`, `crates/cua-model`, `cua.md`, mic diagnostic app integration where relevant.
 
-19. Harden profile/session semantics for SDK users.
-    - Make owner-session write enforcement consistent across transports.
-    - Add HTTP session id support for write routes, or mark HTTP writes as development/operator-only.
-    - Add SDK defaults: read-only observer by default and explicit `acquireOwner()` before mutations.
-    - Add owner-session heartbeat/lease renewal.
-    - Add lease expiry tests.
-    - Add explicit refusal evidence for writes attempted without owner lease.
-    - Add docs explaining profile policy vs bearer token vs owner session: bearer token authenticates local profile access, owner session authorizes mutation, profile policy controls capabilities, and attestation proves runtime/machine identity.
+Must coordinate with:
+- Agent A for runebook `turn`, STT, planner, model, and dispatch-model-output nodes.
+- Agent C for persistent visual context.
+- Agent F for chat DB and ctx memory.
+- Agent G for latency and cost bounds.
 
-20. Make all documented functionality scriptable through the SDK.
-    - Support visual session streaming.
-    - Support model eval only as an optional advanced surface.
-    - Support trace verify/replay helpers.
-    - Support attestation identity/challenge/sign/verify.
+Work:
+- Expose text turns, WAV turns, live-record turns, STT-only steps, planner-only steps, generic model calls, dispatch model output as cua action, and spawn child runebook from model output.
+- Make `[stt.<name>]`, `[planner.<name>]`, and `[memory]` runebook config drive the existing voice/STT/planner pipeline.
+- Keep transcription acceptance states correct: listening, recording stopped, processing, accepted only after usable text is accepted.
+- Keep HUD transcript display short-lived and agent responses persistent for the configured durations.
+- Ensure tool protocol supports batched/sequence actions, shell, Aegis, ctx, browser use through Aegis, screenshot/verify-before-finish, and Skill.md read-and-use behavior.
+- Add conservative configurable RLM loop depth, retries, and token ceilings without hamstringing complex tasks.
+- Switch default planner/model to the selected cheap large-context Gemini model unless overridden.
+- Surface provider/credit/API errors accurately.
+- Keep model eval available as an optional advanced surface.
 
-21. Add SDK and architecture docs.
-    - Add `docs/attestation.md`.
-    - Add `docs/config-home.md`.
-    - Update `docs/http-api.md`.
-    - Update `cua.md`.
-    - Update `README.md`.
+Done means:
+- Real microphone input reliably transcribes normal speech and routes to the planner.
+- Asking about the screen uses visual context and responds correctly.
+- Action requests can use tools and batches instead of returning "could not get usable model response".
+- The loop verifies work before final response.
+- Focused STT, planner, and model-tool tests pass.
 
-22. Add SDK examples.
-    - Add a minimal local status check example.
-    - Add an observe screenshot/context example.
-    - Add a click using frame-relative coordinates example.
-    - Add an acquire owner, run a sequence, release owner example.
-    - Add a visual session and process frames example.
-    - Add a show UI progress in the HUD example.
-    - Add a read/write clipboard with explicit capability profile example.
-    - Add a request attestation and verify it locally example.
-    - Add an enroll with Quilt/cloud example.
-    - Add a use Aegis through cua example.
-    - Add a use ctx through cua example.
+Agent E: Transport, Session, Permissions, And SDK Semantics Owner
 
-23. Add validation and release tests.
-    - Add unit tests for shared path helpers with `CUA_HOME`.
-    - Add unit tests for env loading precedence.
-    - Add unit tests for challenge expiry and audience mismatch.
-    - Add host proof for machine key persistence.
-    - Add host proof for signed package attestation claims.
-    - Add host proof for SDK owner-session mutation.
-    - Add host proof for SDK observer read-only behavior.
-    - Add host proof for config migration.
-    - Add Fozzy deterministic scenario covering SDK status/context/dispatch.
-    - Add Fozzy trace recording and replay for SDK action path.
+Scope:
+- Owns Unix/HTTP transport policy, owner/observer sessions, SDK mutation semantics, permission request behavior, and typed client errors.
+- Primary files: `crates/cua-client`, `crates/cua-daemon`, `crates/cua-cli`, `sdks/typescript`, `sdks/python`, `docs/http-api.md`.
 
-24. Run required shipping commands before release.
+Must coordinate with:
+- Agent B for attestation session claims.
+- Agent C for observer visual sessions.
+- Agent H for SDK docs/examples.
 
-    ```sh
-    cargo fmt --check
-    cargo test
-    cargo check
-    cargo build -p cua
-    scripts/host-session-proof.sh
-    scripts/host-control-surface-proof.sh
-    scripts/host-visual-session-action-proof.sh
-    scripts/host-package-proof.sh
-    fozzy doctor --deep --scenario fozzy/scenarios/cua-smoke.json --runs 5 --seed 4242 --json
-    fozzy test --det --strict fozzy/scenarios/cua-smoke.json --json
-    fozzy run fozzy/scenarios/cua-smoke.json --det --record ~/.cua/artifacts/fozzy/cua-smoke.fozzy --json
-    fozzy trace verify ~/.cua/artifacts/fozzy/cua-smoke.fozzy --strict --json
-    fozzy replay ~/.cua/artifacts/fozzy/cua-smoke.fozzy --json
-    ```
+Work:
+- Finish `cua-client` as a reusable Rust SDK crate with typed errors instead of generic `anyhow` strings for protocol errors.
+- Preserve idempotency support for input requests. SDK callers must not accidentally create untraceable duplicate actions.
+- Prefer Unix socket transport by default.
+- Keep HTTP optional for operator/debug unless it receives equivalent owner-session enforcement.
+- Use `session.acquire` for every SDK code path that mutates state.
+- Require owner sessions for writes: input dispatch, frame input dispatch, profile create/activate, pause/resume/kill, and clipboard write.
+- Allow observer sessions for reads: status, manifest, schemas, screenshot, context, observe, events, and visual session.
+- Decide and implement HTTP write-route policy: session id support for writes or explicit development/operator-only status.
+- Decide whether `CUA_HTTP_TOKEN` remains production override or becomes dev/test only.
+- Add owner-session heartbeat/lease renewal, lease expiry tests, and explicit refusal evidence for writes attempted without an owner lease.
+- Finish advanced TypeScript/Python SDK parity: local Unix where supported, HTTP fallback where practical, generated/checked-in protocol types, attestation helpers, event streaming, visual streaming, trace verify/replay helpers, and model eval helper.
 
-25. Resolve SDK package naming.
-    - Choose between `@quilt/cua`, `@cua/sdk`, and `cua-sdk`.
+Done means:
+- SDK default mode is read-only until explicit owner acquisition.
+- Unauthorized writes fail consistently on all supported transports.
+- Lease expiry and heartbeat behavior are tested.
+- TypeScript, Python, Rust client APIs align on names and semantics.
 
-26. Resolve attestation backend policy.
-    - Choose Secure Enclave first, Keychain first, or file key only for tests.
+Agent F: Config Home, ctx, Chat DB, Memory, And Scratchpad Owner
 
-27. Resolve HTTP write-route policy.
-    - Decide whether HTTP write routes should remain supported after SDK launch.
+Scope:
+- Owns all durable path policy under `~/.cua`, ctx binary resolution, chat persistence, ctx memory integration, scratchpads, env loading policy, and migration.
+- Primary files: `crates/cua-core`, `crates/cua-platform-macos`, `crates/cua-cli`, `frontends/cua-voice`, release/package scripts, `docs/config-home.md`.
 
-28. Resolve token override policy.
-    - Decide whether `CUA_HTTP_TOKEN` should remain a production override or become dev/test only.
+Must coordinate with:
+- Agent B for identity/cloud paths.
+- Agent D for planner memory injection.
+- Agent E for profile/session files.
+- Agent H for docs.
 
-29. Resolve current-directory environment loading policy.
-    - Decide whether current-directory `.env` loading should be removed entirely or kept as dev-only behavior.
+Work:
+- Normalize durable runtime/config state under `~/.cua/{concern}/**/*`.
+- Preserve valid existing paths for profile chat DB, ctx workspace, HTTP token, and daemon socket.
+- Migrate `~/.cua/.env` to `~/.cua/config/env` or decide current-directory `.env` is dev-only/removed.
+- Make scripts use `CUA_HOME` and concern-specific artifact paths.
+- Ensure app runtime logs/proofs use `~/.cua/artifacts/...` where appropriate.
+- Update `ctx_binary()` so production prefers packaged sibling or `~/.cua/bin/ctx`, not repo `vendor/ctx/ctx` except explicit dev mode.
+- Decide whether `ctx` installs into `~/.cua/bin/ctx` or only resolves as a packaged sibling.
+- Implement local chat DB persistence and automatic feed back into the agent loop.
+- Use the vendored `ctx` binary as the required memory layer, not fallback logic.
+- Add agent-accessible ctx tool and automatic chat/context feeding.
+- Add ephemeral and durable scratchpads under `~/.cua/profiles/<profile>/scratchpads/`.
+- Update runtime prompt/instructions so useful discoveries, decisions, environment facts, and project context are appended selectively.
+- Append and retrieve scratchpad memory in parallel with other runtime work whenever possible.
 
-30. Resolve ctx installation policy.
-    - Decide whether `ctx` should be installed into `~/.cua/bin/ctx` or only resolved as a packaged sibling.
+Done means:
+- Installed app runtime does not depend on repo paths.
+- `CUA_HOME` tests prove shared path helpers and config migration.
+- ctx is resolved from the production path or explicit dev override.
+- Chat DB, ctx frame retrieval, and scratchpad append/read are verified in the voice/planner path.
 
-31. Resolve cloud enrollment ownership.
-    - Decide whether cloud enrollment belongs in this repo or in Quilt cloud with a local cua client.
+Agent G: Validation, Fozzy, Release, And Performance Owner
+
+Scope:
+- Owns production proof commands, Fozzy scenarios, host proof scripts, release script gates, latency/perf benchmarks, and trace artifacts.
+- Primary files: `fozzy/scenarios`, `scripts/host-*.sh`, `scripts/release.sh`, test fixtures, artifacts policy.
+
+Must coordinate with:
+- Every agent for the proof command matching their feature.
+- Agent H for documenting the final release gate.
+
+Work:
+- Add unit tests for shared path helpers with `CUA_HOME`.
+- Add unit tests for env loading precedence.
+- Add challenge expiry and audience mismatch tests.
+- Add host proof for machine key persistence.
+- Add host proof for signed package attestation claims.
+- Add host proof for SDK owner-session mutation.
+- Add host proof for SDK observer read-only behavior.
+- Add host proof for config migration.
+- Add Fozzy deterministic scenario covering SDK status/context/dispatch.
+- Add Fozzy trace recording and replay for SDK action path.
+- Maintain required shipping command set:
+
+  ```sh
+  cargo fmt --check
+  cargo test
+  cargo check
+  cargo build -p cua
+  scripts/host-session-proof.sh
+  scripts/host-control-surface-proof.sh
+  scripts/host-visual-session-action-proof.sh
+  scripts/host-package-proof.sh
+  fozzy doctor --deep --scenario fozzy/scenarios/cua-smoke.json --runs 5 --seed 4242 --json
+  fozzy test --det --strict fozzy/scenarios/cua-smoke.json --json
+  fozzy run fozzy/scenarios/cua-smoke.json --det --record ~/.cua/artifacts/fozzy/cua-smoke.fozzy --json
+  fozzy trace verify ~/.cua/artifacts/fozzy/cua-smoke.fozzy --strict --json
+  fozzy replay ~/.cua/artifacts/fozzy/cua-smoke.fozzy --json
+  ```
+
+Done means:
+- Every shipping command passes or has a documented, fixed reason replaced by a stronger equivalent proof.
+- Fozzy has strict deterministic coverage for runtime smoke, runebook trace replay, and SDK action path.
+- Release script fails early on missing dependencies, permissions, stale schemas, broken host proofs, or uncommitted generated artifacts.
+
+Agent H: Documentation, Examples, And Agent Surface Owner
+
+Scope:
+- Owns user-facing docs, architecture docs, SDK examples, `cua.md`, README, and prompt/tool surface inventory.
+- Primary files: `README.md`, `cua.md`, `docs/*.md`, SDK READMEs/examples.
+
+Must coordinate with:
+- Every implementation agent. Do not document a feature as complete until the owning agent provides proof.
+
+Work:
+- Add `docs/attestation.md`.
+- Add `docs/config-home.md`.
+- Update `docs/http-api.md`.
+- Update `cua.md`.
+- Update `README.md`.
+- Keep `cua.md` listing all agent tools and system prompts accurately.
+- Add SDK examples:
+  - minimal local status check
+  - observe screenshot/context
+  - click using frame-relative coordinates
+  - acquire owner, run a sequence, release owner
+  - visual session and process frames
+  - show UI progress in the HUD
+  - read/write clipboard with explicit capability profile
+  - request attestation and verify it locally
+  - enroll with Quilt/cloud
+  - use Aegis through cua
+  - use ctx through cua
+- Ensure docs explain profile policy vs bearer token vs owner session vs attestation.
+
+Done means:
+- Docs match current shipped behavior and do not mention unsupported features as available.
+- Every example is either smoke-tested or directly backed by a passing fixture/proof.
+- README is concise, feature-focused, and production-oriented.
+
+Agent I: Open Policy Decisions Owner
+
+Scope:
+- Owns unresolved decisions that block final production semantics. This agent should resolve decisions by editing source/docs/tests, not by writing essays.
+
+Must coordinate with:
+- The agent whose implementation depends on the decision.
+
+Decisions to close:
+- Attestation backend policy: Secure Enclave first, Keychain first, or file key only for tests.
+- HTTP write-route policy: supported with owner-session semantics or operator/debug-only.
+- Token override policy: keep `CUA_HTTP_TOKEN` production override or make it dev/test only.
+- Current-directory environment loading policy: remove entirely or keep dev-only.
+- ctx installation policy: install into `~/.cua/bin/ctx` or resolve only as packaged sibling.
+- Cloud enrollment ownership: implement here or in Quilt cloud with a local cua client.
+
+Done means:
+- Each decision has one implemented behavior, tests or docs proving it, and no unresolved duplicate plan item elsewhere.
