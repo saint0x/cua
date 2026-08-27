@@ -30,7 +30,7 @@ impl RecordingPolicy {
             max_duration,
             min_duration: duration_from_env("CUA_VOICE_RECORD_MIN_MS", 350, 100..=2_000),
             silence_duration: duration_from_env("CUA_VOICE_RECORD_SILENCE_MS", 420, 120..=2_000),
-            speech_threshold: i16_from_env("CUA_VOICE_RECORD_THRESHOLD", 520, 80..=6_000),
+            speech_threshold: i16_from_env("CUA_VOICE_RECORD_THRESHOLD", 48, 8..=6_000),
         }
     }
 }
@@ -186,9 +186,10 @@ fn record_default_input_with_policy(
         bail!("no samples captured from input device");
     }
     let stats = audio_stats(sample_rate, &samples);
+    let wav_samples = normalize_quiet_samples_for_stt(&samples, stats.peak_amplitude);
     Ok(RecordedAudio {
         sample_rate,
-        wav_bytes: encode_wav_mono(sample_rate, &samples)?,
+        wav_bytes: encode_wav_mono(sample_rate, &wav_samples)?,
         duration: stats.duration,
         peak_amplitude: stats.peak_amplitude,
         rms_amplitude: stats.rms_amplitude,
@@ -283,6 +284,21 @@ fn audio_stats(sample_rate: u32, samples: &[i16]) -> AudioStats {
     }
 }
 
+fn normalize_quiet_samples_for_stt(samples: &[i16], peak: i16) -> Vec<i16> {
+    const TARGET_PEAK: i32 = 3_200;
+    const MAX_GAIN: i32 = 32;
+    if peak <= 0 || i32::from(peak) >= TARGET_PEAK {
+        return samples.to_vec();
+    }
+    let gain = (TARGET_PEAK / i32::from(peak)).clamp(1, MAX_GAIN);
+    samples
+        .iter()
+        .map(|sample| {
+            (i32::from(*sample) * gain).clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -356,7 +372,7 @@ mod tests {
 
         assert_eq!(policy.min_duration, Duration::from_millis(350));
         assert_eq!(policy.silence_duration, Duration::from_millis(420));
-        assert_eq!(policy.speech_threshold, 520);
+        assert_eq!(policy.speech_threshold, 48);
     }
 
     #[test]
@@ -375,10 +391,10 @@ mod tests {
         std::env::remove_var(name);
 
         let threshold_name = "__CUA_VOICE_TEST_THRESHOLD";
-        std::env::set_var(threshold_name, "10");
-        assert_eq!(i16_from_env(threshold_name, 520, 80..=6_000), 520);
+        std::env::set_var(threshold_name, "4");
+        assert_eq!(i16_from_env(threshold_name, 48, 8..=6_000), 48);
         std::env::set_var(threshold_name, "850");
-        assert_eq!(i16_from_env(threshold_name, 520, 80..=6_000), 850);
+        assert_eq!(i16_from_env(threshold_name, 48, 8..=6_000), 850);
         std::env::remove_var(threshold_name);
     }
 
@@ -413,5 +429,14 @@ mod tests {
 
         assert_eq!(*samples.lock().unwrap(), vec![400, 450]);
         assert!(state.lock().unwrap().heard_voice);
+    }
+
+    #[test]
+    fn quiet_samples_are_boosted_for_stt_without_changing_timing_stats() {
+        let samples = [0i16, 50, -100, 25];
+
+        let normalized = normalize_quiet_samples_for_stt(&samples, 100);
+
+        assert_eq!(normalized, vec![0, 1_600, -3_200, 800]);
     }
 }
