@@ -374,10 +374,12 @@ fn user_visible_turn_error(error: &anyhow::Error) -> String {
         || message.contains("No such file or directory: 'ffmpeg'")
     {
         "Local speech-to-text needs attention.".to_string()
-    } else if message.contains("planning model returned empty content")
+    } else if message.contains("planning model returned empty content") {
+        "Planner returned empty content.".to_string()
+    } else if message.contains("model output was not valid action JSON")
         || message.contains("parse plan JSON")
     {
-        "I couldn't get a usable model response.".to_string()
+        "Planner returned invalid action JSON.".to_string()
     } else {
         message
     }
@@ -1133,12 +1135,22 @@ mod tests {
     }
 
     #[test]
-    fn user_visible_error_hides_internal_planner_parse_detail() {
+    fn user_visible_error_names_planner_parse_failure() {
         let error = anyhow::anyhow!("parse plan JSON: expected value");
 
         assert_eq!(
             user_visible_turn_error(&error),
-            "I couldn't get a usable model response."
+            "Planner returned invalid action JSON."
+        );
+    }
+
+    #[test]
+    fn user_visible_error_names_empty_planner_response() {
+        let error = anyhow::anyhow!("planning model returned empty content");
+
+        assert_eq!(
+            user_visible_turn_error(&error),
+            "Planner returned empty content."
         );
     }
 

@@ -52,12 +52,7 @@ impl CuaClient {
     pub async fn context(&self, include_bytes: bool) -> anyhow::Result<DesktopContextSnapshot> {
         self.request(
             "context.snapshot",
-            Some(serde_json::json!({
-                "max_width": 1280,
-                "encoding": FrameEncoding::Png,
-                "force_fresh": true,
-                "include_bytes": include_bytes
-            })),
+            Some(context_request_body(include_bytes)),
         )
         .await
     }
@@ -211,12 +206,7 @@ impl CuaSession {
     pub async fn context(&mut self, include_bytes: bool) -> anyhow::Result<DesktopContextSnapshot> {
         self.request(
             "context.snapshot",
-            Some(serde_json::json!({
-                "max_width": 1280,
-                "encoding": FrameEncoding::Png,
-                "force_fresh": true,
-                "include_bytes": include_bytes
-            })),
+            Some(context_request_body(include_bytes)),
         )
         .await
     }
@@ -379,6 +369,15 @@ fn ensure_dispatchable(action: &InputAction) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn context_request_body(include_bytes: bool) -> Value {
+    serde_json::json!({
+        "max_width": 1280,
+        "encoding": FrameEncoding::Jpeg,
+        "force_fresh": true,
+        "include_bytes": include_bytes
+    })
+}
+
 #[derive(Debug, Deserialize)]
 struct UnixResponse {
     ok: bool,
@@ -435,5 +434,15 @@ mod tests {
         let error = client.preflight().await.unwrap_err().to_string();
 
         assert!(error.contains("daemon.sock"));
+    }
+
+    #[test]
+    fn context_request_uses_realtime_jpeg_frame() {
+        let body = context_request_body(true);
+
+        assert_eq!(body["max_width"], 1280);
+        assert_eq!(body["encoding"], "jpeg");
+        assert_eq!(body["force_fresh"], true);
+        assert_eq!(body["include_bytes"], true);
     }
 }

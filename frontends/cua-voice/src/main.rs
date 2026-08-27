@@ -1029,6 +1029,9 @@ impl Render for VoiceHud {
         let reply_window_expired =
             self.snapshot.expanded_until.is_some() && !self.snapshot.is_expanded();
         self.tick_animation();
+        if self.snapshot.expire_transcript(Instant::now()) {
+            cx.notify();
+        }
         if let Some(expanded) = expansion_command {
             self.set_expanded_from_render(expanded, window, cx);
         }

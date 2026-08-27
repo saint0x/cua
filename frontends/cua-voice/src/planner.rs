@@ -1,5 +1,5 @@
 use anyhow::{bail, Context};
-use cua_core::{DesktopState, FramePayload, InputAction, MouseButton};
+use cua_core::{DesktopState, FrameEncoding, FramePayload, InputAction, MouseButton};
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, REFERER};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -7,14 +7,16 @@ use std::time::Duration;
 const DEFAULT_PLANNER_TIMEOUT_MS: u64 = 12_000;
 const DEFAULT_PLANNER_ATTEMPTS: usize = 3;
 const DEFAULT_PLANNER_RETRY_BACKOFF_MS: u64 = 220;
-const PLANNER_SYSTEM_PROMPT: &str = r#"You are the planner for cua, a local macOS computer-use runtime.
+const PLANNER_SYSTEM_PROMPT: &str = r#"You are the protocol planner for cua, a local macOS computer-use runtime. You are not a general chat assistant and you do not have hidden tools.
 
 You receive:
 - a spoken transcript from the user
 - a live macOS desktop summary with cursor, displays, windows, permissions, and latest frame metadata
 - usually a screenshot image from the active display
 
-Your job is to choose exactly one next tool action for cua. This is a realtime control loop, so be decisive, avoid long reasoning, avoid multi-step plans, and keep the response text short. Return only valid JSON. Do not use Markdown, prose before/after JSON, comments, or extra top-level keys.
+Your job is to choose exactly one next tool action for cua. This is a realtime control loop, so be decisive, avoid long reasoning, avoid multi-step plans, and keep the response text short. Return exactly one valid JSON object matching one of the schemas below. Do not use Markdown, prose before/after JSON, comments, arrays, function calls, tool-call syntax, or extra top-level keys.
+
+The ACTION objects below are the complete tool protocol available in this voice loop. You cannot read files, run shell commands, call browser APIs, launch apps through an invisible app API, or inspect private app state. To control the Mac, use only visible UI, mouse actions, keyboard actions, clipboard actions, and the explicit pause/resume/kill controls listed here.
 
 Top-level response schema:
 {"response":"short status for the user","action":null}
@@ -50,6 +52,8 @@ Decision rules:
 - If the command asks what is visible, summarize the screenshot in one short sentence and set action:null.
 - If the command asks you to read a file and that file is not already open/visible in a desktop app, set action:null and briefly say the file is not visible to the voice controller.
 - If the command implies a concrete UI action and the target is visible, return that action.
+- If the command is multi-step but clear, return the first concrete next action instead of refusing or explaining the whole plan.
+- If the user asks to open an app and the app is not already visible, start the normal macOS path with {"kind":"key_press","combo":"cmd+space"} and a response like "Opening Spotlight."; the next turn can type the app name.
 - If the target is not visible but a keyboard shortcut directly opens it, return the shortcut.
 - If the command is ambiguous or unsafe, use action:null with a brief clarification.
 - Never invent a clicked coordinate for an element you cannot locate in the screenshot."#;
@@ -93,10 +97,10 @@ impl Planner {
                 "Transcript: {transcript}\n{desktop_context}"
             )
         })];
-        if let Some(bytes) = frame.and_then(|frame| frame.bytes_base64.as_ref()) {
+        if let Some((bytes, mime)) = frame.and_then(frame_image_data) {
             content.push(serde_json::json!({
                 "type": "image_url",
-                "image_url": {"url": format!("data:image/png;base64,{bytes}")},
+                "image_url": {"url": format!("data:{mime};base64,{bytes}")},
             }));
         }
         let body = serde_json::json!({
@@ -120,7 +124,21 @@ impl Planner {
         if raw.trim().is_empty() {
             bail!("planning model returned empty content");
         }
-        parse_model_plan(raw)
+        match parse_model_plan(raw) {
+            Ok(plan) => Ok(plan),
+            Err(error) if is_observation_query(transcript) => Ok(turn(
+                planner_output_preview(raw)
+                    .trim_end_matches("...")
+                    .to_string(),
+                None,
+            )),
+            Err(error) => Err(error).with_context(|| {
+                format!(
+                    "model output was not valid action JSON: {}",
+                    planner_output_preview(raw)
+                )
+            }),
+        }
     }
 
     async fn send_planning_request(
@@ -167,6 +185,15 @@ impl Planner {
             last_error.unwrap_or_else(|| "retry attempts exhausted".to_string())
         )
     }
+}
+
+fn frame_image_data(frame: &FramePayload) -> Option<(&str, &'static str)> {
+    let mime = match frame.envelope.encoding {
+        FrameEncoding::Jpeg => "image/jpeg",
+        FrameEncoding::Png => "image/png",
+        FrameEncoding::RawBgra => return None,
+    };
+    Some((frame.bytes_base64.as_deref()?, mime))
 }
 
 fn desktop_context(desktop: &DesktopState) -> String {
@@ -284,6 +311,17 @@ pub fn parse_model_plan(raw: &str) -> anyhow::Result<PlannedTurn> {
     Ok(PlannedTurn { response, action })
 }
 
+fn planner_output_preview(raw: &str) -> String {
+    let compact = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut chars = compact.chars();
+    let preview = chars.by_ref().take(240).collect::<String>();
+    if chars.next().is_some() {
+        format!("{preview}...")
+    } else {
+        preview
+    }
+}
+
 fn extract_first_json_object(raw: &str) -> Option<&str> {
     let mut depth = 0usize;
     let mut start = None;
@@ -380,6 +418,14 @@ pub fn parse_fast_command(transcript: &str) -> Option<PlannedTurn> {
     if words.is_empty() {
         return None;
     }
+    if let Some(app_name) = fast_open_app_name(&words) {
+        return Some(turn(
+            format!("Opening {app_name}."),
+            Some(InputAction::KeyPress {
+                combo: "cmd+space".to_string(),
+            }),
+        ));
+    }
     if words[0].as_str() == "pause" {
         return Some(turn("Paused.", Some(InputAction::Pause)));
     }
@@ -416,7 +462,68 @@ pub fn parse_fast_command(transcript: &str) -> Option<PlannedTurn> {
             Some(InputAction::KeyType { text }),
         ));
     }
+    if matches!(words[0].as_str(), "paste" | "pasted") && words.len() >= 2 {
+        let text = words[1..].join(" ");
+        return Some(turn(
+            "Pasting.".to_string(),
+            Some(InputAction::KeyPaste { text }),
+        ));
+    }
+    if matches!(words[0].as_str(), "press" | "pressed") && words.len() >= 2 {
+        let combo = words[1..].join("+");
+        return Some(turn(
+            format!("Pressing {combo}."),
+            Some(InputAction::KeyPress { combo }),
+        ));
+    }
     None
+}
+
+fn fast_open_app_name(words: &[String]) -> Option<&'static str> {
+    if !matches!(words.first().map(String::as_str), Some("open" | "launch")) {
+        return None;
+    }
+    if words
+        .iter()
+        .any(|word| word == "messages" || word == "imessage")
+    {
+        return Some("Messages");
+    }
+    if words.iter().any(|word| word == "safari") {
+        return Some("Safari");
+    }
+    if words.iter().any(|word| word == "calculator") {
+        return Some("Calculator");
+    }
+    if words.iter().any(|word| word == "terminal") {
+        return Some("Terminal");
+    }
+    if words.iter().any(|word| word == "notes") {
+        return Some("Notes");
+    }
+    if words.iter().any(|word| word == "mail") {
+        return Some("Mail");
+    }
+    None
+}
+
+fn is_observation_query(transcript: &str) -> bool {
+    let normalized = normalized_phrase(transcript);
+    normalized.contains("what do you see")
+        || normalized.contains("what is on my screen")
+        || normalized.contains("whats on my screen")
+        || normalized.contains("what's on my screen")
+        || normalized.contains("look at my screen")
+        || normalized.contains("check my screen")
+}
+
+fn normalized_phrase(text: &str) -> String {
+    text.trim()
+        .trim_matches(|character: char| !character.is_ascii_alphanumeric())
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
 }
 
 fn normalize_command_token(token: &str) -> String {
@@ -494,6 +601,21 @@ mod tests {
     fn planner_prompt_forbids_direct_filesystem_reads() {
         assert!(PLANNER_SYSTEM_PROMPT.contains("no filesystem read/write tool"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("file is not already open/visible"));
+        assert!(PLANNER_SYSTEM_PROMPT.contains("complete tool protocol"));
+        assert!(PLANNER_SYSTEM_PROMPT.contains("cmd+space"));
+    }
+
+    #[test]
+    fn planner_frame_image_data_uses_frame_encoding_mime() {
+        let jpeg = test_frame_payload(FrameEncoding::Jpeg, Some("abc"));
+        let png = test_frame_payload(FrameEncoding::Png, Some("def"));
+        let raw = test_frame_payload(FrameEncoding::RawBgra, Some("ghi"));
+        let missing_bytes = test_frame_payload(FrameEncoding::Jpeg, None);
+
+        assert_eq!(frame_image_data(&jpeg), Some(("abc", "image/jpeg")));
+        assert_eq!(frame_image_data(&png), Some(("def", "image/png")));
+        assert_eq!(frame_image_data(&raw), None);
+        assert_eq!(frame_image_data(&missing_bytes), None);
     }
 
     #[test]
@@ -543,6 +665,43 @@ mod tests {
             plan.action,
             Some(InputAction::MouseClick { x: 10, y: 20, .. })
         ));
+    }
+
+    #[test]
+    fn parse_model_plan_error_includes_raw_preview_context() {
+        let error = parse_model_plan("not json at all").unwrap_err();
+
+        assert!(format!("{error:#}").contains("parse plan JSON"));
+    }
+
+    #[test]
+    fn parses_fast_paste_and_press_commands() {
+        let paste = parse_fast_command("Paste hello there.").unwrap();
+        assert!(
+            matches!(paste.action, Some(InputAction::KeyPaste { ref text }) if text == "hello there")
+        );
+
+        let press = parse_fast_command("Press cmd space.").unwrap();
+        assert!(
+            matches!(press.action, Some(InputAction::KeyPress { ref combo }) if combo == "cmd+space")
+        );
+    }
+
+    #[test]
+    fn parses_fast_open_app_commands_to_spotlight() {
+        let plan = parse_fast_command("Open the messages app at the bottom").unwrap();
+
+        assert_eq!(plan.response, "Opening Messages.");
+        assert!(
+            matches!(plan.action, Some(InputAction::KeyPress { ref combo }) if combo == "cmd+space")
+        );
+    }
+
+    #[test]
+    fn identifies_observation_queries() {
+        assert!(is_observation_query("What do you see on my screen?"));
+        assert!(is_observation_query("check my screen again"));
+        assert!(!is_observation_query("open messages"));
     }
 
     #[test]
@@ -635,5 +794,38 @@ mod tests {
         assert!(retryable_status(reqwest::StatusCode::TOO_MANY_REQUESTS));
         assert!(retryable_status(reqwest::StatusCode::BAD_GATEWAY));
         assert!(!retryable_status(reqwest::StatusCode::UNAUTHORIZED));
+    }
+
+    fn test_frame_payload(encoding: FrameEncoding, bytes_base64: Option<&str>) -> FramePayload {
+        FramePayload {
+            envelope: cua_core::FrameEnvelope {
+                schema_version: cua_core::SCHEMA_VERSION.to_string(),
+                frame_id: 1,
+                timestamp_mono_ns: 1,
+                timestamp_wall_ms: 1,
+                display_id: "display".to_string(),
+                display_x: 0,
+                display_y: 0,
+                display_width: 1280,
+                display_height: 720,
+                frame_origin_x: 0,
+                frame_origin_y: 0,
+                width: 1280,
+                height: 720,
+                scale_factor: 1.0,
+                pixel_format: "rgba8".to_string(),
+                encoding,
+                byte_len: 3,
+                sha256: "abc".to_string(),
+                cursor: cua_core::CursorState {
+                    x: 0.0,
+                    y: 0.0,
+                    visible: true,
+                    included_in_frame: false,
+                },
+                damage_rects: Vec::new(),
+            },
+            bytes_base64: bytes_base64.map(str::to_string),
+        }
     }
 }

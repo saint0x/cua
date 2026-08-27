@@ -2350,7 +2350,7 @@ async fn context_snapshot_payload(
         encoding: request.encoding,
     };
     let (frame, desktop) = tokio::join!(
-        screenshot_payload(state, screenshot_request),
+        screenshot_payload_with_step(state, screenshot_request, false),
         desktop_state(state)
     );
     Ok(DesktopContextSnapshot {
@@ -2364,14 +2364,24 @@ async fn screenshot_payload(
     state: &DaemonState,
     request: ScreenshotRequest,
 ) -> Result<FramePayload, ApiError> {
-    publish_protocol_step(
-        state,
-        1,
-        1,
-        "Capturing screenshot".to_string(),
-        "HTTP API",
-        2_500,
-    );
+    screenshot_payload_with_step(state, request, true).await
+}
+
+async fn screenshot_payload_with_step(
+    state: &DaemonState,
+    request: ScreenshotRequest,
+    publish_step: bool,
+) -> Result<FramePayload, ApiError> {
+    if publish_step {
+        publish_protocol_step(
+            state,
+            1,
+            1,
+            "Capturing screenshot".to_string(),
+            "HTTP API",
+            2_500,
+        );
+    }
     let started = Instant::now();
     let capture_request = CaptureRequest {
         max_width: request.max_width,
@@ -4343,6 +4353,16 @@ mod tests {
         assert_eq!(snapshot.frame.envelope.encoding, FrameEncoding::Png);
         assert!(snapshot.frame.envelope.width > 0);
         assert!(!snapshot.desktop.displays.is_empty());
+
+        let ui_steps = state
+            .events
+            .snapshot()
+            .await
+            .into_iter()
+            .filter(|event| event["kind"] == "ui_step")
+            .collect::<Vec<_>>();
+        assert_eq!(ui_steps.len(), 1);
+        assert_eq!(ui_steps[0]["data"]["label"], "Capturing desktop context");
     }
 
     #[tokio::test]

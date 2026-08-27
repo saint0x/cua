@@ -1,6 +1,9 @@
 use cua_core::UiMode;
 use std::time::{Duration, Instant};
 
+const TRANSCRIPT_VISIBLE_FOR: Duration = Duration::from_millis(1_500);
+const REPLY_VISIBLE_FOR: Duration = Duration::from_secs(5);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HudPhase {
     Idle,
@@ -48,6 +51,7 @@ pub struct HudSnapshot {
     pub step: HudStep,
     pub tool: String,
     pub transcript: Option<String>,
+    pub transcript_until: Option<Instant>,
     pub response: Option<String>,
     pub expanded_until: Option<Instant>,
     pub programmed_step_expires_at: Option<Instant>,
@@ -68,6 +72,7 @@ impl Default for HudSnapshot {
             },
             tool: "Unix socket".to_string(),
             transcript: None,
+            transcript_until: None,
             response: None,
             expanded_until: None,
             programmed_step_expires_at: None,
@@ -85,6 +90,7 @@ impl HudSnapshot {
                 self.step = HudStep::new(1, 4, "Starting recorder");
                 self.tool = "Keyboard".to_string();
                 self.transcript = None;
+                self.transcript_until = None;
                 self.response = None;
                 self.expanded_until = None;
                 self.programmed_step_expires_at = None;
@@ -124,6 +130,7 @@ impl HudSnapshot {
             }
             VoiceUiEvent::Transcript(text) => {
                 self.transcript = Some(text);
+                self.transcript_until = Some(Instant::now() + TRANSCRIPT_VISIBLE_FOR);
             }
             VoiceUiEvent::Planning { tool } => {
                 self.phase = HudPhase::Planning;
@@ -213,7 +220,7 @@ impl HudSnapshot {
                 self.mark_voice_control();
                 self.step = HudStep::new(4, 4, "Done");
                 self.response = Some(text);
-                self.expanded_until = Some(Instant::now() + Duration::from_secs(5));
+                self.expanded_until = Some(Instant::now() + REPLY_VISIBLE_FOR);
                 self.programmed_step_expires_at = None;
                 self.programmed_step_restore = None;
             }
@@ -222,7 +229,7 @@ impl HudSnapshot {
                 self.mark_automation_control();
                 self.step = HudStep::new(4, 4, "Done");
                 self.response = Some(text);
-                self.expanded_until = Some(Instant::now() + Duration::from_secs(5));
+                self.expanded_until = Some(Instant::now() + REPLY_VISIBLE_FOR);
                 self.programmed_step_expires_at = None;
                 self.programmed_step_restore = None;
             }
@@ -230,7 +237,7 @@ impl HudSnapshot {
                 self.phase = HudPhase::Error;
                 self.step = HudStep::new(0, 4, "Stopped");
                 self.response = Some(text);
-                self.expanded_until = Some(Instant::now() + Duration::from_secs(5));
+                self.expanded_until = Some(Instant::now() + REPLY_VISIBLE_FOR);
                 self.programmed_step_expires_at = None;
                 self.programmed_step_restore = None;
             }
@@ -273,6 +280,18 @@ impl HudSnapshot {
             .take()
             .map(|snapshot| *snapshot)
             .unwrap_or_default();
+        true
+    }
+
+    pub fn expire_transcript(&mut self, now: Instant) -> bool {
+        let Some(deadline) = self.transcript_until else {
+            return false;
+        };
+        if now < deadline {
+            return false;
+        }
+        self.transcript = None;
+        self.transcript_until = None;
         true
     }
 
@@ -366,10 +385,29 @@ mod tests {
     #[test]
     fn reply_expands_for_a_short_window() {
         let mut state = HudSnapshot::default();
+        let before = Instant::now();
         state.apply(VoiceUiEvent::Reply("ready".to_string()));
+
         assert!(state.is_expanded());
         assert_eq!(state.phase, HudPhase::Reply);
         assert_eq!(state.input_label, "Voice control");
+        let deadline = state.expanded_until.expect("reply deadline");
+        assert!(deadline >= before + Duration::from_millis(4_900));
+        assert!(deadline <= Instant::now() + Duration::from_millis(5_100));
+    }
+
+    #[test]
+    fn transcript_expires_after_short_visibility_window() {
+        let mut state = HudSnapshot::default();
+        state.apply(VoiceUiEvent::Transcript("what do you see".to_string()));
+
+        let deadline = state.transcript_until.expect("transcript deadline");
+        assert_eq!(state.transcript.as_deref(), Some("what do you see"));
+        assert!(!state.expire_transcript(deadline - Duration::from_millis(1)));
+        assert_eq!(state.transcript.as_deref(), Some("what do you see"));
+        assert!(state.expire_transcript(deadline));
+        assert_eq!(state.transcript, None);
+        assert_eq!(state.transcript_until, None);
     }
 
     #[test]
