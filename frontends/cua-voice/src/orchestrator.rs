@@ -196,7 +196,7 @@ async fn transcribe_and_run_turn_after_local(
     trace: VoiceTurnTrace,
 ) -> anyhow::Result<()> {
     let turn_started = Instant::now();
-    let api_key = std::env::var("OPENROUTER_API_KEY").context("OPENROUTER_API_KEY is required")?;
+    let api_key = api_key_for_stt_backend(&config.stt_backend)?;
     tx.send(VoiceUiEvent::Transcribing).ok();
     trace
         .append(
@@ -220,7 +220,7 @@ async fn transcribe_and_run_turn_after_local(
         .await;
     let stt_backend = config.stt_backend.clone();
     let stt_model = config.stt_model.clone();
-    let stt_api_key = api_key.clone();
+    let stt_api_key = api_key.clone().unwrap_or_default();
     let stt_task = tokio::spawn(async move {
         SttClient::new(stt_backend, stt_model)?
             .transcribe_wav(&stt_api_key, &wav_bytes)
@@ -239,7 +239,6 @@ async fn transcribe_and_run_turn_after_local(
     step_publisher.publish("transcribing audio");
     let context_overlap_started = Instant::now();
     let context_task = spawn_context_prefetch(local.clone());
-    step_publisher.publish("prefetching screen context");
     let transcript = match stt_task.await.context("join speech to text")? {
         Ok(transcript) => {
             trace
@@ -289,7 +288,7 @@ async fn transcribe_and_run_turn_after_local(
     plan_and_dispatch(
         config,
         transcript.text,
-        Some(api_key),
+        api_key,
         local,
         Some(context_task),
         step_publisher,
@@ -305,6 +304,23 @@ async fn transcribe_and_run_turn_after_local(
         )
         .await;
     Ok(())
+}
+
+fn api_key_for_stt_backend(backend: &str) -> anyhow::Result<Option<String>> {
+    api_key_for_stt_backend_from(backend, || std::env::var("OPENROUTER_API_KEY").ok())
+}
+
+fn api_key_for_stt_backend_from(
+    backend: &str,
+    lookup: impl FnOnce() -> Option<String>,
+) -> anyhow::Result<Option<String>> {
+    let key = lookup().filter(|key| !key.trim().is_empty());
+    if backend == "openrouter" {
+        return key
+            .map(Some)
+            .context("OPENROUTER_API_KEY is required for OpenRouter speech-to-text");
+    }
+    Ok(key)
 }
 
 async fn run_transcript_turn(
@@ -1163,6 +1179,29 @@ mod tests {
         assert_eq!(
             user_visible_turn_error(&error),
             "Local speech-to-text needs attention."
+        );
+    }
+
+    #[test]
+    fn local_stt_does_not_require_openrouter_key() {
+        assert_eq!(
+            api_key_for_stt_backend_from("local", || None).unwrap(),
+            None
+        );
+        assert_eq!(
+            api_key_for_stt_backend_from("local", || Some("test-key".to_string())).unwrap(),
+            Some("test-key".to_string())
+        );
+    }
+
+    #[test]
+    fn openrouter_stt_requires_openrouter_key() {
+        let error = api_key_for_stt_backend_from("openrouter", || None).unwrap_err();
+
+        assert!(format!("{error:#}").contains("OpenRouter speech-to-text"));
+        assert_eq!(
+            api_key_for_stt_backend_from("openrouter", || Some("test-key".to_string())).unwrap(),
+            Some("test-key".to_string())
         );
     }
 
