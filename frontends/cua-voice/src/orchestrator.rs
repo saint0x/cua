@@ -23,8 +23,6 @@ const VOICE_STEP_TIMEOUT_MS: u64 = 500;
 const VOICE_STEP_FLUSH_TIMEOUT_MS: u64 = 2_000;
 const DEFAULT_CONTEXT_PREFETCH_TIMEOUT_MS: u64 = 2_500;
 const MIN_RECORDING_DURATION: Duration = Duration::from_millis(250);
-const MIN_RECORDING_RMS: f32 = 0.00002;
-const MIN_RECORDING_PEAK: i16 = 20;
 
 struct PrefetchedContext {
     session: Option<CuaSession>,
@@ -214,14 +212,6 @@ async fn run_transcript_turn(
 fn validate_recorded_audio(audio: &RecordedAudio) -> anyhow::Result<()> {
     if audio.duration < MIN_RECORDING_DURATION {
         anyhow::bail!("recording was too short to contain a clear command");
-    }
-    if audio.peak_amplitude < MIN_RECORDING_PEAK && audio.rms_amplitude < MIN_RECORDING_RMS {
-        anyhow::bail!(
-            "microphone captured near-silence: duration={}ms peak={} rms={:.5}",
-            audio.duration.as_millis(),
-            audio.peak_amplitude,
-            audio.rms_amplitude
-        );
     }
     Ok(())
 }
@@ -582,7 +572,7 @@ mod tests {
     }
 
     #[test]
-    fn recorded_audio_validation_rejects_short_or_silent_audio() {
+    fn recorded_audio_validation_rejects_only_short_audio() {
         let short = RecordedAudio {
             sample_rate: 16_000,
             wav_bytes: vec![0; 44],
@@ -620,7 +610,7 @@ mod tests {
         };
 
         assert!(validate_recorded_audio(&short).is_err());
-        assert!(validate_recorded_audio(&silent).is_err());
+        assert!(validate_recorded_audio(&silent).is_ok());
         assert!(validate_recorded_audio(&low_rms_but_audible_peak).is_ok());
         assert!(validate_recorded_audio(&speech).is_ok());
         assert!(validate_recorded_audio(&quiet_but_real_speech).is_ok());

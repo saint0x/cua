@@ -239,18 +239,17 @@ where
     if frame.is_empty() {
         return None;
     }
-    let mut sum = 0i32;
+    let mut loudest = 0i16;
     let mut peak = 0i16;
     for sample in frame {
         let sample = (*sample).to_sample::<i16>();
-        sum += i32::from(sample);
-        peak = peak.max(sample.saturating_abs());
+        let magnitude = sample.saturating_abs();
+        if magnitude > peak {
+            peak = magnitude;
+            loudest = sample;
+        }
     }
-    let mixed = sum / i32::try_from(frame.len()).unwrap_or(1);
-    Some((
-        mixed.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16,
-        peak,
-    ))
+    Some((loudest, peak))
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]
@@ -408,10 +407,17 @@ mod tests {
     }
 
     #[test]
-    fn interleaved_input_uses_all_channels_for_mono_capture() {
+    fn interleaved_input_uses_loudest_channel_for_mono_capture() {
         let frame = [0i16, 1_000i16];
 
-        assert_eq!(mix_interleaved_frame(&frame), Some((500, 1_000)));
+        assert_eq!(mix_interleaved_frame(&frame), Some((1_000, 1_000)));
+    }
+
+    #[test]
+    fn interleaved_input_does_not_cancel_inverted_channels() {
+        let frame = [1_000i16, -1_000i16];
+
+        assert_eq!(mix_interleaved_frame(&frame), Some((1_000, 1_000)));
     }
 
     #[test]
@@ -427,7 +433,7 @@ mod tests {
 
         push_interleaved(&[0i16, 800i16, 0, 900], 2, &samples, &state, policy);
 
-        assert_eq!(*samples.lock().unwrap(), vec![400, 450]);
+        assert_eq!(*samples.lock().unwrap(), vec![800, 900]);
         assert!(state.lock().unwrap().heard_voice);
     }
 
