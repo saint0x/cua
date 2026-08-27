@@ -92,7 +92,7 @@ fn live_transport_label(snapshot: &HudSnapshot) -> String {
         crate::ui_state::HudPhase::Listening | crate::ui_state::HudPhase::Accepted => {
             "Mic".to_string()
         }
-        crate::ui_state::HudPhase::Transcribing => "Router".to_string(),
+        crate::ui_state::HudPhase::Transcribing => short_tool(&snapshot.tool),
         crate::ui_state::HudPhase::Planning if snapshot.tool.contains("OpenRouter") => {
             "Router".to_string()
         }
@@ -210,6 +210,8 @@ pub fn short_tool(tool: &str) -> String {
         "HTTP".to_string()
     } else if tool.contains("OpenRouter") {
         "Router".to_string()
+    } else if tool.contains("Whisper") || tool.contains("STT") {
+        "STT".to_string()
     } else if tool.contains("Microphone") {
         "Mic".to_string()
     } else if tool.contains("Screen") || tool.contains("Capture") {
@@ -284,6 +286,45 @@ mod tests {
     }
 
     #[test]
+    fn display_chips_track_local_stt_without_router_label() {
+        let mut snapshot = HudSnapshot::default();
+        snapshot.apply(VoiceUiEvent::Transcribing);
+
+        let display = HudDisplay::from_snapshot(&snapshot);
+
+        assert_eq!(display.tool, "STT");
+        assert_eq!(display.target, "STT");
+        assert_eq!(display.rows[0].tool, "STT");
+        assert_eq!(display.rows[1].tool, "STT");
+    }
+
+    #[test]
+    fn protocol_step_fields_propagate_to_hud_labels_and_chips() {
+        let mut snapshot = HudSnapshot::default();
+        snapshot.apply(VoiceUiEvent::AgentStep {
+            label: "Inspecting Safari address bar".to_string(),
+            source: Some("external agent".to_string()),
+            task: Some("Browse test".to_string()),
+            tool: Some("Safari".to_string()),
+            step_index: Some(7),
+            step_total: Some(11),
+            ttl_ms: None,
+        });
+
+        let display = HudDisplay::from_snapshot(&snapshot);
+
+        assert_eq!(display.title, "Automation");
+        assert_eq!(display.tool, "Safari");
+        assert_eq!(display.target, "Safari");
+        assert_eq!(display.rows[1].label, "Inspecting Safari address bar");
+        assert_eq!(display.rows[1].tool, "Safari");
+        assert_eq!(display.rows[1].app, "Safari");
+        assert_eq!(snapshot.task, "Browse test");
+        assert_eq!(snapshot.step.index, 7);
+        assert_eq!(snapshot.step.total, 11);
+    }
+
+    #[test]
     fn display_title_uses_live_input_label_without_transcript() {
         let mut snapshot = HudSnapshot::default();
         snapshot.apply(VoiceUiEvent::AgentStep {
@@ -312,6 +353,7 @@ mod tests {
     fn tool_labels_stay_chip_sized() {
         assert_eq!(short_tool("Unix socket"), "Socket");
         assert_eq!(short_tool("OpenRouter Vision"), "Router");
+        assert_eq!(short_tool("Whisper STT"), "STT");
         assert_eq!(short_tool("Microphone"), "Mic");
         assert_eq!(short_tool("Screen capture"), "Screen");
     }

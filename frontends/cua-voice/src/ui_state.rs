@@ -108,7 +108,7 @@ impl HudSnapshot {
                 self.phase = HudPhase::Transcribing;
                 self.mark_voice_control();
                 self.step = HudStep::new(2, 4, "Accepted");
-                self.tool = "OpenRouter STT".to_string();
+                self.tool = "Whisper STT".to_string();
                 self.programmed_step_expires_at = None;
                 self.programmed_step_restore = None;
             }
