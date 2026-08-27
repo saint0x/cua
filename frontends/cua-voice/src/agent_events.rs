@@ -17,6 +17,10 @@ fn daemon_event_sequence(event: &Value) -> Option<u64> {
     event.get("sequence").and_then(|value| value.as_u64())
 }
 
+pub fn max_daemon_event_sequence(events: &[Value]) -> u64 {
+    events.iter().filter_map(daemon_event_sequence).max().unwrap_or(0)
+}
+
 pub fn agent_ui_event_from_daemon_event(
     event: &Value,
     last_sequence: u64,
@@ -315,6 +319,18 @@ mod tests {
         assert_eq!(tool.as_deref(), Some("CLI API"));
         assert_eq!(step_index, Some(3));
         assert_eq!(step_total, Some(12));
+    }
+
+    #[test]
+    fn max_daemon_event_sequence_ignores_malformed_events() {
+        let events = vec![
+            serde_json::json!({"sequence": 7, "kind": "ui_step"}),
+            serde_json::json!({"kind": "ui_step"}),
+            serde_json::json!({"sequence": 3, "kind": "ui_reply"}),
+            serde_json::json!({"sequence": "bad", "kind": "ui_reply"}),
+        ];
+
+        assert_eq!(max_daemon_event_sequence(&events), 7);
     }
 
     #[test]

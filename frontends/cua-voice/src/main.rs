@@ -4,7 +4,7 @@ use cua_core::{PermissionState, UiMode};
 use cua_voice::activation::ControlDoubleTap;
 use cua_voice::agent_events::{
     agent_reply_from_daemon_event, agent_step_from_daemon_event,
-    agent_ui_event_from_daemon_event_advancing_cursor,
+    agent_ui_event_from_daemon_event_advancing_cursor, max_daemon_event_sequence,
 };
 use cua_voice::client::CuaClient;
 use cua_voice::daemon::{profile_daemon_is_alive, spawn_profile_daemon};
@@ -1392,6 +1392,14 @@ fn start_agent_step_poll(
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 continue;
             };
+            if last_sequence == 0 {
+                match session.events_snapshot().await {
+                    Ok(events) => {
+                        last_sequence = max_daemon_event_sequence(&events);
+                    }
+                    Err(_) => break,
+                }
+            }
             loop {
                 match session.events_wait(last_sequence, 1_000).await {
                     Ok(events) => {
@@ -2339,6 +2347,20 @@ mod tests {
             let (read, mut write) = stream.into_split();
             let mut reader = tokio::io::BufReader::new(read);
             let mut line = String::new();
+            tokio::io::AsyncBufReadExt::read_line(&mut reader, &mut line)
+                .await
+                .unwrap();
+            assert!(line.contains("\"events.snapshot\""));
+            tokio::io::AsyncWriteExt::write_all(
+                &mut write,
+                br#"{"ok":true,"result":[]}"#,
+            )
+            .await
+            .unwrap();
+            tokio::io::AsyncWriteExt::write_all(&mut write, b"\n")
+                .await
+                .unwrap();
+            line.clear();
             tokio::io::AsyncBufReadExt::read_line(&mut reader, &mut line)
                 .await
                 .unwrap();

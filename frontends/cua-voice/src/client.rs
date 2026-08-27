@@ -235,6 +235,10 @@ impl CuaSession {
         .await
     }
 
+    pub async fn events_snapshot(&mut self) -> anyhow::Result<Vec<Value>> {
+        self.request("events.snapshot", None).await
+    }
+
     pub async fn events_wait(
         &mut self,
         sequence: u64,
