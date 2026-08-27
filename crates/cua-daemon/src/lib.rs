@@ -2228,16 +2228,7 @@ async fn capture_window_payload(
     state
         .metrics
         .observe(MetricKind::CaptureScreenshot, started.elapsed());
-    let encoded = state
-        .encode_lane
-        .payload(frame, request.include_bytes.unwrap_or(true))
-        .await
-        .map_err(|error| {
-            state.metrics.increment(CounterKind::EncodeDrops);
-            ApiError::busy(format!("encode lane unavailable: {error:?}"))
-        })?;
-    observe_encode_result(&state.metrics, &encoded);
-    Ok(encoded.value)
+    frame_payload_for_request(state, frame, request.include_bytes.unwrap_or(true)).await
 }
 
 fn window_capture_timeout() -> Duration {
@@ -2432,9 +2423,20 @@ async fn screenshot_payload_with_step(
     state
         .metrics
         .observe(MetricKind::CaptureScreenshot, started.elapsed());
+    frame_payload_for_request(state, lookup.frame, request.include_bytes.unwrap_or(true)).await
+}
+
+async fn frame_payload_for_request(
+    state: &DaemonState,
+    frame: CapturedFrame,
+    include_bytes: bool,
+) -> Result<FramePayload, ApiError> {
+    if !include_bytes {
+        return Ok(frame.as_payload(false));
+    }
     let encoded = state
         .encode_lane
-        .payload(lookup.frame, request.include_bytes.unwrap_or(true))
+        .payload(frame, true)
         .await
         .map_err(|error| {
             state.metrics.increment(CounterKind::EncodeDrops);
@@ -4586,6 +4588,34 @@ mod tests {
             .histograms
             .iter()
             .any(|histogram| histogram.name == "encode.dispatch" && histogram.count == 1));
+    }
+
+    #[tokio::test]
+    async fn metadata_only_screenshot_skips_encode_lane() {
+        let state = DaemonState::synthetic("test", "token");
+
+        let payload = screenshot_payload(
+            &state,
+            ScreenshotRequest {
+                max_width: Some(640),
+                include_bytes: Some(false),
+                force_fresh: Some(true),
+                encoding: Some(FrameEncoding::Png),
+            },
+        )
+        .await
+        .expect("metadata-only screenshot should succeed");
+        let snapshot = state.metrics.snapshot(0);
+
+        assert_eq!(payload.bytes_base64, None);
+        assert_eq!(
+            snapshot
+                .histograms
+                .iter()
+                .find(|histogram| histogram.name == "encode.dispatch")
+                .map(|histogram| histogram.count),
+            Some(0)
+        );
     }
 
     #[tokio::test]
