@@ -275,16 +275,16 @@ export class Cua {
         return session;
     }
     async openApp(app, options) {
-        return this.dispatch({ schema_version: "cua.v1", action: "open_app", app }, options);
+        return this.dispatch({ schema_version: "cua.v1", kind: "open_app", app_name: app }, options);
     }
     async shell(command, options) {
-        return this.dispatch({ schema_version: "cua.v1", action: "shell", command }, options);
+        return this.dispatch({ schema_version: "cua.v1", kind: "shell_exec", command, timeout_ms: 5000 }, options);
     }
     async aegis(args, options) {
-        return this.dispatch({ schema_version: "cua.v1", action: "aegis", args }, options);
+        return this.dispatch({ schema_version: "cua.v1", kind: "aegis", args, timeout_ms: 15000 }, options);
     }
     async ctx(args, options) {
-        return this.dispatch({ schema_version: "cua.v1", action: "ctx", args }, options);
+        return this.dispatch({ schema_version: "cua.v1", kind: "ctx", args, timeout_ms: 5000 }, options);
     }
     async traceVerify(dir) {
         return this.execJson(["--profile", this.profile, "trace", "verify", dir, "--json"]);

@@ -1,6 +1,6 @@
 # Local HTTP API
 
-cua exposes the CLI and local HTTP API for operator access. Latency-sensitive voice control uses the profile-local Unix socket at `~/.cua/profiles/<profile>/daemon.sock`.
+cua exposes the CLI and local HTTP API for operator access. Latency-sensitive voice control and SDK mutation paths use the profile-local Unix socket at `~/.cua/profiles/<profile>/daemon.sock`.
 
 Default bind: `127.0.0.1:8765`.
 
@@ -15,6 +15,7 @@ Security:
 - Observer sessions are valid for reads such as status, manifest, schemas, screenshot, context, observe, events, and visual sessions. Observer sessions cannot mutate runtime state.
 - Unix write callers pass `session_id` in the request envelope.
 - `GET /`, `GET /version`, and `GET /healthz` are unauthenticated readiness/discovery endpoints.
+- HTTP remains an operator/debug surface; SDK hot paths should prefer the profile-local Unix socket.
 
 Initial endpoints:
 
@@ -27,13 +28,17 @@ Initial endpoints:
 - `GET /metrics`
 - `GET /healthz`
 - `POST /capture/screenshot`
+- `POST /capture/window`
+- `POST /context/snapshot`
 - `GET /capture/stream.mjpeg`: continuous MJPEG stream from the daemon capture lane, newest-frame-per-tick, no backlog
 - `GET /capture/stream.ws`: continuous WebSocket stream from the daemon capture lane with JSON frame envelopes and binary JPEG frames
 - `GET /observe/desktop`
 - `GET /observe/displays`
 - `GET /observe/cursor`
 - `GET /events`: retained events from the bounded daemon event lane
+- `GET /events?after=<sequence>`: retained events after a sequence number
 - `GET /events/live?after=<sequence>&timeout_ms=<ms>`: bounded long-poll event wait from the daemon event lane
+- `POST /permissions/accessibility/request`
 - `POST /ui/step`: publish an agent-programmed visible HUD step with `label`, optional `task`, `tool`, `source`, `step_index`, `step_total`, and `ttl_ms`
 - `POST /ui/reply`: publish an agent-programmed visible HUD reply flash with `text`, optional `source`, and `ttl_ms`
 - `POST /ui/mode`: switch a running HUD between `headful` and `headless` without changing the underlying computer-use control path
@@ -50,9 +55,12 @@ Initial endpoints:
 - `POST /input/mouse`
 - `POST /input/keyboard`
 - `POST /input/clipboard`
+- `POST /input/frame`
 - `POST /clipboard/read`
 - `POST /clipboard/write`
 - `POST /model/eval`
+
+Attestation and cloud enrollment routes are not shipped in the current daemon. The `cua-core` schema bundle contains attestation schema types for compatibility work, but there is no HTTP route for challenge, sign, verify, identity, or enrollment yet.
 
 `GET /status` reports `active_streams`; stream clients increment the count on connect and decrement after disconnect cleanup. Its `inventory.config` object reports canonical `~/.cua` paths and migration state without exposing bearer token contents.
 

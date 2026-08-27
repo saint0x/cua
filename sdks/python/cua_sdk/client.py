@@ -401,16 +401,16 @@ class Cua:
         return VisualSession(stream)
 
     def open_app(self, app: str, session: OwnerSession | str) -> Json:
-        return self.dispatch({"schema_version": "cua.v1", "action": "open_app", "app": app}, session=session)
+        return self.dispatch({"schema_version": "cua.v1", "kind": "open_app", "app_name": app}, session=session)
 
     def shell(self, command: str, session: OwnerSession | str) -> Json:
-        return self.dispatch({"schema_version": "cua.v1", "action": "shell", "command": command}, session=session)
+        return self.dispatch({"schema_version": "cua.v1", "kind": "shell_exec", "command": command, "timeout_ms": 5000}, session=session)
 
     def aegis(self, args: list[str], session: OwnerSession | str) -> Json:
-        return self.dispatch({"schema_version": "cua.v1", "action": "aegis", "args": args}, session=session)
+        return self.dispatch({"schema_version": "cua.v1", "kind": "aegis", "args": args, "timeout_ms": 15000}, session=session)
 
     def ctx(self, args: list[str], session: OwnerSession | str) -> Json:
-        return self.dispatch({"schema_version": "cua.v1", "action": "ctx", "args": args}, session=session)
+        return self.dispatch({"schema_version": "cua.v1", "kind": "ctx", "args": args, "timeout_ms": 5000}, session=session)
 
     def trace_verify(self, dir: str | Path) -> Json:
         return self._exec_json(["--profile", self.profile, "trace", "verify", str(dir), "--json"])

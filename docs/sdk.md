@@ -2,6 +2,8 @@
 
 The canonical programmable surface is the cua runebook plus the local daemon protocol. SDKs are thin convenience layers over that surface.
 
+Reads are available immediately after connecting. Mutations should acquire an owner session first and pass that session to write helpers. The bearer token authenticates access to the local daemon; it is not an owner lease. Profile policy still decides whether capabilities such as clipboard are granted.
+
 ## Rust
 
 `crates/cua-client` is the shared Rust client for the profile-local Unix socket.
@@ -12,6 +14,18 @@ let status: serde_json::Value = client.request("status", None).await?;
 ```
 
 The voice app and CLI use this crate for normal one-shot Unix RPC calls.
+
+Rust is currently the SDK surface with direct persistent visual-session support through `CuaClient::visual_session(...)`.
+
+```rust
+let client = cua_client::CuaClient::connect("default").await?;
+let mut stream = client.visual_session(1280, 10, false, None).await?;
+while let Some(frame) = stream.next_frame().await? {
+    println!("frame {} {}x{}", frame.frame_id, frame.width, frame.height);
+    break;
+}
+stream.close().await?;
+```
 
 ## TypeScript
 
@@ -36,6 +50,14 @@ cua = Cua.connect(profile="default")
 print(cua.run("tests/fixtures/runebook-smoke.cua.toml"))
 print(cua.config_status())
 ```
+
+The TypeScript and Python packages shell to `cua run` and typed CLI commands. They expose one-shot context/screenshot helpers and frame-relative dispatch, but do not currently expose persistent visual-session, attestation, or cloud-enrollment helpers.
+
+## Examples And Proofs
+
+The SDK README files and `sdks/*/examples` include examples for shipped helpers. Those examples are backed by the runebook fixtures under `tests/fixtures/`, daemon unit tests for owner-session refusal and clipboard policy, and host proofs such as `scripts/host-session-proof.sh` and `scripts/host-visual-session-action-proof.sh`.
+
+Attestation and Quilt/cloud enrollment examples are intentionally omitted because the current source has no CLI, daemon RPC/routes, or SDK helpers for those flows. See `docs/attestation.md` for the current schema-only state.
 
 ## Design Rule
 

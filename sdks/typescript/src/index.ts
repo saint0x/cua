@@ -454,19 +454,19 @@ export class Cua {
   }
 
   async openApp(app: string, options: DispatchOptions): Promise<Json> {
-    return this.dispatch({ schema_version: "cua.v1", action: "open_app", app }, options);
+    return this.dispatch({ schema_version: "cua.v1", kind: "open_app", app_name: app }, options);
   }
 
   async shell(command: string, options: DispatchOptions): Promise<Json> {
-    return this.dispatch({ schema_version: "cua.v1", action: "shell", command }, options);
+    return this.dispatch({ schema_version: "cua.v1", kind: "shell_exec", command, timeout_ms: 5000 }, options);
   }
 
   async aegis(args: string[], options: DispatchOptions): Promise<Json> {
-    return this.dispatch({ schema_version: "cua.v1", action: "aegis", args }, options);
+    return this.dispatch({ schema_version: "cua.v1", kind: "aegis", args, timeout_ms: 15000 }, options);
   }
 
   async ctx(args: string[], options: DispatchOptions): Promise<Json> {
-    return this.dispatch({ schema_version: "cua.v1", action: "ctx", args }, options);
+    return this.dispatch({ schema_version: "cua.v1", kind: "ctx", args, timeout_ms: 5000 }, options);
   }
 
   async traceVerify(dir: string): Promise<Json> {

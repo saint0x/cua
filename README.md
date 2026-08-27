@@ -1,6 +1,6 @@
 # cua
 
-cua is a CLI-first local computer-use runtime for agents. It provides one resident daemon, a local Unix socket protocol for hot control paths, a local HTTP API for operator access, typed desktop observation, action delivery results, trace artifacts, and bounded model evals for selecting vision/action models without turning the project into an agent framework.
+cua is a CLI-first local computer-use runtime for macOS agents. It provides one resident daemon, a profile-local Unix socket for hot control paths, a loopback HTTP API for operator access, typed desktop observation, action delivery results, trace artifacts, and bounded model evals for selecting vision/action models without turning the project into an agent framework.
 
 On macOS, the shipped product is one Dock-visible app bundle: `cua.app`. The app opens the compact dynamic-island HUD and starts the local runtime it needs; the CLI and HTTP surfaces remain available for agents and operators.
 
@@ -20,7 +20,7 @@ Public control surfaces are intentionally limited to:
 - `crates/cua-model`: OpenRouter eval harness and model selection report
 - `crates/cua-trace`: trace records and validation helpers
 - `crates/cua-platform-macos`: macOS backend and permission boundary
-- `docs/`: API, eval, and support notes
+- `docs/`: API, config, SDK, eval, and support notes
 - `fozzy/`: deterministic scenario verification
 
 ## Run
@@ -121,4 +121,4 @@ fozzy replay artifacts/cua/macos/fozzy/cua-smoke.fozzy --json
 
 The current runtime has production-shaped contracts, daemon/CLI plumbing, Unix socket voice transport, live headless/headful HUD mode switching, persistent Unix visual-control sessions, frame-relative action dispatch, macOS permission probes, profile policy state, pause/resume/kill-switch controls, profile-gated daemon clipboard, daemon-owned capture/encode/input/event/permission/trace/model lanes, ScreenCaptureKit-backed macOS capture with CoreGraphics fallback, native macOS display/cursor/window observation, CGEvent mouse/keyboard input with refusing fallback, signed macOS app packaging, continuous MJPEG/WebSocket streams, schema export, trace inspection, and bounded model evals.
 
-Programmable SDKs are intentionally thin: Rust uses `crates/cua-client`, and TypeScript/Python wrappers live in `sdks/` on top of `cua run` plus the daemon protocol. See [docs/sdk.md](docs/sdk.md).
+Programmable SDKs are intentionally thin: Rust uses `crates/cua-client`, and TypeScript/Python wrappers live in `sdks/` on top of `cua run` plus the daemon protocol. Attestation and Quilt/cloud enrollment are schema-only in the current source, not shipped CLI/daemon/SDK surfaces. See [docs/sdk.md](docs/sdk.md), [docs/http-api.md](docs/http-api.md), [docs/config-home.md](docs/config-home.md), and [docs/attestation.md](docs/attestation.md).

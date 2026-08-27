@@ -46,10 +46,14 @@ HTTP is supported for operator/debug access, but write routes use the same owner
 
 HTTP endpoints:
 
+- `GET /`
 - `GET /manifest`
 - `GET /schemas`
+- `GET /version`
 - `GET /status`
+- `GET /config/status`
 - `GET /metrics`
+- `GET /healthz`
 - `POST /capture/screenshot`
 - `POST /capture/window`
 - `POST /context/snapshot`
@@ -83,6 +87,8 @@ HTTP endpoints:
 - `POST /clipboard/write`
 - `POST /model/eval`
 
+No attestation, identity, or cloud-enrollment HTTP endpoints are currently exposed.
+
 Unix socket RPC methods:
 
 - `visual.session`
@@ -113,13 +119,19 @@ Unix socket RPC methods:
 - `input.dispatch`
 - `input.dispatch_frame`
 
+No attestation, identity, or cloud-enrollment Unix RPC methods are currently exposed.
+
 CLI commands:
 
 - `cua serve`
 - `cua status --json`
+- `cua doctor --json`
 - `cua manifest --json`
 - `cua metrics --json`
+- `cua config status --json`
 - `cua events --json [--after <sequence>]`
+- `cua permissions status --json`
+- `cua permissions preflight --json`
 - `cua permissions request-accessibility --json`
 - `cua session acquire <session-id> --role owner|observer --json`
 - `cua session cancel <session-id> --json`
@@ -128,7 +140,9 @@ CLI commands:
 - `cua ui step <label> --step-index <n> --step-total <n> --json`
 - `cua ui reply <text> --json`
 - `cua ui mode headless|headful --json`
+- `cua ui island expanded|collapsed|toggle --json`
 - `cua perf live --json`
+- `cua perf bench screenshot|stream|input|model-prep --json`
 - `cua screenshot --out <path>`
 - `cua window-capture <window-id> --out <path>`
 - `cua context --json`
@@ -148,6 +162,13 @@ CLI commands:
 - `cua resume --json`
 - `cua kill-switch --json`
 - `cua model eval`
+- `cua schema export --out <path>`
+- `cua trace start <dir>`
+- `cua trace inspect <dir> --json`
+- `cua trace verify <dir> --json`
+- `cua trace replay <dir> --json`
+
+No `cua attestation`, `cua identity`, or `cua enroll` commands are currently exposed.
 
 ## System Prompts
 
