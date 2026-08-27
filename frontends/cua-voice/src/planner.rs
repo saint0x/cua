@@ -16,7 +16,7 @@ You receive:
 
 Your job is to choose the next tool action or action batch for cua. This is a realtime control loop, so be decisive, avoid long reasoning, avoid unnecessary extra turns, and keep the response text short. Return exactly one valid JSON object matching one of the schemas below. Do not use Markdown, prose before/after JSON, comments, arrays, function calls, tool-call syntax, or extra top-level keys.
 
-The ACTION objects below are the complete tool protocol available in this voice loop. You cannot read files, run shell commands, call browser APIs, launch apps through an invisible app API, or inspect private app state. To control the Mac, use only visible UI, mouse actions, keyboard actions, clipboard actions, and the explicit pause/resume/kill controls listed here.
+The ACTION objects below are the complete tool protocol available in this voice loop. To control the Mac, use visible UI, mouse actions, keyboard actions, clipboard actions, app launch, shell, Aegis browser control, and the explicit pause/resume/kill controls listed here. Do not claim access to anything outside this protocol.
 
 Top-level response schema:
 {"response":"[short status for the user]","action":null}
@@ -30,6 +30,8 @@ Supported ACTION shapes:
 {"kind":"key_type","text":"text to type"}
 {"kind":"key_paste","text":"text to paste"}
 {"kind":"open_app","app_name":"Messages"}
+{"kind":"shell_exec","command":"pwd && ls","timeout_ms":5000}
+{"kind":"aegis","args":["--mode","headful","page","actions"],"timeout_ms":15000}
 {"kind":"sequence","actions":[{"kind":"open_app","app_name":"Messages"},{"kind":"key_press","combo":"cmd+n"}],"inter_action_delay_ms":120}
 {"kind":"clipboard_read","allow_sensitive":false}
 {"kind":"clipboard_write","text":"text to put on clipboard"}
@@ -45,16 +47,19 @@ Coordinate rules:
 - Prefer key_type for short text into a focused field.
 - Prefer key_paste for longer text or exact multi-line text.
 - Prefer open_app when the user asks to open or launch a macOS app by name.
-- Prefer sequence when the user asks for multiple concrete actions, when multiple obvious steps are required, or when batching reduces latency. A sequence may contain mouse, key, open_app, and control actions. Do not nest sequence inside sequence.
+- Prefer shell_exec when the user asks to inspect or change local files, run a local CLI, query local process state, or do developer work that is faster and clearer through bash. Keep commands short, bounded, and directly tied to the user request.
+- Prefer aegis when the user asks for browser automation, web navigation, search, page inspection, headless browser work, or headful browser work through Aegis. Pass explicit Aegis CLI args only; do not wrap Aegis in shell_exec.
+- Prefer sequence when the user asks for multiple concrete actions, when multiple obvious steps are required, or when batching reduces latency. A sequence may contain mouse, key, open_app, shell_exec, aegis, and control actions. Do not nest sequence inside sequence.
 - Prefer key_press for keyboard shortcuts, using lowercase combos such as "enter", "escape", "cmd+l", "cmd+t", "cmd+w", "cmd+tab", "shift+cmd+g".
 - Prefer mouse_drag only when the user asks to drag, resize, scrub, select a range, or move an item.
 - Use clipboard actions only when the user explicitly asks about the clipboard or asks you to copy/store text there.
 - Use pause, resume, and kill_switch only when the user explicitly asks for those control states.
-- cua has no filesystem read/write tool in this voice loop. Do not invent local file paths, do not claim you can read files directly, and do not type shell commands to read files unless the user explicitly asks you to operate a visible terminal.
+- Use shell_exec for filesystem reads/writes only when the user's command clearly asks for local file or developer-work access. Keep the response short and let command output appear in action evidence.
+- Native Skill.md support is prompt-driven: when the user names a skill path or asks to use an existing skill repository, use shell_exec to read the relevant SKILL.md file first, then follow that file's instructions for the task. If the skill references nearby files, read only the relevant files with shell_exec before acting.
 
 Decision rules:
 - If the command asks what is visible, summarize the screenshot in one short sentence and set action:null.
-- If the command asks you to read a file and that file is not already open/visible in a desktop app, set action:null and briefly say the file is not visible to the voice controller.
+- If the command asks you to read or inspect a local file, use shell_exec with a direct bounded command unless the user clearly wants you to operate a visible app instead.
 - If the command implies a concrete UI action and the target is visible, return that action.
 - If the command is multi-step but clear, return sequence with the concrete steps instead of forcing another model roundtrip.
 - If the user asks to open an app and the app is not already visible, use open_app with the app name.
@@ -402,6 +407,16 @@ fn normalize_action_value(value: &mut serde_json::Value) {
                 .entry("inter_action_delay_ms")
                 .or_insert_with(|| serde_json::json!(120));
         }
+        "shell_exec" => {
+            object
+                .entry("timeout_ms")
+                .or_insert_with(|| serde_json::json!(5_000));
+        }
+        "aegis" => {
+            object
+                .entry("timeout_ms")
+                .or_insert_with(|| serde_json::json!(15_000));
+        }
         _ => {}
     }
     if let Some(button) = object.get_mut("button").and_then(|button| button.as_str()) {
@@ -610,9 +625,11 @@ mod tests {
     }
 
     #[test]
-    fn planner_prompt_forbids_direct_filesystem_reads() {
-        assert!(PLANNER_SYSTEM_PROMPT.contains("no filesystem read/write tool"));
-        assert!(PLANNER_SYSTEM_PROMPT.contains("file is not already open/visible"));
+    fn planner_prompt_exposes_strict_tool_protocol() {
+        assert!(PLANNER_SYSTEM_PROMPT.contains("shell_exec"));
+        assert!(PLANNER_SYSTEM_PROMPT.contains("aegis"));
+        assert!(PLANNER_SYSTEM_PROMPT.contains("Native Skill.md support"));
+        assert!(PLANNER_SYSTEM_PROMPT.contains("read or inspect a local file"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("complete tool protocol"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("Prefer sequence"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("open_app"));
@@ -697,6 +714,38 @@ mod tests {
                     InputAction::KeyPress { combo },
                 ] if app_name == "Messages" && combo == "cmd+n"
             )
+        ));
+    }
+
+    #[test]
+    fn parses_model_shell_and_aegis_actions_with_default_timeouts() {
+        let shell = parse_model_plan(
+            r#"{"response":"Checking files.","action":{"kind":"shell_exec","command":"pwd && ls"}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            shell.action,
+            Some(InputAction::ShellExec {
+                ref command,
+                timeout_ms: 5_000
+            }) if command == "pwd && ls"
+        ));
+
+        let aegis = parse_model_plan(
+            r#"{"response":"Inspecting browser.","action":{"kind":"aegis","args":["--mode","headful","page","actions"]}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            aegis.action,
+            Some(InputAction::Aegis {
+                ref args,
+                timeout_ms: 15_000
+            }) if args == &[
+                "--mode".to_string(),
+                "headful".to_string(),
+                "page".to_string(),
+                "actions".to_string()
+            ]
         ));
     }
 

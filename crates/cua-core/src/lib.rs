@@ -489,6 +489,14 @@ pub enum InputAction {
     OpenApp {
         app_name: String,
     },
+    ShellExec {
+        command: String,
+        timeout_ms: u64,
+    },
+    Aegis {
+        args: Vec<String>,
+        timeout_ms: u64,
+    },
     ClipboardRead {
         allow_sensitive: bool,
     },

@@ -1271,6 +1271,102 @@
             },
             {
               "properties": {
+                "actions": {
+                  "items": {
+                    "$ref": "#/definitions/InputAction"
+                  },
+                  "type": "array"
+                },
+                "inter_action_delay_ms": {
+                  "format": "uint64",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "sequence"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "actions",
+                "inter_action_delay_ms",
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "app_name": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "open_app"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "app_name",
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "command": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "shell_exec"
+                  ],
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "format": "uint64",
+                  "minimum": 0.0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "command",
+                "kind",
+                "timeout_ms"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "args": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "kind": {
+                  "enum": [
+                    "aegis"
+                  ],
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "format": "uint64",
+                  "minimum": 0.0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "args",
+                "kind",
+                "timeout_ms"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
                 "allow_sensitive": {
                   "type": "boolean"
                 },
@@ -2188,6 +2284,342 @@
     "InputAction": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "definitions": {
+        "InputAction": {
+          "oneOf": [
+            {
+              "properties": {
+                "duration_ms": {
+                  "format": "uint64",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "mouse_move"
+                  ],
+                  "type": "string"
+                },
+                "x": {
+                  "format": "int32",
+                  "type": "integer"
+                },
+                "y": {
+                  "format": "int32",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "duration_ms",
+                "kind",
+                "x",
+                "y"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "button": {
+                  "$ref": "#/definitions/MouseButton"
+                },
+                "count": {
+                  "format": "uint8",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "mouse_click"
+                  ],
+                  "type": "string"
+                },
+                "x": {
+                  "format": "int32",
+                  "type": "integer"
+                },
+                "y": {
+                  "format": "int32",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "button",
+                "count",
+                "kind",
+                "x",
+                "y"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "duration_ms": {
+                  "format": "uint64",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "from_x": {
+                  "format": "int32",
+                  "type": "integer"
+                },
+                "from_y": {
+                  "format": "int32",
+                  "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "mouse_drag"
+                  ],
+                  "type": "string"
+                },
+                "to_x": {
+                  "format": "int32",
+                  "type": "integer"
+                },
+                "to_y": {
+                  "format": "int32",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "duration_ms",
+                "from_x",
+                "from_y",
+                "kind",
+                "to_x",
+                "to_y"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "combo": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "key_press"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "combo",
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "key_type"
+                  ],
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "text"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "key_paste"
+                  ],
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "text"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "actions": {
+                  "items": {
+                    "$ref": "#/definitions/InputAction"
+                  },
+                  "type": "array"
+                },
+                "inter_action_delay_ms": {
+                  "format": "uint64",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "sequence"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "actions",
+                "inter_action_delay_ms",
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "app_name": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "open_app"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "app_name",
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "command": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "shell_exec"
+                  ],
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "format": "uint64",
+                  "minimum": 0.0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "command",
+                "kind",
+                "timeout_ms"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "args": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "kind": {
+                  "enum": [
+                    "aegis"
+                  ],
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "format": "uint64",
+                  "minimum": 0.0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "args",
+                "kind",
+                "timeout_ms"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "allow_sensitive": {
+                  "type": "boolean"
+                },
+                "kind": {
+                  "enum": [
+                    "clipboard_read"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "allow_sensitive",
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "clipboard_write"
+                  ],
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "text"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "pause"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "resume"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "kill_switch"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            }
+          ]
+        },
         "MouseButton": {
           "enum": [
             "left",
@@ -2353,6 +2785,102 @@
           "required": [
             "kind",
             "text"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "actions": {
+              "items": {
+                "$ref": "#/definitions/InputAction"
+              },
+              "type": "array"
+            },
+            "inter_action_delay_ms": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "kind": {
+              "enum": [
+                "sequence"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "actions",
+            "inter_action_delay_ms",
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "app_name": {
+              "type": "string"
+            },
+            "kind": {
+              "enum": [
+                "open_app"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "app_name",
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "command": {
+              "type": "string"
+            },
+            "kind": {
+              "enum": [
+                "shell_exec"
+              ],
+              "type": "string"
+            },
+            "timeout_ms": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "command",
+            "kind",
+            "timeout_ms"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "args": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "enum": [
+                "aegis"
+              ],
+              "type": "string"
+            },
+            "timeout_ms": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "args",
+            "kind",
+            "timeout_ms"
           ],
           "type": "object"
         },
@@ -2597,6 +3125,102 @@
               "required": [
                 "kind",
                 "text"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "actions": {
+                  "items": {
+                    "$ref": "#/definitions/InputAction"
+                  },
+                  "type": "array"
+                },
+                "inter_action_delay_ms": {
+                  "format": "uint64",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "sequence"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "actions",
+                "inter_action_delay_ms",
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "app_name": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "open_app"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "app_name",
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "command": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "shell_exec"
+                  ],
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "format": "uint64",
+                  "minimum": 0.0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "command",
+                "kind",
+                "timeout_ms"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "args": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "kind": {
+                  "enum": [
+                    "aegis"
+                  ],
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "format": "uint64",
+                  "minimum": 0.0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "args",
+                "kind",
+                "timeout_ms"
               ],
               "type": "object"
             },
@@ -3486,6 +4110,76 @@
         "session"
       ],
       "title": "SessionLeaseResult",
+      "type": "object"
+    },
+    "UiIslandRequest": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "UiIslandState": {
+          "enum": [
+            "expanded",
+            "collapsed",
+            "toggle"
+          ],
+          "type": "string"
+        }
+      },
+      "properties": {
+        "schema_version": {
+          "type": "string"
+        },
+        "source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/definitions/UiIslandState"
+        }
+      },
+      "required": [
+        "schema_version",
+        "state"
+      ],
+      "title": "UiIslandRequest",
+      "type": "object"
+    },
+    "UiIslandResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "UiIslandState": {
+          "enum": [
+            "expanded",
+            "collapsed",
+            "toggle"
+          ],
+          "type": "string"
+        }
+      },
+      "properties": {
+        "accepted": {
+          "type": "boolean"
+        },
+        "schema_version": {
+          "type": "string"
+        },
+        "source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/definitions/UiIslandState"
+        }
+      },
+      "required": [
+        "accepted",
+        "schema_version",
+        "state"
+      ],
+      "title": "UiIslandResult",
       "type": "object"
     },
     "UiModeRequest": {

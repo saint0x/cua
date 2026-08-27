@@ -2804,6 +2804,12 @@ fn input_action_label(action: &InputAction) -> String {
         InputAction::KeyPaste { text } => format!("pasting {} chars", text.chars().count()),
         InputAction::Sequence { actions, .. } => format!("sequence {} actions", actions.len()),
         InputAction::OpenApp { app_name } => format!("open app {app_name}"),
+        InputAction::ShellExec { command, .. } => {
+            format!("shell {}", compact_action_text(command, 48))
+        }
+        InputAction::Aegis { args, .. } => {
+            format!("aegis {}", compact_action_text(&args.join(" "), 48))
+        }
         InputAction::ClipboardRead { .. } => "clipboard read".to_string(),
         InputAction::ClipboardWrite { text } => {
             format!("clipboard write {} chars", text.chars().count())
@@ -2812,6 +2818,16 @@ fn input_action_label(action: &InputAction) -> String {
         InputAction::Resume => "resume control".to_string(),
         InputAction::KillSwitch => "kill switch".to_string(),
     }
+}
+
+fn compact_action_text(value: &str, limit: usize) -> String {
+    let compact = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.chars().count() <= limit {
+        return compact;
+    }
+    let mut truncated = compact.chars().take(limit).collect::<String>();
+    truncated.push_str("...");
+    truncated
 }
 
 fn ui_island_state(
@@ -3387,13 +3403,22 @@ async fn dispatch_control_action(
 }
 
 fn captures_trace_snapshots(action: &InputAction) -> bool {
-    !matches!(
-        action,
+    match action {
+        InputAction::MouseClick { .. } | InputAction::MouseDrag { .. } => true,
+        InputAction::Sequence { actions, .. } => actions.iter().any(captures_trace_snapshots),
         InputAction::MouseMove { .. }
-            | InputAction::Pause
-            | InputAction::Resume
-            | InputAction::KillSwitch
-    )
+        | InputAction::KeyPress { .. }
+        | InputAction::KeyType { .. }
+        | InputAction::KeyPaste { .. }
+        | InputAction::OpenApp { .. }
+        | InputAction::ShellExec { .. }
+        | InputAction::Aegis { .. }
+        | InputAction::ClipboardRead { .. }
+        | InputAction::ClipboardWrite { .. }
+        | InputAction::Pause
+        | InputAction::Resume
+        | InputAction::KillSwitch => false,
+    }
 }
 
 async fn clipboard_read(
@@ -4713,11 +4738,44 @@ mod tests {
             y: 20,
             duration_ms: 0,
         }));
+        assert!(!captures_trace_snapshots(&InputAction::Sequence {
+            actions: vec![
+                InputAction::OpenApp {
+                    app_name: "Messages".to_string(),
+                },
+                InputAction::KeyPress {
+                    combo: "cmd+n".to_string(),
+                },
+                InputAction::ShellExec {
+                    command: "pwd".to_string(),
+                    timeout_ms: 5_000,
+                },
+                InputAction::Aegis {
+                    args: vec!["version".to_string()],
+                    timeout_ms: 15_000,
+                },
+            ],
+            inter_action_delay_ms: 120,
+        }));
         assert!(captures_trace_snapshots(&InputAction::MouseClick {
             x: 10,
             y: 20,
             button: cua_core::MouseButton::Left,
             count: 1,
+        }));
+        assert!(captures_trace_snapshots(&InputAction::Sequence {
+            actions: vec![
+                InputAction::KeyPress {
+                    combo: "cmd+l".to_string(),
+                },
+                InputAction::MouseClick {
+                    x: 10,
+                    y: 20,
+                    button: cua_core::MouseButton::Left,
+                    count: 1,
+                },
+            ],
+            inter_action_delay_ms: 120,
         }));
     }
 
@@ -5103,6 +5161,25 @@ mod tests {
                 text: "hello".to_string()
             }),
             "typing 5 chars"
+        );
+        assert_eq!(
+            input_action_label(&InputAction::ShellExec {
+                command: "pwd && ls -la".to_string(),
+                timeout_ms: 5_000,
+            }),
+            "shell pwd && ls -la"
+        );
+        assert_eq!(
+            input_action_label(&InputAction::Aegis {
+                args: vec![
+                    "--mode".to_string(),
+                    "headful".to_string(),
+                    "page".to_string(),
+                    "actions".to_string(),
+                ],
+                timeout_ms: 15_000,
+            }),
+            "aegis --mode headful page actions"
         );
     }
 

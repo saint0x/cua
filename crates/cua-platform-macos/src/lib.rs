@@ -81,6 +81,33 @@ impl CaptureBackend for MacosCaptureBackend {
 #[derive(Debug, Default)]
 pub struct MacosInputBackend;
 
+struct MacosActionOutcome {
+    message: String,
+    route: InputRoute,
+    delivery_mode: DeliveryMode,
+    evidence_kind: EvidenceKind,
+}
+
+impl MacosActionOutcome {
+    fn desktop(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            route: InputRoute::Accessibility,
+            delivery_mode: DeliveryMode::Desktop,
+            evidence_kind: EvidenceKind::ValueReadback,
+        }
+    }
+
+    fn system(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            route: InputRoute::SystemApi,
+            delivery_mode: DeliveryMode::Background,
+            evidence_kind: EvidenceKind::ValueReadback,
+        }
+    }
+}
+
 #[async_trait]
 impl InputBackend for MacosInputBackend {
     async fn execute(&self, request: InputRequest) -> InputResult {
@@ -88,13 +115,13 @@ impl InputBackend for MacosInputBackend {
         let idempotency_key = request.idempotency_key;
         let result = execute_macos_input_action(request.action).await;
         match result {
-            Ok(message) => input_result(
+            Ok(outcome) => input_result(
                 idempotency_key,
                 Effect::Confirmed,
-                InputRoute::Accessibility,
-                DeliveryMode::Desktop,
-                EvidenceKind::ValueReadback,
-                message,
+                outcome.route,
+                outcome.delivery_mode,
+                outcome.evidence_kind,
+                outcome.message,
                 started.elapsed().as_nanos(),
             ),
             Err(message) => input_result(
@@ -114,7 +141,7 @@ impl InputBackend for MacosInputBackend {
     }
 }
 
-async fn execute_macos_input_action(action: InputAction) -> Result<String, String> {
+async fn execute_macos_input_action(action: InputAction) -> Result<MacosActionOutcome, String> {
     match action {
         InputAction::Sequence {
             actions,
@@ -126,40 +153,51 @@ async fn execute_macos_input_action(action: InputAction) -> Result<String, Strin
             let delay = Duration::from_millis(inter_action_delay_ms.min(2_000));
             let last_index = actions.len().saturating_sub(1);
             for (index, action) in actions.into_iter().enumerate() {
-                execute_macos_input_leaf(action)?;
+                execute_macos_input_leaf(action).await?;
                 if index < last_index && !delay.is_zero() {
                     tokio::time::sleep(delay).await;
                 }
             }
-            Ok("sequence posted".to_string())
+            Ok(MacosActionOutcome::system("sequence posted"))
         }
-        action => execute_macos_input_leaf(action),
+        action => execute_macos_input_leaf(action).await,
     }
 }
 
-fn execute_macos_input_leaf(action: InputAction) -> Result<String, String> {
+async fn execute_macos_input_leaf(action: InputAction) -> Result<MacosActionOutcome, String> {
     match action {
-        InputAction::MouseMove { x, y, .. } => post_mouse_move(x, y),
+        InputAction::MouseMove { x, y, .. } => {
+            post_mouse_move(x, y).map(MacosActionOutcome::desktop)
+        }
         InputAction::MouseClick {
             x,
             y,
             button,
             count,
-        } => post_mouse_click(x, y, button, count),
+        } => post_mouse_click(x, y, button, count).map(MacosActionOutcome::desktop),
         InputAction::MouseDrag {
             from_x,
             from_y,
             to_x,
             to_y,
             ..
-        } => post_mouse_drag(from_x, from_y, to_x, to_y),
-        InputAction::KeyPress { combo } => post_key_combo(&combo),
-        InputAction::KeyType { text } => post_text(&text),
-        InputAction::KeyPaste { text } => post_text(&text),
-        InputAction::OpenApp { app_name } => open_app(&app_name),
-        InputAction::Pause | InputAction::Resume | InputAction::KillSwitch => {
-            Ok("safety action accepted by local coordinator".to_string())
-        }
+        } => post_mouse_drag(from_x, from_y, to_x, to_y).map(MacosActionOutcome::desktop),
+        InputAction::KeyPress { combo } => post_key_combo(&combo).map(MacosActionOutcome::desktop),
+        InputAction::KeyType { text } => post_text(&text).map(MacosActionOutcome::desktop),
+        InputAction::KeyPaste { text } => post_text(&text).map(MacosActionOutcome::desktop),
+        InputAction::OpenApp { app_name } => open_app(&app_name).map(MacosActionOutcome::system),
+        InputAction::ShellExec {
+            command,
+            timeout_ms,
+        } => run_shell_command(command, timeout_ms)
+            .await
+            .map(MacosActionOutcome::system),
+        InputAction::Aegis { args, timeout_ms } => run_aegis_command(args, timeout_ms)
+            .await
+            .map(MacosActionOutcome::system),
+        InputAction::Pause | InputAction::Resume | InputAction::KillSwitch => Ok(
+            MacosActionOutcome::system("safety action accepted by local coordinator"),
+        ),
         InputAction::Sequence { .. } => Err("nested sequences are not supported".to_string()),
         InputAction::ClipboardRead { .. } | InputAction::ClipboardWrite { .. } => {
             Err("clipboard actions must use explicit clipboard/profile endpoints".to_string())
@@ -184,6 +222,99 @@ fn open_app(app_name: &str) -> Result<String, String> {
 #[cfg(not(target_os = "macos"))]
 fn open_app(_app_name: &str) -> Result<String, String> {
     Err("open_app is only available on macOS".to_string())
+}
+
+async fn run_shell_command(command: String, timeout_ms: u64) -> Result<String, String> {
+    if command.trim().is_empty() {
+        return Err("shell command must not be empty".to_string());
+    }
+    let timeout = Duration::from_millis(timeout_ms.clamp(100, 30_000));
+    let child = tokio::process::Command::new("/bin/zsh")
+        .arg("-lc")
+        .arg(&command)
+        .kill_on_drop(true)
+        .output();
+    let output = tokio::time::timeout(timeout, child)
+        .await
+        .map_err(|_| format!("shell command timed out after {}ms", timeout.as_millis()))?
+        .map_err(|error| format!("shell command failed to launch: {error}"))?;
+    command_output_message(
+        "shell",
+        output.status.code(),
+        &output.stdout,
+        &output.stderr,
+    )
+}
+
+async fn run_aegis_command(args: Vec<String>, timeout_ms: u64) -> Result<String, String> {
+    if args.iter().any(|arg| arg.trim().is_empty()) {
+        return Err("aegis args must not contain empty values".to_string());
+    }
+    let binary = aegis_binary();
+    let timeout = Duration::from_millis(timeout_ms.clamp(100, 60_000));
+    let child = tokio::process::Command::new(&binary)
+        .args(&args)
+        .kill_on_drop(true)
+        .output();
+    let output = tokio::time::timeout(timeout, child)
+        .await
+        .map_err(|_| format!("aegis command timed out after {}ms", timeout.as_millis()))?
+        .map_err(|error| {
+            format!(
+                "aegis command failed to launch {}: {error}",
+                binary.display()
+            )
+        })?;
+    command_output_message(
+        "aegis",
+        output.status.code(),
+        &output.stdout,
+        &output.stderr,
+    )
+}
+
+fn aegis_binary() -> std::path::PathBuf {
+    let mut candidates = Vec::new();
+    if let Ok(home) = std::env::var("HOME") {
+        candidates.push(std::path::PathBuf::from(home).join(".local/bin/aegis"));
+    }
+    candidates.push(std::path::PathBuf::from("/opt/homebrew/bin/aegis"));
+    candidates.push(std::path::PathBuf::from("/usr/local/bin/aegis"));
+    candidates
+        .into_iter()
+        .find(|candidate| candidate.exists())
+        .unwrap_or_else(|| std::path::PathBuf::from("aegis"))
+}
+
+fn command_output_message(
+    tool: &str,
+    code: Option<i32>,
+    stdout: &[u8],
+    stderr: &[u8],
+) -> Result<String, String> {
+    let stdout = compact_command_output(stdout);
+    let stderr = compact_command_output(stderr);
+    let status = code
+        .map(|code| code.to_string())
+        .unwrap_or_else(|| "signal".to_string());
+    let message = format!("{tool} exited {status}; stdout={stdout}; stderr={stderr}");
+    if code == Some(0) {
+        Ok(message)
+    } else {
+        Err(message)
+    }
+}
+
+fn compact_command_output(bytes: &[u8]) -> String {
+    let text = String::from_utf8_lossy(bytes);
+    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let limit = 1_200;
+    if compact.chars().count() <= limit {
+        return compact;
+    }
+    let mut truncated = compact.chars().take(limit).collect::<String>();
+    truncated.push_str("...");
+    truncated
 }
 
 pub fn permission_report() -> PermissionReport {
@@ -1557,6 +1688,36 @@ mod tests {
     fn input_backend_selection_is_available() {
         let backend = input_backend();
         assert_eq!(backend.name(), "macos-cgevent");
+    }
+
+    #[test]
+    fn compact_command_output_bounds_long_text() {
+        let long = "x ".repeat(1_000);
+        let compact = compact_command_output(long.as_bytes());
+
+        assert!(compact.chars().count() <= 1_203);
+        assert!(compact.ends_with("..."));
+    }
+
+    #[tokio::test]
+    async fn shell_exec_uses_system_route() {
+        let backend = MacosInputBackend;
+        let result = backend
+            .execute(InputRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                idempotency_key: uuid::Uuid::new_v4(),
+                deadline_mono_ns: None,
+                action: InputAction::ShellExec {
+                    command: "printf cua-shell-ok".to_string(),
+                    timeout_ms: 2_000,
+                },
+            })
+            .await;
+
+        assert_eq!(result.effect, Effect::Confirmed);
+        assert_eq!(result.route, InputRoute::SystemApi);
+        assert_eq!(result.delivery_mode, DeliveryMode::Background);
+        assert!(result.evidence[0].message.contains("cua-shell-ok"));
     }
 
     #[test]

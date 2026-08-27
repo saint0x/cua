@@ -65,6 +65,8 @@ enum Command {
         #[command(subcommand)]
         command: KeyCommand,
     },
+    Shell(ShellArgs),
+    Aegis(AegisArgs),
     Clipboard {
         #[command(subcommand)]
         command: ClipboardCommand,
@@ -264,6 +266,21 @@ enum KeyCommand {
     Press { combo: String },
     Type { text: String },
     Paste { text: String },
+}
+
+#[derive(Debug, Args)]
+struct ShellArgs {
+    command: String,
+    #[arg(long, default_value_t = 5_000)]
+    timeout_ms: u64,
+}
+
+#[derive(Debug, Args)]
+struct AegisArgs {
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
+    args: Vec<String>,
+    #[arg(long, default_value_t = 15_000)]
+    timeout_ms: u64,
 }
 
 #[derive(Debug, Subcommand)]
@@ -477,6 +494,8 @@ async fn main() -> anyhow::Result<()> {
         Some(Command::Observe(flag)) => unix_get(&cli.profile, "observe.desktop", flag.json).await,
         Some(Command::Mouse { command }) => daemon_input(&cli.profile, mouse_action(command)).await,
         Some(Command::Key { command }) => daemon_input(&cli.profile, key_action(command)).await,
+        Some(Command::Shell(args)) => daemon_input(&cli.profile, shell_action(args)).await,
+        Some(Command::Aegis(args)) => daemon_input(&cli.profile, aegis_action(args)).await,
         Some(Command::Clipboard { command }) => clipboard(&cli.profile, command).await,
         Some(Command::Model { command }) => model(command).await,
         Some(Command::Schema { command }) => schema(command).await,
@@ -1168,6 +1187,20 @@ fn key_action(command: KeyCommand) -> InputAction {
     }
 }
 
+fn shell_action(args: ShellArgs) -> InputAction {
+    InputAction::ShellExec {
+        command: args.command,
+        timeout_ms: args.timeout_ms,
+    }
+}
+
+fn aegis_action(args: AegisArgs) -> InputAction {
+    InputAction::Aegis {
+        args: args.args,
+        timeout_ms: args.timeout_ms,
+    }
+}
+
 async fn daemon_input(profile: &str, action: InputAction) -> anyhow::Result<()> {
     let value = unix_request_json(
         profile,
@@ -1389,7 +1422,9 @@ fn replay_request(
             | InputAction::KeyType { .. }
             | InputAction::KeyPaste { .. }
             | InputAction::Sequence { .. }
-            | InputAction::OpenApp { .. } => {
+            | InputAction::OpenApp { .. }
+            | InputAction::ShellExec { .. }
+            | InputAction::Aegis { .. } => {
                 return Ok(Some(("input.dispatch", serde_json::to_value(input)?)));
             }
             InputAction::ClipboardRead { .. } | InputAction::ClipboardWrite { .. } => {
