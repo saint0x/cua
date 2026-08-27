@@ -471,6 +471,14 @@ pub enum MachineKeyBackend {
     Unknown,
 }
 
+pub fn production_machine_key_backend() -> MachineKeyBackend {
+    MachineKeyBackend::Keychain
+}
+
+pub fn cloud_enrollment_owner() -> &'static str {
+    "local_cua_client"
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct MachineIdentity {
     pub schema_version: String,
@@ -1352,6 +1360,15 @@ mod tests {
         ] {
             assert!(bundle.schemas.contains_key(key), "missing schema {key}");
         }
+    }
+
+    #[test]
+    fn production_policy_decisions_are_canonical() {
+        assert_eq!(
+            production_machine_key_backend(),
+            MachineKeyBackend::Keychain
+        );
+        assert_eq!(cloud_enrollment_owner(), "local_cua_client");
     }
 
     #[test]

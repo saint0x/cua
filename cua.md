@@ -42,6 +42,8 @@ Fast local command parsing can bypass the model for simple spoken commands:
 
 cua exposes the same local control substrate through HTTP, Unix socket RPC, and CLI.
 
+HTTP is supported for operator/debug access, but write routes use the same owner-session policy as the Unix protocol. Acquire an owner with `POST /session/acquire` and pass `x-cua-session-id` on profile mutation, control, input dispatch, and clipboard-write requests. Bearer auth alone is read-only for those routes.
+
 HTTP endpoints:
 
 - `GET /manifest`
@@ -230,7 +232,7 @@ Short spoken macOS computer control command.
 
 cua keeps local chat history in the active profile at `~/.cua/profiles/<profile>/chat.db`. The chat database is owned by cua and records user/assistant turns, action JSON, action evidence, model, profile, and turn id.
 
-The memory/context layer is owned by the vendored `ctx` binary. It is required, not optional. The packaged app ships `ctx` next to `cua` and `cua-voice`; development builds resolve `vendor/ctx/ctx` or `CUA_CTX_BIN`.
+The memory/context layer is owned by the vendored `ctx` binary. It is required, not optional. The packaged app ships `ctx` next to `cua` and `cua-voice`; non-packaged production installs resolve `~/.cua/bin/ctx`; development builds may use `CUA_CTX_BIN` or opt into the repo-local `vendor/ctx/ctx` path with `CUA_DEV_REPO_PATHS=1`.
 
 For non-fast voice planner turns, cua automatically:
 

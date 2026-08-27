@@ -1226,7 +1226,6 @@ fn initial_ui_source(mode: &UiMode) -> &'static str {
 }
 
 fn load_cua_dotenv() {
-    dotenvy::dotenv().ok();
     if let Ok(path) = std::env::var("CUA_ENV_FILE") {
         load_dotenv_path(Path::new(&path));
     }

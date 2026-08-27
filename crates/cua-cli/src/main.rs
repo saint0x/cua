@@ -549,7 +549,6 @@ async fn main() -> anyhow::Result<()> {
 }
 
 fn load_cua_dotenv() {
-    dotenvy::dotenv().ok();
     if let Ok(path) = std::env::var("CUA_ENV_FILE") {
         load_dotenv_path(Path::new(&path));
     }

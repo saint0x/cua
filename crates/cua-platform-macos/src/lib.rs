@@ -8,8 +8,8 @@ use cua_capture::{
     CapturedFrameTimings, UnavailableCaptureBackend,
 };
 use cua_core::{
-    now_wall_ms, CursorState, DeliveryMode, DisplayInfo, Effect, Evidence, EvidenceKind,
-    FrameEnvelope, InputAction, InputRequest, InputResult, InputRoute, MouseButton,
+    cua_bin_path, now_wall_ms, CursorState, DeliveryMode, DisplayInfo, Effect, Evidence,
+    EvidenceKind, FrameEnvelope, InputAction, InputRequest, InputResult, InputRoute, MouseButton,
     PermissionReport, PermissionState, Rect, WindowInfo, SCHEMA_VERSION,
 };
 use cua_input::InputBackend;
@@ -350,7 +350,22 @@ fn ctx_binary() -> std::path::PathBuf {
             }
         }
     }
-    std::path::PathBuf::from("vendor/ctx/ctx")
+    if let Ok(path) = cua_bin_path("ctx") {
+        if path.exists() {
+            return path;
+        }
+    }
+    if explicit_dev_repo_paths_enabled() {
+        return std::path::PathBuf::from("vendor/ctx/ctx");
+    }
+    std::path::PathBuf::from("ctx")
+}
+
+fn explicit_dev_repo_paths_enabled() -> bool {
+    cfg!(test)
+        || std::env::var("CUA_DEV_REPO_PATHS")
+            .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
 }
 
 fn command_output_message(

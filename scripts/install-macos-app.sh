@@ -13,19 +13,6 @@ sync_openrouter_env() {
   local env_dir="${CUA_HOME:-$HOME/.cua}/config"
   local env_file="$env_dir/env"
   local value="${OPENROUTER_API_KEY:-}"
-  if [[ -z "$value" && -f "$ROOT/.env" ]]; then
-    value="$(awk '
-      /^[[:space:]]*(export[[:space:]]+)?OPENROUTER_API_KEY=/ {
-        sub(/^[[:space:]]*export[[:space:]]+/, "")
-        sub(/^[^=]*=/, "")
-        gsub(/^[[:space:]]+|[[:space:]]+$/, "")
-        gsub(/^"|"$/, "")
-        gsub(/^'\''|'\''$/, "")
-        print
-        exit
-      }
-    ' "$ROOT/.env")"
-  fi
   [[ -n "$value" ]] || return 0
   mkdir -p "$env_dir"
   chmod 700 "$env_dir"

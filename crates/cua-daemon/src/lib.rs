@@ -465,6 +465,42 @@ impl SessionRegistry {
         }
     }
 
+    fn authorize_required_owner(&self, session_id: Option<&str>) -> Result<(), ApiError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| ApiError::internal(anyhow::anyhow!("session registry poisoned")))?;
+        prune_expired_sessions(&mut inner, now_wall_ms());
+        let Some(owner) = inner.owner_session_id.clone() else {
+            return Err(ApiError::forbidden(
+                "session_owner_required",
+                "HTTP writes require an active owner session; acquire one with /session/acquire and send x-cua-session-id",
+            ));
+        };
+        let Some(session_id) = session_id else {
+            return Err(ApiError::forbidden(
+                "session_owner",
+                format!("write lease is held by owner session {owner}"),
+            ));
+        };
+        if owner != session_id {
+            return Err(ApiError::forbidden(
+                "session_owner",
+                format!("write lease is held by owner session {owner}"),
+            ));
+        }
+        match inner.sessions.get_mut(session_id) {
+            Some(session) if session.role == RuntimeSessionRole::Owner => {
+                session.last_seen_wall_ms = now_wall_ms();
+                Ok(())
+            }
+            _ => Err(ApiError::forbidden(
+                "session_owner",
+                "session does not hold an active owner lease",
+            )),
+        }
+    }
+
     fn snapshot(&self) -> SessionSnapshot {
         let mut inner = self.inner.lock().expect("session registry lock");
         prune_expired_sessions(&mut inner, now_wall_ms());
@@ -1228,6 +1264,7 @@ fn host_platform_name() -> &'static str {
 
 pub fn router(state: DaemonState) -> Router {
     let auth_state = state.clone();
+    let write_state = state.clone();
     Router::new()
         .route("/", get(root))
         .route("/manifest", get(manifest))
@@ -1258,18 +1295,78 @@ pub fn router(state: DaemonState) -> Router {
         .route("/ui/reply", post(ui_reply))
         .route("/ui/mode", post(ui_mode))
         .route("/ui/island", post(ui_island))
-        .route("/profile/create", post(profile_create))
-        .route("/profile/activate", post(profile_activate))
+        .route(
+            "/profile/create",
+            post(profile_create).route_layer(middleware::from_fn_with_state(
+                write_state.clone(),
+                require_http_owner_write,
+            )),
+        )
+        .route(
+            "/profile/activate",
+            post(profile_activate).route_layer(middleware::from_fn_with_state(
+                write_state.clone(),
+                require_http_owner_write,
+            )),
+        )
         .route("/profile/status", get(profile_status))
-        .route("/control/pause", post(control_pause))
-        .route("/control/resume", post(control_resume))
-        .route("/control/kill-switch", post(control_kill_switch))
-        .route("/input/mouse", post(input_action))
-        .route("/input/keyboard", post(input_action))
-        .route("/input/clipboard", post(input_action))
-        .route("/input/frame", post(input_frame_action))
+        .route(
+            "/control/pause",
+            post(control_pause).route_layer(middleware::from_fn_with_state(
+                write_state.clone(),
+                require_http_owner_write,
+            )),
+        )
+        .route(
+            "/control/resume",
+            post(control_resume).route_layer(middleware::from_fn_with_state(
+                write_state.clone(),
+                require_http_owner_write,
+            )),
+        )
+        .route(
+            "/control/kill-switch",
+            post(control_kill_switch).route_layer(middleware::from_fn_with_state(
+                write_state.clone(),
+                require_http_owner_write,
+            )),
+        )
+        .route(
+            "/input/mouse",
+            post(input_action).route_layer(middleware::from_fn_with_state(
+                write_state.clone(),
+                require_http_owner_write,
+            )),
+        )
+        .route(
+            "/input/keyboard",
+            post(input_action).route_layer(middleware::from_fn_with_state(
+                write_state.clone(),
+                require_http_owner_write,
+            )),
+        )
+        .route(
+            "/input/clipboard",
+            post(input_action).route_layer(middleware::from_fn_with_state(
+                write_state.clone(),
+                require_http_owner_write,
+            )),
+        )
+        .route(
+            "/input/frame",
+            post(input_frame_action).route_layer(middleware::from_fn_with_state(
+                write_state.clone(),
+                require_http_owner_write,
+            )),
+        )
         .route("/clipboard/read", post(clipboard_read))
-        .route("/clipboard/write", post(clipboard_write))
+        .route(
+            "/clipboard/write",
+            post(clipboard_write).route_layer(middleware::from_fn_with_state(
+                write_state.clone(),
+                require_http_owner_write,
+            )),
+        )
         .route("/model/eval", post(model_eval))
         .layer(middleware::from_fn_with_state(auth_state, require_auth))
         .layer(TraceLayer::new_for_http())
@@ -1308,15 +1405,17 @@ pub async fn serve(
 }
 
 pub async fn load_or_create_profile_token(profile: &str) -> anyhow::Result<String> {
-    if let Ok(token) = std::env::var("CUA_HTTP_TOKEN") {
-        if !token.trim().is_empty() {
-            return Ok(token);
+    if http_token_override_allowed() {
+        if let Ok(token) = std::env::var("CUA_HTTP_TOKEN") {
+            if !token.trim().is_empty() {
+                return Ok(token);
+            }
         }
     }
     let path = profile_token_path(profile)?;
     if let Ok(token) = tokio::fs::read_to_string(&path).await {
         let token = token.trim().to_string();
-        if !token.is_empty() {
+        if !token.trim().is_empty() {
             return Ok(token);
         }
     }
@@ -1326,6 +1425,13 @@ pub async fn load_or_create_profile_token(profile: &str) -> anyhow::Result<Strin
     let token = format!("cua-{}", Uuid::new_v4());
     tokio::fs::write(&path, format!("{token}\n")).await?;
     Ok(token)
+}
+
+fn http_token_override_allowed() -> bool {
+    cfg!(test)
+        || std::env::var("CUA_DEV_HTTP_TOKEN_OVERRIDE")
+            .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
 }
 
 async fn spawn_unix_socket(state: DaemonState) -> anyhow::Result<()> {
@@ -2000,6 +2106,34 @@ async fn require_auth(State(state): State<DaemonState>, request: Request, next: 
             }),
         )
             .into_response()
+    }
+}
+
+async fn require_http_owner_write(
+    State(state): State<DaemonState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let started = Instant::now();
+    let session_id = request
+        .headers()
+        .get("x-cua-session-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    match state.sessions.authorize_required_owner(session_id) {
+        Ok(()) => {
+            state
+                .metrics
+                .observe(MetricKind::PolicyCheck, started.elapsed());
+            next.run(request).await
+        }
+        Err(error) => {
+            state
+                .metrics
+                .observe(MetricKind::PolicyCheck, started.elapsed());
+            error.into_response()
+        }
     }
 }
 
@@ -5069,6 +5203,35 @@ mod tests {
         );
         assert_eq!(inventory["owner_session_id"], "owner-1");
         assert_eq!(inventory["connected_clients"], 2);
+    }
+
+    #[tokio::test]
+    async fn http_write_policy_requires_owner_session() {
+        let state = DaemonState::synthetic("http-write-policy", "token");
+
+        let without_owner = state.sessions.authorize_required_owner(None);
+        assert!(without_owner.is_err());
+
+        state
+            .sessions
+            .acquire(SessionLeaseRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                session_id: "owner-http".to_string(),
+                client_name: "http policy test".to_string(),
+                role: RuntimeSessionRole::Owner,
+                ttl_ms: Some(60_000),
+            })
+            .unwrap();
+
+        assert!(state.sessions.authorize_required_owner(None).is_err());
+        assert!(state
+            .sessions
+            .authorize_required_owner(Some("observer-http"))
+            .is_err());
+        assert!(state
+            .sessions
+            .authorize_required_owner(Some("owner-http"))
+            .is_ok());
     }
 
     #[tokio::test]

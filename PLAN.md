@@ -123,12 +123,12 @@ Work:
 - Finish `cua-client` as a reusable Rust SDK crate with typed errors instead of generic `anyhow` strings for protocol errors.
 - Preserve idempotency support for input requests. SDK callers must not accidentally create untraceable duplicate actions.
 - Prefer Unix socket transport by default.
-- Keep HTTP optional for operator/debug unless it receives equivalent owner-session enforcement.
+- Keep HTTP optional for operator/debug and enforce owner-session ids on HTTP write routes.
 - Use `session.acquire` for every SDK code path that mutates state.
 - Require owner sessions for writes: input dispatch, frame input dispatch, profile create/activate, pause/resume/kill, and clipboard write.
 - Allow observer sessions for reads: status, manifest, schemas, screenshot, context, observe, events, and visual session.
-- Decide and implement HTTP write-route policy: session id support for writes or explicit development/operator-only status.
-- Decide whether `CUA_HTTP_TOKEN` remains production override or becomes dev/test only.
+- Keep HTTP write-route policy aligned with the implemented `x-cua-session-id` owner-session requirement.
+- Keep `CUA_HTTP_TOKEN` as a dev/test-only override gated by `CUA_DEV_HTTP_TOKEN_OVERRIDE=1`.
 - Add owner-session heartbeat/lease renewal, lease expiry tests, and explicit refusal evidence for writes attempted without an owner lease.
 - Finish advanced TypeScript/Python SDK parity: local Unix where supported, HTTP fallback where practical, generated/checked-in protocol types, attestation helpers, event streaming, visual streaming, trace verify/replay helpers, and model eval helper.
 
@@ -153,11 +153,11 @@ Must coordinate with:
 Work:
 - Normalize durable runtime/config state under `~/.cua/{concern}/**/*`.
 - Preserve valid existing paths for profile chat DB, ctx workspace, HTTP token, and daemon socket.
-- Migrate `~/.cua/.env` to `~/.cua/config/env` or decide current-directory `.env` is dev-only/removed.
+- Migrate `~/.cua/.env` to `~/.cua/config/env`; current-directory `.env` is not loaded by runtime code.
 - Make scripts use `CUA_HOME` and concern-specific artifact paths.
 - Ensure app runtime logs/proofs use `~/.cua/artifacts/...` where appropriate.
 - Update `ctx_binary()` so production prefers packaged sibling or `~/.cua/bin/ctx`, not repo `vendor/ctx/ctx` except explicit dev mode.
-- Decide whether `ctx` installs into `~/.cua/bin/ctx` or only resolves as a packaged sibling.
+- Keep ctx resolution on packaged sibling first, then `~/.cua/bin/ctx`, with repo-local ctx only behind explicit development mode.
 - Implement local chat DB persistence and automatic feed back into the agent loop.
 - Use the vendored `ctx` binary as the required memory layer, not fallback logic.
 - Add agent-accessible ctx tool and automatic chat/context feeding.
@@ -249,22 +249,3 @@ Done means:
 - Docs match current shipped behavior and do not mention unsupported features as available.
 - Every example is either smoke-tested or directly backed by a passing fixture/proof.
 - README is concise, feature-focused, and production-oriented.
-
-Agent I: Open Policy Decisions Owner
-
-Scope:
-- Owns unresolved decisions that block final production semantics. This agent should resolve decisions by editing source/docs/tests, not by writing essays.
-
-Must coordinate with:
-- The agent whose implementation depends on the decision.
-
-Decisions to close:
-- Attestation backend policy: Secure Enclave first, Keychain first, or file key only for tests.
-- HTTP write-route policy: supported with owner-session semantics or operator/debug-only.
-- Token override policy: keep `CUA_HTTP_TOKEN` production override or make it dev/test only.
-- Current-directory environment loading policy: remove entirely or keep dev-only.
-- ctx installation policy: install into `~/.cua/bin/ctx` or resolve only as packaged sibling.
-- Cloud enrollment ownership: implement here or in Quilt cloud with a local cua client.
-
-Done means:
-- Each decision has one implemented behavior, tests or docs proving it, and no unresolved duplicate plan item elsewhere.

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+export CUA_DEV_HTTP_TOKEN_OVERRIDE=1
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
@@ -10,23 +12,8 @@ command -v jq >/dev/null
 command -v perl >/dev/null
 command -v say >/dev/null
 
-if [[ -z "${OPENROUTER_API_KEY:-}" && -f .env ]]; then
-  while IFS='=' read -r key value; do
-    key="${key#export }"
-    if [[ "$key" == "OPENROUTER_API_KEY" && -n "${value:-}" ]]; then
-      value="${value%$'\r'}"
-      value="${value%\"}"
-      value="${value#\"}"
-      value="${value%\'}"
-      value="${value#\'}"
-      export OPENROUTER_API_KEY="$value"
-      break
-    fi
-  done < .env
-fi
-
 if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
-  echo "OPENROUTER_API_KEY is required for host voice WAV proof" >&2
+  echo "OPENROUTER_API_KEY is required for host voice WAV proof; set it in the environment or ~/.cua/config/env before launching cua" >&2
   exit 1
 fi
 

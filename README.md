@@ -49,9 +49,9 @@ cargo run -p cua -- config status --json
 cargo run -p cua -- stream --unix --frames 3 --json
 ```
 
-`cua` automatically loads environment values from the current directory `.env`, `CUA_ENV_FILE`, and `~/.cua/config/env`. `OPENROUTER_API_KEY` can live in any of those locations.
+`cua` automatically loads environment values from `CUA_ENV_FILE` and `~/.cua/config/env`. The current directory `.env` is ignored by production runtime code.
 
-`cua serve` refuses non-loopback binds unless `--allow-lan` is explicit. The daemon also opens a profile-local socket at `~/.cua/profiles/<profile>/daemon.sock`; the app runtime uses that socket for context snapshots, visual sessions, and input dispatch. The local APIs use a per-profile bearer token stored at `~/.cua/profiles/<profile>/http.token`; CLI and app commands load it automatically. `cua config status --json` reports the canonical `~/.cua` paths and migration state without exposing token contents.
+`cua serve` refuses non-loopback binds unless `--allow-lan` is explicit. The daemon also opens a profile-local socket at `~/.cua/profiles/<profile>/daemon.sock`; the app runtime uses that socket for context snapshots, visual sessions, and input dispatch. The local APIs use a per-profile bearer token stored at `~/.cua/profiles/<profile>/http.token`; CLI and app commands load it automatically. HTTP write routes also require an owner session id in `x-cua-session-id`. `CUA_HTTP_TOKEN` is a test/development override only when `CUA_DEV_HTTP_TOKEN_OVERRIDE=1` is set. `cua config status --json` reports the canonical `~/.cua` paths and migration state without exposing token contents.
 
 Run `cua serve --hud-mode headful` for the visible dynamic-island HUD or `cua serve --hud-mode headless` for the same resident voice/control event loop without a visible HUD. The HUD process also accepts `cua-voice --headful|--headless` directly. Agents can switch a running HUD with `cua ui mode headless|headful`.
 
@@ -68,11 +68,10 @@ The packager builds `cua`, creates `artifacts/cua/macos/cua.app`, signs it with 
 
 ## Evaluate Models
 
-Create a local `.env`:
+Create `~/.cua/config/env`:
 
 ```sh
 OPENROUTER_API_KEY=...
-CUA_HTTP_TOKEN=...
 CUA_MODEL_EVAL_LIVE=0
 CUA_MODEL_EVAL_MAX_TOKENS=256
 CUA_MODEL_EVAL_MAX_CALLS=8

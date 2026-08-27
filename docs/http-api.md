@@ -8,8 +8,10 @@ Security:
 
 - `cua serve` refuses non-loopback binds unless `--allow-lan` is passed.
 - Authenticated endpoints require `Authorization: Bearer <token>`.
-- Profile tokens are loaded from `CUA_HTTP_TOKEN` or `~/.cua/profiles/<profile>/http.token`.
+- Production profile tokens are loaded from `~/.cua/profiles/<profile>/http.token`.
+- `CUA_HTTP_TOKEN` is honored only for tests or explicit development runs with `CUA_DEV_HTTP_TOKEN_OVERRIDE=1`.
 - The Unix socket uses the same profile token and newline-delimited JSON requests.
+- HTTP write routes require an active owner session. Acquire one with `POST /session/acquire`, then send `x-cua-session-id: <owner-session-id>` on profile mutation, control, input dispatch, and clipboard-write requests.
 - `GET /`, `GET /version`, and `GET /healthz` are unauthenticated readiness/discovery endpoints.
 
 Initial endpoints:
