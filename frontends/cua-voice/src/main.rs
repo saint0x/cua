@@ -45,6 +45,8 @@ const MINIMIZED_WIDTH: f32 = 38.0;
 const MINIMIZED_HEIGHT: f32 = 28.0;
 const MINIMIZED_RADIUS: f32 = 14.0;
 const MINIMIZED_RIGHT_OFFSET: f32 = 220.0;
+const UI_TEXT_PX: f32 = 12.0;
+const UI_META_PX: f32 = 11.0;
 
 #[derive(Debug, Parser)]
 #[command(name = "cua-voice", version, about = "Rust voice HUD for cua")]
@@ -91,6 +93,7 @@ struct VoiceHud {
     minimized_progress: f32,
     expanded: bool,
     minimized: bool,
+    chrome_visible: bool,
     drag: Option<IslandDrag>,
     model_label: String,
 }
@@ -121,6 +124,7 @@ impl VoiceHud {
             minimized_progress: 0.0,
             expanded: false,
             minimized: false,
+            chrome_visible: false,
             drag: None,
             model_label,
         }
@@ -166,7 +170,7 @@ impl VoiceHud {
             .rounded(px(4.0))
             .bg(hsla(0.0, 0.0, 1.0, 0.10))
             .text_color(rgb(0xb9b9c0))
-            .text_xs()
+            .text_size(px(UI_TEXT_PX))
             .child(label.into())
     }
 
@@ -265,6 +269,7 @@ impl VoiceHud {
                 spread_radius: px(0.0),
                 offset: point(px(0.0), px(6.0)),
             }])
+            .relative()
             .on_mouse_down(
                 GpuiMouseButton::Left,
                 cx.listener(|this, _, window, cx| {
@@ -308,20 +313,20 @@ impl VoiceHud {
             .px_3()
             .flex()
             .flex_col()
+            .child(self.stoplights(cx))
             .child(
                 div()
                     .h(px(COMPACT_HEIGHT))
                     .flex()
                     .items_center()
                     .gap_3()
-                    .child(self.stoplights(cx))
                     .child(self.orb())
                     .child(
                         div()
                             .w(px(190.0))
                             .truncate()
                             .text_color(rgb(0x9f9fa6))
-                            .text_xs()
+                            .text_size(px(UI_TEXT_PX))
                             .child(title),
                     )
                     .child(Self::divider())
@@ -341,11 +346,13 @@ impl VoiceHud {
 
     fn stoplights(&self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
+            .absolute()
+            .left(px(8.0))
+            .top(px(3.0))
             .flex()
             .items_center()
             .gap_0p5()
-            .opacity(0.62)
-            .group_hover("cua-island", |style| style.opacity(1.0))
+            .opacity(if self.chrome_visible { 0.92 } else { 0.0 })
             .hover(|style| style.opacity(1.0))
             .child(stoplight(0xff5f57).on_mouse_down(
                 GpuiMouseButton::Left,
@@ -433,14 +440,14 @@ impl VoiceHud {
         div()
             .opacity(metrics.expansion_opacity)
             .h(px((EXPANDED_HEIGHT - COMPACT_HEIGHT).max(0.0)))
-            .border_1()
-            .border_color(hsla(0.0, 0.0, 1.0, 0.12))
-            .px_5()
-            .pb_5()
+            .border_t_1()
+            .border_color(hsla(0.0, 0.0, 1.0, 0.08))
+            .px_3()
+            .pb_4()
             .pt_4()
             .flex()
             .flex_col()
-            .gap_4()
+            .gap_3()
             .child(
                 div()
                     .flex()
@@ -450,14 +457,14 @@ impl VoiceHud {
                         div()
                             .flex()
                             .items_center()
-                            .gap_2()
-                            .child(Self::section_label("TASK"))
+                            .gap_3()
+                            .child(index_tab("01", "Task", true))
                             .child(
                                 div()
-                                    .w(px(520.0))
+                                    .w(px(500.0))
                                     .truncate()
-                                    .text_color(rgb(0xe9e9ee))
-                                    .text_sm()
+                                    .text_color(rgb(0xd8d8de))
+                                    .text_size(px(UI_TEXT_PX))
                                     .child(display.prompt.clone()),
                             ),
                     )
@@ -465,11 +472,11 @@ impl VoiceHud {
                         div()
                             .flex()
                             .items_center()
-                            .gap_2()
+                            .gap_1p5()
                             .child(
                                 div()
-                                    .text_color(rgb(0xd9d9df))
-                                    .text_xs()
+                                    .text_color(rgb(0x8d8d96))
+                                    .text_size(px(UI_META_PX))
                                     .child(format!("{step_index}/{step_total}")),
                             )
                             .child(step_segments(step_index, step_total)),
@@ -477,31 +484,29 @@ impl VoiceHud {
             )
             .child(
                 div()
-                    .h(px(190.0))
-                    .rounded(px(8.0))
-                    .border_1()
-                    .border_color(hsla(0.0, 0.0, 1.0, 0.10))
-                    .bg(hsla(0.0, 0.0, 1.0, 0.035))
-                    .px_4()
+                    .h(px(205.0))
+                    .border_t_1()
+                    .border_b_1()
+                    .border_color(hsla(0.0, 0.0, 1.0, 0.075))
                     .py_3()
                     .overflow_hidden()
                     .flex()
                     .flex_col()
                     .gap_2()
-                    .child(Self::section_label("RESPONSE"))
+                    .child(index_tab("02", "Response", true))
                     .child(
                         div()
                             .whitespace_normal()
-                            .line_height(px(18.0))
-                            .text_color(rgb(0xd6d6dc))
-                            .text_sm()
+                            .line_height(px(16.0))
+                            .text_color(rgb(0xd2d2d8))
+                            .text_size(px(UI_TEXT_PX))
                             .child(response),
                     ),
             )
             .child(
                 div()
                     .flex()
-                    .gap_3()
+                    .gap_6()
                     .child(self.current_action_panel(display))
                     .child(self.tools_panel(display)),
             )
@@ -510,7 +515,7 @@ impl VoiceHud {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .text_xs()
+                    .text_size(px(UI_META_PX))
                     .text_color(rgb(0x74747d))
                     .child(format!("Elapsed {}", elapsed_label(self.started.elapsed())))
                     .child(format!("Model {}", compact_label(&self.model_label, 30)))
@@ -518,74 +523,39 @@ impl VoiceHud {
             )
     }
 
-    fn section_label(label: &'static str) -> impl IntoElement {
-        div().text_xs().text_color(rgb(0x74747d)).child(label)
-    }
-
     fn current_action_panel(&self, display: &HudDisplay) -> impl IntoElement {
         div()
             .flex_1()
-            .rounded(px(8.0))
-            .border_1()
-            .border_color(hsla(0.0, 0.0, 1.0, 0.10))
-            .bg(hsla(0.0, 0.0, 1.0, 0.04))
-            .p_3()
             .flex()
             .flex_col()
-            .gap_3()
-            .child(Self::section_label("CURRENT ACTION"))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .child(action_glyph())
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_sm()
-                                    .text_color(rgb(0xf0f0f4))
-                                    .child(compact_label(&self.snapshot.step.label, 56)),
-                            )
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_xs()
-                                    .text_color(rgb(0x8f8f98))
-                                    .child(display.phase.to_string()),
-                            ),
-                    ),
-            )
-            .child(div().flex().items_center().gap_2().child(live_dot()).child(
-                div().text_xs().text_color(rgb(0x45e683)).child(
-                    if dots_are_active(&self.snapshot) {
-                        "LIVE"
-                    } else {
-                        "IDLE"
-                    },
-                ),
+            .gap_1()
+            .child(info_row(
+                "03",
+                "Action",
+                compact_label(&self.snapshot.step.label, 56),
+                true,
+            ))
+            .child(info_row("04", "Phase", display.phase.to_string(), false))
+            .child(info_row(
+                "05",
+                "State",
+                if dots_are_active(&self.snapshot) {
+                    "Live"
+                } else {
+                    "Idle"
+                },
+                dots_are_active(&self.snapshot),
             ))
     }
 
     fn tools_panel(&self, display: &HudDisplay) -> impl IntoElement {
         div()
             .flex_1()
-            .rounded(px(8.0))
-            .border_1()
-            .border_color(hsla(0.0, 0.0, 1.0, 0.10))
-            .bg(hsla(0.0, 0.0, 1.0, 0.04))
-            .p_3()
             .flex()
             .flex_col()
-            .gap_3()
-            .child(Self::section_label("TOOLS"))
-            .child(tool_row(&display.rows[0]))
-            .child(tool_row(&display.rows[1]))
+            .gap_1()
+            .child(tool_row("06", &display.rows[0]))
+            .child(tool_row("07", &display.rows[1]))
     }
 
     fn finish_drag(&mut self, window: &mut Window, cx: &mut App) {
@@ -677,7 +647,7 @@ fn center_text_slot(center: String, reply_visible: bool, visible_secs: f32) -> i
         } else {
             rgb(0xb9b9c0)
         })
-        .text_xs()
+        .text_size(px(UI_TEXT_PX))
         .child(
             div()
                 .flex_none()
@@ -718,18 +688,18 @@ fn dot(style: ActivityDotStyle) -> impl IntoElement {
 
 fn stoplight(color: u32) -> Div {
     div()
-        .w(px(16.0))
-        .h(px(16.0))
+        .w(px(12.0))
+        .h(px(9.0))
         .rounded_full()
-        .opacity(0.82)
+        .opacity(0.9)
         .hover(|style| style.opacity(1.0))
         .flex()
         .items_center()
         .justify_center()
         .child(
             div()
-                .w(px(9.0))
-                .h(px(9.0))
+                .w(px(5.0))
+                .h(px(5.0))
                 .rounded_full()
                 .bg(rgb(color))
                 .border_1()
@@ -737,60 +707,92 @@ fn stoplight(color: u32) -> Div {
         )
 }
 
-fn action_glyph() -> impl IntoElement {
+fn index_tab(index: &'static str, label: &'static str, active: bool) -> impl IntoElement {
     div()
-        .w(px(24.0))
-        .h(px(24.0))
-        .rounded(px(6.0))
-        .bg(hsla(210.0 / 360.0, 1.0, 0.50, 0.16))
-        .border_1()
-        .border_color(hsla(210.0 / 360.0, 1.0, 0.65, 0.30))
+        .h(px(18.0))
+        .px_1p5()
+        .rounded(px(4.0))
+        .bg(if active {
+            hsla(210.0 / 360.0, 1.0, 0.50, 0.14)
+        } else {
+            hsla(0.0, 0.0, 1.0, 0.055)
+        })
         .flex()
         .items_center()
-        .justify_center()
-        .text_color(rgb(0x6ec7ff))
-        .text_xs()
-        .child(">")
+        .gap_1()
+        .child(
+            div()
+                .text_size(px(UI_META_PX))
+                .text_color(if active { rgb(0x66c7ff) } else { rgb(0x74747d) })
+                .child(index),
+        )
+        .child(
+            div()
+                .text_size(px(UI_META_PX))
+                .text_color(if active { rgb(0xb9b9c0) } else { rgb(0x85858d) })
+                .child(label),
+        )
 }
 
-fn live_dot() -> impl IntoElement {
+fn info_row(
+    index: &'static str,
+    label: &'static str,
+    value: impl Into<String>,
+    active: bool,
+) -> impl IntoElement {
     div()
-        .w(px(6.0))
-        .h(px(6.0))
-        .rounded_full()
-        .bg(hsla(142.0 / 360.0, 0.95, 0.58, 0.95))
-}
-
-fn tool_row(row: &cua_voice::hud::HudRow) -> impl IntoElement {
-    div()
+        .h(px(24.0))
         .flex()
         .items_center()
         .gap_3()
-        .child(action_glyph())
+        .border_b_1()
+        .border_color(hsla(0.0, 0.0, 1.0, 0.055))
+        .child(index_tab(index, label, active))
+        .child(
+            div()
+                .flex_1()
+                .truncate()
+                .text_size(px(UI_TEXT_PX))
+                .text_color(rgb(0xd8d8de))
+                .child(value.into()),
+        )
+}
+
+fn tool_row(index: &'static str, row: &cua_voice::hud::HudRow) -> impl IntoElement {
+    div()
+        .h(px(24.0))
+        .flex()
+        .items_center()
+        .gap_3()
+        .border_b_1()
+        .border_color(hsla(0.0, 0.0, 1.0, 0.055))
+        .child(index_tab(index, "Tool", false))
         .child(
             div()
                 .flex()
-                .flex_col()
-                .gap_1()
+                .items_center()
+                .gap_2()
                 .flex_1()
                 .child(
                     div()
                         .truncate()
-                        .text_color(rgb(0xe1e1e6))
-                        .text_sm()
+                        .text_color(rgb(0xd8d8de))
+                        .text_size(px(UI_TEXT_PX))
                         .child(row.label.clone()),
                 )
                 .child(
                     div()
+                        .w(px(96.0))
                         .truncate()
                         .text_color(rgb(0x85858d))
-                        .text_xs()
+                        .text_size(px(UI_META_PX))
                         .child(format!("{}  {}", row.tool, row.app)),
                 ),
         )
         .child(
             div()
-                .text_xs()
+                .w(px(44.0))
+                .text_size(px(UI_META_PX))
                 .text_color(rgb(0x74747d))
                 .child(row.age.clone()),
         )
@@ -799,11 +801,11 @@ fn tool_row(row: &cua_voice::hud::HudRow) -> impl IntoElement {
 fn step_segments(index: usize, total: usize) -> impl IntoElement {
     let total = total.clamp(1, 24);
     let complete = index.min(total);
-    let mut row = div().flex().items_center().gap_1();
+    let mut row = div().flex().items_center().gap_0p5();
     for segment in 0..total {
         row = row.child(
             div()
-                .w(px(12.0))
+                .w(px(4.0))
                 .h(px(3.0))
                 .rounded_full()
                 .bg(if segment < complete {
@@ -867,6 +869,13 @@ fn response_flash_visible(metrics: HudMetrics) -> bool {
     metrics.response_opacity >= 0.35
 }
 
+fn point_inside_bounds(point: Point<Pixels>, bounds: Bounds<Pixels>) -> bool {
+    point.x >= bounds.origin.x
+        && point.y >= bounds.origin.y
+        && point.x <= bounds.origin.x + bounds.size.width
+        && point.y <= bounds.origin.y + bounds.size.height
+}
+
 fn step_label(index: usize, total: usize, label: &str) -> String {
     format!("Step {index}/{total}   {label}")
 }
@@ -900,6 +909,11 @@ impl Render for VoiceHud {
         self.tick_animation();
         if should_reset_after_reply_collapse(reply_window_expired, self.response_progress) {
             self.snapshot.apply(VoiceUiEvent::Idle);
+        }
+        let chrome_visible = point_inside_bounds(current_cursor_point(), window.bounds());
+        if self.chrome_visible != chrome_visible {
+            self.chrome_visible = chrome_visible;
+            cx.notify();
         }
         self.snapshot.expire_programmed_step(Instant::now());
         window.request_animation_frame();
