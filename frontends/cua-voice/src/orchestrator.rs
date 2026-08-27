@@ -556,10 +556,10 @@ async fn plan_and_dispatch(
         .await?
     } else {
         tx.send(VoiceUiEvent::Planning {
-            tool: "OpenRouter Vision".to_string(),
+            tool: "Desktop context".to_string(),
         })
         .ok();
-        step_publisher.publish("planning from screen context");
+        step_publisher.publish("checking desktop context");
         let wait_started = Instant::now();
         let agent_context_task =
             spawn_agent_context(config.profile.clone(), transcript.clone(), chat_task);
