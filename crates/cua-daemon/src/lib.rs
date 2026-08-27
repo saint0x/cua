@@ -23,11 +23,11 @@ use cua_core::{
     ClipboardReadRequest, ClipboardResult, ClipboardWriteRequest, DeliveryMode,
     DesktopContextSnapshot, DesktopState, Effect, Evidence, EvidenceKind, FrameActionRequest,
     FrameEncoding, FramePayload, HealthReport, InputAction, InputRequest, InputResult, InputRoute,
-    Manifest, MetricBucket, MetricHistogram, MetricsSnapshot, PermissionReport, ProfilePolicy,
-    RuntimeControlState, RuntimeInventory, RuntimeMode, RuntimeSessionInfo, RuntimeSessionRole,
-    SafetyState, SessionCancelRequest, SessionLeaseRequest, SessionLeaseResult, UiIslandRequest,
-    UiIslandResult, UiMode, UiModeRequest, UiModeResult, UiReplyRequest, UiReplyResult,
-    UiStepRequest, UiStepResult, VisualSessionRequest, WindowInfo, SCHEMA_VERSION,
+    Manifest, MetricBucket, MetricHistogram, MetricsSnapshot, PermissionReport, PermissionState,
+    ProfilePolicy, RuntimeControlState, RuntimeInventory, RuntimeMode, RuntimeSessionInfo,
+    RuntimeSessionRole, SafetyState, SessionCancelRequest, SessionLeaseRequest, SessionLeaseResult,
+    UiIslandRequest, UiIslandResult, UiMode, UiModeRequest, UiModeResult, UiReplyRequest,
+    UiReplyResult, UiStepRequest, UiStepResult, VisualSessionRequest, WindowInfo, SCHEMA_VERSION,
 };
 use cua_input::InputBackend;
 use cua_model::{run_eval_report, EvalConfig, EvalReport};
@@ -126,14 +126,16 @@ impl DaemonState {
     pub async fn health(&self) -> HealthReport {
         let permissions = self.permission_report().await;
         let control = self.control.read().await;
+        let latest_frame = self.frame_bus.latest_envelope().await;
+        let status = health_status(&permissions, latest_frame.is_some(), &control.safety_state);
         HealthReport {
             schema_version: SCHEMA_VERSION.to_string(),
-            status: CapabilityState::Degraded,
+            status,
             version: env!("CARGO_PKG_VERSION").to_string(),
             profile: self.profile.clone(),
             started_at: self.started_at,
             permissions,
-            latest_frame: self.frame_bus.latest_envelope().await,
+            latest_frame,
             safety_state: control.safety_state.clone(),
             active_profile: control.active_profile.name.clone(),
             active_streams: self.active_streams.load(Ordering::Relaxed),
@@ -163,6 +165,31 @@ impl DaemonState {
             owner_session_id: session_snapshot.owner_session_id,
             sessions: session_snapshot.sessions,
         }
+    }
+}
+
+fn health_status(
+    permissions: &PermissionReport,
+    has_latest_frame: bool,
+    safety_state: &SafetyState,
+) -> CapabilityState {
+    if matches!(safety_state, SafetyState::Killed) {
+        return CapabilityState::Refused;
+    }
+    let required_permissions_ready =
+        matches!(permissions.screen_recording, PermissionState::Granted)
+            && matches!(
+                permissions.accessibility_input,
+                PermissionState::Granted | PermissionState::NotApplicable
+            )
+            && matches!(
+                permissions.input_monitoring,
+                PermissionState::Granted | PermissionState::NotApplicable
+            );
+    if required_permissions_ready && has_latest_frame {
+        CapabilityState::Ready
+    } else {
+        CapabilityState::Degraded
     }
 }
 
@@ -4359,6 +4386,49 @@ impl IntoResponse for ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn health_ready_ignores_optional_unknown_permissions() {
+        let permissions = PermissionReport {
+            screen_recording: PermissionState::Granted,
+            accessibility_input: PermissionState::Granted,
+            input_monitoring: PermissionState::Granted,
+            automation: PermissionState::Unknown,
+            clipboard: PermissionState::Unknown,
+            portal: PermissionState::NotApplicable,
+        };
+
+        assert_eq!(
+            health_status(&permissions, true, &SafetyState::Running),
+            CapabilityState::Ready
+        );
+    }
+
+    #[test]
+    fn health_degrades_without_required_runtime_state() {
+        let mut permissions = PermissionReport {
+            screen_recording: PermissionState::Granted,
+            accessibility_input: PermissionState::Granted,
+            input_monitoring: PermissionState::Granted,
+            automation: PermissionState::Unknown,
+            clipboard: PermissionState::Unknown,
+            portal: PermissionState::NotApplicable,
+        };
+
+        assert_eq!(
+            health_status(&permissions, false, &SafetyState::Running),
+            CapabilityState::Degraded
+        );
+        permissions.screen_recording = PermissionState::Missing;
+        assert_eq!(
+            health_status(&permissions, true, &SafetyState::Running),
+            CapabilityState::Degraded
+        );
+        assert_eq!(
+            health_status(&permissions, true, &SafetyState::Killed),
+            CapabilityState::Refused
+        );
+    }
 
     #[test]
     fn hud_pid_parser_matches_exact_voice_executable() {
