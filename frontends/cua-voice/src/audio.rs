@@ -118,7 +118,9 @@ fn record_default_input_with_policy(
         bail!("no samples captured from input device {device_name}");
     }
     let stats = audio_stats(sample_rate, &samples);
-    let wav_samples = normalize_quiet_samples_for_stt(&samples, stats.peak_amplitude);
+    let speech_samples = trim_to_speech_for_stt(sample_rate, &samples);
+    let speech_stats = audio_stats(sample_rate, &speech_samples);
+    let wav_samples = normalize_quiet_samples_for_stt(&speech_samples, speech_stats.peak_amplitude);
     Ok(RecordedAudio {
         device_name,
         channels,
@@ -246,6 +248,39 @@ fn normalize_quiet_samples_for_stt(samples: &[i16], peak: i16) -> Vec<i16> {
         .collect()
 }
 
+fn trim_to_speech_for_stt(sample_rate: u32, samples: &[i16]) -> Vec<i16> {
+    const FRAME_MS: u32 = 20;
+    const PAD_MS: u32 = 260;
+    const MIN_RMS: f32 = 0.0014;
+    const MIN_PEAK: i16 = 320;
+    if sample_rate == 0 || samples.is_empty() {
+        return samples.to_vec();
+    }
+    let frame_len = ((u64::from(sample_rate) * u64::from(FRAME_MS)) / 1_000)
+        .max(1)
+        .min(usize::MAX as u64) as usize;
+    let pad_len =
+        ((u64::from(sample_rate) * u64::from(PAD_MS)) / 1_000).min(usize::MAX as u64) as usize;
+    let mut first = None;
+    let mut last = None;
+    for (frame_index, frame) in samples.chunks(frame_len).enumerate() {
+        let stats = audio_stats(sample_rate, frame);
+        if stats.rms_amplitude >= MIN_RMS || stats.peak_amplitude >= MIN_PEAK {
+            let start = frame_index.saturating_mul(frame_len);
+            first.get_or_insert(start);
+            last = Some((start + frame.len()).min(samples.len()));
+        }
+    }
+    match (first, last) {
+        (Some(first), Some(last)) if last > first => {
+            let start = first.saturating_sub(pad_len);
+            let end = (last + pad_len).min(samples.len());
+            samples[start..end].to_vec()
+        }
+        _ => samples.to_vec(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -341,5 +376,26 @@ mod tests {
         let normalized = normalize_quiet_samples_for_stt(&samples, 100);
 
         assert_eq!(normalized, vec![0, 1_600, -3_200, 800]);
+    }
+
+    #[test]
+    fn native_recording_is_trimmed_to_speech_before_stt() {
+        let sample_rate = 1_000;
+        let mut samples = vec![0i16; 1_000];
+        samples.extend([0, 420, -420, 300, -300].repeat(10));
+        samples.extend(vec![0i16; 1_000]);
+
+        let trimmed = trim_to_speech_for_stt(sample_rate, &samples);
+
+        assert!(trimmed.len() < samples.len());
+        assert!(trimmed.iter().any(|sample| sample.saturating_abs() >= 420));
+        assert!(trimmed.len() >= 50);
+    }
+
+    #[test]
+    fn native_recording_trim_keeps_original_when_no_speech_is_found() {
+        let samples = vec![0i16; 200];
+
+        assert_eq!(trim_to_speech_for_stt(1_000, &samples), samples);
     }
 }
