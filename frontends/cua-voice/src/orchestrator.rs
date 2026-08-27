@@ -1,9 +1,10 @@
-use crate::audio::{record_default_input_until, RecordedAudio};
+use crate::audio::{record_default_input_until, record_default_input_until_stop, RecordedAudio};
 use crate::client::{CuaClient, CuaSession};
 use crate::daemon::{spawn_profile_daemon, wait_until_ready};
 use crate::memory::{load_agent_context_with_chat, load_chat_context, ChatStore, CtxMemory};
 use crate::planner::{
-    parse_fast_command, PlanAttemptContext, PlannedTurn, Planner, PlannerRequest,
+    extract_planner_hints, parse_fast_command, PlanAttemptContext, PlannedTurn, Planner,
+    PlannerRequest,
 };
 use crate::stt::{SttClient, SttTranscript, DEFAULT_STT_BACKEND, DEFAULT_STT_MODEL};
 use crate::ui_state::VoiceUiEvent;
@@ -33,6 +34,7 @@ const VOICE_STEP_FLUSH_TIMEOUT_MS: u64 = 120;
 const DEFAULT_CONTEXT_PREFETCH_TIMEOUT_MS: u64 = 2_500;
 const DEFAULT_AGENT_LOOP_MAX_ATTEMPTS: usize = 3;
 const MIN_RECORDING_DURATION: Duration = Duration::from_millis(650);
+pub const DEFAULT_PLANNER_MODEL: &str = "google/gemini-2.5-flash-lite";
 
 struct PrefetchedContext {
     session: Option<CuaSession>,
@@ -69,7 +71,7 @@ impl Default for VoiceConfig {
             record_ms: 4_500,
             stt_backend: DEFAULT_STT_BACKEND.to_string(),
             stt_model: DEFAULT_STT_MODEL.to_string(),
-            planner_model: "anthropic/claude-sonnet-5".to_string(),
+            planner_model: DEFAULT_PLANNER_MODEL.to_string(),
             debug_trace: false,
         }
     }
@@ -119,7 +121,13 @@ pub async fn run_voice_turn_checked(
     config: VoiceConfig,
     tx: Sender<VoiceUiEvent>,
 ) -> anyhow::Result<()> {
-    run_voice_turn_checked_until(config, tx, Arc::new(AtomicBool::new(false))).await
+    record_and_run_turn(
+        config.clone(),
+        tx,
+        Arc::new(AtomicBool::new(false)),
+        Some(Duration::from_millis(config.record_ms)),
+    )
+    .await
 }
 
 pub async fn run_voice_turn_checked_until(
@@ -127,7 +135,7 @@ pub async fn run_voice_turn_checked_until(
     tx: Sender<VoiceUiEvent>,
     stop_requested: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
-    record_and_run_turn(config, tx, stop_requested).await
+    record_and_run_turn(config, tx, stop_requested, None).await
 }
 
 pub async fn run_wav_turn_checked(
@@ -150,6 +158,7 @@ async fn record_and_run_turn(
     config: VoiceConfig,
     tx: Sender<VoiceUiEvent>,
     stop_requested: Arc<AtomicBool>,
+    max_duration: Option<Duration>,
 ) -> anyhow::Result<()> {
     let trace = VoiceTurnTrace::new(&config);
     trace
@@ -160,15 +169,24 @@ async fn record_and_run_turn(
         .await;
     tx.send(VoiceUiEvent::Armed).ok();
     tx.send(VoiceUiEvent::Listening { ms: 0 }).ok();
-    let record_ms = config.record_ms;
     trace
-        .append("record_start", json!({"record_ms": record_ms}))
+        .append(
+            "record_start",
+            json!({
+                "stop": if max_duration.is_some() { "timeout_or_signal" } else { "signal" },
+                "max_duration_ms": max_duration.map(elapsed_ms),
+            }),
+        )
         .await;
     let local_task = spawn_local_preflight(config.profile.clone());
     let progress_flag = Arc::new(AtomicBool::new(true));
     let progress_task = spawn_recording_progress(tx.clone(), progress_flag.clone());
     let record_task = tokio::task::spawn_blocking(move || {
-        record_default_input_until(Duration::from_millis(record_ms), stop_requested)
+        if let Some(max_duration) = max_duration {
+            record_default_input_until(max_duration, stop_requested)
+        } else {
+            record_default_input_until_stop(stop_requested)
+        }
     });
     let record_result = record_task.await.context("join audio recorder");
     progress_flag.store(false, Ordering::Release);
@@ -523,6 +541,10 @@ async fn plan_and_dispatch(
     trace
         .append("planning_start", json!({"transcript": &transcript}))
         .await;
+    let planner_hints = extract_planner_hints(&transcript);
+    if !planner_hints.is_empty() {
+        trace.append("planner_hints", json!(&planner_hints)).await;
+    }
     let completed = if let Some(plan) = parse_fast_command(&transcript) {
         tx.send(VoiceUiEvent::Planning {
             tool: "Command parser".to_string(),
@@ -636,6 +658,7 @@ async fn plan_and_dispatch(
                     PlannerRequest {
                         transcript: &transcript,
                         agent_context: Some(&combined_agent_context),
+                        hints: Some(&planner_hints),
                         frame: context.frame.as_ref(),
                         desktop: context.desktop.as_ref(),
                         prior_attempts: &attempts,
@@ -654,6 +677,19 @@ async fn plan_and_dispatch(
                             }),
                         )
                         .await;
+                    if let Some(turn) = completed_from_confirmed_prior_attempt(&attempts) {
+                        trace
+                            .append(
+                                "planning_error_after_confirmed_action",
+                                json!({
+                                    "attempt_index": attempt_index,
+                                    "error": format!("{error:#}"),
+                                }),
+                            )
+                            .await;
+                        completed = Some(turn);
+                        break;
+                    }
                     return Err(error);
                 }
             };
@@ -689,7 +725,11 @@ async fn plan_and_dispatch(
                     }),
                 )
                 .await;
-            if !should_continue {
+            let should_verify = turn
+                .action
+                .as_ref()
+                .is_some_and(action_needs_fresh_verification);
+            if !should_continue && (!should_verify || attempt_index >= max_attempts) {
                 completed = Some(turn);
                 break;
             }
@@ -711,7 +751,7 @@ async fn plan_and_dispatch(
             trace
                 .append(
                     "agent_reobserve_start",
-                    json!({"after_attempt": attempt_index}),
+                    json!({"after_attempt": attempt_index, "reason": if should_verify { "verify_action" } else { "repair_after_effect" }}),
                 )
                 .await;
             let observe_started = Instant::now();
@@ -926,6 +966,31 @@ fn turn_effect(turn: &CompletedAssistantTurn) -> Option<String> {
         .as_ref()
         .and_then(|evidence| evidence["effect"].as_str())
         .map(ToString::to_string)
+}
+
+fn action_needs_fresh_verification(action: &serde_json::Value) -> bool {
+    match action.get("kind").and_then(|kind| kind.as_str()) {
+        Some("sequence" | "key_type" | "key_paste" | "shell_exec" | "aegis" | "ctx") => true,
+        _ => false,
+    }
+}
+
+fn completed_from_confirmed_prior_attempt(
+    attempts: &[PlanAttemptContext],
+) -> Option<CompletedAssistantTurn> {
+    let attempt = attempts.last()?;
+    if attempt.effect.as_deref() != Some("confirmed") {
+        return None;
+    }
+    let action = attempt.action.as_ref()?;
+    if !action_needs_fresh_verification(action) {
+        return None;
+    }
+    Some(CompletedAssistantTurn {
+        response: attempt.response.clone(),
+        action: attempt.action.clone(),
+        evidence: attempt.evidence.clone(),
+    })
 }
 
 fn attach_loop_evidence(
@@ -1340,7 +1405,6 @@ fn elapsed_ms(duration: Duration) -> u64 {
 fn trace_config(config: &VoiceConfig) -> serde_json::Value {
     json!({
         "profile": &config.profile,
-        "record_ms": config.record_ms,
         "stt_backend": &config.stt_backend,
         "stt_model": &config.stt_model,
         "planner_model": &config.planner_model,
@@ -1789,6 +1853,48 @@ mod tests {
         }
         assert!(!should_replan_after_effect(None, 1, 3));
         assert!(!should_replan_after_effect(Some("suspected_noop"), 3, 3));
+    }
+
+    #[test]
+    fn edge_actions_require_fresh_verification_before_final_reply() {
+        for action in [
+            json!({"kind": "sequence", "actions": []}),
+            json!({"kind": "key_type", "text": "hello"}),
+            json!({"kind": "key_paste", "text": "hello"}),
+            json!({"kind": "shell_exec", "command": "pwd"}),
+            json!({"kind": "aegis", "args": ["--help"]}),
+            json!({"kind": "ctx", "args": ["query", "default", "cua"]}),
+        ] {
+            assert!(action_needs_fresh_verification(&action));
+        }
+        assert!(!action_needs_fresh_verification(
+            &json!({"kind": "open_app", "app_name": "Calculator"})
+        ));
+        assert!(!action_needs_fresh_verification(
+            &json!({"kind": "mouse_click", "x": 1, "y": 2})
+        ));
+    }
+
+    #[test]
+    fn malformed_verification_after_confirmed_edge_action_keeps_confirmed_turn() {
+        let attempts = vec![PlanAttemptContext {
+            attempt_index: 1,
+            response: "Creating the note.".to_string(),
+            action: Some(json!({
+                "kind": "sequence",
+                "actions": [
+                    {"kind": "open_app", "app_name": "Notes"},
+                    {"kind": "key_paste", "text": "hello"}
+                ]
+            })),
+            effect: Some("confirmed".to_string()),
+            evidence: Some(json!({"effect": "confirmed"})),
+        }];
+
+        let completed = completed_from_confirmed_prior_attempt(&attempts).unwrap();
+
+        assert_eq!(completed.response, "Creating the note.");
+        assert_eq!(turn_effect(&completed), Some("confirmed".to_string()));
     }
 
     #[test]

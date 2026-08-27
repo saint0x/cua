@@ -17,7 +17,7 @@ use cua_voice::stt::{DEFAULT_STT_BACKEND, DEFAULT_STT_MODEL};
 use cua_voice::ui_state::{HudPhase, HudSnapshot, VoiceUiEvent};
 use cua_voice::{
     run_text_turn_checked, run_voice_turn_checked, run_voice_turn_until, run_wav_turn_checked,
-    VoiceConfig,
+    VoiceConfig, DEFAULT_PLANNER_MODEL,
 };
 use gpui::{
     canvas, div, hsla, point, prelude::*, px, rgb, size, AnyElement, App, Application, Bounds,
@@ -63,7 +63,7 @@ struct Args {
     stt_backend: String,
     #[arg(long, default_value = DEFAULT_STT_MODEL)]
     stt_model: String,
-    #[arg(long, default_value = "anthropic/claude-sonnet-5")]
+    #[arg(long, default_value = DEFAULT_PLANNER_MODEL)]
     planner_model: String,
     #[arg(long, env = "CUA_VOICE_DEBUG_TRACE")]
     debug_trace: bool,
@@ -2207,7 +2207,7 @@ mod tests {
         let mut hud = VoiceHud::new(
             rx,
             UiMode::Headless,
-            "anthropic/claude-sonnet-5".to_string(),
+            DEFAULT_PLANNER_MODEL.to_string(),
             island_bounds,
         );
 
@@ -2341,7 +2341,7 @@ mod tests {
         let hud = VoiceHud::new(
             rx,
             UiMode::Headless,
-            "anthropic/claude-sonnet-5".to_string(),
+            DEFAULT_PLANNER_MODEL.to_string(),
             Arc::new(Mutex::new(None)),
         );
 

@@ -21,12 +21,18 @@ pub struct RecordedAudio {
 
 #[derive(Debug, Copy, Clone)]
 struct RecordingPolicy {
-    max_duration: Duration,
+    max_duration: Option<Duration>,
 }
 
 impl RecordingPolicy {
     fn from_max_duration(max_duration: Duration) -> Self {
-        Self { max_duration }
+        Self {
+            max_duration: Some(max_duration),
+        }
+    }
+
+    fn until_stop_requested() -> Self {
+        Self { max_duration: None }
     }
 }
 
@@ -60,6 +66,12 @@ pub fn record_default_input_until(
         RecordingPolicy::from_max_duration(max_duration),
         stop_requested,
     )
+}
+
+pub fn record_default_input_until_stop(
+    stop_requested: Arc<AtomicBool>,
+) -> anyhow::Result<RecordedAudio> {
+    record_default_input_with_policy(RecordingPolicy::until_stop_requested(), stop_requested)
 }
 
 fn record_default_input_with_policy(
@@ -164,7 +176,10 @@ fn should_stop_recording(
     policy: RecordingPolicy,
     stop_requested: &AtomicBool,
 ) -> bool {
-    stop_requested.load(Ordering::Acquire) || now.duration_since(started_at) >= policy.max_duration
+    stop_requested.load(Ordering::Acquire)
+        || policy
+            .max_duration
+            .is_some_and(|max_duration| now.duration_since(started_at) >= max_duration)
 }
 
 fn push_interleaved<T>(data: &[T], channels: u16, samples: &Arc<Mutex<Vec<i16>>>)
@@ -296,7 +311,7 @@ mod tests {
     fn recorder_stops_at_max_duration_without_speech() {
         let start = Instant::now();
         let policy = RecordingPolicy {
-            max_duration: Duration::from_secs(2),
+            max_duration: Some(Duration::from_secs(2)),
         };
         let stop_requested = AtomicBool::new(false);
 
@@ -318,7 +333,7 @@ mod tests {
     fn recorder_stops_immediately_when_stop_is_requested() {
         let start = Instant::now();
         let policy = RecordingPolicy {
-            max_duration: Duration::from_secs(5),
+            max_duration: Some(Duration::from_secs(5)),
         };
         let stop_requested = AtomicBool::new(true);
 
@@ -334,7 +349,28 @@ mod tests {
     fn recording_policy_defaults_are_latency_oriented() {
         let policy = RecordingPolicy::from_max_duration(Duration::from_secs(5));
 
-        assert_eq!(policy.max_duration, Duration::from_secs(5));
+        assert_eq!(policy.max_duration, Some(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn live_recorder_waits_until_stop_requested() {
+        let start = Instant::now();
+        let policy = RecordingPolicy::until_stop_requested();
+        let stop_requested = AtomicBool::new(false);
+
+        assert!(!should_stop_recording(
+            start,
+            start + Duration::from_secs(60 * 60),
+            policy,
+            &stop_requested
+        ));
+        stop_requested.store(true, Ordering::Release);
+        assert!(should_stop_recording(
+            start,
+            start + Duration::from_millis(20),
+            policy,
+            &stop_requested
+        ));
     }
 
     #[test]

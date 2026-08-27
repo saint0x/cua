@@ -427,6 +427,10 @@ Required TypeScript SDK:
 3. Fall back to loopback HTTP where Unix socket is not practical.
 4. Generate types from `/schemas` or checked-in schema bundle.
 5. Support visual streaming.
+   - expose model-facing watch sessions that can be opened, closed, or bounded by duration
+   - feed sampled visual frames into the planner loop without blocking low-latency action dispatch
+   - keep the Unix visual session as the hot transport path and add explicit cancellation/backpressure
+   - verify final actions against fresh stream/screenshot evidence before completion
 6. Support owner/observer session semantics.
 7. Support attestation.
 8. Support frame-relative input dispatch.

@@ -11,7 +11,7 @@ SEED="${CUA_RELEASE_SEED:-424242}"
 SCENARIO="${CUA_RELEASE_SCENARIO:-fozzy/scenarios/cua-smoke.json}"
 STT_BACKEND="${CUA_RELEASE_STT_BACKEND:-local}"
 STT_MODEL="${CUA_RELEASE_STT_MODEL:-tiny.en}"
-PLANNER_MODEL="${CUA_RELEASE_PLANNER_MODEL:-anthropic/claude-sonnet-5}"
+PLANNER_MODEL="${CUA_RELEASE_PLANNER_MODEL:-google/gemini-2.5-flash-lite}"
 SKIP_TESTS=0
 SKIP_FOZZY=0
 SKIP_INSTALL=0
@@ -35,7 +35,7 @@ Options:
 Environment:
   CUA_RELEASE_STT_BACKEND   Speech-to-text backend for live smoke. Default: local.
   CUA_RELEASE_STT_MODEL     Speech-to-text model for live smoke. Default: tiny.en.
-  CUA_RELEASE_PLANNER_MODEL Planner model for live smoke. Default: anthropic/claude-sonnet-5.
+  CUA_RELEASE_PLANNER_MODEL Planner model for live smoke. Default: google/gemini-2.5-flash-lite.
 USAGE
 }
 

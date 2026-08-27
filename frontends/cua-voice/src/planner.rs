@@ -6,6 +6,7 @@ use std::time::Duration;
 
 const DEFAULT_PLANNER_TIMEOUT_MS: u64 = 12_000;
 const DEFAULT_PLANNER_ATTEMPTS: usize = 3;
+const DEFAULT_PLANNER_OUTPUT_ATTEMPTS: usize = 2;
 const DEFAULT_PLANNER_RETRY_BACKOFF_MS: u64 = 220;
 const PLANNER_SYSTEM_PROMPT: &str = r#"You are the protocol planner for cua, a local macOS computer-use runtime. You are not a general chat assistant and you do not have hidden tools.
 
@@ -55,6 +56,7 @@ Coordinate rules:
 - Prefer ctx when the user explicitly asks you to remember, query memory, compact context, snapshot context, restore context, or inspect the context runtime. Pass explicit ctx CLI args only; do not wrap ctx in shell_exec. Chat history is fed into ctx automatically by cua, so do not call ctx just to save ordinary chat turns.
 - Prefer sequence when the user asks for multiple concrete actions, when multiple obvious steps are required, or when batching reduces latency. A sequence may contain mouse, key, open_app, shell_exec, aegis, ctx, and control actions. Do not nest sequence inside sequence.
 - Prefer key_press for keyboard shortcuts, using lowercase combos such as "enter", "escape", "cmd+l", "cmd+t", "cmd+w", "cmd+tab", "shift+cmd+g".
+- Prefer key_paste, not key_type, when leaving exact user-provided content inside an app after creating or focusing a field. This is the production writing path for note/message/body text.
 - Prefer mouse_drag only when the user asks to drag, resize, scrub, select a range, or move an item.
 - Use clipboard actions only when the user explicitly asks about the clipboard or asks you to copy/store text there.
 - Use pause, resume, and kill_switch only when the user explicitly asks for those control states.
@@ -67,6 +69,7 @@ Decision rules:
 - If the command implies a concrete UI action and the target is visible, return that action.
 - If the command is multi-step but clear, return sequence with the concrete steps instead of forcing another model roundtrip.
 - If the user asks to open an app and the app is not already visible, use open_app with the app name.
+- Before reporting that a visible/computer-use task is done, take or use a fresh screenshot/reobserve pass after dispatch when the runtime provides it. Do not claim that text was written, a file changed, or an app state was reached solely because an input event was posted; rely on fresh observation/evidence when available, and repair if verification contradicts the intended result.
 - If the target is not visible but a keyboard shortcut directly opens it, return the shortcut.
 - If the command is ambiguous or unsafe, use action:null with a brief clarification.
 - Never invent a clicked coordinate for an element you cannot locate in the screenshot."#;
@@ -86,10 +89,23 @@ pub struct PlanAttemptContext {
     pub evidence: Option<serde_json::Value>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PlannerHints {
+    pub detected_actions: Vec<InputAction>,
+    pub notes: Vec<String>,
+}
+
+impl PlannerHints {
+    pub fn is_empty(&self) -> bool {
+        self.detected_actions.is_empty() && self.notes.is_empty()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PlannerRequest<'a> {
     pub transcript: &'a str,
     pub agent_context: Option<&'a str>,
+    pub hints: Option<&'a PlannerHints>,
     pub frame: Option<&'a FramePayload>,
     pub desktop: Option<&'a DesktopState>,
     pub prior_attempts: &'a [PlanAttemptContext],
@@ -122,6 +138,7 @@ impl Planner {
             PlannerRequest {
                 transcript,
                 agent_context,
+                hints: None,
                 frame,
                 desktop,
                 prior_attempts: &[],
@@ -136,9 +153,6 @@ impl Planner {
         request: PlannerRequest<'_>,
     ) -> anyhow::Result<PlannedTurn> {
         let transcript = request.transcript;
-        if let Some(turn) = parse_fast_command(transcript) {
-            return Ok(turn);
-        }
         let desktop_context = request
             .desktop
             .map(desktop_context)
@@ -152,10 +166,20 @@ impl Planner {
                     .unwrap_or_else(|_| "[]".to_string())
             )
         };
+        let hints_context = request
+            .hints
+            .filter(|hints| !hints.is_empty())
+            .and_then(|hints| serde_json::to_string_pretty(hints).ok())
+            .map(|hints| {
+                format!(
+                    "Planner hints from deterministic transcript parsing. These are suggestions only; use, revise, reorder, or ignore them based on the screenshot and user intent:\n{hints}"
+                )
+            })
+            .unwrap_or_else(|| "Planner hints: none.".to_string());
         let mut content = vec![serde_json::json!({
             "type": "text",
             "text": format!(
-                "Transcript: {transcript}\n{}\n{desktop_context}\n{attempt_context}",
+                "Transcript: {transcript}\n{}\n{hints_context}\n{desktop_context}\n{attempt_context}",
                 request.agent_context.unwrap_or("Agent memory context: unavailable.")
             )
         })];
@@ -174,33 +198,54 @@ impl Planner {
             "max_tokens": 180,
             "response_format": {"type": "json_object"},
         });
-        let response = self.send_planning_request(api_key, &body).await?;
-        let status = response.status();
-        let value: serde_json::Value = response.json().await.context("decode planning response")?;
-        if !status.is_success() {
-            bail!("planning failed with {status}: {value}");
+        let output_attempts = retry_attempts_from_env(
+            "CUA_VOICE_PLANNER_OUTPUT_ATTEMPTS",
+            DEFAULT_PLANNER_OUTPUT_ATTEMPTS,
+        );
+        let backoff = retry_backoff_from_env(
+            "CUA_VOICE_PLANNER_RETRY_BACKOFF_MS",
+            DEFAULT_PLANNER_RETRY_BACKOFF_MS,
+        );
+        let mut last_error = None;
+        for output_attempt in 1..=output_attempts {
+            let response = self.send_planning_request(api_key, &body).await?;
+            let status = response.status();
+            let value: serde_json::Value =
+                response.json().await.context("decode planning response")?;
+            if !status.is_success() {
+                bail!("planning failed with {status}: {value}");
+            }
+            let raw = value["choices"][0]["message"]["content"]
+                .as_str()
+                .unwrap_or_default();
+            if raw.trim().is_empty() {
+                last_error = Some(anyhow::anyhow!("planning model returned empty content"));
+            } else {
+                match parse_model_plan(raw) {
+                    Ok(plan) => return Ok(plan),
+                    Err(_error) if is_observation_query(transcript) => {
+                        return Ok(turn(
+                            planner_output_preview(raw)
+                                .trim_end_matches("...")
+                                .to_string(),
+                            None,
+                        ));
+                    }
+                    Err(error) => {
+                        last_error = Some(error).map(|error| {
+                            error.context(format!(
+                                "model output was not valid action JSON: {}",
+                                planner_output_preview(raw)
+                            ))
+                        });
+                    }
+                }
+            }
+            if output_attempt < output_attempts {
+                tokio::time::sleep(backoff).await;
+            }
         }
-        let raw = value["choices"][0]["message"]["content"]
-            .as_str()
-            .unwrap_or_default();
-        if raw.trim().is_empty() {
-            bail!("planning model returned empty content");
-        }
-        match parse_model_plan(raw) {
-            Ok(plan) => Ok(plan),
-            Err(_error) if is_observation_query(transcript) => Ok(turn(
-                planner_output_preview(raw)
-                    .trim_end_matches("...")
-                    .to_string(),
-                None,
-            )),
-            Err(error) => Err(error).with_context(|| {
-                format!(
-                    "model output was not valid action JSON: {}",
-                    planner_output_preview(raw)
-                )
-            }),
-        }
+        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("planning model produced no output")))
     }
 
     async fn send_planning_request(
@@ -571,6 +616,48 @@ pub fn parse_fast_command(transcript: &str) -> Option<PlannedTurn> {
     None
 }
 
+pub fn extract_planner_hints(transcript: &str) -> PlannerHints {
+    let lower = transcript.trim().to_ascii_lowercase();
+    let words = lower
+        .split_whitespace()
+        .map(normalize_command_token)
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>();
+    let mut detected_actions = Vec::new();
+    if words
+        .iter()
+        .any(|word| matches!(word.as_str(), "open" | "launch"))
+    {
+        for app_name in detected_app_names(&words) {
+            detected_actions.push(InputAction::OpenApp {
+                app_name: app_name.to_string(),
+            });
+        }
+    }
+    let mut notes = Vec::new();
+    if words.iter().any(|word| {
+        matches!(
+            word.as_str(),
+            "write" | "type" | "paste" | "leave" | "message" | "note" | "says" | "content"
+        )
+    }) {
+        notes.push(
+            "If the user wants text left inside an app, prefer key_paste after focusing or creating the target field; key_paste is more reliable for exact content than key_type."
+                .to_string(),
+        );
+    }
+    if detected_actions.len() > 1 {
+        notes.push(
+            "Multiple app opens were detected; a sequence can batch these opens when that matches the user's intent."
+                .to_string(),
+        );
+    }
+    PlannerHints {
+        detected_actions,
+        notes,
+    }
+}
+
 fn fast_open_app_name(words: &[String]) -> Option<&'static str> {
     if !words
         .iter()
@@ -600,6 +687,28 @@ fn fast_open_app_name(words: &[String]) -> Option<&'static str> {
         return Some("Mail");
     }
     None
+}
+
+fn detected_app_names(words: &[String]) -> Vec<&'static str> {
+    let mut apps = Vec::new();
+    for (aliases, app_name) in [
+        (&["messages", "imessage"][..], "Messages"),
+        (&["safari"][..], "Safari"),
+        (&["calculator"][..], "Calculator"),
+        (&["terminal"][..], "Terminal"),
+        (&["notes"][..], "Notes"),
+        (&["mail"][..], "Mail"),
+        (&["twitter", "x"][..], "Twitter"),
+    ] {
+        if words
+            .iter()
+            .any(|word| aliases.iter().any(|alias| word == alias))
+            && !apps.contains(&app_name)
+        {
+            apps.push(app_name);
+        }
+    }
+    apps
 }
 
 fn simple_fast_open_app_command(words: &[String]) -> bool {
@@ -743,6 +852,8 @@ mod tests {
         assert!(PLANNER_SYSTEM_PROMPT.contains("one valid JSON object"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("may contain a sequence action with many actions"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("open_app"));
+        assert!(PLANNER_SYSTEM_PROMPT.contains("Prefer key_paste, not key_type"));
+        assert!(PLANNER_SYSTEM_PROMPT.contains("take or use a fresh screenshot/reobserve pass"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("Do not invent a separate skill runtime"));
     }
 
@@ -931,6 +1042,42 @@ mod tests {
         assert!(parse_fast_command("Open notes and leave me a new note").is_none());
         assert!(parse_fast_command("Launch Safari then search for cua").is_none());
         assert!(parse_fast_command("Open Messages with a new draft").is_none());
+    }
+
+    #[test]
+    fn compound_requests_expose_advisory_planner_hints() {
+        let hints = extract_planner_hints(
+            "Open Notes and open Messages and leave me a note that says cua works",
+        );
+
+        assert!(matches!(
+            hints.detected_actions.as_slice(),
+            [
+                InputAction::OpenApp { app_name: notes },
+                InputAction::OpenApp { app_name: messages },
+            ] if notes == "Messages" || messages == "Messages"
+        ));
+        assert!(hints.detected_actions.iter().any(
+            |action| matches!(action, InputAction::OpenApp { app_name } if app_name == "Notes")
+        ));
+        assert!(hints.detected_actions.iter().any(
+            |action| matches!(action, InputAction::OpenApp { app_name } if app_name == "Messages")
+        ));
+        assert!(hints
+            .notes
+            .iter()
+            .any(|note| note.contains("prefer key_paste")));
+    }
+
+    #[test]
+    fn simple_fast_open_still_has_no_hint_overhead_requirement() {
+        let plan = parse_fast_command("Open Calculator").unwrap();
+        assert!(matches!(
+            plan.action,
+            Some(InputAction::OpenApp { ref app_name }) if app_name == "Calculator"
+        ));
+        let hints = extract_planner_hints("Open Calculator");
+        assert_eq!(hints.detected_actions.len(), 1);
     }
 
     #[test]

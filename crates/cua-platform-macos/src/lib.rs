@@ -26,6 +26,8 @@ use std::sync::Arc;
 #[cfg(target_os = "macos")]
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+#[cfg(target_os = "macos")]
+use tokio::io::AsyncWriteExt;
 
 pub const BACKEND_NAME: &str = "macos";
 
@@ -190,7 +192,7 @@ async fn execute_macos_input_leaf(action: InputAction) -> Result<MacosActionOutc
         } => post_mouse_drag(from_x, from_y, to_x, to_y).map(MacosActionOutcome::desktop),
         InputAction::KeyPress { combo } => post_key_combo(&combo).map(MacosActionOutcome::desktop),
         InputAction::KeyType { text } => post_text(&text).map(MacosActionOutcome::desktop),
-        InputAction::KeyPaste { text } => post_text(&text).map(MacosActionOutcome::desktop),
+        InputAction::KeyPaste { text } => paste_text(text).await.map(MacosActionOutcome::desktop),
         InputAction::OpenApp { app_name } => {
             open_app(&app_name).await.map(MacosActionOutcome::system)
         }
@@ -1192,6 +1194,38 @@ fn post_text(text: &str) -> Result<String, String> {
 #[cfg(not(target_os = "macos"))]
 fn post_text(_text: &str) -> Result<String, String> {
     Err("macOS CGEvent input is only available on macOS".to_string())
+}
+
+#[cfg(target_os = "macos")]
+async fn paste_text(text: String) -> Result<String, String> {
+    ensure_accessibility_trusted()?;
+    let mut child = tokio::process::Command::new("/usr/bin/pbcopy")
+        .stdin(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|error| format!("pbcopy failed to launch: {error}"))?;
+    let Some(mut stdin) = child.stdin.take() else {
+        return Err("pbcopy stdin was unavailable".to_string());
+    };
+    stdin
+        .write_all(text.as_bytes())
+        .await
+        .map_err(|error| format!("pbcopy failed to receive text: {error}"))?;
+    drop(stdin);
+    let status = tokio::time::timeout(Duration::from_millis(2_000), child.wait())
+        .await
+        .map_err(|_| "pbcopy timed out after 2000ms".to_string())?
+        .map_err(|error| format!("pbcopy wait failed: {error}"))?;
+    if !status.success() {
+        return Err(format!("pbcopy failed: {status}"));
+    }
+    post_key_combo("cmd+v")?;
+    Ok("text pasted through macOS pasteboard and CGEvent cmd+v".to_string())
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn paste_text(_text: String) -> Result<String, String> {
+    Err("macOS paste input is only available on macOS".to_string())
 }
 
 #[cfg(target_os = "macos")]

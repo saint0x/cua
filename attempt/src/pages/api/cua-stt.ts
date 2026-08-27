@@ -10,7 +10,7 @@ export const prerender = false;
 const DEFAULT_CUA_VOICE_BIN = "/Users/deepsaint/Applications/cua.app/Contents/MacOS/cua-voice";
 const DEFAULT_STT_BACKEND = "local";
 const DEFAULT_STT_MODEL = "tiny.en";
-const DEFAULT_PLANNER_MODEL = "anthropic/claude-sonnet-5";
+const DEFAULT_PLANNER_MODEL = "google/gemini-2.5-flash-lite";
 
 export const POST: APIRoute = async ({ request, url }) => {
   const startedAt = performance.now();
