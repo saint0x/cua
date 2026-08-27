@@ -561,6 +561,16 @@ pub fn remap_action_from_frame(action: InputAction, frame: &FrameEnvelope) -> In
             to_y: frame.frame_to_display_y(to_y),
             duration_ms,
         },
+        InputAction::Sequence {
+            actions,
+            inter_action_delay_ms,
+        } => InputAction::Sequence {
+            actions: actions
+                .into_iter()
+                .map(|action| remap_action_from_frame(action, frame))
+                .collect(),
+            inter_action_delay_ms,
+        },
         action => action,
     }
 }
@@ -887,6 +897,67 @@ mod tests {
                 y: 143,
                 ..
             }
+        ));
+    }
+
+    #[test]
+    fn frame_action_remaps_mouse_coordinates_inside_sequences() {
+        let frame = FrameEnvelope {
+            schema_version: SCHEMA_VERSION.to_string(),
+            frame_id: 9,
+            timestamp_mono_ns: 0,
+            timestamp_wall_ms: 0,
+            display_id: "main".to_string(),
+            display_x: 0,
+            display_y: 0,
+            display_width: 1512,
+            display_height: 982,
+            frame_origin_x: 0,
+            frame_origin_y: 0,
+            width: 1280,
+            height: 831,
+            scale_factor: 1.0,
+            pixel_format: "rgba8".to_string(),
+            encoding: FrameEncoding::Jpeg,
+            byte_len: 0,
+            sha256: String::new(),
+            cursor: CursorState {
+                x: 0.0,
+                y: 0.0,
+                visible: true,
+                included_in_frame: false,
+            },
+            damage_rects: Vec::new(),
+        };
+
+        let action = remap_action_from_frame(
+            InputAction::Sequence {
+                actions: vec![
+                    InputAction::MouseClick {
+                        x: 100,
+                        y: 100,
+                        button: MouseButton::Left,
+                        count: 1,
+                    },
+                    InputAction::KeyPress {
+                        combo: "enter".to_string(),
+                    },
+                ],
+                inter_action_delay_ms: 120,
+            },
+            &frame,
+        );
+
+        assert!(matches!(
+            action,
+            InputAction::Sequence { actions, .. }
+                if matches!(
+                    actions.as_slice(),
+                    [
+                        InputAction::MouseClick { x: 118, y: 118, .. },
+                        InputAction::KeyPress { combo },
+                    ] if combo == "enter"
+                )
         ));
     }
 }

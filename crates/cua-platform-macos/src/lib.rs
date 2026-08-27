@@ -124,9 +124,10 @@ async fn execute_macos_input_action(action: InputAction) -> Result<String, Strin
                 return Err("sequence must contain at least one action".to_string());
             }
             let delay = Duration::from_millis(inter_action_delay_ms.min(2_000));
-            for action in actions {
+            let last_index = actions.len().saturating_sub(1);
+            for (index, action) in actions.into_iter().enumerate() {
                 execute_macos_input_leaf(action)?;
-                if !delay.is_zero() {
+                if index < last_index && !delay.is_zero() {
                     tokio::time::sleep(delay).await;
                 }
             }
