@@ -23,12 +23,14 @@ MACOS_DIR="$APP_PATH/Contents/MacOS"
 
 test -x "$MACOS_DIR/cua"
 test -x "$MACOS_DIR/cua-voice"
+test -x "$MACOS_DIR/ctx"
 test ! -e "$MACOS_DIR/cua-app"
 /usr/bin/codesign --verify --deep --strict "$APP_PATH" >/dev/null
 SIGNATURE="$(/usr/bin/codesign --display --verbose=2 "$APP_PATH" 2>&1)"
 DESIGNATED_REQUIREMENT="$(/usr/bin/codesign -d -r- "$APP_PATH" 2>&1)"
 DAEMON_SIGNATURE="$(/usr/bin/codesign --display --verbose=2 "$MACOS_DIR/cua" 2>&1)"
 VOICE_SIGNATURE="$(/usr/bin/codesign --display --verbose=2 "$MACOS_DIR/cua-voice" 2>&1)"
+CTX_SIGNATURE="$(/usr/bin/codesign --display --verbose=2 "$MACOS_DIR/ctx" 2>&1)"
 
 BUNDLE_ID="$(plutil -extract CFBundleIdentifier raw -o - "$INFO_PLIST")"
 EXECUTABLE="$(plutil -extract CFBundleExecutable raw -o - "$INFO_PLIST")"
@@ -55,6 +57,7 @@ jq -n \
   --arg designated_requirement "$DESIGNATED_REQUIREMENT" \
   --arg daemon_signature "$DAEMON_SIGNATURE" \
   --arg voice_signature "$VOICE_SIGNATURE" \
+  --arg ctx_signature "$CTX_SIGNATURE" \
   '{
     schema_version: "cua.package_proof.v1",
     ok: (
@@ -72,6 +75,7 @@ jq -n \
       ($daemon_signature | contains("Info.plist entries=")) and
       ($voice_signature | contains("Identifier=io.saint0x.cua")) and
       ($voice_signature | contains("Info.plist entries=")) and
+      ($ctx_signature | contains("Identifier=io.saint0x.cua.ctx")) and
       ($designated_requirement | contains("identifier \"io.saint0x.cua\"")) and
       ($designated_requirement | contains("cdhash") | not)
     ),
@@ -89,8 +93,9 @@ jq -n \
     signature: $signature,
     daemon_signature: $daemon_signature,
     voice_signature: $voice_signature,
+    ctx_signature: $ctx_signature,
     designated_requirement: $designated_requirement,
-    binaries: ["cua", "cua-voice"]
+    binaries: ["cua", "cua-voice", "ctx"]
   }' > "$PROOF"
 
 jq -e '.ok == true' "$PROOF" >/dev/null

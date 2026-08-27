@@ -2817,6 +2817,9 @@ fn input_action_label(action: &InputAction) -> String {
         InputAction::Aegis { args, .. } => {
             format!("aegis {}", compact_action_text(&args.join(" "), 48))
         }
+        InputAction::Ctx { args, .. } => {
+            format!("ctx {}", compact_action_text(&args.join(" "), 48))
+        }
         InputAction::ClipboardRead { .. } => "clipboard read".to_string(),
         InputAction::ClipboardWrite { text } => {
             format!("clipboard write {} chars", text.chars().count())
@@ -3420,6 +3423,7 @@ fn captures_trace_snapshots(action: &InputAction) -> bool {
         | InputAction::OpenApp { .. }
         | InputAction::ShellExec { .. }
         | InputAction::Aegis { .. }
+        | InputAction::Ctx { .. }
         | InputAction::ClipboardRead { .. }
         | InputAction::ClipboardWrite { .. }
         | InputAction::Pause

@@ -497,6 +497,11 @@ pub enum InputAction {
         args: Vec<String>,
         timeout_ms: u64,
     },
+    Ctx {
+        args: Vec<String>,
+        timeout_ms: u64,
+        workspace_root: Option<String>,
+    },
     ClipboardRead {
         allow_sensitive: bool,
     },

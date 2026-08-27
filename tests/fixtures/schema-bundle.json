@@ -1367,6 +1367,39 @@
             },
             {
               "properties": {
+                "args": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "kind": {
+                  "enum": [
+                    "ctx"
+                  ],
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "format": "uint64",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "workspace_root": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "args",
+                "kind",
+                "timeout_ms"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
                 "allow_sensitive": {
                   "type": "boolean"
                 },
@@ -2542,6 +2575,39 @@
             },
             {
               "properties": {
+                "args": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "kind": {
+                  "enum": [
+                    "ctx"
+                  ],
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "format": "uint64",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "workspace_root": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "args",
+                "kind",
+                "timeout_ms"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
                 "allow_sensitive": {
                   "type": "boolean"
                 },
@@ -2886,6 +2952,39 @@
         },
         {
           "properties": {
+            "args": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "enum": [
+                "ctx"
+              ],
+              "type": "string"
+            },
+            "timeout_ms": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "workspace_root": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "args",
+            "kind",
+            "timeout_ms"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
             "allow_sensitive": {
               "type": "boolean"
             },
@@ -3215,6 +3314,39 @@
                   "format": "uint64",
                   "minimum": 0.0,
                   "type": "integer"
+                }
+              },
+              "required": [
+                "args",
+                "kind",
+                "timeout_ms"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "args": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "kind": {
+                  "enum": [
+                    "ctx"
+                  ],
+                  "type": "string"
+                },
+                "timeout_ms": {
+                  "format": "uint64",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "workspace_root": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 }
               },
               "required": [

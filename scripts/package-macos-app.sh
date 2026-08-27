@@ -65,6 +65,7 @@ RUSTFLAGS="$PACKAGE_RUSTFLAGS" cargo build -p cua-voice --release
 
 BIN="$ROOT/target/release/cua"
 VOICE_BIN="$ROOT/target/release/cua-voice"
+CTX_BIN="$ROOT/vendor/ctx/ctx"
 if [[ ! -x "$BIN" ]]; then
   CANDIDATES=()
   while IFS= read -r candidate; do
@@ -87,11 +88,16 @@ if [[ ! -x "$VOICE_BIN" ]]; then
   fi
   VOICE_BIN="${VOICE_CANDIDATES[0]}"
 fi
+if [[ ! -x "$CTX_BIN" ]]; then
+  printf 'missing vendored ctx binary: %s\n' "$CTX_BIN" >&2
+  exit 1
+fi
 
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 install -m 0755 "$BIN" "$MACOS_DIR/cua"
 install -m 0755 "$VOICE_BIN" "$MACOS_DIR/cua-voice"
+install -m 0755 "$CTX_BIN" "$MACOS_DIR/ctx"
 cp "$EMBEDDED_INFO_PLIST" "$CONTENTS_DIR/Info.plist"
 
 cat > "$ENTITLEMENTS" <<PLIST
@@ -128,6 +134,15 @@ fi
   --options runtime \
   --timestamp=none \
   "$MACOS_DIR/cua-voice"
+
+/usr/bin/codesign \
+  --force \
+  --sign "$SIGN_IDENTITY" \
+  --identifier "$BUNDLE_ID.ctx" \
+  --entitlements "$ENTITLEMENTS" \
+  --options runtime \
+  --timestamp=none \
+  "$MACOS_DIR/ctx"
 
 /usr/bin/codesign \
   --force \

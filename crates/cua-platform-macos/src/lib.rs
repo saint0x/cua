@@ -201,6 +201,13 @@ async fn execute_macos_input_leaf(action: InputAction) -> Result<MacosActionOutc
         InputAction::Aegis { args, timeout_ms } => run_aegis_command(args, timeout_ms)
             .await
             .map(MacosActionOutcome::system),
+        InputAction::Ctx {
+            args,
+            timeout_ms,
+            workspace_root,
+        } => run_ctx_command(args, timeout_ms, workspace_root)
+            .await
+            .map(MacosActionOutcome::system),
         InputAction::Pause | InputAction::Resume | InputAction::KillSwitch => Ok(
             MacosActionOutcome::system("safety action accepted by local coordinator"),
         ),
@@ -279,6 +286,44 @@ async fn run_aegis_command(args: Vec<String>, timeout_ms: u64) -> Result<String,
     )
 }
 
+async fn run_ctx_command(
+    args: Vec<String>,
+    timeout_ms: u64,
+    workspace_root: Option<String>,
+) -> Result<String, String> {
+    if args.is_empty() {
+        return Err("ctx args must contain a command".to_string());
+    }
+    if args.iter().any(|arg| arg.trim().is_empty()) {
+        return Err("ctx args must not contain empty values".to_string());
+    }
+    let binary = ctx_binary();
+    let timeout = Duration::from_millis(timeout_ms.clamp(100, 60_000));
+    let mut command = tokio::process::Command::new(&binary);
+    if let Some(workspace_root) = workspace_root {
+        if workspace_root.trim().is_empty() {
+            return Err("ctx workspace_root must not be empty".to_string());
+        }
+        command.env("CUA_CTX_WORKSPACE_ROOT", workspace_root);
+    }
+    let child = command.args(&args).kill_on_drop(true).output();
+    let output = tokio::time::timeout(timeout, child)
+        .await
+        .map_err(|_| format!("ctx command timed out after {}ms", timeout.as_millis()))?
+        .map_err(|error| {
+            format!(
+                "ctx command failed to launch {}: {error}",
+                binary.display()
+            )
+        })?;
+    command_output_message(
+        "ctx",
+        output.status.code(),
+        &output.stdout,
+        &output.stderr,
+    )
+}
+
 fn aegis_binary() -> std::path::PathBuf {
     let mut candidates = Vec::new();
     if let Ok(home) = std::env::var("HOME") {
@@ -290,6 +335,23 @@ fn aegis_binary() -> std::path::PathBuf {
         .into_iter()
         .find(|candidate| candidate.exists())
         .unwrap_or_else(|| std::path::PathBuf::from("aegis"))
+}
+
+fn ctx_binary() -> std::path::PathBuf {
+    if let Ok(path) = std::env::var("CUA_CTX_BIN") {
+        if !path.trim().is_empty() {
+            return std::path::PathBuf::from(path);
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            let sibling = parent.join("ctx");
+            if sibling.exists() {
+                return sibling;
+            }
+        }
+    }
+    std::path::PathBuf::from("vendor/ctx/ctx")
 }
 
 fn command_output_message(

@@ -16,7 +16,7 @@ You receive:
 
 Your job is to choose the next tool action or action batch for cua. This is a realtime control loop, so be decisive, avoid long reasoning, avoid unnecessary extra turns, and keep the response text short. Return exactly one valid JSON object matching one of the schemas below; that object may contain a sequence action with many actions when batching is useful. Do not use Markdown, prose before/after JSON, comments, arrays, function calls, tool-call syntax, or extra top-level keys.
 
-The ACTION objects below are the complete tool protocol available in this voice loop. To control the Mac, use visible UI, mouse actions, keyboard actions, clipboard actions, app launch, shell, Aegis browser control, and the explicit pause/resume/kill controls listed here. Do not claim access to anything outside this protocol.
+The ACTION objects below are the complete tool protocol available in this voice loop. To control the Mac, use visible UI, mouse actions, keyboard actions, clipboard actions, app launch, shell, Aegis browser control, ctx memory/context calls, and the explicit pause/resume/kill controls listed here. Do not claim access to anything outside this protocol.
 
 Top-level response schema:
 {"response":"[short status for the user]","action":null}
@@ -32,6 +32,7 @@ Supported ACTION shapes:
 {"kind":"open_app","app_name":"Messages"}
 {"kind":"shell_exec","command":"pwd && ls","timeout_ms":5000}
 {"kind":"aegis","args":["--mode","headful","page","actions"],"timeout_ms":15000}
+{"kind":"ctx","args":["query","default","cua","open safari"],"timeout_ms":5000}
 {"kind":"sequence","actions":[{"kind":"open_app","app_name":"Messages"},{"kind":"key_press","combo":"cmd+n"}],"inter_action_delay_ms":120}
 {"kind":"clipboard_read","allow_sensitive":false}
 {"kind":"clipboard_write","text":"text to put on clipboard"}
@@ -49,7 +50,8 @@ Coordinate rules:
 - Prefer open_app when the user asks to open or launch a macOS app by name.
 - Prefer shell_exec when the user asks to inspect or change local files, run a local CLI, query local process state, or do developer work that is faster and clearer through bash. Keep commands short, bounded, and directly tied to the user request.
 - Prefer aegis when the user asks for browser automation, web navigation, search, page inspection, headless browser work, or headful browser work through Aegis. Pass explicit Aegis CLI args only; do not wrap Aegis in shell_exec.
-- Prefer sequence when the user asks for multiple concrete actions, when multiple obvious steps are required, or when batching reduces latency. A sequence may contain mouse, key, open_app, shell_exec, aegis, and control actions. Do not nest sequence inside sequence.
+- Prefer ctx when the user explicitly asks you to remember, query memory, compact context, snapshot context, restore context, or inspect the context runtime. Pass explicit ctx CLI args only; do not wrap ctx in shell_exec. Chat history is fed into ctx automatically by cua, so do not call ctx just to save ordinary chat turns.
+- Prefer sequence when the user asks for multiple concrete actions, when multiple obvious steps are required, or when batching reduces latency. A sequence may contain mouse, key, open_app, shell_exec, aegis, ctx, and control actions. Do not nest sequence inside sequence.
 - Prefer key_press for keyboard shortcuts, using lowercase combos such as "enter", "escape", "cmd+l", "cmd+t", "cmd+w", "cmd+tab", "shift+cmd+g".
 - Prefer mouse_drag only when the user asks to drag, resize, scrub, select a range, or move an item.
 - Use clipboard actions only when the user explicitly asks about the clipboard or asks you to copy/store text there.
@@ -91,6 +93,7 @@ impl Planner {
         &self,
         api_key: &str,
         transcript: &str,
+        agent_context: Option<&str>,
         frame: Option<&FramePayload>,
         desktop: Option<&DesktopState>,
     ) -> anyhow::Result<PlannedTurn> {
@@ -103,7 +106,8 @@ impl Planner {
         let mut content = vec![serde_json::json!({
             "type": "text",
             "text": format!(
-                "Transcript: {transcript}\n{desktop_context}"
+                "Transcript: {transcript}\n{}\n{desktop_context}",
+                agent_context.unwrap_or("Agent memory context: unavailable.")
             )
         })];
         if let Some((bytes, mime)) = frame.and_then(frame_image_data) {
@@ -417,6 +421,11 @@ fn normalize_action_value(value: &mut serde_json::Value) {
                 .entry("timeout_ms")
                 .or_insert_with(|| serde_json::json!(15_000));
         }
+        "ctx" => {
+            object
+                .entry("timeout_ms")
+                .or_insert_with(|| serde_json::json!(5_000));
+        }
         _ => {}
     }
     if let Some(button) = object.get_mut("button").and_then(|button| button.as_str()) {
@@ -628,6 +637,7 @@ mod tests {
     fn planner_prompt_exposes_strict_tool_protocol() {
         assert!(PLANNER_SYSTEM_PROMPT.contains("shell_exec"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("aegis"));
+        assert!(PLANNER_SYSTEM_PROMPT.contains("ctx"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("Native Skill.md support"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("read or inspect a local file"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("complete tool protocol"));
@@ -721,7 +731,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_model_shell_and_aegis_actions_with_default_timeouts() {
+    fn parses_model_shell_aegis_and_ctx_actions_with_default_timeouts() {
         let shell = parse_model_plan(
             r#"{"response":"Checking files.","action":{"kind":"shell_exec","command":"pwd && ls"}}"#,
         )
@@ -748,6 +758,24 @@ mod tests {
                 "headful".to_string(),
                 "page".to_string(),
                 "actions".to_string()
+            ]
+        ));
+
+        let ctx = parse_model_plan(
+            r#"{"response":"Querying memory.","action":{"kind":"ctx","args":["query","default","cua","open safari"]}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            ctx.action,
+            Some(InputAction::Ctx {
+                ref args,
+                timeout_ms: 5_000,
+                ..
+            }) if args == &[
+                "query".to_string(),
+                "default".to_string(),
+                "cua".to_string(),
+                "open safari".to_string()
             ]
         ));
     }

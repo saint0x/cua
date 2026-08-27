@@ -1,6 +1,7 @@
 use crate::audio::{record_default_input_until, RecordedAudio};
 use crate::client::{CuaClient, CuaSession};
 use crate::daemon::{spawn_profile_daemon, wait_until_ready};
+use crate::memory::{load_agent_context, ChatStore, CtxMemory};
 use crate::planner::{parse_fast_command, PlannedTurn, Planner};
 use crate::stt::{SttClient, SttTranscript, DEFAULT_STT_BACKEND, DEFAULT_STT_MODEL};
 use crate::ui_state::VoiceUiEvent;
@@ -18,6 +19,7 @@ use tokio::sync::mpsc;
 
 type LocalTask = tokio::task::JoinHandle<anyhow::Result<CuaClient>>;
 type ContextTask = tokio::task::JoinHandle<PrefetchedContext>;
+type AgentContextTask = tokio::task::JoinHandle<anyhow::Result<crate::memory::AgentContext>>;
 const VOICE_TRACE_FILE: &str = "voice-turns.jsonl";
 static VOICE_TRACE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 const VOICE_STEP_SOURCE: &str = "voice";
@@ -33,6 +35,12 @@ struct PrefetchedContext {
     frame: Option<FramePayload>,
     desktop: Option<DesktopState>,
     elapsed: Duration,
+}
+
+struct CompletedAssistantTurn {
+    response: String,
+    action: Option<serde_json::Value>,
+    evidence: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -488,7 +496,7 @@ async fn plan_and_dispatch(
     trace
         .append("planning_start", json!({"transcript": &transcript}))
         .await;
-    let plan = if let Some(plan) = parse_fast_command(&transcript) {
+    let completed = if let Some(plan) = parse_fast_command(&transcript) {
         tx.send(VoiceUiEvent::Planning {
             tool: "Command parser".to_string(),
         })
@@ -504,7 +512,18 @@ async fn plan_and_dispatch(
                 plan_trace_json("fast_command", plan_started.elapsed(), &plan),
             )
             .await;
-        plan
+        send_metric(&tx, "plan_ms", plan_started.elapsed());
+        dispatch_plan(
+            local,
+            None,
+            plan,
+            None,
+            step_publisher,
+            tx,
+            &trace,
+            &config.profile,
+        )
+        .await?
     } else {
         tx.send(VoiceUiEvent::Planning {
             tool: "OpenRouter Vision".to_string(),
@@ -512,7 +531,12 @@ async fn plan_and_dispatch(
         .ok();
         step_publisher.publish("planning from screen context");
         let wait_started = Instant::now();
-        let context = resolve_context_for_planning(local.clone(), context_task).await;
+        let agent_context_task = spawn_agent_context(config.profile.clone(), transcript.clone());
+        let (context, agent_context) = tokio::join!(
+            resolve_context_for_planning(local.clone(), context_task),
+            resolve_agent_context(agent_context_task)
+        );
+        let agent_context = agent_context?;
         trace
             .append(
                 "context_result",
@@ -529,6 +553,15 @@ async fn plan_and_dispatch(
             .await;
         send_metric(&tx, "context_wait_ms", wait_started.elapsed());
         send_metric(&tx, "context_prefetch_ms", context.elapsed);
+        trace
+            .append(
+                "agent_context_result",
+                json!({
+                    "chat_chars": agent_context.chat.chars().count(),
+                    "ctx_chars": agent_context.ctx.chars().count(),
+                }),
+            )
+            .await;
         let api_key = api_key
             .or_else(|| std::env::var("OPENROUTER_API_KEY").ok())
             .context("OPENROUTER_API_KEY is required for non-fast voice commands")?;
@@ -536,6 +569,10 @@ async fn plan_and_dispatch(
             .plan(
                 &api_key,
                 &transcript,
+                Some(&format!(
+                    "{}\n{}",
+                    agent_context.chat, agent_context.ctx
+                )),
                 context.frame.as_ref(),
                 context.desktop.as_ref(),
             )
@@ -557,19 +594,20 @@ async fn plan_and_dispatch(
             )
             .await;
         let source_frame = context.frame.as_ref().map(|frame| frame.envelope.clone());
-        return dispatch_plan(
+        dispatch_plan(
             local,
             context.session,
             plan,
             source_frame,
             step_publisher,
             tx,
-            trace,
+            &trace,
+            &config.profile,
         )
-        .await;
+        .await?
     };
-    send_metric(&tx, "plan_ms", plan_started.elapsed());
-    dispatch_plan(local, None, plan, None, step_publisher, tx, trace).await
+    persist_turn_memory(&config, &transcript, &completed, &trace).await?;
+    Ok(())
 }
 
 async fn prefetch_context(
@@ -607,12 +645,16 @@ fn context_prefetch_timeout() -> Duration {
 async fn dispatch_plan(
     local: CuaClient,
     mut session: Option<CuaSession>,
-    plan: PlannedTurn,
+    mut plan: PlannedTurn,
     source_frame: Option<FrameEnvelope>,
     step_publisher: VoiceStepPublisher,
     tx: Sender<VoiceUiEvent>,
-    trace: VoiceTurnTrace,
-) -> anyhow::Result<()> {
+    trace: &VoiceTurnTrace,
+    profile: &str,
+) -> anyhow::Result<CompletedAssistantTurn> {
+    if let Some(action) = plan.action.as_mut() {
+        stamp_ctx_workspace_root(action, profile);
+    }
     if let Some(action) = &plan.action {
         tx.send(VoiceUiEvent::Dispatching(format!("{action:?}")))
             .ok();
@@ -674,15 +716,47 @@ async fn dispatch_plan(
         trace
             .append("reply", json!({"text": plan.response, "action": true}))
             .await;
+        step_publisher.finish().await;
+        Ok(CompletedAssistantTurn {
+            response: response_text,
+            action: Some(serde_json::to_value(action)?),
+            evidence: Some(result),
+        })
     } else {
         step_publisher.publish(voice_step_label("reply", &plan.response));
         tx.send(VoiceUiEvent::Reply(plan.response.clone())).ok();
         trace
             .append("reply", json!({"text": plan.response, "action": false}))
             .await;
+        step_publisher.finish().await;
+        Ok(CompletedAssistantTurn {
+            response: plan.response,
+            action: None,
+            evidence: None,
+        })
     }
-    step_publisher.finish().await;
-    Ok(())
+}
+
+fn stamp_ctx_workspace_root(action: &mut cua_core::InputAction, profile: &str) {
+    match action {
+        cua_core::InputAction::Ctx { workspace_root, .. } => {
+            if workspace_root.is_none() {
+                *workspace_root = Some(ctx_workspace_root(profile));
+            }
+        }
+        cua_core::InputAction::Sequence { actions, .. } => {
+            for action in actions {
+                stamp_ctx_workspace_root(action, profile);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn ctx_workspace_root(profile: &str) -> String {
+    std::env::var("HOME")
+        .map(|home| format!("{home}/.cua/profiles/{profile}/ctx"))
+        .unwrap_or_else(|_| format!(".cua/profiles/{profile}/ctx"))
 }
 
 fn spawn_recording_progress(
@@ -802,6 +876,19 @@ fn spawn_context_prefetch(local: CuaClient) -> ContextTask {
     tokio::spawn(async move { prefetch_context_for_planning(local).await })
 }
 
+fn spawn_agent_context(profile: String, request: String) -> AgentContextTask {
+    tokio::spawn(async move { load_agent_context(&profile, &request).await })
+}
+
+async fn resolve_agent_context(
+    agent_context_task: AgentContextTask,
+) -> anyhow::Result<crate::memory::AgentContext> {
+    agent_context_task
+        .await
+        .context("join ctx agent context")?
+        .context("load ctx agent context")
+}
+
 async fn abort_context_prefetch(context_task: &ContextTask, trace: &VoiceTurnTrace, reason: &str) {
     context_task.abort();
     trace
@@ -819,6 +906,36 @@ async fn resolve_context_for_planning(
         }
     }
     prefetch_context_for_planning(local).await
+}
+
+async fn persist_turn_memory(
+    config: &VoiceConfig,
+    transcript: &str,
+    completed: &CompletedAssistantTurn,
+    trace: &VoiceTurnTrace,
+) -> anyhow::Result<()> {
+    let started = Instant::now();
+    let turn_id = trace.turn_id.clone();
+    ChatStore::new(config.profile.clone())?
+        .append_turn(
+            &turn_id,
+            transcript,
+            &completed.response,
+            completed.action.as_ref(),
+            completed.evidence.as_ref(),
+            &config.planner_model,
+        )
+        .await?;
+    CtxMemory::new(config.profile.clone())?
+        .remember_chat_turn(transcript, &completed.response)
+        .await?;
+    trace
+        .append(
+            "memory_persisted",
+            json!({"elapsed_ms": elapsed_ms(started.elapsed())}),
+        )
+        .await;
+    Ok(())
 }
 
 async fn preflight_local_client(profile: &str) -> anyhow::Result<CuaClient> {

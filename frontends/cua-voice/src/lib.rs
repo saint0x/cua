@@ -5,6 +5,7 @@ pub mod client;
 pub mod daemon;
 #[cfg(feature = "ui")]
 pub mod hud;
+pub mod memory;
 #[cfg(feature = "ui")]
 pub mod orb;
 pub mod orchestrator;

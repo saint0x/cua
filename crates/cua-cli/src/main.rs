@@ -67,6 +67,7 @@ enum Command {
     },
     Shell(ShellArgs),
     Aegis(AegisArgs),
+    Ctx(CtxArgs),
     Clipboard {
         #[command(subcommand)]
         command: ClipboardCommand,
@@ -283,6 +284,14 @@ struct AegisArgs {
     timeout_ms: u64,
 }
 
+#[derive(Debug, Args)]
+struct CtxArgs {
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
+    args: Vec<String>,
+    #[arg(long, default_value_t = 5_000)]
+    timeout_ms: u64,
+}
+
 #[derive(Debug, Subcommand)]
 enum ClipboardCommand {
     Read {
@@ -496,6 +505,7 @@ async fn main() -> anyhow::Result<()> {
         Some(Command::Key { command }) => daemon_input(&cli.profile, key_action(command)).await,
         Some(Command::Shell(args)) => daemon_input(&cli.profile, shell_action(args)).await,
         Some(Command::Aegis(args)) => daemon_input(&cli.profile, aegis_action(args)).await,
+        Some(Command::Ctx(args)) => daemon_input(&cli.profile, ctx_action(args, &cli.profile)).await,
         Some(Command::Clipboard { command }) => clipboard(&cli.profile, command).await,
         Some(Command::Model { command }) => model(command).await,
         Some(Command::Schema { command }) => schema(command).await,
@@ -1201,6 +1211,20 @@ fn aegis_action(args: AegisArgs) -> InputAction {
     }
 }
 
+fn ctx_action(args: CtxArgs, profile: &str) -> InputAction {
+    InputAction::Ctx {
+        args: args.args,
+        timeout_ms: args.timeout_ms,
+        workspace_root: Some(ctx_workspace_root(profile)),
+    }
+}
+
+fn ctx_workspace_root(profile: &str) -> String {
+    std::env::var("HOME")
+        .map(|home| format!("{home}/.cua/profiles/{profile}/ctx"))
+        .unwrap_or_else(|_| format!(".cua/profiles/{profile}/ctx"))
+}
+
 async fn daemon_input(profile: &str, action: InputAction) -> anyhow::Result<()> {
     let value = unix_request_json(
         profile,
@@ -1424,7 +1448,8 @@ fn replay_request(
             | InputAction::Sequence { .. }
             | InputAction::OpenApp { .. }
             | InputAction::ShellExec { .. }
-            | InputAction::Aegis { .. } => {
+            | InputAction::Aegis { .. }
+            | InputAction::Ctx { .. } => {
                 return Ok(Some(("input.dispatch", serde_json::to_value(input)?)));
             }
             InputAction::ClipboardRead { .. } | InputAction::ClipboardWrite { .. } => {

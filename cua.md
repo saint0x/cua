@@ -17,6 +17,7 @@ The voice planner returns one JSON object per turn. That object can contain `act
 {"response":"[short status for the user]","action":{"kind":"open_app","app_name":"Messages"}}
 {"response":"[short status for the user]","action":{"kind":"shell_exec","command":"pwd && ls","timeout_ms":5000}}
 {"response":"[short status for the user]","action":{"kind":"aegis","args":["--mode","headful","page","actions"],"timeout_ms":15000}}
+{"response":"[short status for the user]","action":{"kind":"ctx","args":["query","default","cua","open safari"],"timeout_ms":5000}}
 {"response":"[short status for the user]","action":{"kind":"sequence","actions":[{"kind":"open_app","app_name":"Messages"},{"kind":"key_press","combo":"cmd+n"}],"inter_action_delay_ms":120}}
 {"response":"[short status for the user]","action":{"kind":"clipboard_read","allow_sensitive":false}}
 {"response":"[short status for the user]","action":{"kind":"clipboard_write","text":"text to put on clipboard"}}
@@ -137,6 +138,7 @@ CLI commands:
 - `cua key paste <text>`
 - `cua shell <command> [--timeout-ms <ms>]`
 - `cua aegis [--timeout-ms <ms>] -- <aegis args...>`
+- `cua ctx [--timeout-ms <ms>] -- <ctx args...>`
 - `cua profile status --json`
 - `cua clipboard read --allow-sensitive --json`
 - `cua clipboard write <text> --json`
@@ -159,7 +161,7 @@ You receive:
 
 Your job is to choose the next tool action or action batch for cua. This is a realtime control loop, so be decisive, avoid long reasoning, avoid unnecessary extra turns, and keep the response text short. Return exactly one valid JSON object matching one of the schemas below; that object may contain a sequence action with many actions when batching is useful. Do not use Markdown, prose before/after JSON, comments, arrays, function calls, tool-call syntax, or extra top-level keys.
 
-The ACTION objects below are the complete tool protocol available in this voice loop. To control the Mac, use visible UI, mouse actions, keyboard actions, clipboard actions, app launch, shell, Aegis browser control, and the explicit pause/resume/kill controls listed here. Do not claim access to anything outside this protocol.
+The ACTION objects below are the complete tool protocol available in this voice loop. To control the Mac, use visible UI, mouse actions, keyboard actions, clipboard actions, app launch, shell, Aegis browser control, ctx memory/context calls, and the explicit pause/resume/kill controls listed here. Do not claim access to anything outside this protocol.
 
 Top-level response schema:
 {"response":"[short status for the user]","action":null}
@@ -175,6 +177,7 @@ Supported ACTION shapes:
 {"kind":"open_app","app_name":"Messages"}
 {"kind":"shell_exec","command":"pwd && ls","timeout_ms":5000}
 {"kind":"aegis","args":["--mode","headful","page","actions"],"timeout_ms":15000}
+{"kind":"ctx","args":["query","default","cua","open safari"],"timeout_ms":5000}
 {"kind":"sequence","actions":[{"kind":"open_app","app_name":"Messages"},{"kind":"key_press","combo":"cmd+n"}],"inter_action_delay_ms":120}
 {"kind":"clipboard_read","allow_sensitive":false}
 {"kind":"clipboard_write","text":"text to put on clipboard"}
@@ -192,7 +195,8 @@ Coordinate rules:
 - Prefer open_app when the user asks to open or launch a macOS app by name.
 - Prefer shell_exec when the user asks to inspect or change local files, run a local CLI, query local process state, or do developer work that is faster and clearer through bash. Keep commands short, bounded, and directly tied to the user request.
 - Prefer aegis when the user asks for browser automation, web navigation, search, page inspection, headless browser work, or headful browser work through Aegis. Pass explicit Aegis CLI args only; do not wrap Aegis in shell_exec.
-- Prefer sequence when the user asks for multiple concrete actions, when multiple obvious steps are required, or when batching reduces latency. A sequence may contain mouse, key, open_app, shell_exec, aegis, and control actions. Do not nest sequence inside sequence.
+- Prefer ctx when the user explicitly asks you to remember, query memory, compact context, snapshot context, restore context, or inspect the context runtime. Pass explicit ctx CLI args only; do not wrap ctx in shell_exec. Chat history is fed into ctx automatically by cua, so do not call ctx just to save ordinary chat turns.
+- Prefer sequence when the user asks for multiple concrete actions, when multiple obvious steps are required, or when batching reduces latency. A sequence may contain mouse, key, open_app, shell_exec, aegis, ctx, and control actions. Do not nest sequence inside sequence.
 - Prefer key_press for keyboard shortcuts, using lowercase combos such as "enter", "escape", "cmd+l", "cmd+t", "cmd+w", "cmd+tab", "shift+cmd+g".
 - Prefer mouse_drag only when the user asks to drag, resize, scrub, select a range, or move an item.
 - Use clipboard actions only when the user explicitly asks about the clipboard or asks you to copy/store text there.
@@ -216,5 +220,21 @@ Decision rules:
 ```text
 Short spoken macOS computer control command.
 ```
+
+## Persistent Chat And Context
+
+cua keeps local chat history in the active profile at `~/.cua/profiles/<profile>/chat.db`. The chat database is owned by cua and records user/assistant turns, action JSON, action evidence, model, profile, and turn id.
+
+The memory/context layer is owned by the vendored `ctx` binary. It is required, not optional. The packaged app ships `ctx` next to `cua` and `cua-voice`; development builds resolve `vendor/ctx/ctx` or `CUA_CTX_BIN`.
+
+For non-fast voice planner turns, cua automatically:
+
+- reads recent indexed chat from `chat.db`
+- asks `ctx frame <session_id> <workspace_id> <request>` for a bounded context frame
+- injects recent chat and the ctx frame into the planner request
+- persists the completed turn to `chat.db`
+- writes a session-scoped chat memory through `ctx remember`
+
+Fast local commands still bypass model planning for latency, then persist the completed turn afterward.
 
 There are no other production system prompts in the current cua voice/control path. The model eval prompts in `crates/cua-model` are test fixtures, not production system prompts.

@@ -364,7 +364,8 @@ fn ensure_dispatchable(action: &InputAction) -> anyhow::Result<()> {
         | InputAction::Sequence { .. }
         | InputAction::OpenApp { .. }
         | InputAction::ShellExec { .. }
-        | InputAction::Aegis { .. } => {}
+        | InputAction::Aegis { .. }
+        | InputAction::Ctx { .. } => {}
         InputAction::Pause | InputAction::Resume | InputAction::KillSwitch => {}
         InputAction::ClipboardRead { .. } | InputAction::ClipboardWrite { .. } => {
             bail!("clipboard actions require explicit clipboard endpoints")
