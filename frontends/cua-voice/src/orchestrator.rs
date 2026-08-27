@@ -652,7 +652,7 @@ async fn plan_and_dispatch(
                     }),
                 )
                 .await;
-            let plan = match planner
+            let mut plan = match planner
                 .plan_request(
                     &api_key,
                     PlannerRequest {
@@ -693,12 +693,47 @@ async fn plan_and_dispatch(
                     return Err(error);
                 }
             };
+            repair_new_note_text_entry_plan(&transcript, &mut plan.action);
             trace
                 .append(
                     "planning_result",
                     plan_trace_json(&config.planner_model, attempt_started.elapsed(), &plan),
                 )
                 .await;
+            if transcript_requests_text_entry(&transcript)
+                && !plan
+                    .action
+                    .as_ref()
+                    .is_some_and(action_satisfies_text_entry_request)
+            {
+                let action_json = plan.action.as_ref().map(serde_json::to_value).transpose()?;
+                trace
+                    .append(
+                        "planning_rejected",
+                        json!({
+                            "attempt_index": attempt_index,
+                            "reason": "text_request_without_text_entry_action",
+                            "action": action_json,
+                        }),
+                    )
+                    .await;
+                attempts.push(PlanAttemptContext {
+                    attempt_index,
+                    response: plan.response,
+                    action: action_json,
+                    effect: Some("suspected_noop".to_string()),
+                    evidence: Some(json!({
+                        "effect": "suspected_noop",
+                        "reason": "text_request_without_text_entry_action",
+                    })),
+                });
+                if attempt_index >= max_attempts {
+                    anyhow::bail!(
+                        "planning model did not include a text-entry action for a text-writing command"
+                    );
+                }
+                continue;
+            }
             let source_frame = context.frame.as_ref().map(|frame| frame.envelope.clone());
             let turn = dispatch_plan(
                 local.clone(),
@@ -729,10 +764,12 @@ async fn plan_and_dispatch(
                 .action
                 .as_ref()
                 .is_some_and(action_needs_fresh_verification);
-            if !should_continue && (!should_verify || attempt_index >= max_attempts) {
+            if !should_continue && !should_verify {
                 completed = Some(turn);
                 break;
             }
+            let finish_after_reobserve =
+                should_finish_after_reobserve(should_verify, should_continue);
             attempts.push(PlanAttemptContext {
                 attempt_index,
                 response: turn.response.clone(),
@@ -769,17 +806,20 @@ async fn plan_and_dispatch(
                     }),
                 )
                 .await;
+            if finish_after_reobserve {
+                completed = Some(turn);
+                break;
+            }
         }
         send_metric(&tx, "plan_ms", plan_started.elapsed());
-        let completed = attach_loop_evidence(
-            completed.context("agent loop exhausted without a completed turn")?,
-            &attempts,
-        );
+        let completed = completed.context("agent loop exhausted without a completed turn")?;
+        let attempt_count = loop_attempt_count(&completed, &attempts);
+        let completed = attach_loop_evidence(completed, &attempts);
         trace
             .append(
                 "agent_loop_stop",
                 json!({
-                    "attempts": attempts.len() + 1,
+                    "attempts": attempt_count,
                     "final_effect": turn_effect(&completed),
                 }),
             )
@@ -975,6 +1015,128 @@ fn action_needs_fresh_verification(action: &serde_json::Value) -> bool {
     }
 }
 
+fn transcript_requests_text_entry(transcript: &str) -> bool {
+    transcript
+        .split_whitespace()
+        .map(normalize_voice_token)
+        .any(|word| {
+            matches!(
+                word.as_str(),
+                "write"
+                    | "type"
+                    | "paste"
+                    | "leave"
+                    | "message"
+                    | "says"
+                    | "content"
+                    | "story"
+                    | "marker"
+            )
+        })
+}
+
+fn transcript_requests_new_note(transcript: &str) -> bool {
+    let words = transcript
+        .split_whitespace()
+        .map(normalize_voice_token)
+        .collect::<Vec<_>>();
+    words.iter().any(|word| word == "note" || word == "notes")
+        && words
+            .iter()
+            .any(|word| matches!(word.as_str(), "new" | "create" | "make"))
+}
+
+fn normalize_voice_token(token: &str) -> String {
+    token
+        .trim_matches(|ch: char| !ch.is_ascii_alphanumeric())
+        .to_ascii_lowercase()
+}
+
+fn repair_new_note_text_entry_plan(transcript: &str, action: &mut Option<cua_core::InputAction>) {
+    if !transcript_requests_new_note(transcript) {
+        return;
+    }
+    let Some(current) = action.take() else {
+        return;
+    };
+    let Some(text_action) = first_text_entry_action(&current) else {
+        *action = Some(current);
+        return;
+    };
+    if transcript_mentions_notes(transcript) {
+        *action = Some(cua_core::InputAction::Sequence {
+            actions: vec![
+                cua_core::InputAction::OpenApp {
+                    app_name: "Notes".to_string(),
+                },
+                cua_core::InputAction::KeyPress {
+                    combo: "cmd+n".to_string(),
+                },
+                text_action,
+            ],
+            inter_action_delay_ms: 120,
+        });
+    } else if action_contains_cmd_n(&current) {
+        *action = Some(current);
+    } else {
+        *action = Some(cua_core::InputAction::Sequence {
+            actions: vec![
+                cua_core::InputAction::KeyPress {
+                    combo: "cmd+n".to_string(),
+                },
+                text_action,
+            ],
+            inter_action_delay_ms: 120,
+        });
+    }
+}
+
+fn first_text_entry_action(action: &cua_core::InputAction) -> Option<cua_core::InputAction> {
+    match action {
+        cua_core::InputAction::KeyType { .. }
+        | cua_core::InputAction::KeyPaste { .. }
+        | cua_core::InputAction::ClipboardWrite { .. } => Some(action.clone()),
+        cua_core::InputAction::Sequence { actions, .. } => {
+            actions.iter().find_map(first_text_entry_action)
+        }
+        _ => None,
+    }
+}
+
+fn transcript_mentions_notes(transcript: &str) -> bool {
+    transcript
+        .split_whitespace()
+        .map(normalize_voice_token)
+        .any(|word| word == "note" || word == "notes")
+}
+
+fn action_satisfies_text_entry_request(action: &cua_core::InputAction) -> bool {
+    match action {
+        cua_core::InputAction::KeyType { .. }
+        | cua_core::InputAction::KeyPaste { .. }
+        | cua_core::InputAction::ClipboardWrite { .. }
+        | cua_core::InputAction::ShellExec { .. } => true,
+        cua_core::InputAction::Sequence { actions, .. } => {
+            actions.iter().any(action_satisfies_text_entry_request)
+        }
+        _ => false,
+    }
+}
+
+fn action_contains_cmd_n(action: &cua_core::InputAction) -> bool {
+    match action {
+        cua_core::InputAction::KeyPress { combo } => combo.eq_ignore_ascii_case("cmd+n"),
+        cua_core::InputAction::Sequence { actions, .. } => {
+            actions.iter().any(action_contains_cmd_n)
+        }
+        _ => false,
+    }
+}
+
+fn should_finish_after_reobserve(should_verify: bool, should_continue: bool) -> bool {
+    should_verify && !should_continue
+}
+
 fn completed_from_confirmed_prior_attempt(
     attempts: &[PlanAttemptContext],
 ) -> Option<CompletedAssistantTurn> {
@@ -1000,6 +1162,8 @@ fn attach_loop_evidence(
     if prior_attempts.is_empty() {
         return completed;
     }
+    let final_attempt_already_recorded =
+        prior_attempts_include_completed(&completed, prior_attempts);
     let final_evidence = completed.evidence.take();
     let final_effect = final_evidence
         .as_ref()
@@ -1011,13 +1175,15 @@ fn attach_loop_evidence(
         })
         .to_string();
     let mut attempts = prior_attempts.to_vec();
-    attempts.push(PlanAttemptContext {
-        attempt_index: attempts.len() + 1,
-        response: completed.response.clone(),
-        action: completed.action.clone(),
-        effect: Some(final_effect.clone()),
-        evidence: final_evidence.clone(),
-    });
+    if !final_attempt_already_recorded {
+        attempts.push(PlanAttemptContext {
+            attempt_index: attempts.len() + 1,
+            response: completed.response.clone(),
+            action: completed.action.clone(),
+            effect: Some(final_effect.clone()),
+            evidence: final_evidence.clone(),
+        });
+    }
     completed.evidence = Some(json!({
         "effect": final_effect,
         "final_evidence": final_evidence,
@@ -1025,6 +1191,29 @@ fn attach_loop_evidence(
         "attempts": attempts,
     }));
     completed
+}
+
+fn loop_attempt_count(
+    completed: &CompletedAssistantTurn,
+    attempts: &[PlanAttemptContext],
+) -> usize {
+    attempts.len()
+        + if prior_attempts_include_completed(completed, attempts) {
+            0
+        } else {
+            1
+        }
+}
+
+fn prior_attempts_include_completed(
+    completed: &CompletedAssistantTurn,
+    attempts: &[PlanAttemptContext],
+) -> bool {
+    attempts.last().is_some_and(|attempt| {
+        attempt.response == completed.response
+            && attempt.action == completed.action
+            && attempt.evidence == completed.evidence
+    })
 }
 
 fn should_replan_after_effect(
@@ -1876,6 +2065,77 @@ mod tests {
     }
 
     #[test]
+    fn text_entry_requests_reject_open_only_plans() {
+        assert!(transcript_requests_text_entry(
+            "Open Notes and write me a note that says hello"
+        ));
+        assert!(!transcript_requests_text_entry("Open Notes"));
+        assert!(!action_satisfies_text_entry_request(
+            &cua_core::InputAction::OpenApp {
+                app_name: "Notes".to_string(),
+            }
+        ));
+        assert!(action_satisfies_text_entry_request(
+            &cua_core::InputAction::Sequence {
+                actions: vec![
+                    cua_core::InputAction::OpenApp {
+                        app_name: "Notes".to_string(),
+                    },
+                    cua_core::InputAction::KeyPaste {
+                        text: "hello".to_string(),
+                    },
+                ],
+                inter_action_delay_ms: 120,
+            }
+        ));
+    }
+
+    #[test]
+    fn new_note_text_entry_plans_are_repaired_to_create_note_once() {
+        let mut action = Some(cua_core::InputAction::KeyPaste {
+            text: "hello".to_string(),
+        });
+
+        repair_new_note_text_entry_plan(
+            "Open Notes and create a new note that says hello",
+            &mut action,
+        );
+
+        let Some(cua_core::InputAction::Sequence { actions, .. }) = action else {
+            panic!("expected repaired sequence");
+        };
+        assert!(matches!(
+            actions.as_slice(),
+            [
+                cua_core::InputAction::OpenApp { app_name },
+                cua_core::InputAction::KeyPress { combo },
+                cua_core::InputAction::KeyPaste { text },
+            ] if app_name == "Notes" && combo == "cmd+n" && text == "hello"
+        ));
+    }
+
+    #[test]
+    fn ordinary_text_entry_plans_are_not_forced_into_new_notes() {
+        let mut action = Some(cua_core::InputAction::KeyPaste {
+            text: "hello".to_string(),
+        });
+
+        repair_new_note_text_entry_plan("Paste hello", &mut action);
+
+        assert!(matches!(
+            action,
+            Some(cua_core::InputAction::KeyPaste { ref text }) if text == "hello"
+        ));
+    }
+
+    #[test]
+    fn confirmed_edge_actions_finish_after_reobserve_without_replanning() {
+        assert!(should_finish_after_reobserve(true, false));
+        assert!(!should_finish_after_reobserve(true, true));
+        assert!(!should_finish_after_reobserve(false, false));
+    }
+
+    #[test]
     fn malformed_verification_after_confirmed_edge_action_keeps_confirmed_turn() {
         let attempts = vec![PlanAttemptContext {
             attempt_index: 1,
@@ -1895,6 +2155,30 @@ mod tests {
 
         assert_eq!(completed.response, "Creating the note.");
         assert_eq!(turn_effect(&completed), Some("confirmed".to_string()));
+    }
+
+    #[test]
+    fn loop_evidence_does_not_duplicate_final_attempt_already_recorded_for_reobserve() {
+        let action =
+            Some(json!({"kind": "sequence", "actions": [{"kind": "key_paste", "text": "hello"}]}));
+        let evidence = Some(json!({"effect": "confirmed"}));
+        let completed = CompletedAssistantTurn {
+            response: "Done.".to_string(),
+            action: action.clone(),
+            evidence: evidence.clone(),
+        };
+        let attempts = vec![PlanAttemptContext {
+            attempt_index: 1,
+            response: "Done.".to_string(),
+            action,
+            effect: Some("confirmed".to_string()),
+            evidence,
+        }];
+
+        assert_eq!(loop_attempt_count(&completed, &attempts), 1);
+        let completed = attach_loop_evidence(completed, &attempts);
+
+        assert_eq!(completed.evidence.as_ref().unwrap()["attempt_count"], 1);
     }
 
     #[test]

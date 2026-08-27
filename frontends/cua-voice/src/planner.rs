@@ -8,6 +8,8 @@ const DEFAULT_PLANNER_TIMEOUT_MS: u64 = 12_000;
 const DEFAULT_PLANNER_ATTEMPTS: usize = 3;
 const DEFAULT_PLANNER_OUTPUT_ATTEMPTS: usize = 2;
 const DEFAULT_PLANNER_RETRY_BACKOFF_MS: u64 = 220;
+const DEFAULT_PLANNER_MAX_TOKENS: u32 = 180;
+const DEFAULT_PLANNER_TEXT_MAX_TOKENS: u32 = 900;
 const PLANNER_SYSTEM_PROMPT: &str = r#"You are the protocol planner for cua, a local macOS computer-use runtime. You are not a general chat assistant and you do not have hidden tools.
 
 You receive:
@@ -57,6 +59,7 @@ Coordinate rules:
 - Prefer sequence when the user asks for multiple concrete actions, when multiple obvious steps are required, or when batching reduces latency. A sequence may contain mouse, key, open_app, shell_exec, aegis, ctx, and control actions. Do not nest sequence inside sequence.
 - Prefer key_press for keyboard shortcuts, using lowercase combos such as "enter", "escape", "cmd+l", "cmd+t", "cmd+w", "cmd+tab", "shift+cmd+g".
 - Prefer key_paste, not key_type, when leaving exact user-provided content inside an app after creating or focusing a field. This is the production writing path for note/message/body text.
+- If the user asks you to write, leave, paste, type, draft, or create text in an app, the returned action must include the text-entry action in the same response, usually as a sequence with open_app, key_press or focusing, then key_paste. Returning only open_app for a text-writing command is invalid.
 - Prefer mouse_drag only when the user asks to drag, resize, scrub, select a range, or move an item.
 - Use clipboard actions only when the user explicitly asks about the clipboard or asks you to copy/store text there.
 - Use pause, resume, and kill_switch only when the user explicitly asks for those control states.
@@ -195,7 +198,7 @@ impl Planner {
                 {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
                 {"role": "user", "content": content}
             ],
-            "max_tokens": 180,
+            "max_tokens": planner_max_tokens(transcript),
             "response_format": {"type": "json_object"},
         });
         let output_attempts = retry_attempts_from_env(
@@ -384,6 +387,45 @@ fn retry_backoff_from_env(name: &str, default_ms: u64) -> Duration {
         .filter(|value| (10..=2_000).contains(value))
         .unwrap_or(default_ms);
     Duration::from_millis(ms)
+}
+
+fn planner_max_tokens(transcript: &str) -> u32 {
+    let env_name = if planner_transcript_requests_text_payload(transcript) {
+        "CUA_VOICE_PLANNER_TEXT_MAX_TOKENS"
+    } else {
+        "CUA_VOICE_PLANNER_MAX_TOKENS"
+    };
+    let default = if env_name == "CUA_VOICE_PLANNER_TEXT_MAX_TOKENS" {
+        DEFAULT_PLANNER_TEXT_MAX_TOKENS
+    } else {
+        DEFAULT_PLANNER_MAX_TOKENS
+    };
+    std::env::var(env_name)
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .filter(|value| (64..=4_000).contains(value))
+        .unwrap_or(default)
+}
+
+fn planner_transcript_requests_text_payload(transcript: &str) -> bool {
+    transcript
+        .split_whitespace()
+        .map(normalize_command_token)
+        .any(|word| {
+            matches!(
+                word.as_str(),
+                "write"
+                    | "type"
+                    | "paste"
+                    | "leave"
+                    | "message"
+                    | "says"
+                    | "content"
+                    | "story"
+                    | "draft"
+                    | "marker"
+            )
+        })
 }
 
 fn retryable_status(status: reqwest::StatusCode) -> bool {
@@ -853,6 +895,8 @@ mod tests {
         assert!(PLANNER_SYSTEM_PROMPT.contains("may contain a sequence action with many actions"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("open_app"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("Prefer key_paste, not key_type"));
+        assert!(PLANNER_SYSTEM_PROMPT
+            .contains("Returning only open_app for a text-writing command is invalid"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("take or use a fresh screenshot/reobserve pass"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("Do not invent a separate skill runtime"));
     }
@@ -1170,6 +1214,22 @@ mod tests {
             Duration::from_millis(500)
         );
         std::env::remove_var(backoff);
+    }
+
+    #[test]
+    fn planner_uses_larger_output_budget_for_text_payloads() {
+        std::env::remove_var("CUA_VOICE_PLANNER_MAX_TOKENS");
+        std::env::remove_var("CUA_VOICE_PLANNER_TEXT_MAX_TOKENS");
+
+        assert_eq!(planner_max_tokens("Open Notes"), DEFAULT_PLANNER_MAX_TOKENS);
+        assert_eq!(
+            planner_max_tokens("Open Notes and write me a short story"),
+            DEFAULT_PLANNER_TEXT_MAX_TOKENS
+        );
+
+        std::env::set_var("CUA_VOICE_PLANNER_TEXT_MAX_TOKENS", "1200");
+        assert_eq!(planner_max_tokens("leave a note that says hello"), 1_200);
+        std::env::remove_var("CUA_VOICE_PLANNER_TEXT_MAX_TOKENS");
     }
 
     #[test]
