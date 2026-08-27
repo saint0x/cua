@@ -19,6 +19,9 @@ use sha2::{Digest, Sha256};
 use std::ffi::CStr;
 #[cfg(target_os = "macos")]
 use std::os::raw::c_char;
+#[cfg(target_os = "macos")]
+use std::os::raw::c_void;
+use std::sync::mpsc::{channel, Sender};
 use std::sync::Arc;
 #[cfg(target_os = "macos")]
 use std::sync::Mutex;
@@ -170,6 +173,23 @@ pub fn control_key_is_down() -> bool {
 
 pub fn left_mouse_button_is_down() -> bool {
     native_left_mouse_button_is_down()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LeftMouseEventKind {
+    Down,
+    Up,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LeftMouseEvent {
+    pub kind: LeftMouseEventKind,
+    pub x: f64,
+    pub y: f64,
+}
+
+pub fn start_left_mouse_event_monitor(tx: Sender<LeftMouseEvent>) -> Result<(), String> {
+    native_start_left_mouse_event_monitor(tx)
 }
 
 pub fn window_list() -> anyhow::Result<Vec<WindowInfo>> {
@@ -534,6 +554,83 @@ fn native_left_mouse_button_is_down() -> bool {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn native_start_left_mouse_event_monitor(tx: Sender<LeftMouseEvent>) -> Result<(), String> {
+    let (start_tx, start_rx) = channel();
+    std::thread::Builder::new()
+        .name("cua-left-mouse-event-tap".to_string())
+        .spawn(move || unsafe {
+            let boxed_tx = Box::new(tx);
+            let user_info = Box::into_raw(boxed_tx).cast::<c_void>();
+            let mask = (1_u64 << CG_EVENT_LEFT_MOUSE_DOWN) | (1_u64 << CG_EVENT_LEFT_MOUSE_UP);
+            let tap = CGEventTapCreate(
+                CG_HID_EVENT_TAP,
+                CG_HEAD_INSERT_EVENT_TAP,
+                CG_EVENT_TAP_OPTION_LISTEN_ONLY,
+                mask,
+                left_mouse_event_tap_callback,
+                user_info,
+            );
+            if tap.is_null() {
+                start_tx
+                    .send(Err("CGEventTapCreate returned null".to_string()))
+                    .ok();
+                drop(Box::from_raw(user_info.cast::<Sender<LeftMouseEvent>>()));
+                return;
+            }
+            let source = CFMachPortCreateRunLoopSource(std::ptr::null(), tap, 0);
+            if source.is_null() {
+                start_tx
+                    .send(Err(
+                        "CFMachPortCreateRunLoopSource returned null".to_string()
+                    ))
+                    .ok();
+                CFMachPortInvalidate(tap);
+                CFRelease(tap.cast());
+                drop(Box::from_raw(user_info.cast::<Sender<LeftMouseEvent>>()));
+                return;
+            }
+            CGEventTapEnable(tap, true);
+            CFRunLoopAddSource(CFRunLoopGetCurrent(), source, kCFRunLoopCommonModes);
+            CFRelease(source.cast());
+            start_tx.send(Ok(())).ok();
+            CFRunLoopRun();
+            CFMachPortInvalidate(tap);
+            CFRelease(tap.cast());
+            drop(Box::from_raw(user_info.cast::<Sender<LeftMouseEvent>>()));
+        })
+        .map_err(|error| format!("failed to start left mouse event monitor: {error}"))?;
+    start_rx
+        .recv_timeout(Duration::from_secs(1))
+        .unwrap_or_else(|_| Err("left mouse event monitor did not start".to_string()))
+}
+
+#[cfg(target_os = "macos")]
+unsafe extern "C" fn left_mouse_event_tap_callback(
+    _proxy: *mut c_void,
+    event_type: u32,
+    event: *mut c_void,
+    user_info: *mut c_void,
+) -> *mut c_void {
+    if user_info.is_null() || event.is_null() {
+        return event;
+    }
+    let kind = match event_type {
+        CG_EVENT_LEFT_MOUSE_DOWN => LeftMouseEventKind::Down,
+        CG_EVENT_LEFT_MOUSE_UP => LeftMouseEventKind::Up,
+        _ => return event,
+    };
+    let point = CGEventGetLocation(event.cast_const());
+    let tx = &*(user_info.cast::<Sender<LeftMouseEvent>>());
+    tx.send(LeftMouseEvent {
+        kind,
+        x: point.x,
+        y: point.y,
+    })
+    .ok();
+    event
+}
+
 #[cfg(not(target_os = "macos"))]
 fn native_control_key_is_down() -> bool {
     false
@@ -542,6 +639,11 @@ fn native_control_key_is_down() -> bool {
 #[cfg(not(target_os = "macos"))]
 fn native_left_mouse_button_is_down() -> bool {
     false
+}
+
+#[cfg(not(target_os = "macos"))]
+fn native_start_left_mouse_event_monitor(_tx: Sender<LeftMouseEvent>) -> Result<(), String> {
+    Err("left mouse event monitor is only available on macOS".to_string())
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -1104,6 +1206,33 @@ unsafe extern "C" {
     fn CGEventPost(tap: u32, event: *const std::ffi::c_void);
     fn CGEventSetFlags(event: *const std::ffi::c_void, flags: u64);
     fn CGEventSetIntegerValueField(event: *const std::ffi::c_void, field: u32, value: i64);
+    fn CGEventTapCreate(
+        tap: u32,
+        place: u32,
+        options: u32,
+        events_of_interest: u64,
+        callback: unsafe extern "C" fn(
+            proxy: *mut c_void,
+            event_type: u32,
+            event: *mut c_void,
+            user_info: *mut c_void,
+        ) -> *mut c_void,
+        user_info: *mut c_void,
+    ) -> *mut std::ffi::c_void;
+    fn CGEventTapEnable(tap: *const std::ffi::c_void, enable: bool);
+    fn CFMachPortCreateRunLoopSource(
+        allocator: *const std::ffi::c_void,
+        port: *const std::ffi::c_void,
+        order: isize,
+    ) -> *const std::ffi::c_void;
+    fn CFMachPortInvalidate(port: *const std::ffi::c_void);
+    fn CFRunLoopGetCurrent() -> *const std::ffi::c_void;
+    fn CFRunLoopAddSource(
+        run_loop: *const std::ffi::c_void,
+        source: *const std::ffi::c_void,
+        mode: *const std::ffi::c_void,
+    );
+    fn CFRunLoopRun();
     fn CFDataGetBytePtr(data: *const std::ffi::c_void) -> *const u8;
     fn CFDataGetLength(data: *const std::ffi::c_void) -> usize;
     fn CFArrayGetCount(array: *const std::ffi::c_void) -> isize;
@@ -1148,6 +1277,7 @@ unsafe extern "C" {
     fn CFRelease(cf: *const std::ffi::c_void);
 
     static kCFRunLoopDefaultMode: *const std::ffi::c_void;
+    static kCFRunLoopCommonModes: *const std::ffi::c_void;
     static kCFBooleanTrue: *const std::ffi::c_void;
     static kAXTrustedCheckOptionPrompt: *const std::ffi::c_void;
     static kCGWindowNumber: *const std::ffi::c_void;
@@ -1215,6 +1345,10 @@ struct CGRect {
 
 #[cfg(target_os = "macos")]
 const CG_HID_EVENT_TAP: u32 = 0;
+#[cfg(target_os = "macos")]
+const CG_HEAD_INSERT_EVENT_TAP: u32 = 0;
+#[cfg(target_os = "macos")]
+const CG_EVENT_TAP_OPTION_LISTEN_ONLY: u32 = 1;
 #[cfg(target_os = "macos")]
 const CG_WINDOW_LIST_OPTION_ON_SCREEN_ONLY: u32 = 1;
 #[cfg(target_os = "macos")]

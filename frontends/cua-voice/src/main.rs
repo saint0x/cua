@@ -97,6 +97,7 @@ struct VoiceHud {
     drag: Option<IslandDrag>,
     model_label: String,
     island_bounds: Arc<Mutex<Option<Bounds<Pixels>>>>,
+    last_island_toggle_at: Option<Instant>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -134,6 +135,7 @@ impl VoiceHud {
             drag: None,
             model_label,
             island_bounds,
+            last_island_toggle_at: None,
         }
     }
 
@@ -142,15 +144,50 @@ impl VoiceHud {
         while let Ok(event) = self.rx.try_recv() {
             match event {
                 VoiceUiEvent::ToggleExpanded => {
-                    expansion_command = Some(!expansion_command.unwrap_or(self.expanded));
+                    if self.accept_island_toggle(Instant::now()) {
+                        expansion_command = Some(!expansion_command.unwrap_or(self.expanded));
+                    }
                 }
                 VoiceUiEvent::SetExpanded(expanded) => {
                     expansion_command = Some(expanded);
+                }
+                VoiceUiEvent::AutomationActivity {
+                    label,
+                    source,
+                    tool,
+                } if self.automation_activity_toggles_island(&label) => {
+                    if self.accept_island_toggle(Instant::now()) {
+                        expansion_command = Some(!expansion_command.unwrap_or(self.expanded));
+                    }
+                    self.snapshot.apply(VoiceUiEvent::AutomationActivity {
+                        label,
+                        source,
+                        tool,
+                    });
                 }
                 event => self.snapshot.apply(event),
             }
         }
         expansion_command
+    }
+
+    fn accept_island_toggle(&mut self, now: Instant) -> bool {
+        if self
+            .last_island_toggle_at
+            .is_some_and(|previous| now.duration_since(previous) < Duration::from_millis(260))
+        {
+            return false;
+        }
+        self.last_island_toggle_at = Some(now);
+        true
+    }
+
+    fn automation_activity_toggles_island(&self, label: &str) -> bool {
+        let Some(point) = automation_double_click_point(label) else {
+            return false;
+        };
+        let bounds = self.island_bounds.lock().ok().and_then(|current| *current);
+        bounds.is_some_and(|bounds| point_inside_bounds(point, bounds))
     }
 
     fn orb(&self) -> impl IntoElement {
@@ -290,12 +327,7 @@ impl VoiceHud {
             .id("cua-island-shell")
             .on_mouse_down(
                 GpuiMouseButton::Left,
-                cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                    if island_double_tap_toggles_expansion(event.click_count) {
-                        this.toggle_expanded(window, cx);
-                        cx.stop_propagation();
-                        return;
-                    }
+                cx.listener(|this, _: &MouseDownEvent, window, cx| {
                     this.drag = Some(IslandDrag {
                         start_cursor: current_cursor_point(),
                         start_bounds: window.bounds(),
@@ -938,8 +970,18 @@ fn point_inside_bounds(point: Point<Pixels>, bounds: Bounds<Pixels>) -> bool {
         && point.y <= bounds.origin.y + bounds.size.height
 }
 
-fn island_double_tap_toggles_expansion(click_count: usize) -> bool {
-    click_count >= 2
+fn automation_double_click_point(label: &str) -> Option<Point<Pixels>> {
+    let normalized = label.trim();
+    let (prefix, count) = normalized.rsplit_once(" x")?;
+    if count.parse::<u8>().ok()? < 2 {
+        return None;
+    }
+    let coords = prefix.strip_prefix("Left mouse click at ")?;
+    let (x, y) = coords.split_once(',')?;
+    Some(point(
+        px(x.trim().parse::<f32>().ok()?),
+        px(y.trim().parse::<f32>().ok()?),
+    ))
 }
 
 fn step_label(index: usize, total: usize, label: &str) -> String {
@@ -1533,6 +1575,26 @@ fn start_island_double_tap_listener(
     tx: Sender<VoiceUiEvent>,
     island_bounds: Arc<Mutex<Option<Bounds<Pixels>>>>,
 ) {
+    let (mouse_tx, mouse_rx) = channel();
+    if cua_platform_macos::start_left_mouse_event_monitor(mouse_tx).is_ok() {
+        std::thread::spawn(move || {
+            let mut detector = ControlDoubleTap::default();
+            let mut tap_started_inside = false;
+            while let Ok(event) = mouse_rx.recv() {
+                let bounds = island_bounds.lock().ok().and_then(|current| *current);
+                if island_mouse_event_triggers_toggle(
+                    &mut detector,
+                    &mut tap_started_inside,
+                    event,
+                    bounds,
+                    Instant::now(),
+                ) {
+                    tx.send(VoiceUiEvent::ToggleExpanded).ok();
+                }
+            }
+        });
+        return;
+    }
     std::thread::spawn(move || {
         let mut detector = ControlDoubleTap::default();
         let mut was_down = false;
@@ -1554,6 +1616,31 @@ fn start_island_double_tap_listener(
             std::thread::sleep(CONTROL_SHORTCUT_POLL_INTERVAL);
         }
     });
+}
+
+fn island_mouse_event_triggers_toggle(
+    detector: &mut ControlDoubleTap,
+    tap_started_inside: &mut bool,
+    event: cua_platform_macos::LeftMouseEvent,
+    bounds: Option<Bounds<Pixels>>,
+    now: Instant,
+) -> bool {
+    let cursor = point(px(event.x as f32), px(event.y as f32));
+    let inside = bounds.is_some_and(|bounds| point_inside_bounds(cursor, bounds));
+    match event.kind {
+        cua_platform_macos::LeftMouseEventKind::Down => {
+            *tap_started_inside = inside;
+            if inside {
+                detector.key_down();
+            }
+            false
+        }
+        cua_platform_macos::LeftMouseEventKind::Up => {
+            let valid_tap = *tap_started_inside && inside;
+            *tap_started_inside = false;
+            valid_tap && detector.key_up(now)
+        }
+    }
 }
 
 fn island_mouse_sample_triggers_toggle(
@@ -1804,14 +1891,6 @@ mod tests {
     }
 
     #[test]
-    fn island_expansion_requires_double_tap() {
-        assert!(!island_double_tap_toggles_expansion(0));
-        assert!(!island_double_tap_toggles_expansion(1));
-        assert!(island_double_tap_toggles_expansion(2));
-        assert!(island_double_tap_toggles_expansion(3));
-    }
-
-    #[test]
     fn island_chrome_visibility_tracks_cursor_bounds() {
         let bounds = Bounds {
             origin: point(px(100.0), px(20.0)),
@@ -1891,6 +1970,135 @@ mod tests {
             Some(bounds),
             start + Duration::from_millis(260),
         ));
+    }
+
+    #[test]
+    fn island_mouse_event_tap_toggles_only_for_inside_double_tap() {
+        let start = Instant::now();
+        let bounds = Bounds {
+            origin: point(px(100.0), px(20.0)),
+            size: size(px(300.0), px(40.0)),
+        };
+        let mut detector = ControlDoubleTap::default();
+        let mut tap_started_inside = false;
+
+        assert!(!island_mouse_event_triggers_toggle(
+            &mut detector,
+            &mut tap_started_inside,
+            cua_platform_macos::LeftMouseEvent {
+                kind: cua_platform_macos::LeftMouseEventKind::Down,
+                x: 250.0,
+                y: 40.0,
+            },
+            Some(bounds),
+            start,
+        ));
+        assert!(!island_mouse_event_triggers_toggle(
+            &mut detector,
+            &mut tap_started_inside,
+            cua_platform_macos::LeftMouseEvent {
+                kind: cua_platform_macos::LeftMouseEventKind::Up,
+                x: 250.0,
+                y: 40.0,
+            },
+            Some(bounds),
+            start + Duration::from_millis(40),
+        ));
+        assert!(!island_mouse_event_triggers_toggle(
+            &mut detector,
+            &mut tap_started_inside,
+            cua_platform_macos::LeftMouseEvent {
+                kind: cua_platform_macos::LeftMouseEventKind::Down,
+                x: 80.0,
+                y: 40.0,
+            },
+            Some(bounds),
+            start + Duration::from_millis(120),
+        ));
+        assert!(!island_mouse_event_triggers_toggle(
+            &mut detector,
+            &mut tap_started_inside,
+            cua_platform_macos::LeftMouseEvent {
+                kind: cua_platform_macos::LeftMouseEventKind::Up,
+                x: 250.0,
+                y: 40.0,
+            },
+            Some(bounds),
+            start + Duration::from_millis(160),
+        ));
+        assert!(!island_mouse_event_triggers_toggle(
+            &mut detector,
+            &mut tap_started_inside,
+            cua_platform_macos::LeftMouseEvent {
+                kind: cua_platform_macos::LeftMouseEventKind::Down,
+                x: 250.0,
+                y: 40.0,
+            },
+            Some(bounds),
+            start + Duration::from_millis(220),
+        ));
+        assert!(island_mouse_event_triggers_toggle(
+            &mut detector,
+            &mut tap_started_inside,
+            cua_platform_macos::LeftMouseEvent {
+                kind: cua_platform_macos::LeftMouseEventKind::Up,
+                x: 250.0,
+                y: 40.0,
+            },
+            Some(bounds),
+            start + Duration::from_millis(260),
+        ));
+    }
+
+    #[test]
+    fn automation_double_click_label_parses_only_double_left_clicks() {
+        assert_eq!(
+            automation_double_click_point("Left mouse click at 756,38 x2"),
+            Some(point(px(756.0), px(38.0)))
+        );
+        assert_eq!(
+            automation_double_click_point("Left mouse click at 756,38"),
+            None
+        );
+        assert_eq!(
+            automation_double_click_point("Right mouse click at 756,38 x2"),
+            None
+        );
+        assert_eq!(
+            automation_double_click_point("Left mouse click at nope x2"),
+            None
+        );
+    }
+
+    #[test]
+    fn automation_double_click_on_island_toggles_once() {
+        let (tx, rx) = channel();
+        let island_bounds = Arc::new(Mutex::new(Some(Bounds {
+            origin: point(px(100.0), px(20.0)),
+            size: size(px(300.0), px(40.0)),
+        })));
+        let mut hud = VoiceHud::new(
+            rx,
+            UiMode::Headless,
+            "anthropic/claude-sonnet-5".to_string(),
+            island_bounds,
+        );
+
+        tx.send(VoiceUiEvent::AutomationActivity {
+            label: "Left mouse click at 250,40 x2".to_string(),
+            source: Some("Computer control".to_string()),
+            tool: Some("Unix socket".to_string()),
+        })
+        .unwrap();
+        assert_eq!(hud.drain_events(), Some(true));
+
+        tx.send(VoiceUiEvent::AutomationActivity {
+            label: "Left mouse click at 250,40 x2".to_string(),
+            source: Some("Computer control".to_string()),
+            tool: Some("Unix socket".to_string()),
+        })
+        .unwrap();
+        assert_eq!(hud.drain_events(), None);
     }
 
     #[test]
