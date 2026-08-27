@@ -47,7 +47,7 @@ use std::sync::{
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::{mpsc, oneshot, Notify, RwLock};
+use tokio::sync::{mpsc, oneshot, Notify, RwLock, Semaphore};
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
 
@@ -860,18 +860,28 @@ impl ModelLane {
     fn spawn(capacity: usize) -> Self {
         let (sender, mut receiver) = mpsc::channel::<ModelJob>(capacity);
         let active = Arc::new(AtomicU32::new(0));
-        let worker_active = active.clone();
+        let worker_pool_active = active.clone();
+        let semaphore = Arc::new(Semaphore::new(model_lane_workers()));
         tokio::spawn(async move {
             while let Some(job) = receiver.recv().await {
-                let queue_wait = job.enqueued_at.elapsed();
-                worker_active.fetch_add(1, Ordering::Relaxed);
-                let run_started = Instant::now();
-                let report = run_eval_report(job.config, job.frame, job.api_key).await;
-                worker_active.fetch_sub(1, Ordering::Relaxed);
-                let _ = job.reply.send(ModelLaneResult {
-                    queue_wait,
-                    run_duration: run_started.elapsed(),
-                    report,
+                let permit = semaphore
+                    .clone()
+                    .acquire_owned()
+                    .await
+                    .expect("model semaphore is never closed");
+                let worker_active = worker_pool_active.clone();
+                tokio::spawn(async move {
+                    let _permit = permit;
+                    let queue_wait = job.enqueued_at.elapsed();
+                    worker_active.fetch_add(1, Ordering::Relaxed);
+                    let run_started = Instant::now();
+                    let report = run_eval_report(job.config, job.frame, job.api_key).await;
+                    worker_active.fetch_sub(1, Ordering::Relaxed);
+                    let _ = job.reply.send(ModelLaneResult {
+                        queue_wait,
+                        run_duration: run_started.elapsed(),
+                        report,
+                    });
                 });
             }
         });
@@ -910,6 +920,10 @@ fn model_lane_capacity() -> usize {
         .and_then(|value| value.parse().ok())
         .filter(|value| *value > 0)
         .unwrap_or(8)
+}
+
+fn model_lane_workers() -> usize {
+    env_usize("CUA_MODEL_WORKERS", 4, 1, 32)
 }
 
 #[derive(Clone)]
@@ -2447,6 +2461,17 @@ fn env_flag_enabled(value: Option<&str>) -> bool {
                 "1" | "true" | "yes" | "on" | "frames" | "artifacts"
             )
     )
+}
+
+fn env_usize(key: &str, default: usize, min: usize, max: usize) -> usize {
+    parse_bounded_usize(std::env::var(key).ok().as_deref(), default, min, max)
+}
+
+fn parse_bounded_usize(value: Option<&str>, default: usize, min: usize, max: usize) -> usize {
+    value
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(default)
+        .clamp(min, max)
 }
 
 fn env_duration_ms(key: &str, default_ms: u64, min_ms: u64, max_ms: u64) -> Duration {
@@ -4818,6 +4843,15 @@ mod tests {
         assert!(env_flag_enabled(Some("true")));
         assert!(env_flag_enabled(Some("frames")));
         assert!(env_flag_enabled(Some(" artifacts ")));
+    }
+
+    #[test]
+    fn bounded_worker_env_values_are_clamped_and_defaulted() {
+        assert_eq!(parse_bounded_usize(None, 4, 1, 32), 4);
+        assert_eq!(parse_bounded_usize(Some("bad"), 4, 1, 32), 4);
+        assert_eq!(parse_bounded_usize(Some("0"), 4, 1, 32), 1);
+        assert_eq!(parse_bounded_usize(Some("64"), 4, 1, 32), 32);
+        assert_eq!(parse_bounded_usize(Some("8"), 4, 1, 32), 8);
     }
 
     #[test]
