@@ -1,0 +1,39 @@
+schema = "cua.runebook.v1"
+
+[run]
+name = "runebook-protocol"
+trace = true
+on_error = "stop"
+
+[[steps]]
+id = "schemas"
+do = "schemas"
+save_as = "schemas"
+
+[[steps]]
+id = "rpc"
+do = "rpc"
+method = "manifest"
+save_as = "manifest"
+
+[[steps]]
+id = "events_wait"
+do = "events"
+after = 0
+timeout_ms = 1
+save_as = "events"
+
+[[steps]]
+id = "island"
+do = "ui.island"
+state = "collapsed"
+source = "runebook protocol smoke"
+
+[[steps]]
+id = "screenshot"
+do = "screenshot"
+max_width = 320
+encoding = "png"
+force_fresh = false
+include_bytes = false
+save_as = "screenshot"

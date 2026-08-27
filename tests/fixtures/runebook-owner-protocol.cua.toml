@@ -1,0 +1,34 @@
+schema = "cua.runebook.v1"
+
+[run]
+name = "runebook-owner-protocol"
+trace = true
+on_error = "stop"
+
+[session]
+role = "owner"
+client = "runebook owner protocol smoke"
+ttl_ms = 30000
+
+[[steps]]
+id = "profile_create"
+do = "profile.create"
+name = "runebook-owner-profile"
+mode = "supervised"
+duration_ms = 30000
+save_as = "created"
+
+[[steps]]
+id = "profile_activate"
+do = "profile.activate"
+save_as = "activated"
+
+[[steps]]
+id = "session_status"
+do = "session.status"
+save_as = "sessions"
+
+[[steps]]
+id = "session_cancel"
+do = "session.cancel"
+save_as = "cancelled"

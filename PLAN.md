@@ -1,14 +1,13 @@
 1. Implement cua runebooks as the canonical scripting surface.
    - Use `sample-cua-runebook.md` as the reference design.
    - Support the remaining top-level runebook shape from `sample-cua-runebook.md`: `[daemon]`, `[attest]`, `[stt.<name>]`, `[planner.<name>]`, and `[memory]`.
-   - Support the raw `rpc` escape hatch for full Unix/HTTP protocol coverage.
+   - Support the raw `rpc` escape hatch for HTTP protocol coverage.
    - Support `$result.path` references.
-   - Support remaining direct protocol steps: doctor, schemas, permissions, session acquire/cancel, profile create/activate, screenshot, window capture, visual session, observe displays/cursor, event waits, UI island, trace start/inspect/verify/replay, perf bench, model eval, and schema export.
+   - Support remaining direct protocol steps: doctor, permissions, window capture, visual session, observe displays/cursor, trace start/inspect/verify/replay, perf bench, model eval, and schema export.
    - Support workflow nodes: `parallel`, `race`, `batch`, `foreach`, `run`, and `spawn_run`.
    - Support built-in model/voice turn nodes: text turn, WAV turn, live record turn, STT-only step, planner-only step, generic model call step, dispatch model output as cua action, and spawn child runebook from model output.
    - Add trace verify/replay support for runebook traces.
    - Add deterministic fozzy scenarios for remaining runebook trace verification and replay.
-   - Add docs that make clear the runebook format is the canonical programmable surface and SDKs are convenience layers over the same protocol/runebook substrate.
 
 2. Implement global and step-level runebook error policy.
    - Implement `on_error = "ask" | "rollback"`.
@@ -238,26 +237,16 @@
     - Add docs explaining profile policy vs bearer token vs owner session: bearer token authenticates local profile access, owner session authorizes mutation, profile policy controls capabilities, and attestation proves runtime/machine identity.
 
 21. Make all documented functionality scriptable through the SDK.
-    - Support status, manifest, schemas, and metrics.
     - Support screenshot and window capture.
-    - Support context snapshot.
-    - Support desktop, display, cursor, and window observation.
-    - Support event snapshot, after, and wait.
     - Support visual session streaming.
     - Support accessibility permission request.
-    - Support session acquire/cancel/status.
-    - Support UI step, reply, mode, and island.
     - Support profile create/activate/status.
-    - Support pause/resume/kill switch.
     - Support input dispatch for mouse move, mouse click, mouse drag, key press, key type, key paste, sequence, open app, shell exec, Aegis, and ctx.
-    - Support frame-relative input dispatch.
-    - Support clipboard read/write through explicit clipboard endpoints.
     - Support model eval only as an optional advanced surface.
     - Support trace verify/replay helpers.
     - Support attestation identity/challenge/sign/verify.
 
 22. Add SDK and architecture docs.
-    - Add `docs/sdk.md`.
     - Add `docs/attestation.md`.
     - Add `docs/config-home.md`.
     - Update `docs/http-api.md`.

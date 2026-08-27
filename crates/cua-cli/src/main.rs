@@ -1290,10 +1290,99 @@ impl RunebookRuntime {
             "status" => self.request("status", None, None).await,
             "config.status" | "config" => self.request("config.status", None, None).await,
             "manifest" => self.request("manifest", None, None).await,
+            "schemas" => self.request("schemas", None, None).await,
             "metrics" => self.request("metrics", None, None).await,
+            "permissions.request_accessibility" | "permissions.accessibility" => {
+                self.request("permissions.request_accessibility", None, None)
+                    .await
+            }
+            "rpc" => {
+                let method = self.required_string(step, "method")?;
+                let params = step
+                    .fields
+                    .get("params")
+                    .map(toml_value_to_json)
+                    .transpose()?;
+                let session_id = self
+                    .string_field(step, "session_id")?
+                    .or_else(|| self.session_id.clone());
+                self.request(&method, params, session_id.as_deref()).await
+            }
+            "session.acquire" => {
+                let session_id = self
+                    .string_field(step, "session_id")?
+                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                self.request(
+                    "session.acquire",
+                    Some(serde_json::json!({
+                        "schema_version": SCHEMA_VERSION,
+                        "session_id": session_id,
+                        "client_name": self.string_field(step, "client_name")?.unwrap_or_else(|| "cua runebook".to_string()),
+                        "role": self.string_field(step, "role")?.unwrap_or_else(|| "owner".to_string()),
+                        "ttl_ms": step_i64(step, "ttl_ms")?,
+                    })),
+                    None,
+                )
+                .await
+            }
+            "session.cancel" => {
+                self.request(
+                    "session.cancel",
+                    Some(serde_json::json!({
+                        "schema_version": SCHEMA_VERSION,
+                        "session_id": self.string_field(step, "session_id")?.or_else(|| self.session_id.clone()).context("session.cancel requires session_id or top-level [session]")?,
+                        "target_session_id": self.string_field(step, "target_session_id")?,
+                    })),
+                    None,
+                )
+                .await
+            }
             "session.status" => self.request("session.status", None, None).await,
             "profile.status" => self.request("profile.status", None, None).await,
+            "profile.create" => {
+                self.request(
+                    "profile.create",
+                    Some(serde_json::json!({
+                        "name": self.required_string(step, "name")?,
+                        "mode": self.string_field(step, "mode")?.unwrap_or_else(|| "supervised".to_string()),
+                        "duration_ms": step_u64(step, "duration_ms")?,
+                        "capabilities": step.fields.get("capabilities").map(toml_value_to_json).transpose()?,
+                    })),
+                    self.session_id.as_deref(),
+                )
+                .await
+            }
+            "profile.activate" => {
+                self.request("profile.activate", None, self.session_id.as_deref())
+                    .await
+            }
             "observe" => self.request("observe.desktop", None, None).await,
+            "screenshot" | "capture.screenshot" => {
+                self.request(
+                    "capture.screenshot",
+                    Some(serde_json::json!({
+                        "max_width": step_u64(step, "max_width")?.unwrap_or(1280) as u32,
+                        "encoding": self.string_field(step, "encoding")?.unwrap_or_else(|| "png".to_string()),
+                        "force_fresh": step_bool(step, "force_fresh")?.unwrap_or(true),
+                        "include_bytes": step_bool(step, "include_bytes")?.unwrap_or(false),
+                    })),
+                    None,
+                )
+                .await
+            }
+            "window.capture" | "capture.window" => {
+                self.request(
+                    "capture.window",
+                    Some(serde_json::json!({
+                        "window_id": step_u64(step, "window_id")?.context("capture.window requires window_id")? as u32,
+                        "max_width": step_u64(step, "max_width")?.unwrap_or(1280) as u32,
+                        "encoding": self.string_field(step, "encoding")?.unwrap_or_else(|| "png".to_string()),
+                        "include_bytes": step_bool(step, "include_bytes")?.unwrap_or(false),
+                    })),
+                    None,
+                )
+                .await
+            }
             "context" => {
                 self.request(
                     "context.snapshot",
@@ -1308,7 +1397,17 @@ impl RunebookRuntime {
                 .await
             }
             "events" => {
-                if let Some(after) = step_u64(step, "after")? {
+                if let Some(timeout_ms) = step_u64(step, "timeout_ms")? {
+                    self.request(
+                        "events.wait",
+                        Some(serde_json::json!({
+                            "after_sequence": step_u64(step, "after")?.unwrap_or(0),
+                            "timeout_ms": timeout_ms,
+                        })),
+                        None,
+                    )
+                    .await
+                } else if let Some(after) = step_u64(step, "after")? {
                     self.request(
                         "events.after",
                         Some(serde_json::json!({"after_sequence": after})),
@@ -1331,6 +1430,18 @@ impl RunebookRuntime {
                         "step_index": step_u64(step, "step_index")?,
                         "step_total": step_u64(step, "step_total")?,
                         "ttl_ms": step_u64(step, "ttl_ms")?,
+                    })),
+                    None,
+                )
+                .await
+            }
+            "ui.island" => {
+                self.request(
+                    "ui.island",
+                    Some(serde_json::json!({
+                        "schema_version": SCHEMA_VERSION,
+                        "state": self.required_string(step, "state")?,
+                        "source": self.string_field(step, "source")?,
                     })),
                     None,
                 )
@@ -2514,5 +2625,26 @@ app = "${target}"
 
         assert_eq!(action["kind"], "open_app");
         assert_eq!(action["app_name"], "Notes");
+    }
+
+    #[test]
+    fn runebook_parses_protocol_adapter_steps() {
+        let raw = include_str!("../../../tests/fixtures/runebook-protocol.cua.toml");
+        let runebook: Runebook = toml::from_str(raw).unwrap();
+
+        validate_runebook(&runebook).unwrap();
+        let actions = runebook
+            .steps
+            .iter()
+            .map(|step| step.action.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            actions,
+            vec!["schemas", "rpc", "events", "ui.island", "screenshot"]
+        );
+        assert_eq!(
+            runebook.steps[1].fields["method"].as_str(),
+            Some("manifest")
+        );
     }
 }
