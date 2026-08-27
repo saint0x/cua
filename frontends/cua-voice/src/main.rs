@@ -19,9 +19,9 @@ use cua_voice::{
 };
 use gpui::{
     canvas, div, hsla, point, prelude::*, px, rgb, size, AnyElement, App, Application, Bounds,
-    BoxShadow, Context, Div, IntoElement, MouseButton as GpuiMouseButton, MouseMoveEvent,
-    ParentElement, Pixels, Point, Render, Styled, Window, WindowBackgroundAppearance, WindowBounds,
-    WindowKind, WindowOptions,
+    BoxShadow, Context, Div, IntoElement, MouseButton as GpuiMouseButton, MouseDownEvent,
+    MouseMoveEvent, ParentElement, Pixels, Point, Render, Styled, Window,
+    WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions,
 };
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -270,9 +270,15 @@ impl VoiceHud {
                 offset: point(px(0.0), px(6.0)),
             }])
             .relative()
+            .id("cua-island-shell")
             .on_mouse_down(
                 GpuiMouseButton::Left,
-                cx.listener(|this, _, window, cx| {
+                cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                    if island_double_tap_toggles_expansion(event.click_count) {
+                        this.toggle_expanded(window, cx);
+                        cx.stop_propagation();
+                        return;
+                    }
                     this.drag = Some(IslandDrag {
                         start_cursor: current_cursor_point(),
                         start_bounds: window.bounds(),
@@ -374,25 +380,26 @@ impl VoiceHud {
             .child(stoplight(0x28c840).on_mouse_down(
                 GpuiMouseButton::Left,
                 cx.listener(|this, _, window, cx| {
-                    this.expanded = !this.expanded;
-                    this.minimized = false;
-                    this.drag = None;
-                    cx.notify();
-                    if let Some(display) = window.display(cx) {
-                        let bounds = animated_island_bounds(
-                            window.bounds(),
-                            HudMetrics::with_expansion(
-                                this.response_progress,
-                                this.expansion_progress,
-                            ),
-                            this.minimized_progress,
-                            display.bounds(),
-                        );
-                        window.set_bounds(bounds);
-                    }
+                    this.toggle_expanded(window, cx);
                     cx.stop_propagation();
                 }),
             ))
+    }
+
+    fn toggle_expanded(&mut self, window: &mut Window, cx: &mut App) {
+        self.expanded = !self.expanded;
+        self.minimized = false;
+        self.drag = None;
+        window.refresh();
+        if let Some(display) = window.display(cx) {
+            let bounds = animated_island_bounds(
+                window.bounds(),
+                HudMetrics::with_expansion(self.response_progress, self.expansion_progress),
+                self.minimized_progress,
+                display.bounds(),
+            );
+            window.set_bounds(bounds);
+        }
     }
 
     fn minimized_icon(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -453,15 +460,17 @@ impl VoiceHud {
                     .flex()
                     .items_center()
                     .justify_between()
+                    .gap_4()
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .gap_3()
+                            .gap_2()
+                            .min_w_0()
                             .child(index_tab("01", "Task", true))
                             .child(
                                 div()
-                                    .w(px(500.0))
+                                    .w(px(540.0))
                                     .truncate()
                                     .text_color(rgb(0xd8d8de))
                                     .text_size(px(UI_TEXT_PX))
@@ -473,8 +482,16 @@ impl VoiceHud {
                             .flex()
                             .items_center()
                             .gap_1p5()
+                            .flex_none()
+                            .child(index_tab("02", "Step", true))
                             .child(
                                 div()
+                                    .h(px(15.0))
+                                    .px_1()
+                                    .rounded(px(3.0))
+                                    .bg(hsla(0.0, 0.0, 1.0, 0.045))
+                                    .flex()
+                                    .items_center()
                                     .text_color(rgb(0x8d8d96))
                                     .text_size(px(UI_META_PX))
                                     .child(format!("{step_index}/{step_total}")),
@@ -493,7 +510,7 @@ impl VoiceHud {
                     .flex()
                     .flex_col()
                     .gap_2()
-                    .child(index_tab("02", "Response", true))
+                    .child(index_tab("03", "Response", true))
                     .child(
                         div()
                             .whitespace_normal()
@@ -530,14 +547,14 @@ impl VoiceHud {
             .flex_col()
             .gap_1()
             .child(info_row(
-                "03",
+                "04",
                 "Action",
                 compact_label(&self.snapshot.step.label, 56),
                 true,
             ))
-            .child(info_row("04", "Phase", display.phase.to_string(), false))
+            .child(info_row("05", "Phase", display.phase.to_string(), false))
             .child(info_row(
-                "05",
+                "06",
                 "State",
                 if dots_are_active(&self.snapshot) {
                     "Live"
@@ -554,8 +571,8 @@ impl VoiceHud {
             .flex()
             .flex_col()
             .gap_1()
-            .child(tool_row("06", &display.rows[0]))
-            .child(tool_row("07", &display.rows[1]))
+            .child(tool_row("07", &display.rows[0]))
+            .child(tool_row("08", &display.rows[1]))
     }
 
     fn finish_drag(&mut self, window: &mut Window, cx: &mut App) {
@@ -709,13 +726,13 @@ fn stoplight(color: u32) -> Div {
 
 fn index_tab(index: &'static str, label: &'static str, active: bool) -> impl IntoElement {
     div()
-        .h(px(18.0))
+        .h(px(16.0))
         .px_1p5()
-        .rounded(px(4.0))
+        .rounded(px(3.0))
         .bg(if active {
-            hsla(210.0 / 360.0, 1.0, 0.50, 0.14)
+            hsla(210.0 / 360.0, 1.0, 0.50, 0.10)
         } else {
-            hsla(0.0, 0.0, 1.0, 0.055)
+            hsla(0.0, 0.0, 1.0, 0.04)
         })
         .flex()
         .items_center()
@@ -805,13 +822,13 @@ fn step_segments(index: usize, total: usize) -> impl IntoElement {
     for segment in 0..total {
         row = row.child(
             div()
-                .w(px(4.0))
-                .h(px(3.0))
+                .w(px(3.0))
+                .h(px(2.0))
                 .rounded_full()
                 .bg(if segment < complete {
-                    hsla(210.0 / 360.0, 1.0, 0.58, 0.90)
+                    hsla(210.0 / 360.0, 1.0, 0.58, 0.86)
                 } else {
-                    hsla(0.0, 0.0, 1.0, 0.12)
+                    hsla(0.0, 0.0, 1.0, 0.10)
                 }),
         );
     }
@@ -874,6 +891,10 @@ fn point_inside_bounds(point: Point<Pixels>, bounds: Bounds<Pixels>) -> bool {
         && point.y >= bounds.origin.y
         && point.x <= bounds.origin.x + bounds.size.width
         && point.y <= bounds.origin.y + bounds.size.height
+}
+
+fn island_double_tap_toggles_expansion(click_count: usize) -> bool {
+    click_count >= 2
 }
 
 fn step_label(index: usize, total: usize, label: &str) -> String {
@@ -1015,7 +1036,7 @@ fn main() -> anyhow::Result<()> {
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar: None,
-                focus: false,
+                focus: true,
                 kind: WindowKind::PopUp,
                 is_resizable: false,
                 is_minimizable: false,
@@ -1663,6 +1684,27 @@ mod tests {
     fn reply_progress_switches_bar_to_response_flash_mode() {
         assert!(!response_flash_visible(HudMetrics::interpolate(0.20)));
         assert!(response_flash_visible(HudMetrics::interpolate(0.35)));
+    }
+
+    #[test]
+    fn island_expansion_requires_double_tap() {
+        assert!(!island_double_tap_toggles_expansion(0));
+        assert!(!island_double_tap_toggles_expansion(1));
+        assert!(island_double_tap_toggles_expansion(2));
+        assert!(island_double_tap_toggles_expansion(3));
+    }
+
+    #[test]
+    fn island_chrome_visibility_tracks_cursor_bounds() {
+        let bounds = Bounds {
+            origin: point(px(100.0), px(20.0)),
+            size: size(px(300.0), px(40.0)),
+        };
+
+        assert!(point_inside_bounds(point(px(100.0), px(20.0)), bounds));
+        assert!(point_inside_bounds(point(px(250.0), px(40.0)), bounds));
+        assert!(!point_inside_bounds(point(px(99.0), px(40.0)), bounds));
+        assert!(!point_inside_bounds(point(px(250.0), px(61.0)), bounds));
     }
 
     #[test]
