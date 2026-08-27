@@ -19,6 +19,7 @@ Initial endpoints:
 - `GET /schemas`
 - `GET /version`
 - `GET /status`
+- `GET /config/status`
 - `GET /metrics`
 - `GET /healthz`
 - `POST /capture/screenshot`
@@ -45,7 +46,9 @@ Initial endpoints:
 - `POST /clipboard/write`
 - `POST /model/eval`
 
-`GET /status` reports `active_streams`; stream clients increment the count on connect and decrement after disconnect cleanup.
+`GET /status` reports `active_streams`; stream clients increment the count on connect and decrement after disconnect cleanup. Its `inventory.config` object reports canonical `~/.cua` paths and migration state without exposing bearer token contents.
+
+`GET /config/status` returns that same config inventory directly for SDKs, runebooks, and scripts that need to discover the profile socket, profile root, chat database, ctx workspace, trace roots, and config migration state.
 
 `GET /metrics` returns typed latency histograms and counters for hot runtime paths including screenshot capture, encode queueing, streaming ticks, input dispatch, model queueing, permission probes, trace writes, clipboard operations, emitted stream frames, refusals, active streams, dropped events, dropped encode jobs, dropped model jobs, permission fallbacks, and dropped trace jobs. `cua perf live --json` reads the same endpoint. `cua perf bench screenshot|stream|input|model-prep --json` runs bounded local latency checks against the daemon and fails when p95 exceeds its budget.
 

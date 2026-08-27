@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "name": "cua-runebook",
+  "steps": [
+    {
+      "type": "proc_when",
+      "cmd": "cargo",
+      "args": ["test", "-p", "cua", "runebook_", "--", "--test-threads=1"],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "times": 1
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "cargo",
+      "args": ["test", "-p", "cua", "runebook_", "--", "--test-threads=1"],
+      "expect_exit": 0,
+      "expect_stdout": "runebook_parses_steps_vars_and_macros"
+    }
+  ]
+}

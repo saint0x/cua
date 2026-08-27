@@ -45,12 +45,13 @@ cargo run -p cua -- clipboard read --allow-sensitive --json
 cargo run -p cua -- pause --json
 cargo run -p cua -- resume --json
 cargo run -p cua -- kill-switch --json
+cargo run -p cua -- config status --json
 cargo run -p cua -- stream --unix --frames 3 --json
 ```
 
 `cua` automatically loads environment values from the current directory `.env`, `CUA_ENV_FILE`, and `~/.cua/config/env`. `OPENROUTER_API_KEY` can live in any of those locations.
 
-`cua serve` refuses non-loopback binds unless `--allow-lan` is explicit. The daemon also opens a profile-local socket at `~/.cua/profiles/<profile>/daemon.sock`; the app runtime uses that socket for context snapshots, visual sessions, and input dispatch. The local APIs use a per-profile bearer token stored at `~/.cua/profiles/<profile>/http.token`; CLI and app commands load it automatically.
+`cua serve` refuses non-loopback binds unless `--allow-lan` is explicit. The daemon also opens a profile-local socket at `~/.cua/profiles/<profile>/daemon.sock`; the app runtime uses that socket for context snapshots, visual sessions, and input dispatch. The local APIs use a per-profile bearer token stored at `~/.cua/profiles/<profile>/http.token`; CLI and app commands load it automatically. `cua config status --json` reports the canonical `~/.cua` paths and migration state without exposing token contents.
 
 Run `cua serve --hud-mode headful` for the visible dynamic-island HUD or `cua serve --hud-mode headless` for the same resident voice/control event loop without a visible HUD. The HUD process also accepts `cua-voice --headful|--headless` directly. Agents can switch a running HUD with `cua ui mode headless|headful`.
 

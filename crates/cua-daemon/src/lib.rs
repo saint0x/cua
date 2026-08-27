@@ -21,9 +21,9 @@ use cua_capture::{
 use cua_core::{
     now_wall_ms, profile_daemon_trace_dir, profile_socket_path, profile_token_path, schema_bundle,
     ApiErrorBody, CapabilityManifest, CapabilityState, ClipboardReadRequest, ClipboardResult,
-    ClipboardWriteRequest, DeliveryMode, DesktopContextSnapshot, DesktopState, Effect, Evidence,
-    EvidenceKind, FrameActionRequest, FrameEncoding, FramePayload, HealthReport, InputAction,
-    InputRequest, InputResult, InputRoute, Manifest, MetricBucket, MetricHistogram,
+    ClipboardWriteRequest, ConfigInventory, DeliveryMode, DesktopContextSnapshot, DesktopState,
+    Effect, Evidence, EvidenceKind, FrameActionRequest, FrameEncoding, FramePayload, HealthReport,
+    InputAction, InputRequest, InputResult, InputRoute, Manifest, MetricBucket, MetricHistogram,
     MetricsSnapshot, PermissionReport, PermissionState, ProfilePolicy, RuntimeControlState,
     RuntimeInventory, RuntimeMode, RuntimeSessionInfo, RuntimeSessionRole, SafetyState,
     SessionCancelRequest, SessionLeaseRequest, SessionLeaseResult, UiIslandRequest, UiIslandResult,
@@ -161,6 +161,7 @@ impl DaemonState {
                 .lock()
                 .map(|value| value.clone())
                 .unwrap_or_default(),
+            config: config_inventory_state(self),
             hud_pid: self.hud_supervisor.pid().or_else(discover_hud_pid),
             connected_clients: session_snapshot.sessions.len() as u32,
             owner_session_id: session_snapshot.owner_session_id,
@@ -1233,6 +1234,7 @@ pub fn router(state: DaemonState) -> Router {
         .route("/schemas", get(schemas))
         .route("/version", get(version))
         .route("/status", get(status))
+        .route("/config/status", get(config_status))
         .route("/metrics", get(metrics))
         .route("/healthz", get(healthz))
         .route("/capture/screenshot", post(screenshot))
@@ -1694,6 +1696,7 @@ async fn handle_unix_request(state: &DaemonState, request: UnixRequest) -> serde
             }
         }
         "status" => Ok(serde_json::to_value(state.health().await)),
+        "config.status" => Ok(serde_json::to_value(config_inventory_state(state))),
         "manifest" => Ok(serde_json::to_value(manifest_payload())),
         "metrics" => Ok(serde_json::to_value(metrics_snapshot(state))),
         "permissions.request_accessibility" => Ok(serde_json::to_value(
@@ -2029,6 +2032,7 @@ fn manifest_payload() -> Manifest {
             "GET /manifest".to_string(),
             "GET /schemas".to_string(),
             "GET /status".to_string(),
+            "GET /config/status".to_string(),
             "GET /metrics".to_string(),
             "POST /capture/screenshot".to_string(),
             "POST /capture/window".to_string(),
@@ -2047,6 +2051,7 @@ fn manifest_payload() -> Manifest {
             "UNIX session.acquire".to_string(),
             "UNIX session.cancel".to_string(),
             "UNIX session.status".to_string(),
+            "UNIX config.status".to_string(),
             "POST /ui/step".to_string(),
             "POST /ui/reply".to_string(),
             "POST /ui/mode".to_string(),
@@ -2067,6 +2072,7 @@ fn manifest_payload() -> Manifest {
         commands: vec![
             "cua serve".to_string(),
             "cua status --json".to_string(),
+            "cua config status --json".to_string(),
             "cua manifest --json".to_string(),
             "cua metrics --json".to_string(),
             "cua events --json [--after <sequence>]".to_string(),
@@ -2725,6 +2731,37 @@ async fn session_cancel(
 
 async fn session_status(State(state): State<DaemonState>) -> Json<RuntimeInventory> {
     Json(state.runtime_inventory().await)
+}
+
+async fn config_status(State(state): State<DaemonState>) -> Json<ConfigInventory> {
+    Json(config_inventory_state(&state))
+}
+
+fn config_inventory_state(state: &DaemonState) -> ConfigInventory {
+    ConfigInventory::for_profile(&state.profile).unwrap_or_else(|_| ConfigInventory {
+        schema_version: SCHEMA_VERSION.to_string(),
+        cua_home: String::new(),
+        config_dir: String::new(),
+        config_env: String::new(),
+        legacy_config_env: String::new(),
+        legacy_config_env_present: false,
+        config_env_present: false,
+        migration_state: cua_core::ConfigMigrationState::Missing,
+        profile_root: String::new(),
+        profile_socket: String::new(),
+        profile_token_present: false,
+        chat_db: String::new(),
+        ctx_workspace: String::new(),
+        trace_root: String::new(),
+        voice_trace: String::new(),
+        daemon_trace_root: String::new(),
+        identity_root: String::new(),
+        cloud_root: String::new(),
+        artifact_root: String::new(),
+        cache_root: String::new(),
+        log_root: String::new(),
+        bin_root: String::new(),
+    })
 }
 
 async fn ui_step(
@@ -4798,6 +4835,17 @@ mod tests {
             handle_unix_request(&state, unix_request("status", serde_json::json!({}))).await,
         );
         assert_eq!(status["active_profile"], "unix-methods");
+        assert_eq!(
+            status["inventory"]["config"]["profile_root"]
+                .as_str()
+                .unwrap()
+                .contains("unix-methods"),
+            true
+        );
+        assert_eq!(
+            status["inventory"]["config"]["profile_token_present"],
+            false
+        );
 
         let manifest = unix_result(
             handle_unix_request(&state, unix_request("manifest", serde_json::json!({}))).await,
@@ -4807,6 +4855,22 @@ mod tests {
             .unwrap()
             .iter()
             .any(|surface| surface == "local_unix_socket"));
+        assert!(manifest["endpoints"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|endpoint| endpoint == "UNIX config.status"));
+
+        let config = unix_result(
+            handle_unix_request(&state, unix_request("config.status", serde_json::json!({}))).await,
+        );
+        assert_eq!(config["schema_version"], SCHEMA_VERSION);
+        assert_eq!(config["profile_token_present"], false);
+        assert!(config["profile_root"]
+            .as_str()
+            .unwrap()
+            .contains("unix-methods"));
+        assert!(config.get("profile_token").is_none());
 
         let pause = unix_result(
             handle_unix_request(&state, unix_request("control.pause", serde_json::json!({}))).await,

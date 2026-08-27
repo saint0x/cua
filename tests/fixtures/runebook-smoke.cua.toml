@@ -1,0 +1,33 @@
+schema = "cua.runebook.v1"
+
+[run]
+name = "runebook-smoke"
+trace = true
+on_error = "stop"
+
+[vars]
+message = "runebook smoke ok"
+
+[macro.say]
+items = [
+  { do = "ui.step", label = "${message}", source = "runebook", task = "Smoke", tool = "cua", step_index = 1, step_total = 1, ttl_ms = 1000 },
+]
+
+[[steps]]
+id = "config"
+do = "config.status"
+save_as = "config"
+
+[[steps]]
+id = "status"
+do = "status"
+save_as = "status"
+
+[[steps]]
+id = "macro"
+do = "macro.say"
+
+[[steps]]
+id = "events"
+do = "events"
+save_as = "events"

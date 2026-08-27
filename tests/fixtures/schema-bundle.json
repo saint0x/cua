@@ -207,6 +207,114 @@
       "title": "ClipboardWriteRequest",
       "type": "object"
     },
+    "ConfigInventory": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "ConfigMigrationState": {
+          "enum": [
+            "current",
+            "legacy_only",
+            "conflict",
+            "missing"
+          ],
+          "type": "string"
+        }
+      },
+      "properties": {
+        "artifact_root": {
+          "type": "string"
+        },
+        "bin_root": {
+          "type": "string"
+        },
+        "cache_root": {
+          "type": "string"
+        },
+        "chat_db": {
+          "type": "string"
+        },
+        "cloud_root": {
+          "type": "string"
+        },
+        "config_dir": {
+          "type": "string"
+        },
+        "config_env": {
+          "type": "string"
+        },
+        "config_env_present": {
+          "type": "boolean"
+        },
+        "ctx_workspace": {
+          "type": "string"
+        },
+        "cua_home": {
+          "type": "string"
+        },
+        "daemon_trace_root": {
+          "type": "string"
+        },
+        "identity_root": {
+          "type": "string"
+        },
+        "legacy_config_env": {
+          "type": "string"
+        },
+        "legacy_config_env_present": {
+          "type": "boolean"
+        },
+        "log_root": {
+          "type": "string"
+        },
+        "migration_state": {
+          "$ref": "#/definitions/ConfigMigrationState"
+        },
+        "profile_root": {
+          "type": "string"
+        },
+        "profile_socket": {
+          "type": "string"
+        },
+        "profile_token_present": {
+          "type": "boolean"
+        },
+        "schema_version": {
+          "type": "string"
+        },
+        "trace_root": {
+          "type": "string"
+        },
+        "voice_trace": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "artifact_root",
+        "bin_root",
+        "cache_root",
+        "chat_db",
+        "cloud_root",
+        "config_dir",
+        "config_env",
+        "config_env_present",
+        "ctx_workspace",
+        "cua_home",
+        "daemon_trace_root",
+        "identity_root",
+        "legacy_config_env",
+        "legacy_config_env_present",
+        "log_root",
+        "migration_state",
+        "profile_root",
+        "profile_socket",
+        "profile_token_present",
+        "schema_version",
+        "trace_root",
+        "voice_trace"
+      ],
+      "title": "ConfigInventory",
+      "type": "object"
+    },
     "DesktopContextSnapshot": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "definitions": {
@@ -1917,6 +2025,110 @@
           ],
           "type": "string"
         },
+        "ConfigInventory": {
+          "properties": {
+            "artifact_root": {
+              "type": "string"
+            },
+            "bin_root": {
+              "type": "string"
+            },
+            "cache_root": {
+              "type": "string"
+            },
+            "chat_db": {
+              "type": "string"
+            },
+            "cloud_root": {
+              "type": "string"
+            },
+            "config_dir": {
+              "type": "string"
+            },
+            "config_env": {
+              "type": "string"
+            },
+            "config_env_present": {
+              "type": "boolean"
+            },
+            "ctx_workspace": {
+              "type": "string"
+            },
+            "cua_home": {
+              "type": "string"
+            },
+            "daemon_trace_root": {
+              "type": "string"
+            },
+            "identity_root": {
+              "type": "string"
+            },
+            "legacy_config_env": {
+              "type": "string"
+            },
+            "legacy_config_env_present": {
+              "type": "boolean"
+            },
+            "log_root": {
+              "type": "string"
+            },
+            "migration_state": {
+              "$ref": "#/definitions/ConfigMigrationState"
+            },
+            "profile_root": {
+              "type": "string"
+            },
+            "profile_socket": {
+              "type": "string"
+            },
+            "profile_token_present": {
+              "type": "boolean"
+            },
+            "schema_version": {
+              "type": "string"
+            },
+            "trace_root": {
+              "type": "string"
+            },
+            "voice_trace": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "artifact_root",
+            "bin_root",
+            "cache_root",
+            "chat_db",
+            "cloud_root",
+            "config_dir",
+            "config_env",
+            "config_env_present",
+            "ctx_workspace",
+            "cua_home",
+            "daemon_trace_root",
+            "identity_root",
+            "legacy_config_env",
+            "legacy_config_env_present",
+            "log_root",
+            "migration_state",
+            "profile_root",
+            "profile_socket",
+            "profile_token_present",
+            "schema_version",
+            "trace_root",
+            "voice_trace"
+          ],
+          "type": "object"
+        },
+        "ConfigMigrationState": {
+          "enum": [
+            "current",
+            "legacy_only",
+            "conflict",
+            "missing"
+          ],
+          "type": "string"
+        },
         "CursorState": {
           "properties": {
             "included_in_frame": {
@@ -2132,6 +2344,9 @@
         },
         "RuntimeInventory": {
           "properties": {
+            "config": {
+              "$ref": "#/definitions/ConfigInventory"
+            },
             "connected_clients": {
               "format": "uint32",
               "minimum": 0.0,
@@ -2173,6 +2388,7 @@
             }
           },
           "required": [
+            "config",
             "connected_clients",
             "daemon_pid",
             "http_addr",
@@ -3941,6 +4157,110 @@
     "RuntimeInventory": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "definitions": {
+        "ConfigInventory": {
+          "properties": {
+            "artifact_root": {
+              "type": "string"
+            },
+            "bin_root": {
+              "type": "string"
+            },
+            "cache_root": {
+              "type": "string"
+            },
+            "chat_db": {
+              "type": "string"
+            },
+            "cloud_root": {
+              "type": "string"
+            },
+            "config_dir": {
+              "type": "string"
+            },
+            "config_env": {
+              "type": "string"
+            },
+            "config_env_present": {
+              "type": "boolean"
+            },
+            "ctx_workspace": {
+              "type": "string"
+            },
+            "cua_home": {
+              "type": "string"
+            },
+            "daemon_trace_root": {
+              "type": "string"
+            },
+            "identity_root": {
+              "type": "string"
+            },
+            "legacy_config_env": {
+              "type": "string"
+            },
+            "legacy_config_env_present": {
+              "type": "boolean"
+            },
+            "log_root": {
+              "type": "string"
+            },
+            "migration_state": {
+              "$ref": "#/definitions/ConfigMigrationState"
+            },
+            "profile_root": {
+              "type": "string"
+            },
+            "profile_socket": {
+              "type": "string"
+            },
+            "profile_token_present": {
+              "type": "boolean"
+            },
+            "schema_version": {
+              "type": "string"
+            },
+            "trace_root": {
+              "type": "string"
+            },
+            "voice_trace": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "artifact_root",
+            "bin_root",
+            "cache_root",
+            "chat_db",
+            "cloud_root",
+            "config_dir",
+            "config_env",
+            "config_env_present",
+            "ctx_workspace",
+            "cua_home",
+            "daemon_trace_root",
+            "identity_root",
+            "legacy_config_env",
+            "legacy_config_env_present",
+            "log_root",
+            "migration_state",
+            "profile_root",
+            "profile_socket",
+            "profile_token_present",
+            "schema_version",
+            "trace_root",
+            "voice_trace"
+          ],
+          "type": "object"
+        },
+        "ConfigMigrationState": {
+          "enum": [
+            "current",
+            "legacy_only",
+            "conflict",
+            "missing"
+          ],
+          "type": "string"
+        },
         "RuntimeSessionInfo": {
           "properties": {
             "active": {
@@ -3994,6 +4314,9 @@
         }
       },
       "properties": {
+        "config": {
+          "$ref": "#/definitions/ConfigInventory"
+        },
         "connected_clients": {
           "format": "uint32",
           "minimum": 0.0,
@@ -4035,6 +4358,7 @@
         }
       },
       "required": [
+        "config",
         "connected_clients",
         "daemon_pid",
         "http_addr",

@@ -1,6 +1,6 @@
 use anyhow::{bail, Context};
 use cua_core::{
-    profile_socket_path, profile_token_path, DesktopContextSnapshot, DesktopState,
+    profile_socket_path, profile_token_path, ConfigInventory, DesktopContextSnapshot, DesktopState,
     FrameActionRequest, FrameEncoding, FrameEnvelope, FramePayload, InputAction, UiMode,
     UiModeRequest, UiReplyRequest, UiStepRequest, SCHEMA_VERSION,
 };
@@ -47,6 +47,10 @@ impl CuaClient {
 
     pub async fn observe(&self) -> anyhow::Result<DesktopState> {
         self.request("observe.desktop", None).await
+    }
+
+    pub async fn config_status(&self) -> anyhow::Result<ConfigInventory> {
+        self.request("config.status", None).await
     }
 
     pub async fn context(&self, include_bytes: bool) -> anyhow::Result<DesktopContextSnapshot> {

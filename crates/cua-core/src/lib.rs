@@ -26,6 +26,10 @@ pub fn config_env_path() -> anyhow::Result<PathBuf> {
     Ok(config_dir()?.join("env"))
 }
 
+pub fn legacy_config_env_path() -> anyhow::Result<PathBuf> {
+    Ok(cua_home()?.join(".env"))
+}
+
 pub fn profile_dir(profile: &str) -> anyhow::Result<PathBuf> {
     Ok(cua_home()?.join("profiles").join(profile))
 }
@@ -84,6 +88,101 @@ pub fn bin_dir() -> anyhow::Result<PathBuf> {
 
 pub fn cua_bin_path(name: &str) -> anyhow::Result<PathBuf> {
     Ok(bin_dir()?.join(name))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfigMigrationState {
+    Current,
+    LegacyOnly,
+    Conflict,
+    Missing,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ConfigInventory {
+    pub schema_version: String,
+    pub cua_home: String,
+    pub config_dir: String,
+    pub config_env: String,
+    pub legacy_config_env: String,
+    pub legacy_config_env_present: bool,
+    pub config_env_present: bool,
+    pub migration_state: ConfigMigrationState,
+    pub profile_root: String,
+    pub profile_socket: String,
+    pub profile_token_present: bool,
+    pub chat_db: String,
+    pub ctx_workspace: String,
+    pub trace_root: String,
+    pub voice_trace: String,
+    pub daemon_trace_root: String,
+    pub identity_root: String,
+    pub cloud_root: String,
+    pub artifact_root: String,
+    pub cache_root: String,
+    pub log_root: String,
+    pub bin_root: String,
+}
+
+impl ConfigInventory {
+    pub fn for_profile(profile: &str) -> anyhow::Result<Self> {
+        let cua_home = cua_home()?;
+        let config_dir = config_dir()?;
+        let config_env = config_env_path()?;
+        let legacy_config_env = legacy_config_env_path()?;
+        let profile_root = profile_dir(profile)?;
+        let profile_socket = profile_socket_path(profile)?;
+        let profile_token = profile_token_path(profile)?;
+        let chat_db = profile_chat_db_path(profile)?;
+        let ctx_workspace = profile_ctx_dir(profile)?;
+        let trace_root = profile_trace_dir(profile)?;
+        let voice_trace = profile_voice_trace_path(profile)?;
+        let daemon_trace_root = profile_daemon_trace_dir(profile)?;
+        let identity_root = identity_dir()?;
+        let cloud_root = cloud_dir()?;
+        let artifact_root = cua_home.join("artifacts");
+        let cache_root = cua_home.join("cache");
+        let log_root = cua_home.join("logs");
+        let bin_root = bin_dir()?;
+        let config_env_present = config_env.exists();
+        let legacy_config_env_present = legacy_config_env.exists();
+        let migration_state = match (config_env_present, legacy_config_env_present) {
+            (true, false) => ConfigMigrationState::Current,
+            (false, true) => ConfigMigrationState::LegacyOnly,
+            (true, true) => ConfigMigrationState::Conflict,
+            (false, false) => ConfigMigrationState::Missing,
+        };
+
+        Ok(Self {
+            schema_version: SCHEMA_VERSION.to_string(),
+            cua_home: path_string(cua_home),
+            config_dir: path_string(config_dir),
+            config_env: path_string(config_env),
+            legacy_config_env: path_string(legacy_config_env),
+            legacy_config_env_present,
+            config_env_present,
+            migration_state,
+            profile_root: path_string(profile_root),
+            profile_socket: path_string(profile_socket),
+            profile_token_present: profile_token.exists(),
+            chat_db: path_string(chat_db),
+            ctx_workspace: path_string(ctx_workspace),
+            trace_root: path_string(trace_root),
+            voice_trace: path_string(voice_trace),
+            daemon_trace_root: path_string(daemon_trace_root),
+            identity_root: path_string(identity_root),
+            cloud_root: path_string(cloud_root),
+            artifact_root: path_string(artifact_root),
+            cache_root: path_string(cache_root),
+            log_root: path_string(log_root),
+            bin_root: path_string(bin_root),
+        })
+    }
+}
+
+fn path_string(path: PathBuf) -> String {
+    path.display().to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -338,6 +437,7 @@ pub struct RuntimeInventory {
     pub daemon_pid: u32,
     pub http_addr: String,
     pub profile_socket: String,
+    pub config: ConfigInventory,
     pub hud_pid: Option<u32>,
     pub connected_clients: u32,
     pub owner_session_id: Option<String>,
@@ -783,6 +883,10 @@ pub fn schema_bundle() -> SchemaBundle {
         serde_json::json!(schema_for!(RuntimeInventory)),
     );
     schemas.insert(
+        "ConfigInventory".to_string(),
+        serde_json::json!(schema_for!(ConfigInventory)),
+    );
+    schemas.insert(
         "RuntimeSessionInfo".to_string(),
         serde_json::json!(schema_for!(RuntimeSessionInfo)),
     );
@@ -1063,6 +1167,10 @@ mod tests {
             PathBuf::from("/tmp/cua-home-test/config/env")
         );
         assert_eq!(
+            legacy_config_env_path().unwrap(),
+            PathBuf::from("/tmp/cua-home-test/.env")
+        );
+        assert_eq!(
             profile_token_path("p").unwrap(),
             PathBuf::from("/tmp/cua-home-test/profiles/p/http.token")
         );
@@ -1096,5 +1204,43 @@ mod tests {
         } else {
             std::env::remove_var("CUA_HOME");
         }
+    }
+
+    #[test]
+    fn config_inventory_redacts_token_and_reports_paths() {
+        let temp_root =
+            std::env::temp_dir().join(format!("cua-config-inventory-test-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(temp_root.join("config")).unwrap();
+        std::fs::create_dir_all(temp_root.join("profiles/default")).unwrap();
+        std::fs::write(
+            temp_root.join("config/env"),
+            "OPENROUTER_API_KEY=env-secret",
+        )
+        .unwrap();
+        std::fs::write(
+            temp_root.join("profiles/default/http.token"),
+            "bearer-secret",
+        )
+        .unwrap();
+
+        let old = std::env::var_os("CUA_HOME");
+        std::env::set_var("CUA_HOME", &temp_root);
+        let inventory = ConfigInventory::for_profile("default").unwrap();
+
+        assert_eq!(inventory.cua_home, temp_root.display().to_string());
+        assert_eq!(inventory.config_env_present, true);
+        assert_eq!(inventory.legacy_config_env_present, false);
+        assert_eq!(inventory.migration_state, ConfigMigrationState::Current);
+        assert_eq!(inventory.profile_token_present, true);
+        let encoded = serde_json::to_string(&inventory).unwrap();
+        assert!(!encoded.contains("env-secret"));
+        assert!(!encoded.contains("bearer-secret"));
+
+        if let Some(old) = old {
+            std::env::set_var("CUA_HOME", old);
+        } else {
+            std::env::remove_var("CUA_HOME");
+        }
+        let _ = std::fs::remove_dir_all(temp_root);
     }
 }
