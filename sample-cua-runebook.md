@@ -77,7 +77,7 @@ retry_backoff_ms = 180
 
 [planner.default]
 provider = "openrouter"
-model = "google/gemini-2.5-flash-lite"
+model = "google/gemini-3.5-flash-lite"
 timeout_ms = 12000
 attempts = 3
 retry_backoff_ms = 220
@@ -166,7 +166,7 @@ save_as = "planner_turn"
 id = "ask-generic-model"
 do = "model"
 provider = "openrouter"
-model = "google/gemini-2.5-flash-lite"
+model = "google/gemini-3.5-flash-lite"
 system = "Return a cua runebook fragment as JSON."
 message = "Given $ctx and $events, decide the next useful inspection step."
 include_context = ["$ctx", "$events"]
@@ -290,7 +290,7 @@ Planner/model settings for cua action planning.
 ```toml
 [planner.default]
 provider = "openrouter"
-model = "google/gemini-2.5-flash-lite"
+model = "google/gemini-3.5-flash-lite"
 timeout_ms = 12000
 attempts = 3
 retry_backoff_ms = 220
@@ -678,7 +678,7 @@ This is not limited to the built-in voice planner. It lets a runebook send a mes
 id = "decide-next"
 do = "model"
 provider = "openrouter"
-model = "google/gemini-2.5-flash-lite"
+model = "google/gemini-3.5-flash-lite"
 system = "Return a cua runebook fragment as JSON."
 message = "Given $ctx and $events, decide the next useful inspection step."
 include_context = ["$ctx", "$events"]

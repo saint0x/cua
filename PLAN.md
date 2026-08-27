@@ -108,36 +108,6 @@ Done means:
 - SDK examples can consume frames and dispatch frame-relative actions.
 - Host visual-session action proof passes.
 
-Agent D: Voice, STT, Planner, Model, And RLM Loop Owner
-
-Scope:
-- Owns voice frontend pipeline, STT quality path, planner prompts, model tool protocol, thin RLM loop, and model eval surfaces.
-- Primary files: `frontends/cua-voice`, `crates/cua-model`, `cua.md`, mic diagnostic app integration where relevant.
-
-Must coordinate with:
-- Agent A for runebook `turn`, STT, planner, model, and dispatch-model-output nodes.
-- Agent C for persistent visual context.
-- Agent F for chat DB and ctx memory.
-- Agent G for latency and cost bounds.
-
-Work:
-- Expose text turns, WAV turns, live-record turns, STT-only steps, planner-only steps, generic model calls, dispatch model output as cua action, and spawn child runebook from model output.
-- Make `[stt.<name>]`, `[planner.<name>]`, and `[memory]` runebook config drive the existing voice/STT/planner pipeline.
-- Keep transcription acceptance states correct: listening, recording stopped, processing, accepted only after usable text is accepted.
-- Keep HUD transcript display short-lived and agent responses persistent for the configured durations.
-- Ensure tool protocol supports batched/sequence actions, shell, Aegis, ctx, browser use through Aegis, screenshot/verify-before-finish, and Skill.md read-and-use behavior.
-- Add conservative configurable RLM loop depth, retries, and token ceilings without hamstringing complex tasks.
-- Switch default planner/model to the selected cheap large-context Gemini model unless overridden.
-- Surface provider/credit/API errors accurately.
-- Keep model eval available as an optional advanced surface.
-
-Done means:
-- Real microphone input reliably transcribes normal speech and routes to the planner.
-- Asking about the screen uses visual context and responds correctly.
-- Action requests can use tools and batches instead of returning "could not get usable model response".
-- The loop verifies work before final response.
-- Focused STT, planner, and model-tool tests pass.
-
 Agent E: Transport, Session, Permissions, And SDK Semantics Owner
 
 Scope:
