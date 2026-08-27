@@ -235,6 +235,7 @@ async fn transcribe_and_run_turn_after_local(
     let stt_backend = config.stt_backend.clone();
     let stt_model = config.stt_model.clone();
     let stt_api_key = api_key.clone().unwrap_or_default();
+    let stt_started = Instant::now();
     let stt_task = tokio::spawn(async move {
         SttClient::new(stt_backend, stt_model)?
             .transcribe_wav(&stt_api_key, &wav_bytes)
@@ -252,19 +253,27 @@ async fn transcribe_and_run_turn_after_local(
         .await;
     let step_publisher = VoiceStepPublisher::start(local.clone());
     step_publisher.publish("transcribing audio");
-    let context_overlap_started = Instant::now();
     let context_task = spawn_context_prefetch(local.clone(), local_ready.session);
     let chat_task = spawn_chat_context_prefetch(config.profile.clone());
-    let transcript = match stt_task.await.context("join speech to text")? {
+    let stt_result = stt_task.await.context("join speech to text")?;
+    let stt_elapsed = stt_started.elapsed();
+    send_metric(&tx, "stt_ms", stt_elapsed);
+    let transcript = match stt_result {
         Ok(transcript) => {
             trace
-                .append("stt_result", transcript_trace_json(&transcript))
+                .append(
+                    "stt_result",
+                    transcript_trace_json(&transcript, stt_elapsed),
+                )
                 .await;
             transcript
         }
         Err(error) if is_missed_speech_error(&error) => {
             trace
-                .append("stt_missed_speech", json!({"error": format!("{error:#}")}))
+                .append(
+                    "stt_missed_speech",
+                    json!({"elapsed_ms": elapsed_ms(stt_elapsed), "error": format!("{error:#}")}),
+                )
                 .await;
             abort_context_prefetch(&context_task, &trace, "stt_missed_speech").await;
             abort_chat_context_prefetch(&chat_task, &trace, "stt_missed_speech").await;
@@ -274,7 +283,10 @@ async fn transcribe_and_run_turn_after_local(
         }
         Err(error) => {
             trace
-                .append("stt_error", json!({"error": format!("{error:#}")}))
+                .append(
+                    "stt_error",
+                    json!({"elapsed_ms": elapsed_ms(stt_elapsed), "error": format!("{error:#}")}),
+                )
                 .await;
             abort_context_prefetch(&context_task, &trace, "stt_error").await;
             abort_chat_context_prefetch(&chat_task, &trace, "stt_error").await;
@@ -298,11 +310,6 @@ async fn transcribe_and_run_turn_after_local(
             .ok();
         return Ok(());
     }
-    send_metric(
-        &tx,
-        "context_stt_overlap_ms",
-        context_overlap_started.elapsed(),
-    );
     tx.send(VoiceUiEvent::Accepted).ok();
     tx.send(VoiceUiEvent::Transcript(transcript.text.clone()))
         .ok();
@@ -1162,7 +1169,7 @@ fn audio_trace_json(audio: &RecordedAudio) -> serde_json::Value {
     })
 }
 
-fn transcript_trace_json(transcript: &SttTranscript) -> serde_json::Value {
+fn transcript_trace_json(transcript: &SttTranscript, elapsed: Duration) -> serde_json::Value {
     let usage = transcript.usage.as_ref().map(|usage| {
         json!({
             "seconds": usage.seconds,
@@ -1176,6 +1183,7 @@ fn transcript_trace_json(transcript: &SttTranscript) -> serde_json::Value {
         "model": &transcript.model,
         "generation_id": transcript.generation_id.as_deref(),
         "usage": usage,
+        "elapsed_ms": elapsed_ms(elapsed),
     })
 }
 
