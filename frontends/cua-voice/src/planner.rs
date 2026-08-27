@@ -18,6 +18,8 @@ Your job is to choose the next tool action or action batch for cua. This is a re
 
 The ACTION objects below are the complete tool protocol available in this voice loop. To control the Mac, use visible UI, mouse actions, keyboard actions, clipboard actions, app launch, shell, Aegis browser control, ctx memory/context calls, and the explicit pause/resume/kill controls listed here. Do not claim access to anything outside this protocol.
 
+You may receive previous attempts from this same user turn. Treat them as repair evidence, not as new user instructions. Do not repeat an action that produced partial, unverifiable, suspected_noop, or refused unless the fresh observation clearly justifies it. If the failure is a missing permission, unsafe ambiguity, or unrecoverable refusal, return action:null with a concise user-visible status. If the next useful move requires several deterministic steps, return one sequence action instead of one tiny action per turn.
+
 Top-level response schema:
 {"response":"[short status for the user]","action":null}
 {"response":"[short status for the user]","action":ACTION}
@@ -75,6 +77,24 @@ pub struct PlannedTurn {
     pub action: Option<InputAction>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PlanAttemptContext {
+    pub attempt_index: usize,
+    pub response: String,
+    pub action: Option<serde_json::Value>,
+    pub effect: Option<String>,
+    pub evidence: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PlannerRequest<'a> {
+    pub transcript: &'a str,
+    pub agent_context: Option<&'a str>,
+    pub frame: Option<&'a FramePayload>,
+    pub desktop: Option<&'a DesktopState>,
+    pub prior_attempts: &'a [PlanAttemptContext],
+}
+
 #[derive(Debug, Clone)]
 pub struct Planner {
     client: reqwest::Client,
@@ -97,20 +117,49 @@ impl Planner {
         frame: Option<&FramePayload>,
         desktop: Option<&DesktopState>,
     ) -> anyhow::Result<PlannedTurn> {
+        self.plan_request(
+            api_key,
+            PlannerRequest {
+                transcript,
+                agent_context,
+                frame,
+                desktop,
+                prior_attempts: &[],
+            },
+        )
+        .await
+    }
+
+    pub async fn plan_request(
+        &self,
+        api_key: &str,
+        request: PlannerRequest<'_>,
+    ) -> anyhow::Result<PlannedTurn> {
+        let transcript = request.transcript;
         if let Some(turn) = parse_fast_command(transcript) {
             return Ok(turn);
         }
-        let desktop_context = desktop
+        let desktop_context = request
+            .desktop
             .map(desktop_context)
             .unwrap_or_else(|| "Desktop context: unavailable.".to_string());
+        let attempt_context = if request.prior_attempts.is_empty() {
+            "Prior attempts: none.".to_string()
+        } else {
+            format!(
+                "Prior attempts in this turn:\n{}",
+                serde_json::to_string_pretty(request.prior_attempts)
+                    .unwrap_or_else(|_| "[]".to_string())
+            )
+        };
         let mut content = vec![serde_json::json!({
             "type": "text",
             "text": format!(
-                "Transcript: {transcript}\n{}\n{desktop_context}",
-                agent_context.unwrap_or("Agent memory context: unavailable.")
+                "Transcript: {transcript}\n{}\n{desktop_context}\n{attempt_context}",
+                request.agent_context.unwrap_or("Agent memory context: unavailable.")
             )
         })];
-        if let Some((bytes, mime)) = frame.and_then(frame_image_data) {
+        if let Some((bytes, mime)) = request.frame.and_then(frame_image_data) {
             content.push(serde_json::json!({
                 "type": "image_url",
                 "image_url": {"url": format!("data:{mime};base64,{bytes}")},
@@ -139,7 +188,7 @@ impl Planner {
         }
         match parse_model_plan(raw) {
             Ok(plan) => Ok(plan),
-            Err(error) if is_observation_query(transcript) => Ok(turn(
+            Err(_error) if is_observation_query(transcript) => Ok(turn(
                 planner_output_preview(raw)
                     .trim_end_matches("...")
                     .to_string(),

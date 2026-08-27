@@ -83,12 +83,60 @@ Required work:
 15. Add deterministic fozzy scenarios for runebook parsing, validation, execution, trace verification, and replay.
 16. Add docs that make clear the runebook format is the canonical programmable surface and SDKs are convenience layers over the same protocol/runebook substrate.
 
-Current source reality:
+Current source reality and deduped implementation gaps:
 
-- `cua run <file>` is not implemented yet.
-- A runebook parser/executor is not implemented yet.
-- `on_error = "stop" | "continue" | "ask" | "rollback"` is not implemented yet.
-- Existing source has localized retry/error behavior for STT, planner, capture, trace verification, and normal command failures, but not a global runebook error policy.
+1. The runebook runtime is not implemented:
+   - no `cua run <file>` command
+   - no runebook parser, validator, executor, schema, or trace format
+   - no `[[steps]]` execution model
+   - no variable interpolation, `save_as`, result references, macros, or compact alias compiler
+2. Global and step-level error policy is not implemented:
+   - `on_error = "stop" | "continue" | "ask" | "rollback"` is not implemented
+   - existing source has localized retry/error behavior for STT, planner, capture, trace verification, and normal command failures, but no global runebook error policy
+   - `ask` needs an operator decision path through CLI/HUD
+   - `rollback` needs explicit rollback handlers and trace semantics
+3. Workflow composition is not implemented as runebook functionality:
+   - `seq`, `parallel`, `race`, `batch`, `foreach`, `run`, and `spawn_run`
+   - `InputAction::Sequence` exists for batched input actions, but it is not a general workflow engine
+4. Attestation and enrollment runebook fields are not implemented:
+   - `[attest]`
+   - `do = "attest"`
+   - machine identity status
+   - enrollment
+   - signed local-machine proofs
+   - cloud trust metadata
+5. Generic model steps are not implemented:
+   - `do = "model"`
+   - `dispatch_model_action`
+   - model output spawning a child runebook
+   - current source only has voice planner internals and `model eval`
+6. Voice/STT/planner turn steps are only partially backed:
+   - text, WAV, and live-record turns exist in `frontends/cua-voice`
+   - STT and planner config exists through voice CLI flags and env vars
+   - `[stt.<name>]`, `[planner.<name>]`, `[memory]`, `do = "turn"`, STT-only steps, planner-only steps, and scheduled/programmatic model messages are not exposed through a runebook executor
+7. Runebook trace verification and replay are not implemented:
+   - existing trace start/inspect/verify/replay is action-trace oriented
+   - runebook-level traces, step-result traces, error-policy traces, verify-on-complete, replay, and shrinking need separate implementation
+8. Conditions and timing are not implemented:
+   - `if`, `if_present`, result-based branching, sleeps, timers, delayed messages, and first-class waits are proposed only
+9. Config-home normalization is not complete:
+   - durable state is partly under `~/.cua/profiles/<profile>/...`
+   - there is not yet a universal `~/.cua/{concern}/**/*` resolver or `CUA_HOME`-backed root
+   - docs and env loading still mention/use root-level `~/.cua/.env`
+10. HTTP write-session parity is not complete:
+   - Unix RPC write paths enforce owner-session checks
+   - HTTP write routes appear bearer-token-only today
+   - runebooks and SDKs should prefer Unix until HTTP has equivalent session semantics
+11. Several direct protocol operations are backed by source but still need runebook adapters:
+   - status, manifest, schemas, metrics, health
+   - screenshot, window capture, context, observe, events
+   - visual sessions
+   - UI step/reply/mode/island
+   - profiles and sessions
+   - pause/resume/kill switch
+   - clipboard
+   - shell, aegis, ctx, open app, mouse, keyboard
+   - model eval, schema export, trace start/inspect/verify/replay
 
 Required `on_error` implementation:
 
@@ -434,6 +482,9 @@ Target layout:
       downloads/
       uploads/
       sessions/
+      scratchpads/
+        ephemeral/
+        durable/
   cloud/
     enrollments/
       <audience>.json
@@ -479,6 +530,17 @@ Required work:
    - `~/.cua/profiles/<profile>/http.token` stays valid
    - `~/.cua/profiles/<profile>/daemon.sock` stays valid
 8. Make scripts use `CUA_HOME` and concern-specific artifact paths.
+9. Add first-class agent-authored scratchpad docs:
+   - support ephemeral scratchpads for short-lived run/session reasoning
+   - support durable scratchpads for longer-standing project/profile notes
+   - keep the primitive intentionally lightweight for now: files the agent can write, read, and reference
+   - update the agent system prompt/runtime instructions so the agent appends useful discoveries, decisions, environment facts, and project context that may help future work
+   - keep memory appends selective and work-relevant so scratchpads stay useful instead of becoming noisy transcripts
+   - append and retrieve scratchpad memory in parallel with other runtime work whenever possible, so memory hygiene does not add avoidable turn latency
+   - make blocking memory reads explicit only when the next action truly depends on that memory
+10. Keep scratchpads profile-scoped by default, with a path shape like:
+   - `~/.cua/profiles/<profile>/scratchpads/ephemeral/`
+   - `~/.cua/profiles/<profile>/scratchpads/durable/`
 
 ## 10. Current config/path gaps to fix
 

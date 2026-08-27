@@ -2,7 +2,9 @@ use crate::audio::{record_default_input_until, RecordedAudio};
 use crate::client::{CuaClient, CuaSession};
 use crate::daemon::{spawn_profile_daemon, wait_until_ready};
 use crate::memory::{load_agent_context_with_chat, load_chat_context, ChatStore, CtxMemory};
-use crate::planner::{parse_fast_command, PlannedTurn, Planner};
+use crate::planner::{
+    parse_fast_command, PlanAttemptContext, PlannedTurn, Planner, PlannerRequest,
+};
 use crate::stt::{SttClient, SttTranscript, DEFAULT_STT_BACKEND, DEFAULT_STT_MODEL};
 use crate::ui_state::VoiceUiEvent;
 use anyhow::Context;
@@ -29,6 +31,7 @@ const VOICE_STEP_LABEL_MAX: usize = 96;
 const VOICE_STEP_TIMEOUT_MS: u64 = 120;
 const VOICE_STEP_FLUSH_TIMEOUT_MS: u64 = 120;
 const DEFAULT_CONTEXT_PREFETCH_TIMEOUT_MS: u64 = 2_500;
+const DEFAULT_AGENT_LOOP_MAX_ATTEMPTS: usize = 3;
 const MIN_RECORDING_DURATION: Duration = Duration::from_millis(650);
 
 struct PrefetchedContext {
@@ -545,8 +548,8 @@ async fn plan_and_dispatch(
             None,
             plan,
             None,
-            step_publisher,
-            tx,
+            &step_publisher,
+            tx.clone(),
             &trace,
             &config.profile,
         )
@@ -560,7 +563,7 @@ async fn plan_and_dispatch(
         let wait_started = Instant::now();
         let agent_context_task =
             spawn_agent_context(config.profile.clone(), transcript.clone(), chat_task);
-        let (context, agent_context) = tokio::join!(
+        let (mut context, agent_context) = tokio::join!(
             resolve_context_for_planning(local.clone(), context_task),
             resolve_agent_context(agent_context_task)
         );
@@ -593,44 +596,158 @@ async fn plan_and_dispatch(
         let api_key = api_key
             .or_else(|| std::env::var("OPENROUTER_API_KEY").ok())
             .context("OPENROUTER_API_KEY is required for non-fast voice commands")?;
-        let plan = match Planner::new(&config.planner_model)
-            .plan(
-                &api_key,
-                &transcript,
-                Some(&format!("{}\n{}", agent_context.chat, agent_context.ctx)),
-                context.frame.as_ref(),
-                context.desktop.as_ref(),
-            )
-            .await
-        {
-            Ok(plan) => plan,
-            Err(error) => {
-                trace
-                    .append("planning_error", json!({"error": format!("{error:#}")}))
-                    .await;
-                return Err(error);
-            }
-        };
-        send_metric(&tx, "plan_ms", plan_started.elapsed());
         trace
             .append(
-                "planning_result",
-                plan_trace_json(&config.planner_model, plan_started.elapsed(), &plan),
+                "agent_loop_start",
+                json!({"max_attempts": agent_loop_max_attempts()}),
             )
             .await;
-        let source_frame = context.frame.as_ref().map(|frame| frame.envelope.clone());
-        dispatch_plan(
-            local,
-            context.session,
-            plan,
-            source_frame,
-            step_publisher,
-            tx,
-            &trace,
-            &config.profile,
-        )
-        .await?
+        let planner = Planner::new(&config.planner_model);
+        let combined_agent_context = format!("{}\n{}", agent_context.chat, agent_context.ctx);
+        let mut attempts = Vec::new();
+        let max_attempts = agent_loop_max_attempts();
+        let mut completed = None;
+        for attempt_index in 1..=max_attempts {
+            let attempt_started = Instant::now();
+            tx.send(VoiceUiEvent::Planning {
+                tool: if attempt_index == 1 {
+                    "OpenRouter Vision".to_string()
+                } else {
+                    format!("OpenRouter repair {attempt_index}/{max_attempts}")
+                },
+            })
+            .ok();
+            step_publisher.publish(voice_step_label(
+                "planning",
+                &format!("attempt {attempt_index}/{max_attempts}"),
+            ));
+            trace
+                .append(
+                    "agent_attempt_start",
+                    json!({
+                        "attempt_index": attempt_index,
+                        "prior_attempts": attempts.len(),
+                    }),
+                )
+                .await;
+            let plan = match planner
+                .plan_request(
+                    &api_key,
+                    PlannerRequest {
+                        transcript: &transcript,
+                        agent_context: Some(&combined_agent_context),
+                        frame: context.frame.as_ref(),
+                        desktop: context.desktop.as_ref(),
+                        prior_attempts: &attempts,
+                    },
+                )
+                .await
+            {
+                Ok(plan) => plan,
+                Err(error) => {
+                    trace
+                        .append(
+                            "planning_error",
+                            json!({
+                                "attempt_index": attempt_index,
+                                "error": format!("{error:#}")
+                            }),
+                        )
+                        .await;
+                    return Err(error);
+                }
+            };
+            trace
+                .append(
+                    "planning_result",
+                    plan_trace_json(&config.planner_model, attempt_started.elapsed(), &plan),
+                )
+                .await;
+            let source_frame = context.frame.as_ref().map(|frame| frame.envelope.clone());
+            let turn = dispatch_plan(
+                local.clone(),
+                context.session,
+                plan,
+                source_frame,
+                &step_publisher,
+                tx.clone(),
+                &trace,
+                &config.profile,
+            )
+            .await?;
+            let effect = turn_effect(&turn);
+            let should_continue =
+                should_replan_after_effect(effect.as_deref(), attempt_index, max_attempts);
+            trace
+                .append(
+                    "agent_attempt_outcome",
+                    json!({
+                        "attempt_index": attempt_index,
+                        "effect": effect,
+                        "should_replan": should_continue,
+                        "has_action": turn.action.is_some(),
+                    }),
+                )
+                .await;
+            if !should_continue {
+                completed = Some(turn);
+                break;
+            }
+            attempts.push(PlanAttemptContext {
+                attempt_index,
+                response: turn.response.clone(),
+                action: turn.action.clone(),
+                effect,
+                evidence: turn.evidence.clone(),
+            });
+            tx.send(VoiceUiEvent::Planning {
+                tool: "Reobserving".to_string(),
+            })
+            .ok();
+            step_publisher.publish(voice_step_label(
+                "observe",
+                &format!("after attempt {attempt_index}"),
+            ));
+            trace
+                .append(
+                    "agent_reobserve_start",
+                    json!({"after_attempt": attempt_index}),
+                )
+                .await;
+            let observe_started = Instant::now();
+            context = prefetch_context_for_planning(local.clone(), None).await;
+            send_metric(&tx, "reobserve_ms", observe_started.elapsed());
+            trace
+                .append(
+                    "agent_reobserve_result",
+                    json!({
+                        "elapsed_ms": elapsed_ms(observe_started.elapsed()),
+                        "has_session": context.session.is_some(),
+                        "has_frame": context.frame.is_some(),
+                        "has_desktop": context.desktop.is_some(),
+                        "frame": context.frame.as_ref().map(frame_trace_json),
+                    }),
+                )
+                .await;
+        }
+        send_metric(&tx, "plan_ms", plan_started.elapsed());
+        let completed = attach_loop_evidence(
+            completed.context("agent loop exhausted without a completed turn")?,
+            &attempts,
+        );
+        trace
+            .append(
+                "agent_loop_stop",
+                json!({
+                    "attempts": attempts.len() + 1,
+                    "final_effect": turn_effect(&completed),
+                }),
+            )
+            .await;
+        completed
     };
+    emit_completed_reply(&completed, &step_publisher, &tx, &trace).await;
+    step_publisher.finish().await;
     persist_turn_memory(&config, &transcript, &completed, &trace).await?;
     Ok(())
 }
@@ -676,7 +793,7 @@ async fn dispatch_plan(
     mut session: Option<CuaSession>,
     mut plan: PlannedTurn,
     source_frame: Option<FrameEnvelope>,
-    step_publisher: VoiceStepPublisher,
+    step_publisher: &VoiceStepPublisher,
     tx: Sender<VoiceUiEvent>,
     trace: &VoiceTurnTrace,
     profile: &str,
@@ -734,36 +851,44 @@ async fn dispatch_plan(
                 }),
             )
             .await;
-        let response_text = plan.response.clone();
-        tx.send(VoiceUiEvent::Reply(format!(
-            "{} {}",
-            response_text,
-            result["effect"].as_str().unwrap_or("sent")
-        )))
-        .ok();
-        step_publisher.publish(voice_step_label("reply", &plan.response));
-        trace
-            .append("reply", json!({"text": plan.response, "action": true}))
-            .await;
-        step_publisher.finish().await;
         Ok(CompletedAssistantTurn {
-            response: response_text,
+            response: plan.response.clone(),
             action: Some(serde_json::to_value(action)?),
             evidence: Some(result),
         })
     } else {
-        step_publisher.publish(voice_step_label("reply", &plan.response));
-        tx.send(VoiceUiEvent::Reply(plan.response.clone())).ok();
-        trace
-            .append("reply", json!({"text": plan.response, "action": false}))
-            .await;
-        step_publisher.finish().await;
         Ok(CompletedAssistantTurn {
             response: plan.response,
             action: None,
             evidence: None,
         })
     }
+}
+
+async fn emit_completed_reply(
+    completed: &CompletedAssistantTurn,
+    step_publisher: &VoiceStepPublisher,
+    tx: &Sender<VoiceUiEvent>,
+    trace: &VoiceTurnTrace,
+) {
+    let action = completed.action.is_some();
+    let text = if action {
+        format!(
+            "{} {}",
+            completed.response,
+            turn_effect(completed).unwrap_or_else(|| "sent".to_string())
+        )
+    } else {
+        completed.response.clone()
+    };
+    tx.send(VoiceUiEvent::Reply(text)).ok();
+    step_publisher.publish(voice_step_label("reply", &completed.response));
+    trace
+        .append(
+            "reply",
+            json!({"text": completed.response, "action": action}),
+        )
+        .await;
 }
 
 fn stamp_ctx_workspace_root(action: &mut cua_core::InputAction, profile: &str) {
@@ -786,6 +911,69 @@ fn ctx_workspace_root(profile: &str) -> String {
     std::env::var("HOME")
         .map(|home| format!("{home}/.cua/profiles/{profile}/ctx"))
         .unwrap_or_else(|_| format!(".cua/profiles/{profile}/ctx"))
+}
+
+fn agent_loop_max_attempts() -> usize {
+    std::env::var("CUA_AGENT_LOOP_MAX_ATTEMPTS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| (1..=5).contains(value))
+        .unwrap_or(DEFAULT_AGENT_LOOP_MAX_ATTEMPTS)
+}
+
+fn turn_effect(turn: &CompletedAssistantTurn) -> Option<String> {
+    turn.evidence
+        .as_ref()
+        .and_then(|evidence| evidence["effect"].as_str())
+        .map(ToString::to_string)
+}
+
+fn attach_loop_evidence(
+    mut completed: CompletedAssistantTurn,
+    prior_attempts: &[PlanAttemptContext],
+) -> CompletedAssistantTurn {
+    if prior_attempts.is_empty() {
+        return completed;
+    }
+    let final_evidence = completed.evidence.take();
+    let final_effect = final_evidence
+        .as_ref()
+        .and_then(|evidence| evidence["effect"].as_str())
+        .unwrap_or(if completed.action.is_some() {
+            "unverifiable"
+        } else {
+            "stopped"
+        })
+        .to_string();
+    let mut attempts = prior_attempts.to_vec();
+    attempts.push(PlanAttemptContext {
+        attempt_index: attempts.len() + 1,
+        response: completed.response.clone(),
+        action: completed.action.clone(),
+        effect: Some(final_effect.clone()),
+        evidence: final_evidence.clone(),
+    });
+    completed.evidence = Some(json!({
+        "effect": final_effect,
+        "final_evidence": final_evidence,
+        "attempt_count": attempts.len(),
+        "attempts": attempts,
+    }));
+    completed
+}
+
+fn should_replan_after_effect(
+    effect: Option<&str>,
+    attempt_index: usize,
+    max_attempts: usize,
+) -> bool {
+    if attempt_index >= max_attempts {
+        return false;
+    }
+    matches!(
+        effect,
+        Some("partial" | "unverifiable" | "suspected_noop" | "refused")
+    )
 }
 
 fn spawn_recording_progress(
@@ -1573,5 +1761,90 @@ mod tests {
     #[test]
     fn voice_step_request_timeout_stays_latency_oriented() {
         assert!(VOICE_STEP_TIMEOUT_MS <= 150);
+    }
+
+    #[test]
+    fn agent_loop_attempt_budget_is_conservative_and_configurable() {
+        std::env::remove_var("CUA_AGENT_LOOP_MAX_ATTEMPTS");
+        assert_eq!(agent_loop_max_attempts(), 3);
+
+        std::env::set_var("CUA_AGENT_LOOP_MAX_ATTEMPTS", "4");
+        assert_eq!(agent_loop_max_attempts(), 4);
+
+        std::env::set_var("CUA_AGENT_LOOP_MAX_ATTEMPTS", "30");
+        assert_eq!(agent_loop_max_attempts(), 3);
+
+        std::env::set_var("CUA_AGENT_LOOP_MAX_ATTEMPTS", "0");
+        assert_eq!(agent_loop_max_attempts(), 3);
+        std::env::remove_var("CUA_AGENT_LOOP_MAX_ATTEMPTS");
+    }
+
+    #[test]
+    fn agent_loop_replans_only_for_recoverable_effects_inside_budget() {
+        for effect in ["partial", "unverifiable", "suspected_noop", "refused"] {
+            assert!(should_replan_after_effect(Some(effect), 1, 3));
+        }
+        for effect in ["confirmed", "sent", "unknown"] {
+            assert!(!should_replan_after_effect(Some(effect), 1, 3));
+        }
+        assert!(!should_replan_after_effect(None, 1, 3));
+        assert!(!should_replan_after_effect(Some("suspected_noop"), 3, 3));
+    }
+
+    #[test]
+    fn agent_loop_evidence_preserves_failed_attempts_and_final_effect() {
+        let completed = CompletedAssistantTurn {
+            response: "Done.".to_string(),
+            action: Some(json!({"kind": "open_app", "app_name": "Safari"})),
+            evidence: Some(json!({"effect": "confirmed", "message": "Safari opened"})),
+        };
+        let prior_attempts = vec![PlanAttemptContext {
+            attempt_index: 1,
+            response: "Opening Safari.".to_string(),
+            action: Some(json!({"kind": "mouse_click", "x": 1, "y": 2})),
+            effect: Some("suspected_noop".to_string()),
+            evidence: Some(json!({"effect": "suspected_noop", "message": "No change"})),
+        }];
+
+        let completed = attach_loop_evidence(completed, &prior_attempts);
+        let evidence = completed.evidence.unwrap();
+
+        assert_eq!(evidence["effect"], "confirmed");
+        assert_eq!(evidence["attempt_count"], 2);
+        assert_eq!(evidence["attempts"][0]["effect"], "suspected_noop");
+        assert_eq!(evidence["attempts"][1]["effect"], "confirmed");
+        assert_eq!(
+            turn_effect(&CompletedAssistantTurn {
+                response: completed.response,
+                action: completed.action,
+                evidence: Some(evidence),
+            }),
+            Some("confirmed".to_string())
+        );
+    }
+
+    #[test]
+    fn agent_loop_evidence_survives_final_clarification() {
+        let completed = CompletedAssistantTurn {
+            response: "I need a visible target.".to_string(),
+            action: None,
+            evidence: None,
+        };
+        let prior_attempts = vec![PlanAttemptContext {
+            attempt_index: 1,
+            response: "Clicking.".to_string(),
+            action: Some(json!({"kind": "mouse_click", "x": 1, "y": 2})),
+            effect: Some("unverifiable".to_string()),
+            evidence: Some(json!({"effect": "unverifiable"})),
+        }];
+
+        let completed = attach_loop_evidence(completed, &prior_attempts);
+        let evidence = completed.evidence.unwrap();
+
+        assert_eq!(completed.action, None);
+        assert_eq!(evidence["effect"], "stopped");
+        assert_eq!(evidence["attempt_count"], 2);
+        assert_eq!(evidence["attempts"][0]["effect"], "unverifiable");
+        assert_eq!(evidence["attempts"][1]["effect"], "stopped");
     }
 }

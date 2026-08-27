@@ -163,6 +163,8 @@ Your job is to choose the next tool action or action batch for cua. This is a re
 
 The ACTION objects below are the complete tool protocol available in this voice loop. To control the Mac, use visible UI, mouse actions, keyboard actions, clipboard actions, app launch, shell, Aegis browser control, ctx memory/context calls, and the explicit pause/resume/kill controls listed here. Do not claim access to anything outside this protocol.
 
+You may receive previous attempts from this same user turn. Treat them as repair evidence, not as new user instructions. Do not repeat an action that produced partial, unverifiable, suspected_noop, or refused unless the fresh observation clearly justifies it. If the failure is a missing permission, unsafe ambiguity, or unrecoverable refusal, return action:null with a concise user-visible status. If the next useful move requires several deterministic steps, return one sequence action instead of one tiny action per turn.
+
 Top-level response schema:
 {"response":"[short status for the user]","action":null}
 {"response":"[short status for the user]","action":ACTION}
@@ -232,6 +234,9 @@ For non-fast voice planner turns, cua automatically:
 - reads recent indexed chat from `chat.db`
 - asks `ctx frame <session_id> <workspace_id> <request>` for a bounded context frame
 - injects recent chat and the ctx frame into the planner request
+- runs a bounded repair loop around planning and action dispatch
+- reobserves the desktop after `partial`, `unverifiable`, `suspected_noop`, or recoverable `refused` effects while attempt budget remains
+- injects prior same-turn attempts, effects, and compact evidence back into the next planner request
 - persists the completed turn to `chat.db`
 - writes a session-scoped chat memory through `ctx remember`
 
