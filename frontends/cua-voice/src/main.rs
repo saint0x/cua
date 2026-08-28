@@ -57,6 +57,7 @@ const MINIMIZED_RADIUS: f32 = 14.0;
 const MINIMIZED_RIGHT_OFFSET: f32 = 220.0;
 const HEADER_PAD_X_PX: f32 = 16.0;
 const HEADER_GAP_PX: f32 = 8.0;
+const HEADER_TITLE_DIVIDER_GAP_PX: f32 = 4.0;
 const HEADER_LEAD_WIDTH_PX: f32 = 28.0;
 const HEADER_ORB_PX: f32 = 18.0;
 const HEADER_RING_PX: f32 = 22.0;
@@ -478,7 +479,6 @@ impl VoiceHud {
                     .top(px(COMPACT_CONTENT_Y_OFFSET_PX))
                     .flex()
                     .items_center()
-                    .gap(px(HEADER_GAP_PX))
                     .px(px(HEADER_PAD_X_PX))
                     .child(
                         div()
@@ -493,6 +493,7 @@ impl VoiceHud {
                                     .child(self.orb()),
                             ),
                     )
+                    .child(div().w(px(HEADER_GAP_PX)).flex_none())
                     .child(
                         div()
                             .w(px(header_widths.title))
@@ -505,7 +506,9 @@ impl VoiceHud {
                             .line_height(px(UI_LINE_HEIGHT_PX))
                             .child(title),
                     )
+                    .child(div().w(px(HEADER_TITLE_DIVIDER_GAP_PX)).flex_none())
                     .child(Self::divider())
+                    .child(div().w(px(HEADER_GAP_PX)).flex_none())
                     .child(center_text_slot(
                         center,
                         reply_visible,
@@ -515,7 +518,9 @@ impl VoiceHud {
                             self.reduced_motion,
                         ),
                     ))
+                    .child(div().w(px(HEADER_GAP_PX)).flex_none())
                     .child(Self::divider())
+                    .child(div().w(px(HEADER_GAP_PX)).flex_none())
                     .child(
                         div()
                             .flex()
@@ -524,6 +529,7 @@ impl VoiceHud {
                             .child(Self::chip(tool))
                             .child(Self::chip(app)),
                     )
+                    .child(div().w(px(HEADER_GAP_PX)).flex_none())
                     .child(self.activity_ring_from_scene(scene)),
             )
             .when(scene_renders_expanded_body(scene), |element| {
@@ -1126,7 +1132,7 @@ fn header_layout_widths(
         + 2.0
         + header_chips_width_px(transport, target)
         + HEADER_RING_PX;
-    let gap_width = HEADER_GAP_PX * 6.0;
+    let gap_width = header_gap_width_px();
     let center_width =
         (island_shell_width(metrics) - (HEADER_PAD_X_PX * 2.0) - chrome_width - gap_width)
             .max(HEADER_CENTER_MIN_WIDTH_PX);
@@ -1140,6 +1146,10 @@ fn header_layout_widths(
 fn header_title_width_px(title: &str) -> f32 {
     (estimated_header_text_width_px(title) + 2.0)
         .clamp(HEADER_TITLE_MIN_WIDTH_PX, HEADER_TITLE_MAX_WIDTH_PX)
+}
+
+fn header_gap_width_px() -> f32 {
+    (HEADER_GAP_PX * 5.0) + HEADER_TITLE_DIVIDER_GAP_PX
 }
 
 fn header_chips_width_px(transport: &str, target: &str) -> f32 {
@@ -3330,6 +3340,7 @@ mod tests {
         assert_eq!(UI_META_PX, UI_TEXT_PX);
         assert_eq!(HEADER_ORB_PX, 18.0);
         assert_eq!(HEADER_GAP_PX, 8.0);
+        assert_eq!(HEADER_TITLE_DIVIDER_GAP_PX, 4.0);
         assert_eq!(HEADER_TITLE_MIN_WIDTH_PX, 64.0);
         assert_eq!(HEADER_TITLE_MAX_WIDTH_PX, 92.0);
         assert_eq!(HEADER_CENTER_MIN_WIDTH_PX, 260.0);
@@ -3341,6 +3352,7 @@ mod tests {
             header_title_width_px("Voice control")
                 >= estimated_header_text_width_px("Voice control")
         );
+        assert!(HEADER_TITLE_DIVIDER_GAP_PX < HEADER_GAP_PX);
     }
 
     #[test]
@@ -3362,6 +3374,26 @@ mod tests {
         assert!(automation.center > voice.center);
         assert!(automation.center >= HEADER_CENTER_MIN_WIDTH_PX);
         assert!(voice.center >= HEADER_CENTER_MIN_WIDTH_PX);
+    }
+
+    #[test]
+    fn compact_header_gives_center_slot_more_space_after_title_divider_tightening() {
+        let metrics = HudMetrics::with_expansion(0.0, 0.0);
+        let title = "Voice control";
+        let old_uniform_gap_width = HEADER_GAP_PX * 6.0;
+        let old_center = (island_shell_width(metrics)
+            - (HEADER_PAD_X_PX * 2.0)
+            - HEADER_LEAD_WIDTH_PX
+            - header_title_width_px(title)
+            - 2.0
+            - header_chips_width_px("Socket", "macOS")
+            - HEADER_RING_PX
+            - old_uniform_gap_width)
+            .max(HEADER_CENTER_MIN_WIDTH_PX);
+        let tightened = header_layout_widths(metrics, title, "Socket", "macOS");
+
+        assert_eq!(header_gap_width_px(), old_uniform_gap_width - 4.0);
+        assert_eq!(tightened.center, old_center + 4.0);
     }
 
     #[test]
