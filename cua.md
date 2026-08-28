@@ -46,6 +46,8 @@ Fast local command parsing can bypass the model for simple spoken commands:
 - `resume`
 - `kill switch`
 
+If the planner provider returns empty content for a clear visible browser research command, cua records the provider metadata in the debug trace and runs a single bounded Safari bootstrap sequence instead of surfacing an empty-content dead end.
+
 ## Runtime Protocol Tools
 
 cua exposes the same local control substrate through HTTP, Unix socket RPC, and CLI.

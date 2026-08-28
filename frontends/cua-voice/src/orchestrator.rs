@@ -3,8 +3,8 @@ use crate::client::{CuaClient, CuaSession};
 use crate::daemon::{spawn_profile_daemon, wait_until_ready};
 use crate::memory::{load_agent_context_with_chat, load_chat_context, ChatStore, CtxMemory};
 use crate::planner::{
-    extract_planner_hints, parse_fast_command, PlanAttemptContext, PlannedTurn, Planner,
-    PlannerRequest,
+    browser_research_bootstrap_plan, extract_planner_hints, parse_fast_command, PlanAttemptContext,
+    PlannedTurn, Planner, PlannerRequest,
 };
 use crate::stt::{SttClient, SttTranscript, DEFAULT_STT_BACKEND, DEFAULT_STT_MODEL};
 use crate::ui_state::VoiceUiEvent;
@@ -467,6 +467,10 @@ fn is_missed_speech_message(message: &str) -> bool {
         || message.contains("speech-to-text did not produce a command")
 }
 
+fn planning_error_is_empty_content(error: &anyhow::Error) -> bool {
+    format!("{error:#}").contains("planning model returned empty content")
+}
+
 fn normalized_transcript(transcript: &str) -> String {
     transcript
         .trim()
@@ -695,7 +699,24 @@ async fn plan_and_dispatch(
                         completed = Some(turn);
                         break;
                     }
-                    return Err(error);
+                    if planning_error_is_empty_content(&error) {
+                        if let Some(plan) = browser_research_bootstrap_plan(&transcript) {
+                            trace
+                                .append(
+                                    "planning_empty_content_recovered",
+                                    json!({
+                                        "attempt_index": attempt_index,
+                                        "strategy": "browser_research_bootstrap",
+                                    }),
+                                )
+                                .await;
+                            plan
+                        } else {
+                            return Err(error);
+                        }
+                    } else {
+                        return Err(error);
+                    }
                 }
             };
             repair_new_note_text_entry_plan(&transcript, &mut plan.action);
@@ -2016,6 +2037,7 @@ mod tests {
             user_visible_turn_error(&error),
             "Planner returned empty content."
         );
+        assert!(planning_error_is_empty_content(&error));
     }
 
     #[test]

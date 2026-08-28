@@ -225,7 +225,7 @@ impl Planner {
                 .as_str()
                 .unwrap_or_default();
             if raw.trim().is_empty() {
-                last_error = Some(anyhow::anyhow!("planning model returned empty content"));
+                last_error = Some(empty_planner_response_error(&value));
             } else {
                 match parse_model_plan(raw) {
                     Ok(plan) => return Ok(plan),
@@ -474,6 +474,35 @@ fn planner_output_preview(raw: &str) -> String {
     }
 }
 
+fn empty_planner_response_error(value: &serde_json::Value) -> anyhow::Error {
+    let choice = &value["choices"][0];
+    let message = &choice["message"];
+    let finish_reason = choice["finish_reason"]
+        .as_str()
+        .or_else(|| value["finish_reason"].as_str())
+        .unwrap_or("unknown");
+    let message_keys = message
+        .as_object()
+        .map(|object| object.keys().cloned().collect::<Vec<_>>().join(","))
+        .unwrap_or_else(|| "unavailable".to_string());
+    let refusal = message["refusal"]
+        .as_str()
+        .map(planner_output_preview)
+        .unwrap_or_else(|| "none".to_string());
+    let tool_call_count = message["tool_calls"]
+        .as_array()
+        .map(|calls| calls.len())
+        .unwrap_or(0);
+    let provider_error = value["error"]["message"]
+        .as_str()
+        .map(planner_output_preview)
+        .unwrap_or_else(|| "none".to_string());
+
+    anyhow::anyhow!(
+        "planning model returned empty content: finish_reason={finish_reason} message_keys={message_keys} refusal={refusal} tool_calls={tool_call_count} provider_error={provider_error}"
+    )
+}
+
 fn extract_first_json_object(raw: &str) -> Option<&str> {
     let mut depth = 0usize;
     let mut start = None;
@@ -659,6 +688,39 @@ pub fn parse_fast_command(transcript: &str) -> Option<PlannedTurn> {
         ));
     }
     None
+}
+
+pub fn browser_research_bootstrap_plan(transcript: &str) -> Option<PlannedTurn> {
+    let words = transcript
+        .split_whitespace()
+        .map(normalize_command_token)
+        .map(|word| word.to_ascii_lowercase())
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>();
+    let wants_browser = words
+        .iter()
+        .any(|word| matches!(word.as_str(), "safari" | "browser" | "web" | "google"));
+    let wants_research = words
+        .iter()
+        .any(|word| matches!(word.as_str(), "research" | "search" | "browse" | "browsing"));
+    if !wants_browser || !wants_research {
+        return None;
+    }
+
+    Some(turn(
+        "Opening Safari for research.",
+        Some(InputAction::Sequence {
+            actions: vec![
+                InputAction::OpenApp {
+                    app_name: "Safari".to_string(),
+                },
+                InputAction::KeyPress {
+                    combo: "cmd+l".to_string(),
+                },
+            ],
+            inter_action_delay_ms: 120,
+        }),
+    ))
 }
 
 pub fn extract_planner_hints(transcript: &str) -> PlannerHints {
@@ -1170,6 +1232,32 @@ mod tests {
 
         assert!(hints.detected_actions.is_empty());
         assert!(hints.notes.iter().any(|note| note.contains("only setup")));
+    }
+
+    #[test]
+    fn browser_research_bootstrap_handles_visible_browsing_command() {
+        let plan = browser_research_bootstrap_plan(
+            "Open Safari browser and do some research while I am watching",
+        )
+        .unwrap();
+
+        assert!(matches!(
+            plan.action,
+            Some(InputAction::Sequence { ref actions, .. }) if matches!(
+                actions.as_slice(),
+                [
+                    InputAction::OpenApp { app_name },
+                    InputAction::KeyPress { combo },
+                ] if app_name == "Safari"
+                    && combo == "cmd+l"
+            )
+        ));
+    }
+
+    #[test]
+    fn browser_research_bootstrap_ignores_simple_open_app() {
+        assert!(browser_research_bootstrap_plan("Open Safari").is_none());
+        assert!(browser_research_bootstrap_plan("Research local restaurants").is_none());
     }
 
     #[test]

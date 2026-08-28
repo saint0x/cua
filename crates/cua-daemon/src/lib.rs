@@ -281,7 +281,11 @@ impl HudSupervisor {
     fn pid(&self) -> Option<u32> {
         match self.pid.load(Ordering::Relaxed) {
             0 => None,
-            pid => Some(pid),
+            pid if process_is_alive(pid) => Some(pid),
+            _ => {
+                self.pid.store(0, Ordering::Relaxed);
+                None
+            }
         }
     }
 
@@ -333,6 +337,23 @@ impl HudSupervisor {
             });
         }
     }
+}
+
+fn process_is_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    let output = std::process::Command::new("/bin/ps")
+        .args(["-p", &pid.to_string(), "-o", "stat=,command="])
+        .output();
+    output.is_ok_and(|output| {
+        if !output.status.success() || output.stdout.is_empty() {
+            return false;
+        }
+        let state = String::from_utf8_lossy(&output.stdout);
+        let trimmed = state.trim_start();
+        !trimmed.starts_with('Z') && !state.contains("<defunct>")
+    })
 }
 
 #[derive(Clone, Default)]
