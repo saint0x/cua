@@ -1000,7 +1000,22 @@ async fn dispatch_plan(
         let result = match result {
             Ok(result) => result,
             Err(error) => {
-                let _ = local.cancel_session(owner_session_id.clone(), None).await;
+                if let Err(cancel_error) =
+                    local.cancel_session(owner_session_id.clone(), None).await
+                {
+                    trace
+                        .append(
+                            "dispatch_owner_cancel_error",
+                            json!({
+                                "owner_session_id": owner_session_id,
+                                "error": format!("{cancel_error:#}")
+                            }),
+                        )
+                        .await;
+                    eprintln!(
+                        "cua voice dispatch owner cleanup failed after dispatch error: {cancel_error:#}"
+                    );
+                }
                 trace
                     .append(
                         "dispatch_error",
@@ -1014,7 +1029,18 @@ async fn dispatch_plan(
                 return Err(error.into());
             }
         };
-        let _ = local.cancel_session(owner_session_id, None).await;
+        if let Err(error) = local.cancel_session(owner_session_id.clone(), None).await {
+            trace
+                .append(
+                    "dispatch_owner_cancel_error",
+                    json!({
+                        "owner_session_id": owner_session_id,
+                        "error": format!("{error:#}")
+                    }),
+                )
+                .await;
+            eprintln!("cua voice dispatch owner cleanup failed: {error:#}");
+        }
         send_metric(&tx, "dispatch_ms", dispatch_started.elapsed());
         trace
             .append(

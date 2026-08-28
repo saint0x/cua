@@ -218,6 +218,7 @@ impl FrameBus {
         let started = Instant::now();
         if !request.force_fresh {
             if let Some(frame) = self.latest.read().await.clone() {
+                let frame = frame.transformed(&request)?;
                 return Ok(FrameLookup {
                     frame,
                     cache_hit: true,
@@ -225,10 +226,13 @@ impl FrameBus {
                 });
             }
         }
-        let frame = match capture_latest_timed(&self.backend, request, self.capture_timeout).await {
+        let frame = match capture_latest_timed(&self.backend, request.clone(), self.capture_timeout)
+            .await
+        {
             Ok(frame) => frame,
             Err(error) => {
                 if let Some(frame) = self.latest.read().await.clone() {
+                    let frame = frame.transformed(&request)?;
                     return Ok(FrameLookup {
                         frame,
                         cache_hit: true,
@@ -606,8 +610,8 @@ mod tests {
 
         assert!(lookup.cache_hit);
         assert_eq!(lookup.frame.envelope.frame_id, frame.envelope.frame_id);
-        assert_eq!(lookup.frame.envelope.width, frame.envelope.width);
-        assert_eq!(lookup.frame.envelope.encoding, frame.envelope.encoding);
+        assert_eq!(lookup.frame.envelope.width, 320);
+        assert_eq!(lookup.frame.envelope.encoding, FrameEncoding::Png);
     }
 
     #[tokio::test]
@@ -659,6 +663,40 @@ mod tests {
         assert!(transformed.envelope.height < frame.envelope.height);
         assert_eq!(transformed.envelope.byte_len, transformed.bytes.len());
         assert_ne!(transformed.envelope.sha256, frame.envelope.sha256);
+    }
+
+    #[tokio::test]
+    async fn cached_frame_hit_honors_requested_encoding_without_resize() {
+        let backend = Arc::new(SyntheticCaptureBackend::default());
+        let bus = FrameBus::new(backend);
+        let seeded = bus
+            .latest_or_capture_timed(CaptureRequest {
+                max_width: Some(640),
+                encoding: FrameEncoding::Jpeg,
+                force_fresh: true,
+            })
+            .await
+            .unwrap();
+
+        let cached = bus
+            .latest_or_capture_timed(CaptureRequest {
+                max_width: Some(seeded.frame.envelope.width),
+                encoding: FrameEncoding::Png,
+                force_fresh: false,
+            })
+            .await
+            .unwrap();
+
+        assert!(cached.cache_hit);
+        assert_eq!(
+            cached.frame.envelope.frame_id,
+            seeded.frame.envelope.frame_id
+        );
+        assert_eq!(cached.frame.envelope.width, seeded.frame.envelope.width);
+        assert_eq!(cached.frame.envelope.height, seeded.frame.envelope.height);
+        assert_eq!(cached.frame.envelope.encoding, FrameEncoding::Png);
+        assert_eq!(cached.frame.envelope.byte_len, cached.frame.bytes.len());
+        assert_ne!(cached.frame.envelope.sha256, seeded.frame.envelope.sha256);
     }
 
     #[tokio::test]

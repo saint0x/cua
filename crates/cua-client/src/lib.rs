@@ -13,6 +13,7 @@ use cua_core::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{
@@ -958,14 +959,28 @@ fn ensure_dispatchable(action: &InputAction) -> Result<()> {
 }
 
 fn decode_api_error(error: Option<Value>) -> ApiErrorBody {
-    error
-        .and_then(|value| serde_json::from_value::<ApiErrorBody>(value).ok())
-        .unwrap_or_else(|| ApiErrorBody {
+    match error {
+        Some(value) => match serde_json::from_value::<ApiErrorBody>(value.clone()) {
+            Ok(error) => error,
+            Err(source) => {
+                let mut details = BTreeMap::new();
+                details.insert("decode_error".to_string(), source.to_string());
+                details.insert("raw_error".to_string(), value.to_string());
+                ApiErrorBody {
+                    schema_version: SCHEMA_VERSION.to_string(),
+                    code: "protocol_error".to_string(),
+                    message: "daemon returned an unstructured protocol error".to_string(),
+                    details,
+                }
+            }
+        },
+        None => ApiErrorBody {
             schema_version: SCHEMA_VERSION.to_string(),
             code: "protocol_error".to_string(),
             message: "daemon returned an unstructured protocol error".to_string(),
             details: Default::default(),
-        })
+        },
+    }
 }
 
 fn context_request_body(include_bytes: bool) -> Value {
@@ -1050,6 +1065,33 @@ mod tests {
                 assert_eq!(method, "control.pause");
                 assert_eq!(error.code, "session_owner");
                 assert_eq!(error.message, "write requires an active owner session");
+            }
+            other => panic!("expected protocol error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unix_protocol_errors_preserve_unstructured_payload() {
+        let line = serde_json::json!({
+            "id": "test",
+            "ok": false,
+            "error": {
+                "message": "capture backend timed out after 10000ms",
+                "status": 500
+            }
+        })
+        .to_string();
+
+        let error = decode_unix_response::<Value>("context.snapshot", &line).unwrap_err();
+        match error {
+            CuaClientError::Protocol { method, error } => {
+                assert_eq!(method, "context.snapshot");
+                assert_eq!(error.code, "protocol_error");
+                assert!(error
+                    .details
+                    .get("raw_error")
+                    .is_some_and(|raw| raw.contains("capture backend timed out")));
+                assert!(error.details.contains_key("decode_error"));
             }
             other => panic!("expected protocol error, got {other:?}"),
         }

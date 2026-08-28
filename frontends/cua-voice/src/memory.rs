@@ -267,13 +267,12 @@ async fn load_scratchpad_kind(
         if path.extension().and_then(|value| value.to_str()) != Some("json") {
             continue;
         }
-        let bytes = match tokio::fs::read(&path).await {
-            Ok(bytes) => bytes,
-            Err(_) => continue,
-        };
-        if let Ok(entry) = serde_json::from_slice::<ScratchpadEntry>(&bytes) {
-            out.push(entry);
-        }
+        let bytes = tokio::fs::read(&path)
+            .await
+            .with_context(|| format!("read scratchpad {}", path.display()))?;
+        let entry = serde_json::from_slice::<ScratchpadEntry>(&bytes)
+            .with_context(|| format!("decode scratchpad {}", path.display()))?;
+        out.push(entry);
     }
     Ok(())
 }
@@ -445,6 +444,23 @@ mod tests {
         assert!(frame.contains("Scratchpads:"));
         assert!(frame.contains("active-goal"));
         assert!(frame.contains("verify with a screenshot"));
+
+        let _ = tokio::fs::remove_dir_all(cua_core::profile_dir(&profile).unwrap()).await;
+    }
+
+    #[tokio::test]
+    async fn scratchpad_context_reports_corrupt_profile_state() {
+        let profile = format!("scratchpad-corrupt-{}", uuid::Uuid::new_v4());
+        let root = profile_scratchpads_dir(&profile).unwrap();
+        let durable = root.join("durable");
+        tokio::fs::create_dir_all(&durable).await.unwrap();
+        tokio::fs::write(durable.join("broken.json"), b"{not json")
+            .await
+            .unwrap();
+
+        let error = load_scratchpad_context(&profile).await.unwrap_err();
+
+        assert!(format!("{error:#}").contains("decode scratchpad"));
 
         let _ = tokio::fs::remove_dir_all(cua_core::profile_dir(&profile).unwrap()).await;
     }

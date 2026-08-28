@@ -1470,17 +1470,35 @@ fn start_inbox_turn_poll(
             return;
         };
         let mut last_sequence = 0_u64;
+        let mut last_connect_error: Option<String> = None;
         loop {
-            let Ok(mut session) = client.session().await else {
-                tokio::time::sleep(Duration::from_millis(150)).await;
-                continue;
+            let mut session = match client.session().await {
+                Ok(session) => {
+                    last_connect_error = None;
+                    session
+                }
+                Err(error) => {
+                    let error = format!("{error:#}");
+                    if last_connect_error.as_deref() != Some(error.as_str()) {
+                        eprintln!(
+                            "cua voice inbox poll could not connect to profile socket for {}: {error}",
+                            config.profile
+                        );
+                        last_connect_error = Some(error);
+                    }
+                    tokio::time::sleep(Duration::from_millis(150)).await;
+                    continue;
+                }
             };
             if last_sequence == 0 {
                 match session.events_snapshot().await {
                     Ok(events) => {
                         last_sequence = max_daemon_event_sequence(&events);
                     }
-                    Err(_) => break,
+                    Err(error) => {
+                        eprintln!("cua voice inbox poll events snapshot failed: {error:#}");
+                        break;
+                    }
                 }
             }
             loop {
@@ -1496,26 +1514,44 @@ fn start_inbox_turn_poll(
                                 continue;
                             };
                             let message_id = message.message_id.clone();
-                            client.inbox_running(message_id.clone()).await.ok();
+                            if let Err(error) = client.inbox_running(message_id.clone()).await {
+                                let message = format!("mark inbox message running failed: {error:#}");
+                                eprintln!("{message}");
+                                let _ = tx.send(VoiceUiEvent::Error(message));
+                            }
                             let prompt = inbound_prompt(&message);
                             let result =
                                 run_text_turn_checked(config.clone(), prompt, tx.clone()).await;
                             match result {
                                 Ok(()) => {
-                                    client
+                                    if let Err(error) = client
                                         .inbox_done(message_id, Some("completed".to_string()))
                                         .await
-                                        .ok();
+                                    {
+                                        let message =
+                                            format!("mark inbox message done failed: {error:#}");
+                                        eprintln!("{message}");
+                                        let _ = tx.send(VoiceUiEvent::Error(message));
+                                    }
                                 }
                                 Err(error) => {
                                     let error = error.to_string();
-                                    client.inbox_failed(message_id, error.clone()).await.ok();
-                                    tx.send(VoiceUiEvent::Error(error)).ok();
+                                    if let Err(status_error) =
+                                        client.inbox_failed(message_id, error.clone()).await
+                                    {
+                                        eprintln!(
+                                            "mark inbox message failed-state update failed: {status_error:#}"
+                                        );
+                                    }
+                                    let _ = tx.send(VoiceUiEvent::Error(error));
                                 }
                             }
                         }
                     }
-                    Err(_) => break,
+                    Err(error) => {
+                        eprintln!("cua voice inbox poll events wait failed: {error:#}");
+                        break;
+                    }
                 }
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -2019,17 +2055,37 @@ fn request_desktop_permission_once(
     }
     if legacy_desktop_permission_prompt_marker_path(profile, permission).is_file() {
         if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            if let Err(error) = std::fs::create_dir_all(parent) {
+                eprintln!(
+                    "cua permission marker directory create failed for {}: {error}",
+                    parent.display()
+                );
+            }
         }
         let result = current();
-        let _ = std::fs::write(&path, format!("{:?}\n", result));
+        if let Err(error) = std::fs::write(&path, format!("{:?}\n", result)) {
+            eprintln!(
+                "cua permission marker write failed for {}: {error}",
+                path.display()
+            );
+        }
         return result;
     }
     if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+        if let Err(error) = std::fs::create_dir_all(parent) {
+            eprintln!(
+                "cua permission marker directory create failed for {}: {error}",
+                parent.display()
+            );
+        }
     }
     let result = request();
-    let _ = std::fs::write(&path, format!("{:?}\n", result));
+    if let Err(error) = std::fs::write(&path, format!("{:?}\n", result)) {
+        eprintln!(
+            "cua permission marker write failed for {}: {error}",
+            path.display()
+        );
+    }
     result
 }
 
