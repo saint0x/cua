@@ -67,6 +67,8 @@ const COMPACT_ROW_ITEM_HEIGHT_PX: f32 = 18.0;
 const COMPACT_CONTENT_Y_OFFSET_PX: f32 = 0.0;
 const STOPLIGHT_SIZE_PX: f32 = 8.0;
 const STOPLIGHT_TOP_PX: f32 = compact_content_axis_y() - (STOPLIGHT_SIZE_PX / 2.0);
+const SHELL_MOTION_SECS: f32 = 0.320;
+const CONTENT_MOTION_SECS: f32 = 0.210;
 
 #[derive(Debug, Parser)]
 #[command(name = "cua-voice", version, about = "Rust voice HUD for cua")]
@@ -324,27 +326,26 @@ impl VoiceHud {
         } else {
             0.0
         };
-        let step = (dt * 10.5).clamp(0.0, 1.0);
-        self.response_progress += (target - self.response_progress) * step;
-        if (self.response_progress - target).abs() < 0.01 {
-            self.response_progress = target;
-        }
+        self.response_progress =
+            advance_motion_progress(self.response_progress, target, dt, CONTENT_MOTION_SECS);
         let expansion_target = if self.expanded && !self.minimized {
             1.0
         } else {
             0.0
         };
-        let expansion_step = (dt * 13.0).clamp(0.0, 1.0);
-        self.expansion_progress += (expansion_target - self.expansion_progress) * expansion_step;
-        if (self.expansion_progress - expansion_target).abs() < 0.006 {
-            self.expansion_progress = expansion_target;
-        }
+        self.expansion_progress = advance_motion_progress(
+            self.expansion_progress,
+            expansion_target,
+            dt,
+            SHELL_MOTION_SECS,
+        );
         let minimized_target = if self.minimized { 1.0 } else { 0.0 };
-        let minimized_step = (dt * 14.0).clamp(0.0, 1.0);
-        self.minimized_progress += (minimized_target - self.minimized_progress) * minimized_step;
-        if (self.minimized_progress - minimized_target).abs() < 0.006 {
-            self.minimized_progress = minimized_target;
-        }
+        self.minimized_progress = advance_motion_progress(
+            self.minimized_progress,
+            minimized_target,
+            dt,
+            SHELL_MOTION_SECS,
+        );
     }
 
     fn sync_center_text(&mut self, center_text: &str) {
@@ -1551,6 +1552,20 @@ fn response_flash_visible(metrics: HudMetrics) -> bool {
     metrics.response_opacity >= 0.35
 }
 
+fn advance_motion_progress(current: f32, target: f32, dt_secs: f32, duration_secs: f32) -> f32 {
+    let current = current.clamp(0.0, 1.0);
+    let target = target.clamp(0.0, 1.0);
+    if current == target {
+        return target;
+    }
+    let step = (dt_secs / duration_secs.max(0.001)).clamp(0.0, 1.0);
+    if target > current {
+        (current + step).min(target)
+    } else {
+        (current - step).max(target)
+    }
+}
+
 fn point_inside_bounds(point: Point<Pixels>, bounds: Bounds<Pixels>) -> bool {
     point.x >= bounds.origin.x
         && point.y >= bounds.origin.y
@@ -2469,7 +2484,7 @@ fn animated_island_bounds(
     minimized_progress: f32,
     display_bounds: Bounds<Pixels>,
 ) -> Bounds<Pixels> {
-    let minimized_progress = cua_voice::hud::ease_out_cubic(minimized_progress.clamp(0.0, 1.0));
+    let minimized_progress = cua_voice::hud::shell_ease(minimized_progress.clamp(0.0, 1.0));
     let display_left = display_bounds.origin.x.to_f64() as f32;
     let display_right =
         display_bounds.origin.x.to_f64() as f32 + display_bounds.size.width.to_f64() as f32;
@@ -3018,6 +3033,25 @@ mod tests {
         assert!(!should_reset_after_reply_collapse(true, 0.42));
         assert!(should_reset_after_reply_collapse(true, 0.0));
         assert!(!should_reset_after_reply_collapse(false, 0.0));
+    }
+
+    #[test]
+    fn hud_motion_uses_reference_durations() {
+        assert_eq!(SHELL_MOTION_SECS, 0.320);
+        assert_eq!(CONTENT_MOTION_SECS, 0.210);
+
+        assert_eq!(
+            advance_motion_progress(0.0, 1.0, SHELL_MOTION_SECS, SHELL_MOTION_SECS),
+            1.0
+        );
+        assert_eq!(
+            advance_motion_progress(1.0, 0.0, CONTENT_MOTION_SECS, CONTENT_MOTION_SECS),
+            0.0
+        );
+        assert_eq!(
+            advance_motion_progress(0.0, 1.0, SHELL_MOTION_SECS / 2.0, SHELL_MOTION_SECS),
+            0.5
+        );
     }
 
     #[test]

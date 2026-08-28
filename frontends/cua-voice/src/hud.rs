@@ -17,6 +17,10 @@ pub const EXPANDED_FILLET: f32 = 26.0;
 pub const WINDOW_WIDTH: f32 = COMPACT_WIDTH + (COMPACT_FILLET * 2.0);
 pub const WINDOW_HEIGHT: f32 = COMPACT_HEIGHT;
 pub const TOP_MARGIN: f32 = 0.0;
+const SHELL_EASE_X1: f32 = 0.32;
+const SHELL_EASE_Y1: f32 = 0.72;
+const SHELL_EASE_X2: f32 = 0.0;
+const SHELL_EASE_Y2: f32 = 1.0;
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct HudMetrics {
@@ -35,7 +39,7 @@ impl HudMetrics {
 
     pub fn with_expansion(response_progress: f32, expansion_progress: f32) -> Self {
         let response_progress = response_progress.clamp(0.0, 1.0);
-        let expansion_progress = ease_out_cubic(expansion_progress.clamp(0.0, 1.0));
+        let expansion_progress = shell_ease(expansion_progress.clamp(0.0, 1.0));
         Self {
             width: lerp(COMPACT_WIDTH, EXPANDED_WIDTH, expansion_progress),
             height: lerp(COMPACT_HEIGHT, EXPANDED_HEIGHT, expansion_progress),
@@ -539,6 +543,43 @@ pub fn ease_out_cubic(t: f32) -> f32 {
     1.0 - (1.0 - t).powi(3)
 }
 
+pub fn shell_ease(t: f32) -> f32 {
+    cubic_bezier_y_for_x(
+        t,
+        SHELL_EASE_X1,
+        SHELL_EASE_Y1,
+        SHELL_EASE_X2,
+        SHELL_EASE_Y2,
+    )
+}
+
+fn cubic_bezier_y_for_x(x: f32, x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
+    let x = x.clamp(0.0, 1.0);
+    if x <= 0.0 || x >= 1.0 {
+        return x;
+    }
+
+    let mut low = 0.0;
+    let mut high = 1.0;
+    let mut t = x;
+    for _ in 0..18 {
+        let sample_x = cubic_bezier_axis(t, x1, x2);
+        if sample_x < x {
+            low = t;
+        } else {
+            high = t;
+        }
+        t = (low + high) * 0.5;
+    }
+
+    cubic_bezier_axis(t, y1, y2).clamp(0.0, 1.0)
+}
+
+fn cubic_bezier_axis(t: f32, p1: f32, p2: f32) -> f32 {
+    let inv = 1.0 - t;
+    (3.0 * inv * inv * t * p1) + (3.0 * inv * t * t * p2) + (t * t * t)
+}
+
 pub fn lerp(start: f32, end: f32, progress: f32) -> f32 {
     start + (end - start) * progress
 }
@@ -724,6 +765,15 @@ mod tests {
         assert_eq!(expanded.radius, EXPANDED_RADIUS);
         assert_eq!(expanded.response_opacity, 0.0);
         assert_eq!(expanded.expansion_opacity, 1.0);
+    }
+
+    #[test]
+    fn shell_ease_matches_reference_curve_shape() {
+        assert_eq!(shell_ease(0.0), 0.0);
+        assert_eq!(shell_ease(1.0), 1.0);
+        assert!(shell_ease(0.25) > 0.75);
+        assert!(shell_ease(0.5) > 0.9);
+        assert!(shell_ease(0.75) > shell_ease(0.5));
     }
 
     #[test]
