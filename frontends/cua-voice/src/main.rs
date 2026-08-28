@@ -267,7 +267,7 @@ impl VoiceHud {
         center_text: String,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        if minimized_content_visible(self.minimized_progress) {
+        if should_render_minimized_content(self.minimized, self.minimized_progress) {
             self.minimized_icon(cx).into_any_element()
         } else {
             self.island_surface(scene, metrics, center_text, cx)
@@ -1538,6 +1538,10 @@ fn island_fillet(metrics: HudMetrics) -> f32 {
 
 fn minimized_content_visible(progress: f32) -> bool {
     progress >= 0.55
+}
+
+fn should_render_minimized_content(minimized: bool, progress: f32) -> bool {
+    minimized || minimized_content_visible(progress)
 }
 
 const fn compact_content_axis_y() -> f32 {
@@ -3497,6 +3501,10 @@ mod tests {
         );
         assert!(!minimized_content_visible(0.54));
         assert!(minimized_content_visible(0.55));
+        assert!(should_render_minimized_content(true, 0.0));
+        assert!(should_render_minimized_content(true, 0.2));
+        assert!(!should_render_minimized_content(false, 0.54));
+        assert!(should_render_minimized_content(false, 0.55));
     }
 
     #[test]
