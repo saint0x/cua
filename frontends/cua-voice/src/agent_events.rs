@@ -88,6 +88,7 @@ pub fn agent_island_from_daemon_event(
     let event = match state {
         "expanded" => VoiceUiEvent::SetExpanded(true),
         "collapsed" => VoiceUiEvent::SetExpanded(false),
+        "minimized" => VoiceUiEvent::SetMinimized(true),
         "toggle" => VoiceUiEvent::ToggleExpanded,
         _ => return None,
     };
@@ -468,6 +469,13 @@ mod tests {
                 "state": "toggle"
             }
         });
+        let minimized = serde_json::json!({
+            "sequence": 50,
+            "kind": "ui_island",
+            "data": {
+                "state": "minimized"
+            }
+        });
 
         let Some((sequence, VoiceUiEvent::SetExpanded(true))) =
             agent_island_from_daemon_event(&expanded, 46)
@@ -489,6 +497,12 @@ mod tests {
             panic!("expected toggle island event");
         };
         assert_eq!(sequence, 49);
+        let Some((sequence, VoiceUiEvent::SetMinimized(true))) =
+            agent_island_from_daemon_event(&minimized, 49)
+        else {
+            panic!("expected minimized island event");
+        };
+        assert_eq!(sequence, 50);
         assert!(agent_island_from_daemon_event(&toggle, 49).is_none());
     }
 

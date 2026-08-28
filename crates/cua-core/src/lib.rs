@@ -1218,6 +1218,7 @@ pub struct UiModeResult {
 pub enum UiIslandState {
     Expanded,
     Collapsed,
+    Minimized,
     Toggle,
 }
 

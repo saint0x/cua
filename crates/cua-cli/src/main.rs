@@ -630,6 +630,7 @@ enum UiCommand {
 enum UiIslandStateArg {
     Expanded,
     Collapsed,
+    Minimized,
     Toggle,
 }
 
@@ -638,6 +639,7 @@ impl From<UiIslandStateArg> for UiIslandState {
         match value {
             UiIslandStateArg::Expanded => UiIslandState::Expanded,
             UiIslandStateArg::Collapsed => UiIslandState::Collapsed,
+            UiIslandStateArg::Minimized => UiIslandState::Minimized,
             UiIslandStateArg::Toggle => UiIslandState::Toggle,
         }
     }

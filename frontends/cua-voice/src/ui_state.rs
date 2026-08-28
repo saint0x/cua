@@ -222,6 +222,7 @@ impl HudSnapshot {
             VoiceUiEvent::SceneBackground(_) => {}
             VoiceUiEvent::ToggleExpanded => {}
             VoiceUiEvent::SetExpanded(_) => {}
+            VoiceUiEvent::SetMinimized(_) => {}
             VoiceUiEvent::Idle => {
                 let mode = self.mode.clone();
                 let input_label = self.input_label.clone();
@@ -380,6 +381,7 @@ pub enum VoiceUiEvent {
     SceneBackground(IslandBackground),
     ToggleExpanded,
     SetExpanded(bool),
+    SetMinimized(bool),
     Idle,
 }
 

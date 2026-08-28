@@ -8022,6 +8022,29 @@ mod tests {
             .expect("ui_island event");
         assert_eq!(island["data"]["state"], "expanded");
         assert_eq!(island["data"]["source"], "automation");
+
+        let Json(result) = ui_island(
+            State(state.clone()),
+            Json(UiIslandRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                state: cua_core::UiIslandState::Minimized,
+                source: Some("automation".to_string()),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert!(result.accepted);
+        assert_eq!(result.state, cua_core::UiIslandState::Minimized);
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let events = state.events.snapshot().await;
+        let island = events
+            .iter()
+            .rev()
+            .find(|event| event["kind"] == "ui_island")
+            .expect("ui_island event");
+        assert_eq!(island["data"]["state"], "minimized");
     }
 
     #[tokio::test]

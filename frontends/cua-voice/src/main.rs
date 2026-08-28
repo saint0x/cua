@@ -41,7 +41,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-const CENTER_LABEL_WIDTH: f32 = 270.0;
+const LEFT_LABEL_WIDTH: f32 = 112.0;
+const CENTER_LABEL_WIDTH: f32 = 330.0;
 const MARQUEE_START_DELAY_SECS: f32 = 1.6;
 const MARQUEE_END_HOLD_SECS: f32 = 0.9;
 const MARQUEE_SCROLL_SPEED_PX_PER_SEC: f32 = 24.0;
@@ -184,6 +185,14 @@ impl VoiceHud {
                 }
                 VoiceUiEvent::SetExpanded(expanded) => {
                     expansion_command = Some(expanded);
+                }
+                VoiceUiEvent::SetMinimized(minimized) => {
+                    self.minimized = minimized;
+                    if minimized {
+                        self.expanded = false;
+                        expansion_command = None;
+                    }
+                    self.drag = None;
                 }
                 VoiceUiEvent::SceneSet(scene) => {
                     expansion_command = Some(scene.layout == IslandLayout::Expanded);
@@ -463,7 +472,7 @@ impl VoiceHud {
                     )
                     .child(
                         div()
-                            .w(px(190.0))
+                            .w(px(LEFT_LABEL_WIDTH))
                             .h(px(COMPACT_ROW_ITEM_HEIGHT_PX))
                             .flex()
                             .items_center()
@@ -610,17 +619,8 @@ impl VoiceHud {
         div()
             .w(px(MINIMIZED_WIDTH))
             .h(px(MINIMIZED_HEIGHT))
-            .rounded(px(MINIMIZED_RADIUS))
             .overflow_hidden()
-            .bg(hsla(0.0, 0.0, 0.0, 0.90))
-            .border_1()
-            .border_color(hsla(0.0, 0.0, 1.0, 0.16))
-            .shadow(vec![BoxShadow {
-                color: hsla(0.0, 0.0, 0.0, 0.48),
-                blur_radius: px(14.0),
-                spread_radius: px(0.0),
-                offset: point(px(0.0), px(4.0)),
-            }])
+            .relative()
             .flex()
             .items_center()
             .justify_center()
@@ -641,6 +641,7 @@ impl VoiceHud {
                 }
                 cx.stop_propagation();
             }))
+            .child(minimized_background_layer())
             .child(self.orb())
     }
 
@@ -1173,6 +1174,26 @@ fn shell_background_layer(
                     bottom_left: px(radius),
                 }));
             }
+        },
+    )
+    .absolute()
+    .left_0()
+    .top_0()
+    .size_full()
+}
+
+fn minimized_background_layer() -> impl IntoElement {
+    canvas(
+        move |_, _, _| (),
+        move |bounds, _, window, _| {
+            window.paint_quad(
+                fill(bounds, default_background_color()).corner_radii(Corners {
+                    top_left: px(0.0),
+                    top_right: px(0.0),
+                    bottom_right: px(MINIMIZED_RADIUS),
+                    bottom_left: px(MINIMIZED_RADIUS),
+                }),
+            );
         },
     )
     .absolute()
@@ -2090,6 +2111,9 @@ fn print_headless_events(rx: Receiver<VoiceUiEvent>) {
             VoiceUiEvent::ToggleExpanded => serde_json::json!({"event": "toggle_expanded"}),
             VoiceUiEvent::SetExpanded(expanded) => {
                 serde_json::json!({"event": "set_expanded", "expanded": expanded})
+            }
+            VoiceUiEvent::SetMinimized(minimized) => {
+                serde_json::json!({"event": "set_minimized", "minimized": minimized})
             }
             VoiceUiEvent::Idle => serde_json::json!({"event": "idle"}),
         };
@@ -3104,6 +3128,9 @@ mod tests {
         assert_eq!(UI_META_PX, UI_TEXT_PX);
         assert_eq!(HEADER_ORB_PX, 18.0);
         assert_eq!(HEADER_LEAD_WIDTH_PX, 22.0);
+        assert_eq!(LEFT_LABEL_WIDTH, 112.0);
+        assert_eq!(CENTER_LABEL_WIDTH, 330.0);
+        assert!(CENTER_LABEL_WIDTH - LEFT_LABEL_WIDTH > 200.0);
     }
 
     #[test]
