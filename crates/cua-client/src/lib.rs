@@ -678,7 +678,9 @@ impl CuaVisualSession {
                     });
                 }
                 VisualSessionMessage::Closed { .. } => return Ok(None),
-                VisualSessionMessage::Started { .. } | VisualSessionMessage::Empty => {}
+                VisualSessionMessage::Started { .. }
+                | VisualSessionMessage::Diagnostic { .. }
+                | VisualSessionMessage::Empty => {}
             }
         }
         Ok(None)
@@ -721,6 +723,10 @@ pub enum VisualSessionMessage {
     Frame {
         schema_version: String,
         frame: Value,
+    },
+    Diagnostic {
+        schema_version: String,
+        message: String,
     },
     Error {
         schema_version: String,
@@ -1011,6 +1017,8 @@ fn http_token_override_allowed() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::AsyncWriteExt;
+    use tokio::net::UnixStream;
 
     #[test]
     fn context_request_uses_realtime_jpeg_frame() {
@@ -1045,5 +1053,30 @@ mod tests {
             }
             other => panic!("expected protocol error, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn visual_session_next_frame_skips_stream_diagnostics() {
+        let (client, mut server) = UnixStream::pair().unwrap();
+        let (read, write) = client.into_split();
+        let mut session = CuaVisualSession {
+            read: BufReader::new(read),
+            write,
+            closed: false,
+        };
+
+        server
+            .write_all(
+                br#"{"type":"started","schema_version":"cua.v1","fps":10}
+{"type":"diagnostic","schema_version":"cua.v1","message":"transient capture miss"}
+{"type":"frame","schema_version":"cua.v1","frame":{"ok":true}}
+"#,
+            )
+            .await
+            .unwrap();
+
+        let frame = session.next_frame().await.unwrap().unwrap();
+
+        assert_eq!(frame["ok"], true);
     }
 }

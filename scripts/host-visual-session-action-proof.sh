@@ -113,12 +113,32 @@ def wait_for_response(reader, request_id, collected_frames):
             return message["result"]
 
 def wait_for_frame(reader):
+    timeout_secs = float(os.environ.get("CUA_VISUAL_ACTION_PROOF_FIRST_FRAME_TIMEOUT_SECS", "20"))
+    deadline = time.perf_counter() + timeout_secs
+    diagnostics = []
     while True:
-        message = reader.recv_json()
+        try:
+            message = reader.recv_json()
+        except TimeoutError as error:
+            raise RuntimeError({
+                "type": "error",
+                "schema_version": "cua.v1",
+                "error": f"visual session did not produce a frame within {timeout_secs:.0f}s",
+                "diagnostics": diagnostics[-5:],
+            }) from error
         if message.get("type") == "frame":
             return message
         if message.get("type") == "error":
             raise RuntimeError(message)
+        if message.get("type") == "diagnostic":
+            diagnostics.append(message.get("message", "unknown diagnostic"))
+        if time.perf_counter() >= deadline:
+            raise RuntimeError({
+                "type": "error",
+                "schema_version": "cua.v1",
+                "error": "visual session did not produce a frame before deadline",
+                "diagnostics": diagnostics[-5:],
+            })
 
 def wait_for_closed(reader):
     while True:
@@ -173,7 +193,7 @@ try:
         raise RuntimeError("daemon socket did not become ready")
 
     stream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    stream.settimeout(float(os.environ.get("CUA_VISUAL_ACTION_PROOF_TIMEOUT_SECS", "45")))
+    stream.settimeout(float(os.environ.get("CUA_VISUAL_ACTION_PROOF_TIMEOUT_SECS", "20")))
     stream.connect(str(socket_path))
     reader = LineReader(stream)
     owner_id = "visual-action-owner-proof"

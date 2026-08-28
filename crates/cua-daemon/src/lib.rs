@@ -123,7 +123,7 @@ impl DaemonState {
             metrics: Arc::new(RuntimeMetrics::default()),
             events,
             trace_lane: trace_dir_from_env_or_profile(&profile)
-                .and_then(|dir| TraceWriter::from_dir(dir).ok())
+                .and_then(build_trace_writer)
                 .map(|writer| TraceLane::spawn(writer, trace_lane_capacity())),
             ui_step_context: Arc::new(StdMutex::new(None)),
             hud_supervisor: HudSupervisor::default(),
@@ -1523,6 +1523,7 @@ enum TraceJob {
 impl TraceLane {
     fn spawn(writer: TraceWriter, capacity: usize) -> Self {
         let dir = writer.dir().to_path_buf();
+        let worker_dir = dir.clone();
         let (sender, mut receiver) = mpsc::channel::<TraceJob>(capacity);
         tokio::spawn(async move {
             while let Some(job) = receiver.recv().await {
@@ -1531,10 +1532,24 @@ impl TraceLane {
                         relative_path,
                         bytes,
                     } => {
-                        let _ = writer.write_artifact(relative_path, bytes.as_ref()).await;
+                        if let Err(error) = writer
+                            .write_artifact(relative_path.clone(), bytes.as_ref())
+                            .await
+                        {
+                            eprintln!(
+                                "cua daemon trace artifact write failed for {} in {}: {error}",
+                                relative_path,
+                                worker_dir.display()
+                            );
+                        }
                     }
                     TraceJob::Record(record) => {
-                        let _ = writer.append(&record).await;
+                        if let Err(error) = writer.append(&record).await {
+                            eprintln!(
+                                "cua daemon trace append failed in {}: {error}",
+                                worker_dir.display()
+                            );
+                        }
                     }
                 }
             }
@@ -1557,6 +1572,19 @@ impl TraceLane {
 
     fn dir(&self) -> &std::path::Path {
         &self.dir
+    }
+}
+
+fn build_trace_writer(dir: PathBuf) -> Option<TraceWriter> {
+    match TraceWriter::from_dir(&dir) {
+        Ok(writer) => Some(writer),
+        Err(error) => {
+            eprintln!(
+                "cua daemon trace initialization failed for {}: {error}",
+                dir.display()
+            );
+            None
+        }
     }
 }
 
@@ -1971,6 +1999,7 @@ async fn handle_visual_session(
     let (frame_tx, mut frame_rx) = mpsc::channel(queue_depth);
     let frame_bus = state.frame_bus.clone();
     let metrics = state.metrics.clone();
+    let event_state = state.clone();
     let max_width = visual.max_width;
     let include_bytes = visual.include_bytes;
     let _producer = TaskAbortGuard::new(tokio::spawn(async move {
@@ -1994,10 +2023,18 @@ async fn handle_visual_session(
                         frame: lookup.frame.as_payload(include_bytes),
                     }
                 }
-                Err(error) => VisualSessionMessage::Error {
-                    schema_version: SCHEMA_VERSION.to_string(),
-                    error: error.to_string(),
-                },
+                Err(error) => {
+                    metrics.increment(CounterKind::UnixFrameDrops);
+                    let error = error.to_string();
+                    event_state.publish_event(
+                        "visual_session_frame_miss",
+                        serde_json::json!({ "error": error }),
+                    );
+                    VisualSessionMessage::Diagnostic {
+                        schema_version: SCHEMA_VERSION.to_string(),
+                        message: error,
+                    }
+                }
             };
             if frame_tx.try_send(message).is_err() {
                 metrics.increment(CounterKind::UnixFrameDrops);
@@ -2072,9 +2109,9 @@ enum VisualSessionMessage {
         schema_version: String,
         frame: FramePayload,
     },
-    Error {
+    Diagnostic {
         schema_version: String,
-        error: String,
+        message: String,
     },
     Closed {
         schema_version: String,

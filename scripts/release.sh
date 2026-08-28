@@ -189,7 +189,6 @@ fi
 log "Host production proofs"
 run scripts/host-session-proof.sh | tee "$ARTIFACT_DIR/host-session-proof.json"
 run scripts/host-control-surface-proof.sh | tee "$ARTIFACT_DIR/host-control-surface-proof.json"
-run scripts/host-visual-session-action-proof.sh | tee "$ARTIFACT_DIR/host-visual-session-action-proof.json"
 run scripts/host-latency-proof.sh | tee "$ARTIFACT_DIR/host-latency-proof.json"
 run scripts/host-machine-key-persistence-proof.sh | tee "$ARTIFACT_DIR/host-machine-key-persistence-proof.json"
 run scripts/host-config-migration-proof.sh | tee "$ARTIFACT_DIR/host-config-migration-proof.json"

@@ -41,6 +41,7 @@ struct PrefetchedContext {
     session: Option<CuaSession>,
     frame: Option<FramePayload>,
     desktop: Option<DesktopState>,
+    errors: Vec<String>,
     elapsed: Duration,
 }
 
@@ -606,6 +607,7 @@ async fn plan_and_dispatch(
                     "frame": context.frame.as_ref().map(frame_trace_json),
                     "windows": context.desktop.as_ref().map(|desktop| desktop.windows.len()),
                     "displays": context.desktop.as_ref().map(|desktop| desktop.displays.len()),
+                    "errors": &context.errors,
                 }),
             )
             .await;
@@ -879,31 +881,65 @@ async fn plan_and_dispatch(
     Ok(())
 }
 
-async fn prefetch_context(
-    local: CuaClient,
-    warm_session: Option<CuaSession>,
-) -> (
-    Option<CuaSession>,
-    Option<FramePayload>,
-    Option<DesktopState>,
-) {
+async fn prefetch_context(local: CuaClient, warm_session: Option<CuaSession>) -> PrefetchedContext {
+    let mut errors = Vec::new();
     let mut session = match warm_session {
         Some(session) => session,
         None => match local.session().await {
             Ok(session) => session,
-            Err(_) => return (None, None, None),
+            Err(error) => {
+                errors.push(format!("session acquire failed: {error}"));
+                return PrefetchedContext {
+                    session: None,
+                    frame: None,
+                    desktop: None,
+                    errors,
+                    elapsed: Duration::ZERO,
+                };
+            }
         },
     };
     let snapshot =
         match tokio::time::timeout(context_prefetch_timeout(), session.context(true)).await {
             Ok(Ok(snapshot)) => snapshot,
-            Ok(Err(_)) => return (None, None, None),
+            Ok(Err(error)) => {
+                errors.push(format!("context snapshot failed: {error}"));
+                return PrefetchedContext {
+                    session: Some(session),
+                    frame: None,
+                    desktop: None,
+                    errors,
+                    elapsed: Duration::ZERO,
+                };
+            }
             Err(_) => {
-                let desktop = local.observe().await.ok();
-                return (None, None, desktop);
+                errors.push(format!(
+                    "context snapshot timed out after {}ms",
+                    context_prefetch_timeout().as_millis()
+                ));
+                let desktop = match local.observe().await {
+                    Ok(desktop) => Some(desktop),
+                    Err(error) => {
+                        errors.push(format!("fallback desktop observe failed: {error}"));
+                        None
+                    }
+                };
+                return PrefetchedContext {
+                    session: None,
+                    frame: None,
+                    desktop,
+                    errors,
+                    elapsed: Duration::ZERO,
+                };
             }
         };
-    (Some(session), Some(snapshot.frame), Some(snapshot.desktop))
+    PrefetchedContext {
+        session: Some(session),
+        frame: Some(snapshot.frame),
+        desktop: Some(snapshot.desktop),
+        errors,
+        elapsed: Duration::ZERO,
+    }
 }
 
 fn context_prefetch_timeout() -> Duration {
@@ -1565,13 +1601,9 @@ async fn prefetch_context_for_planning(
     warm_session: Option<CuaSession>,
 ) -> PrefetchedContext {
     let started = Instant::now();
-    let (session, frame, desktop) = prefetch_context(local, warm_session).await;
-    PrefetchedContext {
-        session,
-        frame,
-        desktop,
-        elapsed: started.elapsed(),
-    }
+    let mut context = prefetch_context(local, warm_session).await;
+    context.elapsed = started.elapsed();
+    context
 }
 
 fn spawn_context_prefetch(local: CuaClient, warm_session: Option<CuaSession>) -> ContextTask {
@@ -1638,8 +1670,15 @@ async fn resolve_context_for_planning(
     context_task: Option<ContextTask>,
 ) -> PrefetchedContext {
     if let Some(context_task) = context_task {
-        if let Ok(context) = context_task.await {
-            return context;
+        match context_task.await {
+            Ok(context) => return context,
+            Err(error) => {
+                let mut context = prefetch_context_for_planning(local, None).await;
+                context
+                    .errors
+                    .insert(0, format!("context prefetch join failed: {error}"));
+                return context;
+            }
         }
     }
     prefetch_context_for_planning(local, None).await
@@ -1742,7 +1781,10 @@ impl VoiceTurnTrace {
             return;
         };
         if let Some(parent) = path.parent() {
-            let _ = tokio::fs::create_dir_all(parent).await;
+            if let Err(error) = tokio::fs::create_dir_all(parent).await {
+                report_voice_trace_error("create trace directory", parent, &error);
+                return;
+            }
         }
         let line = json!({
             "schema_version": "cua.voice_trace.v1",
@@ -1751,16 +1793,29 @@ impl VoiceTurnTrace {
             "at_wall_ms": wall_ms(),
             "data": data,
         });
-        if let Ok(mut file) = tokio::fs::OpenOptions::new()
+        let mut file = match tokio::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(path)
             .await
         {
-            use tokio::io::AsyncWriteExt;
-            let _ = file.write_all(line.to_string().as_bytes()).await;
-            let _ = file.write_all(b"\n").await;
-            let _ = file.flush().await;
+            Ok(file) => file,
+            Err(error) => {
+                report_voice_trace_error("open trace file", path, &error);
+                return;
+            }
+        };
+        use tokio::io::AsyncWriteExt;
+        if let Err(error) = file.write_all(line.to_string().as_bytes()).await {
+            report_voice_trace_error("write trace line", path, &error);
+            return;
+        }
+        if let Err(error) = file.write_all(b"\n").await {
+            report_voice_trace_error("write trace newline", path, &error);
+            return;
+        }
+        if let Err(error) = file.flush().await {
+            report_voice_trace_error("flush trace file", path, &error);
         }
     }
 
@@ -1772,18 +1827,23 @@ impl VoiceTurnTrace {
             return;
         };
         if let Some(parent) = path.parent() {
-            let _ = tokio::fs::create_dir_all(parent).await;
+            if let Err(error) = tokio::fs::create_dir_all(parent).await {
+                report_voice_trace_error("create artifact directory", parent, &error);
+                return;
+            }
         }
-        if tokio::fs::write(&path, bytes).await.is_ok() {
-            self.append(
-                "artifact",
-                json!({
-                    "path": path.display().to_string(),
-                    "data": data,
-                }),
-            )
-            .await;
+        if let Err(error) = tokio::fs::write(&path, bytes).await {
+            report_voice_trace_error("write trace artifact", &path, &error);
+            return;
         }
+        self.append(
+            "artifact",
+            json!({
+                "path": path.display().to_string(),
+                "data": data,
+            }),
+        )
+        .await;
     }
 
     fn artifact_path(&self, name: &str) -> Option<PathBuf> {
@@ -1795,6 +1855,13 @@ impl VoiceTurnTrace {
                 .join(name),
         )
     }
+}
+
+fn report_voice_trace_error(action: &str, path: &std::path::Path, error: &dyn std::fmt::Display) {
+    eprintln!(
+        "cua voice debug trace {action} failed for {}: {error}",
+        path.display()
+    );
 }
 
 fn voice_trace_path(profile: &str) -> Option<PathBuf> {
@@ -2152,6 +2219,7 @@ mod tests {
                 session: None,
                 frame: None,
                 desktop: None,
+                errors: Vec::new(),
                 elapsed: expected_elapsed,
             }
         });
@@ -2162,6 +2230,35 @@ mod tests {
         assert!(context.session.is_none());
         assert!(context.frame.is_none());
         assert!(context.desktop.is_none());
+    }
+
+    #[tokio::test]
+    async fn planning_context_records_prefetch_join_failure() {
+        let local = CuaClient::new(format!("prefetch-join-test-{}", uuid::Uuid::new_v4()))
+            .await
+            .unwrap();
+        let task = tokio::spawn(async {
+            panic!("synthetic context prefetch failure");
+            #[allow(unreachable_code)]
+            PrefetchedContext {
+                session: None,
+                frame: None,
+                desktop: None,
+                errors: Vec::new(),
+                elapsed: Duration::ZERO,
+            }
+        });
+
+        let context = resolve_context_for_planning(local, Some(task)).await;
+
+        assert!(
+            context
+                .errors
+                .first()
+                .is_some_and(|error| error.contains("context prefetch join failed")),
+            "errors were {:?}",
+            context.errors
+        );
     }
 
     #[tokio::test]
@@ -2183,6 +2280,7 @@ mod tests {
                 session: None,
                 frame: None,
                 desktop: None,
+                errors: Vec::new(),
                 elapsed: Duration::from_secs(60),
             }
         });

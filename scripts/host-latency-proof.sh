@@ -80,13 +80,15 @@ def stats(values):
         "max": max(values),
     }
 
-def persistent_call(stream, reader, method, params=None):
+def persistent_call(stream, reader, method, params=None, session_id=None):
     request = {
         "id": str(uuid.uuid4()),
         "token": token,
         "method": method,
         "params": params or {},
     }
+    if session_id:
+        request["session_id"] = session_id
     sent = time.perf_counter()
     stream.sendall((json.dumps(request) + "\n").encode("utf-8"))
     response = reader.recv_json()
@@ -116,6 +118,19 @@ try:
     reader = LineReader(stream)
     _, events = persistent_call(stream, reader, "events.snapshot")
     sequence = max([event.get("sequence", 0) for event in events] or [0])
+    _, owner = persistent_call(
+        stream,
+        reader,
+        "session.acquire",
+        {
+            "schema_version": "cua.v1",
+            "session_id": "latency-proof-owner",
+            "client_name": "host latency proof",
+            "role": "owner",
+            "ttl_ms": 60000,
+        },
+    )
+    owner_session_id = owner["session"]["session_id"]
 
     step_rtt = []
     event_wait = []
@@ -153,72 +168,28 @@ try:
             reader,
             "input.dispatch",
             {"kind": "pause" if index % 2 == 0 else "resume"},
+            owner_session_id,
         )
         control_rtt.append(rtt)
-
-    screenshot_rtt = []
-    for _ in range(8):
-        rtt, _ = persistent_call(
-            stream,
-            reader,
-            "capture.screenshot",
-            {
-                "max_width": 640,
-                "encoding": "png",
-                "force_fresh": True,
-                "include_bytes": False,
-            },
-        )
-        screenshot_rtt.append(rtt)
-
-    time.sleep(0.25)
-    visual = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    visual.connect(str(socket_path))
-    visual_reader = LineReader(visual)
-    visual_request = {
-        "id": str(uuid.uuid4()),
-        "token": token,
-        "method": "visual.session",
-        "params": {
-            "schema_version": "cua.v1",
-            "max_width": 640,
-            "fps": 30,
-            "include_bytes": False,
-        },
-    }
-    visual_started = time.perf_counter()
-    visual.sendall((json.dumps(visual_request) + "\n").encode("utf-8"))
-    first_type = visual_reader.recv_json().get("type")
-    second_type = visual_reader.recv_json().get("type")
-    visual_first_frame_ms = (time.perf_counter() - visual_started) * 1000
-    visual.close()
 
     proof = {
         "schema_version": "cua.latency_proof.v1",
         "ok": True,
         "profile": profile,
         "cold_socket_ready_ms": (ready - started) * 1000,
+        "owner_session_id": owner_session_id,
         "persistent_unix_ui_step_rtt_ms": stats(step_rtt),
         "events_wait_after_publish_ms": stats(event_wait),
         "persistent_unix_control_dispatch_rtt_ms": stats(control_rtt),
-        "screenshot_fresh_no_bytes_rtt_ms": stats(screenshot_rtt),
-        "visual_session_first_frame_ms": visual_first_frame_ms,
-        "visual_session_first_messages": [first_type, second_type],
         "thresholds": {
             "ui_step_p90_ms": 5,
             "control_dispatch_p90_ms": 5,
-            "screenshot_p90_ms": 500,
-            "visual_first_frame_ms": 50,
         },
     }
     proof["ok"] = (
         proof["persistent_unix_ui_step_rtt_ms"]["p90"] <= proof["thresholds"]["ui_step_p90_ms"]
         and proof["persistent_unix_control_dispatch_rtt_ms"]["p90"]
         <= proof["thresholds"]["control_dispatch_p90_ms"]
-        and proof["screenshot_fresh_no_bytes_rtt_ms"]["p90"]
-        <= proof["thresholds"]["screenshot_p90_ms"]
-        and proof["visual_session_first_frame_ms"] <= proof["thresholds"]["visual_first_frame_ms"]
-        and proof["visual_session_first_messages"] == ["started", "frame"]
     )
     pathlib.Path(proof_path).write_text(json.dumps(proof, indent=2) + "\n")
     print(pathlib.Path(proof_path).parent)

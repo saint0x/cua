@@ -63,7 +63,7 @@ The TypeScript and Python packages shell to `cua run`, typed CLI commands, and U
 
 ## Examples And Proofs
 
-The SDK README files and `sdks/*/examples` include examples for shipped helpers. Those examples are backed by the runebook fixtures under `tests/fixtures/`, daemon unit tests for owner-session refusal, inbox/webhook behavior, and clipboard policy, plus host proofs such as `scripts/host-session-proof.sh` and `scripts/host-visual-session-action-proof.sh`.
+The SDK README files and `sdks/*/examples` include examples for shipped helpers. Those examples are backed by the runebook fixtures under `tests/fixtures/`, daemon unit tests for owner-session refusal, inbox/webhook behavior, and clipboard policy, plus host proofs such as `scripts/host-session-proof.sh` and `scripts/host-control-surface-proof.sh`.
 
 ## Design Rule
 

@@ -106,7 +106,7 @@ def try_call(fn):
         return {"ok": False, "error": str(error)}
 
 status = sdk.status()
-context = sdk.context(max_width=320, encoding="png", force_fresh=True, include_bytes=False)
+desktop = sdk.observe()
 owner = sdk.acquire_owner("python sdk owner proof", ttl_ms=60000)
 observer_report = sdk.rpc(
     "session.acquire",
@@ -135,7 +135,7 @@ observer_status = sdk.session_status()
 proof = {
     "schema_version": "cua.sdk_session_proof.v1",
     "status_ok": status["schema_version"] == "cua.v1" and status["profile"] == profile,
-    "context_ok": context["schema_version"] == "cua.v1" and context["frame"]["envelope"]["width"] > 0,
+    "observe_ok": len(desktop["displays"]) >= 1 and isinstance(desktop["windows"], list),
     "owner_acquired": owner.raw["accepted"] is True and owner.raw["session"]["role"] == "owner",
     "observer_acquired": observer["accepted"] is True and observer["session"]["role"] == "observer",
     "anonymous_write_refused": anonymous_pause["ok"] is False and "session_owner" in anonymous_pause["error"],
@@ -147,7 +147,11 @@ proof = {
     "observer_read_only_status": observer_status["owner_session_id"] == owner.session_id,
     "artifacts": {
         "status": status,
-        "context_envelope": context["frame"]["envelope"],
+        "desktop": {
+            "display_count": len(desktop["displays"]),
+            "window_count": len(desktop["windows"]),
+            "cursor_visible": desktop["cursor"]["visible"],
+        },
         "owner": owner.raw,
         "observer": observer,
         "anonymous_pause": anonymous_pause,

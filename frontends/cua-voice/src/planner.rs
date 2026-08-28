@@ -8,8 +8,8 @@ const DEFAULT_PLANNER_TIMEOUT_MS: u64 = 12_000;
 const DEFAULT_PLANNER_ATTEMPTS: usize = 3;
 const DEFAULT_PLANNER_OUTPUT_ATTEMPTS: usize = 2;
 const DEFAULT_PLANNER_RETRY_BACKOFF_MS: u64 = 220;
-const DEFAULT_PLANNER_MAX_TOKENS: u32 = 180;
-const DEFAULT_PLANNER_TEXT_MAX_TOKENS: u32 = 900;
+const DEFAULT_PLANNER_MAX_TOKENS: u32 = 512;
+const DEFAULT_PLANNER_TEXT_MAX_TOKENS: u32 = 1_200;
 const PLANNER_SYSTEM_PROMPT: &str = r#"You are the protocol planner for cua, a local macOS computer-use runtime. You are not a general chat assistant and you do not have hidden tools.
 
 You receive:

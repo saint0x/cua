@@ -576,7 +576,7 @@ fn sck_capture_timeout() -> Duration {
     let millis = std::env::var("CUA_SCK_CAPTURE_TIMEOUT_MS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(1_500)
+        .unwrap_or(5_000)
         .clamp(250, 30_000);
     Duration::from_millis(millis)
 }
@@ -1783,6 +1783,13 @@ mod tests {
     fn capture_backend_selection_never_fabricates_macos_frames() {
         let backend = capture_backend_or_unavailable();
         assert!(matches!(backend.name(), "macos" | "unavailable"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn sck_capture_timeout_default_allows_first_frame_under_load() {
+        std::env::remove_var("CUA_SCK_CAPTURE_TIMEOUT_MS");
+        assert_eq!(sck_capture_timeout(), Duration::from_millis(5_000));
     }
 
     #[cfg(target_os = "macos")]

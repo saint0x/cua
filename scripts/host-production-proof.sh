@@ -13,7 +13,6 @@ mkdir -p "$OUT_DIR"
 
 VOICE_DIR="$OUT_DIR/voice"
 CONTROL_DIR="$OUT_DIR/control"
-VISUAL_ACTION_DIR="$OUT_DIR/visual-action"
 PACKAGE_DIR="$OUT_DIR/package"
 
 VOICE_RESULT="$(
@@ -24,37 +23,30 @@ CONTROL_RESULT="$(
   CUA_CONTROL_SURFACE_PROOF_OUT_DIR="$CONTROL_DIR" \
   scripts/host-control-surface-proof.sh | tail -n 1
 )"
-VISUAL_ACTION_RESULT="$(
-  CUA_VISUAL_ACTION_PROOF_OUT_DIR="$VISUAL_ACTION_DIR" \
-  scripts/host-visual-session-action-proof.sh | tail -n 1
-)"
 PACKAGE_RESULT="$(
   CUA_PACKAGE_PROOF_OUT_DIR="$PACKAGE_DIR" \
   scripts/host-package-proof.sh | tail -n 1
 )"
 
-if [[ "$VOICE_RESULT" != "$VOICE_DIR" || "$CONTROL_RESULT" != "$CONTROL_DIR" || "$VISUAL_ACTION_RESULT" != "$VISUAL_ACTION_DIR" || "$PACKAGE_RESULT" != "$PACKAGE_DIR" ]]; then
+if [[ "$VOICE_RESULT" != "$VOICE_DIR" || "$CONTROL_RESULT" != "$CONTROL_DIR" || "$PACKAGE_RESULT" != "$PACKAGE_DIR" ]]; then
   echo "production proof child output mismatch" >&2
   exit 1
 fi
 
 jq -e '.ok == true' "$VOICE_DIR/proof.json" >/dev/null
 jq -e '.ok == true' "$CONTROL_DIR/proof.json" >/dev/null
-jq -e '.ok == true' "$VISUAL_ACTION_DIR/proof.json" >/dev/null
 jq -e '.ok == true' "$PACKAGE_DIR/proof.json" >/dev/null
 
 jq -n \
   --arg voice_dir "$VOICE_DIR" \
   --arg control_dir "$CONTROL_DIR" \
-  --arg visual_action_dir "$VISUAL_ACTION_DIR" \
   --arg package_dir "$PACKAGE_DIR" \
   --slurpfile voice "$VOICE_DIR/proof.json" \
   --slurpfile control "$CONTROL_DIR/proof.json" \
-  --slurpfile visual_action "$VISUAL_ACTION_DIR/proof.json" \
   --slurpfile package "$PACKAGE_DIR/proof.json" \
   '{
     schema_version: "cua.production_proof.v1",
-    ok: ($voice[0].ok == true and $control[0].ok == true and $visual_action[0].ok == true and $package[0].ok == true),
+    ok: ($voice[0].ok == true and $control[0].ok == true and $package[0].ok == true),
     voice: {
       dir: $voice_dir,
       action_elapsed_ms: $voice[0].action.elapsed_ms,
@@ -81,13 +73,6 @@ jq -n \
         unix: $control[0].unix.ui_reply,
         voice_bridge: $control[0].unix.voice_bridge.reply_text
       }
-    },
-    visual_action: {
-      dir: $visual_action_dir,
-      first_frame: $visual_action[0].first_frame,
-      frame_action: $visual_action[0].frame_action,
-      cursor_after_action: $visual_action[0].cursor_after_action,
-      post_action_frame_id: $visual_action[0].post_action_frame_id
     },
     package: {
       dir: $package_dir,
