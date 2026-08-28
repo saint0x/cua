@@ -54,8 +54,8 @@ const MINIMIZED_RADIUS: f32 = 14.0;
 const MINIMIZED_RIGHT_OFFSET: f32 = 220.0;
 const HEADER_PAD_X_PX: f32 = 16.0;
 const HEADER_GAP_PX: f32 = 12.0;
-const HEADER_LEAD_WIDTH_PX: f32 = 36.0;
-const HEADER_ORB_PX: f32 = 34.0;
+const HEADER_LEAD_WIDTH_PX: f32 = 22.0;
+const HEADER_ORB_PX: f32 = 18.0;
 const HEADER_RING_PX: f32 = 22.0;
 const TASK_RING_PX: f32 = 34.0;
 const BODY_LABEL_WIDTH_PX: f32 = 68.0;
@@ -3102,6 +3102,8 @@ mod tests {
         );
         assert_eq!(UI_TEXT_PX, 12.0);
         assert_eq!(UI_META_PX, UI_TEXT_PX);
+        assert_eq!(HEADER_ORB_PX, 18.0);
+        assert_eq!(HEADER_LEAD_WIDTH_PX, 22.0);
     }
 
     #[test]
