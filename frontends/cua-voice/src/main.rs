@@ -419,11 +419,11 @@ impl VoiceHud {
                 if event.pressed_button == Some(GpuiMouseButton::Left) {
                     if let Some(drag) = this.drag {
                         let cursor = current_cursor_point();
-                        let dx = cursor.x - drag.start_cursor.x;
-                        let dy = cursor.y - drag.start_cursor.y;
-                        let mut bounds = drag.start_bounds;
-                        bounds.origin.x = drag.start_bounds.origin.x + dx;
-                        bounds.origin.y = drag.start_bounds.origin.y + dy;
+                        let mut bounds =
+                            dragged_island_bounds(drag.start_bounds, drag.start_cursor, cursor);
+                        if let Some(display) = window.display(cx) {
+                            bounds.origin.y = display.bounds().origin.y + px(TOP_MARGIN);
+                        }
                         window.set_bounds(bounds);
                         cx.notify();
                         cx.stop_propagation();
@@ -2623,6 +2623,18 @@ fn snap_island_bounds(bounds: Bounds<Pixels>, display_bounds: Bounds<Pixels>) ->
     }
 }
 
+fn dragged_island_bounds(
+    start_bounds: Bounds<Pixels>,
+    start_cursor: Point<Pixels>,
+    cursor: Point<Pixels>,
+) -> Bounds<Pixels> {
+    let dx = cursor.x - start_cursor.x;
+    Bounds {
+        origin: point(start_bounds.origin.x + dx, start_bounds.origin.y),
+        size: start_bounds.size,
+    }
+}
+
 fn start_demo_cycle(tx: Sender<VoiceUiEvent>) {
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_millis(900));
@@ -3298,6 +3310,23 @@ mod tests {
 
         assert_eq!(snap_island_bounds(left_drop, display).origin.x, px(0.0));
         assert_eq!(snap_island_bounds(right_drop, display).origin.x, px(832.0));
+    }
+
+    #[test]
+    fn drag_motion_preserves_top_attachment_axis() {
+        let start_bounds = Bounds {
+            origin: point(px(420.0), px(TOP_MARGIN)),
+            size: size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT)),
+        };
+        let dragged = dragged_island_bounds(
+            start_bounds,
+            point(px(800.0), px(12.0)),
+            point(px(860.0), px(180.0)),
+        );
+
+        assert_eq!(dragged.origin.x, px(480.0));
+        assert_eq!(dragged.origin.y, px(TOP_MARGIN));
+        assert_eq!(dragged.size, start_bounds.size);
     }
 
     #[test]
