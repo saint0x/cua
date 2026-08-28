@@ -570,13 +570,11 @@ impl VoiceHud {
     fn actor_layer(&self, scene: &IslandScene, metrics: HudMetrics) -> impl IntoElement {
         let elapsed =
             motion_elapsed_secs(self.started.elapsed().as_secs_f32(), self.reduced_motion);
+        let accent = phase_accent(&self.snapshot.phase);
         let mut layer = div().absolute().left_0().top_0().size_full();
         for actor in &scene.actors {
             let style = actor_style(actor, metrics, elapsed);
-            let color = match actor.kind {
-                IslandActorKind::Sprite => 0x1e9bff,
-                IslandActorKind::Particle => 0x7ecbff,
-            };
+            let fill = actor_fill_color(&actor.kind, accent);
             layer = layer.child(
                 div()
                     .absolute()
@@ -586,14 +584,7 @@ impl VoiceHud {
                     .h(px(actor.height as f32))
                     .rounded_full()
                     .opacity(style.opacity)
-                    .bg(hsla(
-                        207.0 / 360.0,
-                        1.0,
-                        if color == 0x1e9bff { 0.56 } else { 0.75 },
-                        0.92,
-                    ))
-                    .border_1()
-                    .border_color(hsla(207.0 / 360.0, 1.0, 0.64, 0.45)),
+                    .bg(fill),
             );
         }
         layer
@@ -1491,6 +1482,14 @@ fn phase_accent(phase: &HudPhase) -> Hsla {
         | HudPhase::Planning => hsla(276.0 / 360.0, 0.88, 0.65, 1.0),
         _ => hsla(0.0, 0.0, 0.56, 1.0),
     }
+}
+
+fn actor_fill_color(kind: &IslandActorKind, accent: Hsla) -> Hsla {
+    let lightness = match kind {
+        IslandActorKind::Sprite => accent.l,
+        IslandActorKind::Particle => (accent.l + 0.16).min(0.82),
+    };
+    hsla(accent.h, accent.s, lightness, 0.92)
 }
 
 fn paint_activity_ring(
@@ -4174,6 +4173,19 @@ mod tests {
         assert!(middle.x > start.x);
         assert!(end.x > middle.x);
         assert_eq!(start.y, 10.0);
+    }
+
+    #[test]
+    fn actor_palette_inherits_the_phase_accent() {
+        let accent = phase_accent(&HudPhase::Dispatching);
+        let sprite = actor_fill_color(&IslandActorKind::Sprite, accent);
+        let particle = actor_fill_color(&IslandActorKind::Particle, accent);
+
+        assert_eq!(sprite.h, accent.h);
+        assert_eq!(particle.h, accent.h);
+        assert_eq!(sprite.s, accent.s);
+        assert_eq!(particle.s, accent.s);
+        assert!(particle.l > sprite.l);
     }
 
     #[test]
