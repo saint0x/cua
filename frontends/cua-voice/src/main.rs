@@ -25,10 +25,10 @@ use cua_voice::{
 };
 use gpui::{
     canvas, div, fill, hsla, linear_color_stop, linear_gradient, point, prelude::*, px, rgb, size,
-    AnyElement, App, Application, Background, Bounds, BoxShadow, Context, Corners, Div, Hsla,
-    IntoElement, MouseButton as GpuiMouseButton, MouseDownEvent, MouseMoveEvent, ParentElement,
-    PathBuilder, Pixels, Point, Render, Rgba, Styled, Window, WindowBackgroundAppearance,
-    WindowBounds, WindowKind, WindowOptions,
+    AnyElement, App, Application, Background, Bounds, Context, Corners, Div, Hsla, IntoElement,
+    MouseButton as GpuiMouseButton, MouseDownEvent, MouseMoveEvent, ParentElement, PathBuilder,
+    Pixels, Point, Render, Rgba, Styled, Window, WindowBackgroundAppearance, WindowBounds,
+    WindowKind, WindowOptions,
 };
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -389,12 +389,6 @@ impl VoiceHud {
             .group("cua-island")
             .opacity(metrics.bar_opacity)
             .bg(hsla(0.0, 0.0, 0.0, 0.0))
-            .shadow(vec![BoxShadow {
-                color: hsla(0.0, 0.0, 0.0, 0.58),
-                blur_radius: px(18.0),
-                spread_radius: px(0.0),
-                offset: point(px(0.0), px(6.0)),
-            }])
             .relative()
             .id("cua-island-shell")
             .on_mouse_down(
