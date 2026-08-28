@@ -48,6 +48,7 @@ const MARQUEE_START_DELAY_SECS: f32 = 1.6;
 const MARQUEE_END_HOLD_SECS: f32 = 0.9;
 const MARQUEE_SCROLL_SPEED_PX_PER_SEC: f32 = 24.0;
 const MARQUEE_CHAR_WIDTH_PX: f32 = 6.2;
+const DRAG_THRESHOLD_PX: f32 = 4.0;
 const CONTROL_SHORTCUT_POLL_INTERVAL: Duration = Duration::from_millis(4);
 const EDGE_SNAP_MARGIN_PX: f32 = 96.0;
 const MINIMIZED_WIDTH: f32 = 74.0;
@@ -142,6 +143,7 @@ struct VoiceHud {
 struct IslandDrag {
     start_cursor: Point<Pixels>,
     start_bounds: Bounds<Pixels>,
+    active: bool,
 }
 
 impl VoiceHud {
@@ -412,6 +414,7 @@ impl VoiceHud {
                     this.drag = Some(IslandDrag {
                         start_cursor: current_cursor_point(),
                         start_bounds: window.bounds(),
+                        active: false,
                     });
                     cx.notify();
                     cx.stop_propagation();
@@ -421,8 +424,19 @@ impl VoiceHud {
                 if event.pressed_button == Some(GpuiMouseButton::Left) {
                     if let Some(drag) = this.drag {
                         let cursor = current_cursor_point();
-                        let mut bounds =
-                            dragged_island_bounds(drag.start_bounds, drag.start_cursor, cursor);
+                        let Some(mut bounds) = dragged_island_bounds(
+                            drag.start_bounds,
+                            drag.start_cursor,
+                            cursor,
+                            drag.active,
+                        ) else {
+                            cx.stop_propagation();
+                            return;
+                        };
+                        this.drag = Some(IslandDrag {
+                            active: true,
+                            ..drag
+                        });
                         if let Some(display) = window.display(cx) {
                             bounds.origin.y = display.bounds().origin.y + px(TOP_MARGIN);
                         }
@@ -2681,12 +2695,16 @@ fn dragged_island_bounds(
     start_bounds: Bounds<Pixels>,
     start_cursor: Point<Pixels>,
     cursor: Point<Pixels>,
-) -> Bounds<Pixels> {
+    active: bool,
+) -> Option<Bounds<Pixels>> {
     let dx = cursor.x - start_cursor.x;
-    Bounds {
+    if !active && dx.abs() < px(DRAG_THRESHOLD_PX) {
+        return None;
+    }
+    Some(Bounds {
         origin: point(start_bounds.origin.x + dx, start_bounds.origin.y),
         size: start_bounds.size,
-    }
+    })
 }
 
 fn start_demo_cycle(tx: Sender<VoiceUiEvent>) {
@@ -3400,11 +3418,38 @@ mod tests {
             start_bounds,
             point(px(800.0), px(12.0)),
             point(px(860.0), px(180.0)),
-        );
+            false,
+        )
+        .expect("drag crosses the activation threshold");
 
         assert_eq!(dragged.origin.x, px(480.0));
         assert_eq!(dragged.origin.y, px(TOP_MARGIN));
         assert_eq!(dragged.size, start_bounds.size);
+    }
+
+    #[test]
+    fn drag_motion_waits_for_reference_threshold() {
+        let start_bounds = Bounds {
+            origin: point(px(420.0), px(TOP_MARGIN)),
+            size: size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT)),
+        };
+
+        assert_eq!(
+            dragged_island_bounds(
+                start_bounds,
+                point(px(800.0), px(12.0)),
+                point(px(802.0), px(180.0)),
+                false,
+            ),
+            None
+        );
+        assert!(dragged_island_bounds(
+            start_bounds,
+            point(px(800.0), px(12.0)),
+            point(px(802.0), px(180.0)),
+            true,
+        )
+        .is_some());
     }
 
     #[test]
