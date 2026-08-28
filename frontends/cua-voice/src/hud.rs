@@ -1,3 +1,11 @@
+use crate::ui_state::{HudPhase, HudSnapshot};
+use cua_core::{
+    validate_island_scene, IslandItem, IslandLayout, IslandPalette, IslandRegion, IslandScene,
+    IslandSceneError, IslandTheme, ISLAND_SCHEMA_VERSION,
+};
+use std::collections::BTreeMap;
+use std::time::Duration;
+
 pub const COMPACT_WIDTH: f32 = 815.0;
 pub const COMPACT_HEIGHT: f32 = 42.0;
 pub const COMPACT_RADIUS: f32 = 21.0;
@@ -7,8 +15,6 @@ pub const EXPANDED_RADIUS: f32 = 18.0;
 pub const WINDOW_WIDTH: f32 = COMPACT_WIDTH;
 pub const WINDOW_HEIGHT: f32 = COMPACT_HEIGHT;
 pub const TOP_MARGIN: f32 = 0.0;
-
-use crate::ui_state::HudSnapshot;
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct HudMetrics {
@@ -58,6 +64,23 @@ pub struct HudRow {
     pub age: String,
 }
 
+pub fn island_scene_from_snapshot(
+    snapshot: &HudSnapshot,
+    display: &HudDisplay,
+    expanded: bool,
+    reply_visible: bool,
+    model_label: &str,
+    elapsed: Duration,
+) -> Result<IslandScene, IslandSceneError> {
+    let scene = if expanded {
+        expanded_scene(snapshot, display, reply_visible, model_label, elapsed)
+    } else {
+        compact_scene(snapshot, display, reply_visible)
+    };
+    validate_island_scene(&scene)?;
+    Ok(scene)
+}
+
 impl HudDisplay {
     pub fn from_snapshot(snapshot: &HudSnapshot) -> Self {
         let prompt = snapshot
@@ -89,19 +112,11 @@ impl HudDisplay {
 
 fn live_transport_label(snapshot: &HudSnapshot) -> String {
     match snapshot.phase {
-        crate::ui_state::HudPhase::Listening
-        | crate::ui_state::HudPhase::RecordingStopped
-        | crate::ui_state::HudPhase::Accepted => "Mic".to_string(),
-        crate::ui_state::HudPhase::Transcribing => short_tool(&snapshot.tool),
-        crate::ui_state::HudPhase::Planning if snapshot.tool.contains("OpenRouter") => {
-            "Router".to_string()
-        }
-        crate::ui_state::HudPhase::Planning | crate::ui_state::HudPhase::Dispatching => {
-            short_tool(&snapshot.tool)
-        }
-        crate::ui_state::HudPhase::Reply | crate::ui_state::HudPhase::Idle => {
-            short_tool(&snapshot.tool)
-        }
+        HudPhase::Listening | HudPhase::RecordingStopped | HudPhase::Accepted => "Mic".to_string(),
+        HudPhase::Transcribing => short_tool(&snapshot.tool),
+        HudPhase::Planning if snapshot.tool.contains("OpenRouter") => "Router".to_string(),
+        HudPhase::Planning | HudPhase::Dispatching => short_tool(&snapshot.tool),
+        HudPhase::Reply | HudPhase::Idle => short_tool(&snapshot.tool),
         _ => short_tool(&snapshot.tool),
     }
 }
@@ -113,9 +128,7 @@ fn live_target_label(snapshot: &HudSnapshot) -> String {
     if snapshot.tool.contains("Microphone")
         || matches!(
             snapshot.phase,
-            crate::ui_state::HudPhase::Listening
-                | crate::ui_state::HudPhase::RecordingStopped
-                | crate::ui_state::HudPhase::Accepted
+            HudPhase::Listening | HudPhase::RecordingStopped | HudPhase::Accepted
         )
     {
         return "Microphone".to_string();
@@ -137,12 +150,10 @@ fn live_target_label(snapshot: &HudSnapshot) -> String {
         return "macOS".to_string();
     }
     match snapshot.phase {
-        crate::ui_state::HudPhase::RecordingStopped | crate::ui_state::HudPhase::Transcribing => {
-            "STT".to_string()
-        }
-        crate::ui_state::HudPhase::Planning => "Model".to_string(),
-        crate::ui_state::HudPhase::Dispatching => "macOS".to_string(),
-        crate::ui_state::HudPhase::Reply => "Result".to_string(),
+        HudPhase::RecordingStopped | HudPhase::Transcribing => "STT".to_string(),
+        HudPhase::Planning => "Model".to_string(),
+        HudPhase::Dispatching => "macOS".to_string(),
+        HudPhase::Reply => "Result".to_string(),
         _ => "macOS".to_string(),
     }
 }
@@ -162,10 +173,10 @@ fn action_rows(snapshot: &HudSnapshot) -> [HudRow; 2] {
         HudRow {
             label: transcript,
             tool: match snapshot.phase {
-                crate::ui_state::HudPhase::Listening
-                | crate::ui_state::HudPhase::RecordingStopped
-                | crate::ui_state::HudPhase::Accepted => "Mic".to_string(),
-                crate::ui_state::HudPhase::Transcribing => "STT".to_string(),
+                HudPhase::Listening | HudPhase::RecordingStopped | HudPhase::Accepted => {
+                    "Mic".to_string()
+                }
+                HudPhase::Transcribing => "STT".to_string(),
                 _ => short_tool(&snapshot.tool),
             },
             app: snapshot.phase.label().to_string(),
@@ -186,6 +197,327 @@ fn action_rows(snapshot: &HudSnapshot) -> [HudRow; 2] {
             },
         },
     ]
+}
+
+fn compact_scene(snapshot: &HudSnapshot, display: &HudDisplay, reply_visible: bool) -> IslandScene {
+    let title = if reply_visible {
+        "Reply".to_string()
+    } else {
+        display.title.clone()
+    };
+    let center = center_status_text(snapshot, display, reply_visible);
+    let transport = if reply_visible {
+        "cua".to_string()
+    } else {
+        display.tool.clone()
+    };
+    let target = if reply_visible {
+        display.phase.to_string()
+    } else {
+        display.target.clone()
+    };
+    let mut regions = BTreeMap::new();
+    regions.insert(
+        "left".to_string(),
+        IslandRegion {
+            items: vec![
+                IslandItem::Label {
+                    id: "orb".to_string(),
+                    text: "orb".to_string(),
+                },
+                IslandItem::Label {
+                    id: "input".to_string(),
+                    text: title,
+                },
+            ],
+        },
+    );
+    regions.insert(
+        "center".to_string(),
+        IslandRegion {
+            items: vec![IslandItem::Marquee {
+                id: "status".to_string(),
+                text: center,
+            }],
+        },
+    );
+    regions.insert(
+        "right".to_string(),
+        IslandRegion {
+            items: vec![
+                IslandItem::Chip {
+                    id: "transport".to_string(),
+                    text: transport,
+                },
+                IslandItem::Chip {
+                    id: "target".to_string(),
+                    text: target,
+                },
+                IslandItem::DotChase {
+                    id: "activity".to_string(),
+                    active: dots_are_active(snapshot),
+                    palette: IslandPalette::BlueNeon,
+                    count: 6,
+                    speed: dot_chase_speed(snapshot),
+                },
+            ],
+        },
+    );
+    IslandScene {
+        schema_version: ISLAND_SCHEMA_VERSION.to_string(),
+        layout: IslandLayout::Compact,
+        mode: snapshot.mode.clone(),
+        regions,
+        actors: Vec::new(),
+        theme: Some(default_island_theme()),
+    }
+}
+
+fn expanded_scene(
+    snapshot: &HudSnapshot,
+    display: &HudDisplay,
+    reply_visible: bool,
+    model_label: &str,
+    elapsed: Duration,
+) -> IslandScene {
+    let step_counter = snapshot.step.counter();
+    let mut regions = BTreeMap::new();
+    regions.insert(
+        "header_left".to_string(),
+        IslandRegion {
+            items: vec![
+                IslandItem::Label {
+                    id: "orb".to_string(),
+                    text: "orb".to_string(),
+                },
+                IslandItem::Label {
+                    id: "input".to_string(),
+                    text: if reply_visible {
+                        "Reply".to_string()
+                    } else {
+                        display.title.clone()
+                    },
+                },
+            ],
+        },
+    );
+    regions.insert(
+        "header_center".to_string(),
+        IslandRegion {
+            items: vec![IslandItem::Marquee {
+                id: "status".to_string(),
+                text: center_status_text(snapshot, display, reply_visible),
+            }],
+        },
+    );
+    regions.insert(
+        "header_right".to_string(),
+        IslandRegion {
+            items: vec![
+                IslandItem::Chip {
+                    id: "transport".to_string(),
+                    text: if reply_visible {
+                        "cua".to_string()
+                    } else {
+                        display.tool.clone()
+                    },
+                },
+                IslandItem::Chip {
+                    id: "target".to_string(),
+                    text: if reply_visible {
+                        display.phase.to_string()
+                    } else {
+                        display.target.clone()
+                    },
+                },
+                IslandItem::DotChase {
+                    id: "activity".to_string(),
+                    active: dots_are_active(snapshot),
+                    palette: IslandPalette::BlueNeon,
+                    count: 6,
+                    speed: dot_chase_speed(snapshot),
+                },
+            ],
+        },
+    );
+    let mut task_items = vec![IslandItem::Row {
+        id: "task".to_string(),
+        index: "01".to_string(),
+        label: "Task".to_string(),
+        value: display.prompt.clone(),
+        active: true,
+    }];
+    if let Some((index, total)) = step_counter {
+        task_items.push(IslandItem::StepCounter {
+            id: "step".to_string(),
+            index: index as u16,
+            total: total as u16,
+        });
+    }
+    regions.insert("task".to_string(), IslandRegion { items: task_items });
+    regions.insert(
+        "response".to_string(),
+        IslandRegion {
+            items: vec![IslandItem::Row {
+                id: "response".to_string(),
+                index: "03".to_string(),
+                label: "Response".to_string(),
+                value: expanded_response_text(display),
+                active: true,
+            }],
+        },
+    );
+    regions.insert(
+        "details_left".to_string(),
+        IslandRegion {
+            items: vec![
+                IslandItem::Row {
+                    id: "action".to_string(),
+                    index: "04".to_string(),
+                    label: "Action".to_string(),
+                    value: compact_label(&snapshot.step.label, 56),
+                    active: true,
+                },
+                IslandItem::Row {
+                    id: "phase".to_string(),
+                    index: "05".to_string(),
+                    label: "Phase".to_string(),
+                    value: display.phase.to_string(),
+                    active: false,
+                },
+                IslandItem::Row {
+                    id: "state".to_string(),
+                    index: "06".to_string(),
+                    label: "State".to_string(),
+                    value: if dots_are_active(snapshot) {
+                        "Live".to_string()
+                    } else {
+                        "Idle".to_string()
+                    },
+                    active: dots_are_active(snapshot),
+                },
+            ],
+        },
+    );
+    regions.insert(
+        "details_right".to_string(),
+        IslandRegion {
+            items: display
+                .rows
+                .iter()
+                .enumerate()
+                .map(|(index, row)| IslandItem::ToolRow {
+                    id: format!("tool_{index}"),
+                    index: format!("{:02}", index + 7),
+                    label: row.label.clone(),
+                    tool: row.tool.clone(),
+                    app: row.app.clone(),
+                    age: row.age.clone(),
+                })
+                .collect(),
+        },
+    );
+    regions.insert(
+        "footer".to_string(),
+        IslandRegion {
+            items: vec![
+                IslandItem::Label {
+                    id: "elapsed".to_string(),
+                    text: format!("Elapsed {}", elapsed_label(elapsed)),
+                },
+                IslandItem::Label {
+                    id: "model".to_string(),
+                    text: format!("Model {}", compact_label(model_label, 30)),
+                },
+                IslandItem::Label {
+                    id: "transport".to_string(),
+                    text: format!("Transport {}", display.tool),
+                },
+            ],
+        },
+    );
+    IslandScene {
+        schema_version: ISLAND_SCHEMA_VERSION.to_string(),
+        layout: IslandLayout::Expanded,
+        mode: snapshot.mode.clone(),
+        regions,
+        actors: Vec::new(),
+        theme: Some(default_island_theme()),
+    }
+}
+
+pub fn center_status_text(
+    snapshot: &HudSnapshot,
+    display: &HudDisplay,
+    reply_visible: bool,
+) -> String {
+    if reply_visible {
+        return display.result.clone();
+    }
+    if snapshot.phase == HudPhase::Idle {
+        return snapshot.step.label.clone();
+    }
+    if snapshot.phase == HudPhase::Listening {
+        return "Listening".to_string();
+    }
+    if snapshot.phase == HudPhase::RecordingStopped {
+        return "Recording Stopped".to_string();
+    }
+    if snapshot.phase == HudPhase::Transcribing {
+        return "Processing".to_string();
+    }
+    if snapshot.phase == HudPhase::Accepted {
+        return "Accepted".to_string();
+    }
+    if let Some((index, total)) = snapshot.step.counter() {
+        return format!("Step {index}/{total}   {}", snapshot.step.label);
+    }
+    snapshot.step.label.clone()
+}
+
+pub fn dots_are_active(snapshot: &HudSnapshot) -> bool {
+    !matches!(snapshot.phase, HudPhase::Idle)
+}
+
+pub fn dot_chase_speed(snapshot: &HudSnapshot) -> u8 {
+    match snapshot.phase {
+        HudPhase::Listening | HudPhase::RecordingStopped | HudPhase::Dispatching => 8,
+        HudPhase::Accepted | HudPhase::Planning | HudPhase::Transcribing => 6,
+        HudPhase::Reply => 5,
+        HudPhase::Error => 10,
+        HudPhase::Armed => 7,
+        HudPhase::Idle => 0,
+    }
+}
+
+fn expanded_response_text(display: &HudDisplay) -> String {
+    let text = if display.result.trim().is_empty() {
+        display.prompt.as_str()
+    } else {
+        display.result.as_str()
+    };
+    compact_label(text, 460)
+}
+
+fn elapsed_label(duration: Duration) -> String {
+    let secs = duration.as_secs();
+    let minutes = secs / 60;
+    let seconds = secs % 60;
+    format!("{minutes:02}:{seconds:02}")
+}
+
+fn default_island_theme() -> IslandTheme {
+    IslandTheme {
+        name: "default".to_string(),
+        tokens: BTreeMap::from([
+            ("background".to_string(), "#000000".to_string()),
+            ("text".to_string(), "#e8e8ec".to_string()),
+            ("muted".to_string(), "#8b8b95".to_string()),
+            ("blue".to_string(), "#1e9bff".to_string()),
+            ("chip_background".to_string(), "#1f1f22".to_string()),
+            ("divider".to_string(), "#1b1b1f".to_string()),
+        ]),
+    }
 }
 
 pub fn compact_label(value: &str, max_chars: usize) -> String {
@@ -388,5 +720,122 @@ mod tests {
         assert_eq!(expanded.radius, EXPANDED_RADIUS);
         assert_eq!(expanded.response_opacity, 0.0);
         assert_eq!(expanded.expansion_opacity, 1.0);
+    }
+
+    #[test]
+    fn compact_scene_reproduces_current_hud_baseline() {
+        let snapshot = HudSnapshot::default();
+        let display = HudDisplay::from_snapshot(&snapshot);
+
+        let scene = island_scene_from_snapshot(
+            &snapshot,
+            &display,
+            false,
+            false,
+            "anthropic/claude-sonnet-5",
+            Duration::ZERO,
+        )
+        .unwrap();
+
+        assert_eq!(scene.schema_version, cua_core::ISLAND_SCHEMA_VERSION);
+        assert_eq!(scene.layout, cua_core::IslandLayout::Compact);
+        let left = &scene.regions["left"].items;
+        let center = &scene.regions["center"].items;
+        let right = &scene.regions["right"].items;
+        assert!(matches!(
+            &left[1],
+            cua_core::IslandItem::Label { id, text }
+                if id == "input" && text == "Voice control"
+        ));
+        assert!(matches!(
+            &center[0],
+            cua_core::IslandItem::Marquee { id, text } if id == "status" && text == "Ready"
+        ));
+        assert!(matches!(
+            &right[2],
+            cua_core::IslandItem::DotChase {
+                id,
+                active: false,
+                count: 6,
+                speed: 0,
+                ..
+            } if id == "activity"
+        ));
+    }
+
+    #[test]
+    fn compact_scene_uses_reply_as_center_marquee() {
+        let mut snapshot = HudSnapshot::default();
+        snapshot.apply(VoiceUiEvent::Reply(
+            "I can see the current desktop and the app is ready.".to_string(),
+        ));
+        let display = HudDisplay::from_snapshot(&snapshot);
+
+        let scene = island_scene_from_snapshot(
+            &snapshot,
+            &display,
+            false,
+            true,
+            "anthropic/claude-sonnet-5",
+            Duration::ZERO,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            &scene.regions["center"].items[0],
+            cua_core::IslandItem::Marquee { text, .. }
+                if text == "I can see the current desktop and the app is ready."
+        ));
+        assert!(matches!(
+            &scene.regions["right"].items[2],
+            cua_core::IslandItem::DotChase {
+                active: true,
+                speed: 5,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn expanded_scene_carries_task_rows_and_step_counter() {
+        let mut snapshot = HudSnapshot::default();
+        snapshot.apply(VoiceUiEvent::AgentStep {
+            label: "Checking Safari results".to_string(),
+            source: Some("automation".to_string()),
+            task: Some("Research".to_string()),
+            tool: Some("Safari".to_string()),
+            step_index: Some(3),
+            step_total: Some(12),
+            ttl_ms: None,
+        });
+        let display = HudDisplay::from_snapshot(&snapshot);
+
+        let scene = island_scene_from_snapshot(
+            &snapshot,
+            &display,
+            true,
+            false,
+            "anthropic/claude-sonnet-5",
+            Duration::from_secs(67),
+        )
+        .unwrap();
+
+        assert_eq!(scene.layout, cua_core::IslandLayout::Expanded);
+        assert!(matches!(
+            &scene.regions["task"].items[1],
+            cua_core::IslandItem::StepCounter {
+                id,
+                index: 3,
+                total: 12
+            } if id == "step"
+        ));
+        assert!(matches!(
+            &scene.regions["details_left"].items[0],
+            cua_core::IslandItem::Row { value, .. } if value == "Checking Safari results"
+        ));
+        assert!(matches!(
+            &scene.regions["footer"].items[0],
+            cua_core::IslandItem::Label { text, .. } if text == "Elapsed 01:07"
+        ));
     }
 }

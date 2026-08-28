@@ -1236,6 +1236,542 @@ pub struct UiIslandResult {
     pub source: Option<String>,
 }
 
+pub const ISLAND_SCHEMA_VERSION: &str = "cua.island.v1";
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum IslandLayout {
+    Compact,
+    Expanded,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum IslandLayer {
+    Background,
+    Content,
+    Ambient,
+    Actor,
+    Foreground,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct IslandScene {
+    pub schema_version: String,
+    pub layout: IslandLayout,
+    pub mode: UiMode,
+    pub regions: BTreeMap<String, IslandRegion>,
+    pub actors: Vec<IslandActor>,
+    pub theme: Option<IslandTheme>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct IslandRegion {
+    pub items: Vec<IslandItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum IslandItem {
+    Label {
+        id: String,
+        text: String,
+    },
+    Marquee {
+        id: String,
+        text: String,
+    },
+    Chip {
+        id: String,
+        text: String,
+    },
+    StepCounter {
+        id: String,
+        index: u16,
+        total: u16,
+    },
+    DotChase {
+        id: String,
+        active: bool,
+        palette: IslandPalette,
+        count: u8,
+        speed: u8,
+    },
+    Row {
+        id: String,
+        index: String,
+        label: String,
+        value: String,
+        active: bool,
+    },
+    ToolRow {
+        id: String,
+        index: String,
+        label: String,
+        tool: String,
+        app: String,
+        age: String,
+    },
+    Divider {
+        id: String,
+    },
+    Spacer {
+        id: String,
+        width: Option<u16>,
+        flex: Option<u8>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum IslandPalette {
+    BlueNeon,
+    Default,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct IslandActor {
+    pub id: String,
+    pub kind: IslandActorKind,
+    pub layer: IslandLayer,
+    pub anchor: IslandAnchor,
+    pub x: i16,
+    pub y: i16,
+    pub width: u16,
+    pub height: u16,
+    pub motion: Option<IslandMotion>,
+    pub interactive: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum IslandActorKind {
+    Sprite,
+    Particle,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum IslandAnchor {
+    Canvas,
+    RegionItem,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum IslandMotion {
+    None,
+    Fade {
+        duration_ms: u16,
+    },
+    Pulse {
+        duration_ms: u16,
+    },
+    SlideTo {
+        x: i16,
+        y: i16,
+        duration_ms: u16,
+    },
+    WalkTo {
+        region: String,
+        item: String,
+        duration_ms: u16,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct IslandTheme {
+    pub name: String,
+    pub tokens: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct UiSceneRequest {
+    pub schema_version: String,
+    pub scene: IslandScene,
+    pub source: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct UiScenePatchRequest {
+    pub schema_version: String,
+    pub scene: IslandScene,
+    pub source: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct UiSceneResetRequest {
+    pub schema_version: String,
+    pub source: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct UiSceneThemeRequest {
+    pub schema_version: String,
+    pub theme: IslandTheme,
+    pub source: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct UiSceneResult {
+    pub schema_version: String,
+    pub accepted: bool,
+    pub source: Option<String>,
+    pub scene: Option<IslandScene>,
+}
+
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum IslandSceneError {
+    #[error("{field}: {message}")]
+    Invalid { field: String, message: String },
+}
+
+impl IslandSceneError {
+    fn invalid(field: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::Invalid {
+            field: field.into(),
+            message: message.into(),
+        }
+    }
+}
+
+impl IslandScene {
+    pub fn validate(&self) -> Result<(), IslandSceneError> {
+        if self.schema_version != ISLAND_SCHEMA_VERSION {
+            return Err(IslandSceneError::invalid(
+                "schema_version",
+                format!("expected {ISLAND_SCHEMA_VERSION}"),
+            ));
+        }
+        if self.regions.is_empty() {
+            return Err(IslandSceneError::invalid(
+                "regions",
+                "scene must contain at least one region",
+            ));
+        }
+        validate_required_island_regions(self)?;
+        let allowed_regions = allowed_island_regions(&self.layout);
+        let mut item_count = 0usize;
+        for (name, region) in &self.regions {
+            if !allowed_regions.contains(&name.as_str()) {
+                return Err(IslandSceneError::invalid(
+                    format!("regions.{name}"),
+                    "unknown region for layout",
+                ));
+            }
+            if region.items.len() > 16 {
+                return Err(IslandSceneError::invalid(
+                    format!("regions.{name}.items"),
+                    "region may contain at most 16 items",
+                ));
+            }
+            item_count += region.items.len();
+            for item in &region.items {
+                validate_island_item(name, item)?;
+            }
+        }
+        if item_count > 64 {
+            return Err(IslandSceneError::invalid(
+                "regions",
+                "scene may contain at most 64 items",
+            ));
+        }
+        if self.actors.len() > 4 {
+            return Err(IslandSceneError::invalid(
+                "actors",
+                "scene may contain at most 4 actors",
+            ));
+        }
+        for actor in &self.actors {
+            validate_island_actor(actor)?;
+        }
+        if let Some(theme) = &self.theme {
+            validate_island_theme(theme)?;
+        }
+        Ok(())
+    }
+}
+
+pub fn validate_island_scene(scene: &IslandScene) -> Result<(), IslandSceneError> {
+    scene.validate()
+}
+
+fn allowed_island_regions(layout: &IslandLayout) -> &'static [&'static str] {
+    match layout {
+        IslandLayout::Compact => &["left", "center", "right"],
+        IslandLayout::Expanded => &[
+            "header_left",
+            "header_center",
+            "header_right",
+            "task",
+            "response",
+            "details_left",
+            "details_right",
+            "footer",
+        ],
+    }
+}
+
+fn validate_required_island_regions(scene: &IslandScene) -> Result<(), IslandSceneError> {
+    let required: &[(&str, &[&str])] = match scene.layout {
+        IslandLayout::Compact => &[
+            ("left", &["orb", "input"]),
+            ("center", &["status"]),
+            ("right", &["transport", "target", "activity"]),
+        ],
+        IslandLayout::Expanded => &[
+            ("header_left", &["orb", "input"]),
+            ("header_center", &["status"]),
+            ("header_right", &["transport", "target", "activity"]),
+            ("task", &["task"]),
+            ("response", &["response"]),
+            ("details_left", &["action", "phase", "state"]),
+            ("details_right", &["tool_0", "tool_1"]),
+            ("footer", &["elapsed", "model", "transport"]),
+        ],
+    };
+    for (region_name, item_ids) in required {
+        let Some(region) = scene.regions.get(*region_name) else {
+            return Err(IslandSceneError::invalid(
+                format!("regions.{region_name}"),
+                "required region is missing",
+            ));
+        };
+        for item_id in *item_ids {
+            if !region
+                .items
+                .iter()
+                .any(|item| island_item_id(item) == *item_id)
+            {
+                return Err(IslandSceneError::invalid(
+                    format!("regions.{region_name}.{item_id}"),
+                    "required item is missing",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_island_item(region: &str, item: &IslandItem) -> Result<(), IslandSceneError> {
+    let id = island_item_id(item);
+    validate_island_id(&format!("regions.{region}.{id}.id"), id)?;
+    match item {
+        IslandItem::Label { text, .. }
+        | IslandItem::Marquee { text, .. }
+        | IslandItem::Chip { text, .. } => validate_island_text(
+            &format!("regions.{region}.{id}.text"),
+            text,
+            match item {
+                IslandItem::Marquee { .. } => 480,
+                _ => 80,
+            },
+        ),
+        IslandItem::StepCounter { index, total, .. } => {
+            if *total == 0 {
+                return Err(IslandSceneError::invalid(
+                    format!("regions.{region}.{id}.total"),
+                    "total must be at least 1",
+                ));
+            }
+            if *index > *total {
+                return Err(IslandSceneError::invalid(
+                    format!("regions.{region}.{id}.index"),
+                    "index must be less than or equal to total",
+                ));
+            }
+            Ok(())
+        }
+        IslandItem::DotChase { count, speed, .. } => {
+            if !(3..=12).contains(count) {
+                return Err(IslandSceneError::invalid(
+                    format!("regions.{region}.{id}.count"),
+                    "dot count must be between 3 and 12",
+                ));
+            }
+            if *speed > 24 {
+                return Err(IslandSceneError::invalid(
+                    format!("regions.{region}.{id}.speed"),
+                    "dot chase speed must be 24 or lower",
+                ));
+            }
+            Ok(())
+        }
+        IslandItem::Row {
+            index,
+            label,
+            value,
+            ..
+        } => {
+            validate_island_text(&format!("regions.{region}.{id}.index"), index, 8)?;
+            validate_island_text(&format!("regions.{region}.{id}.label"), label, 24)?;
+            validate_island_text(&format!("regions.{region}.{id}.value"), value, 240)
+        }
+        IslandItem::ToolRow {
+            index,
+            label,
+            tool,
+            app,
+            age,
+            ..
+        } => {
+            validate_island_text(&format!("regions.{region}.{id}.index"), index, 8)?;
+            validate_island_text(&format!("regions.{region}.{id}.label"), label, 240)?;
+            validate_island_text(&format!("regions.{region}.{id}.tool"), tool, 48)?;
+            validate_island_text(&format!("regions.{region}.{id}.app"), app, 48)?;
+            validate_island_text(&format!("regions.{region}.{id}.age"), age, 24)
+        }
+        IslandItem::Divider { .. } => Ok(()),
+        IslandItem::Spacer { width, flex, .. } => {
+            if width.unwrap_or(0) > 512 {
+                return Err(IslandSceneError::invalid(
+                    format!("regions.{region}.{id}.width"),
+                    "spacer width must be 512px or lower",
+                ));
+            }
+            if flex.unwrap_or(0) > 8 {
+                return Err(IslandSceneError::invalid(
+                    format!("regions.{region}.{id}.flex"),
+                    "spacer flex must be 8 or lower",
+                ));
+            }
+            Ok(())
+        }
+    }
+}
+
+fn island_item_id(item: &IslandItem) -> &str {
+    match item {
+        IslandItem::Label { id, .. }
+        | IslandItem::Marquee { id, .. }
+        | IslandItem::Chip { id, .. }
+        | IslandItem::StepCounter { id, .. }
+        | IslandItem::DotChase { id, .. }
+        | IslandItem::Row { id, .. }
+        | IslandItem::ToolRow { id, .. }
+        | IslandItem::Divider { id }
+        | IslandItem::Spacer { id, .. } => id,
+    }
+}
+
+fn validate_island_id(field: &str, value: &str) -> Result<(), IslandSceneError> {
+    if value.is_empty() || value.chars().count() > 64 {
+        return Err(IslandSceneError::invalid(
+            field,
+            "id must be 1 to 64 characters",
+        ));
+    }
+    if !value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '.')
+    {
+        return Err(IslandSceneError::invalid(
+            field,
+            "id may only contain letters, numbers, dot, dash, and underscore",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_island_text(
+    field: &str,
+    value: &str,
+    max_chars: usize,
+) -> Result<(), IslandSceneError> {
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.chars().count() > max_chars {
+        return Err(IslandSceneError::invalid(
+            field,
+            format!("text must be {max_chars} characters or fewer"),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_island_actor(actor: &IslandActor) -> Result<(), IslandSceneError> {
+    validate_island_id("actors.id", &actor.id)?;
+    if actor.width == 0 || actor.height == 0 {
+        return Err(IslandSceneError::invalid(
+            format!("actors.{}.size", actor.id),
+            "actor width and height must be positive",
+        ));
+    }
+    if actor.width > 96 || actor.height > 42 {
+        return Err(IslandSceneError::invalid(
+            format!("actors.{}.size", actor.id),
+            "actor must fit inside the compact island height",
+        ));
+    }
+    if actor.x < 0 || actor.y < 0 || actor.x as u16 > 930 || actor.y as u16 > 520 {
+        return Err(IslandSceneError::invalid(
+            format!("actors.{}.position", actor.id),
+            "actor position must be inside the island canvas",
+        ));
+    }
+    if actor.interactive {
+        return Err(IslandSceneError::invalid(
+            format!("actors.{}.interactive", actor.id),
+            "interactive actors are not enabled yet",
+        ));
+    }
+    if let Some(motion) = &actor.motion {
+        validate_island_motion(&actor.id, motion)?;
+    }
+    Ok(())
+}
+
+fn validate_island_motion(actor_id: &str, motion: &IslandMotion) -> Result<(), IslandSceneError> {
+    let duration = match motion {
+        IslandMotion::None => return Ok(()),
+        IslandMotion::Fade { duration_ms }
+        | IslandMotion::Pulse { duration_ms }
+        | IslandMotion::SlideTo { duration_ms, .. }
+        | IslandMotion::WalkTo { duration_ms, .. } => *duration_ms,
+    };
+    if !(50..=5_000).contains(&duration) {
+        return Err(IslandSceneError::invalid(
+            format!("actors.{actor_id}.motion.duration_ms"),
+            "motion duration must be between 50ms and 5000ms",
+        ));
+    }
+    if let IslandMotion::WalkTo { region, item, .. } = motion {
+        if region.is_empty() || item.is_empty() {
+            return Err(IslandSceneError::invalid(
+                format!("actors.{actor_id}.motion.target"),
+                "walk_to requires a region and item target",
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub fn validate_island_theme(theme: &IslandTheme) -> Result<(), IslandSceneError> {
+    validate_island_id("theme.name", &theme.name)?;
+    if theme.tokens.len() > 32 {
+        return Err(IslandSceneError::invalid(
+            "theme.tokens",
+            "theme may contain at most 32 tokens",
+        ));
+    }
+    for (key, value) in &theme.tokens {
+        validate_island_id("theme.tokens.key", key)?;
+        if !is_valid_hex_color(value) {
+            return Err(IslandSceneError::invalid(
+                format!("theme.tokens.{key}"),
+                "theme token must be a #rrggbb color",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn is_valid_hex_color(value: &str) -> bool {
+    let Some(hex) = value.strip_prefix('#') else {
+        return false;
+    };
+    hex.len() == 6 && hex.chars().all(|ch| ch.is_ascii_hexdigit())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Effect {
@@ -1712,6 +2248,30 @@ pub fn schema_bundle() -> SchemaBundle {
         serde_json::json!(schema_for!(UiIslandResult)),
     );
     schemas.insert(
+        "IslandScene".to_string(),
+        serde_json::json!(schema_for!(IslandScene)),
+    );
+    schemas.insert(
+        "UiSceneRequest".to_string(),
+        serde_json::json!(schema_for!(UiSceneRequest)),
+    );
+    schemas.insert(
+        "UiScenePatchRequest".to_string(),
+        serde_json::json!(schema_for!(UiScenePatchRequest)),
+    );
+    schemas.insert(
+        "UiSceneResetRequest".to_string(),
+        serde_json::json!(schema_for!(UiSceneResetRequest)),
+    );
+    schemas.insert(
+        "UiSceneThemeRequest".to_string(),
+        serde_json::json!(schema_for!(UiSceneThemeRequest)),
+    );
+    schemas.insert(
+        "UiSceneResult".to_string(),
+        serde_json::json!(schema_for!(UiSceneResult)),
+    );
+    schemas.insert(
         "InputAction".to_string(),
         serde_json::json!(schema_for!(InputAction)),
     );
@@ -1771,6 +2331,65 @@ mod tests {
     use std::sync::Mutex;
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn sample_compact_island_scene() -> IslandScene {
+        let mut regions = BTreeMap::new();
+        regions.insert(
+            "left".to_string(),
+            IslandRegion {
+                items: vec![
+                    IslandItem::Label {
+                        id: "orb".to_string(),
+                        text: "orb".to_string(),
+                    },
+                    IslandItem::Label {
+                        id: "input".to_string(),
+                        text: "Voice control".to_string(),
+                    },
+                ],
+            },
+        );
+        regions.insert(
+            "center".to_string(),
+            IslandRegion {
+                items: vec![IslandItem::Marquee {
+                    id: "status".to_string(),
+                    text: "Ready".to_string(),
+                }],
+            },
+        );
+        regions.insert(
+            "right".to_string(),
+            IslandRegion {
+                items: vec![
+                    IslandItem::Chip {
+                        id: "transport".to_string(),
+                        text: "Socket".to_string(),
+                    },
+                    IslandItem::Chip {
+                        id: "target".to_string(),
+                        text: "macOS".to_string(),
+                    },
+                    IslandItem::DotChase {
+                        id: "activity".to_string(),
+                        active: false,
+                        palette: IslandPalette::BlueNeon,
+                        count: 6,
+                        speed: 0,
+                    },
+                ],
+            },
+        );
+
+        IslandScene {
+            schema_version: ISLAND_SCHEMA_VERSION.to_string(),
+            layout: IslandLayout::Compact,
+            mode: UiMode::Headful,
+            regions,
+            actors: Vec::new(),
+            theme: None,
+        }
+    }
 
     #[test]
     fn frame_action_remaps_mouse_coordinates_to_display_space() {
@@ -2286,5 +2905,96 @@ mod tests {
 
         assert_eq!(value["duration_ms"], 1_500);
         assert_eq!(value["queue_depth"], 1);
+    }
+
+    #[test]
+    fn compact_island_scene_validates_default_regions_and_items() {
+        let scene = sample_compact_island_scene();
+
+        validate_island_scene(&scene).unwrap();
+    }
+
+    #[test]
+    fn island_scene_rejects_unknown_region_for_layout() {
+        let mut scene = sample_compact_island_scene();
+        scene
+            .regions
+            .insert("body".to_string(), IslandRegion { items: Vec::new() });
+
+        let error = validate_island_scene(&scene).unwrap_err();
+        assert!(error.to_string().contains("unknown region"));
+    }
+
+    #[test]
+    fn island_scene_rejects_invalid_step_counter() {
+        let mut scene = sample_compact_island_scene();
+        scene
+            .regions
+            .get_mut("center")
+            .unwrap()
+            .items
+            .push(IslandItem::StepCounter {
+                id: "step".to_string(),
+                index: 7,
+                total: 4,
+            });
+
+        let error = validate_island_scene(&scene).unwrap_err();
+        assert!(error.to_string().contains("index"));
+    }
+
+    #[test]
+    fn island_scene_accepts_bounded_noninteractive_actor() {
+        let mut scene = sample_compact_island_scene();
+        scene.actors = vec![IslandActor {
+            id: "pet".to_string(),
+            kind: IslandActorKind::Sprite,
+            layer: IslandLayer::Actor,
+            anchor: IslandAnchor::Canvas,
+            x: 92,
+            y: 12,
+            width: 24,
+            height: 20,
+            motion: Some(IslandMotion::WalkTo {
+                region: "right".to_string(),
+                item: "activity".to_string(),
+                duration_ms: 900,
+            }),
+            interactive: false,
+        }];
+
+        validate_island_scene(&scene).unwrap();
+    }
+
+    #[test]
+    fn island_scene_rejects_interactive_actor_until_hitboxes_are_explicit() {
+        let mut scene = sample_compact_island_scene();
+        scene.actors = vec![IslandActor {
+            id: "pet".to_string(),
+            kind: IslandActorKind::Sprite,
+            layer: IslandLayer::Actor,
+            anchor: IslandAnchor::Canvas,
+            x: 92,
+            y: 12,
+            width: 24,
+            height: 20,
+            motion: None,
+            interactive: true,
+        }];
+
+        let error = validate_island_scene(&scene).unwrap_err();
+        assert!(error.to_string().contains("interactive"));
+    }
+
+    #[test]
+    fn schema_bundle_exports_island_scene_contracts() {
+        let bundle = schema_bundle();
+
+        assert!(bundle.schemas.contains_key("IslandScene"));
+        assert!(bundle.schemas.contains_key("UiSceneRequest"));
+        assert!(bundle.schemas.contains_key("UiScenePatchRequest"));
+        assert!(bundle.schemas.contains_key("UiSceneResetRequest"));
+        assert!(bundle.schemas.contains_key("UiSceneThemeRequest"));
+        assert!(bundle.schemas.contains_key("UiSceneResult"));
     }
 }

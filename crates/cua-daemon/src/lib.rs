@@ -34,7 +34,8 @@ use cua_core::{
     ScratchpadListRequest, ScratchpadListResult, ScratchpadReadRequest, ScratchpadSummary,
     ScratchpadWriteRequest, SessionCancelRequest, SessionHeartbeatRequest, SessionLeaseRequest,
     SessionLeaseResult, UiIslandRequest, UiIslandResult, UiMode, UiModeRequest, UiModeResult,
-    UiReplyRequest, UiReplyResult, UiStepRequest, UiStepResult, VisualSessionRequest,
+    UiReplyRequest, UiReplyResult, UiScenePatchRequest, UiSceneRequest, UiSceneResetRequest,
+    UiSceneResult, UiSceneThemeRequest, UiStepRequest, UiStepResult, VisualSessionRequest,
     WebhookSourceStatus, WebhookSubscribeRequest, WindowInfo, SCHEMA_VERSION,
 };
 use cua_input::InputBackend;
@@ -1684,6 +1685,10 @@ pub fn router(state: DaemonState) -> Router {
         .route("/ui/reply", post(ui_reply))
         .route("/ui/mode", post(ui_mode))
         .route("/ui/island", post(ui_island))
+        .route("/ui/scene", post(ui_scene))
+        .route("/ui/scene/patch", post(ui_scene_patch))
+        .route("/ui/scene/reset", post(ui_scene_reset))
+        .route("/ui/scene/theme", post(ui_scene_theme))
         .route(
             "/profile/create",
             post(profile_create).route_layer(middleware::from_fn_with_state(
@@ -2594,6 +2599,62 @@ async fn handle_unix_request(state: &DaemonState, request: UnixRequest) -> serde
             let params = request.params.unwrap_or_else(|| serde_json::json!({}));
             match serde_json::from_value::<UiIslandRequest>(params) {
                 Ok(request) => ui_island_state(state, request).map(serde_json::to_value),
+                Err(error) => {
+                    return unix_error(
+                        id,
+                        "bad_request",
+                        error.to_string(),
+                        Some(StatusCode::BAD_REQUEST),
+                    )
+                }
+            }
+        }
+        "ui.scene.set" => {
+            let params = request.params.unwrap_or_else(|| serde_json::json!({}));
+            match serde_json::from_value::<UiSceneRequest>(params) {
+                Ok(request) => ui_scene_state(state, request).map(serde_json::to_value),
+                Err(error) => {
+                    return unix_error(
+                        id,
+                        "bad_request",
+                        error.to_string(),
+                        Some(StatusCode::BAD_REQUEST),
+                    )
+                }
+            }
+        }
+        "ui.scene.patch" => {
+            let params = request.params.unwrap_or_else(|| serde_json::json!({}));
+            match serde_json::from_value::<UiScenePatchRequest>(params) {
+                Ok(request) => ui_scene_patch_state(state, request).map(serde_json::to_value),
+                Err(error) => {
+                    return unix_error(
+                        id,
+                        "bad_request",
+                        error.to_string(),
+                        Some(StatusCode::BAD_REQUEST),
+                    )
+                }
+            }
+        }
+        "ui.scene.reset" => {
+            let params = request.params.unwrap_or_else(|| serde_json::json!({}));
+            match serde_json::from_value::<UiSceneResetRequest>(params) {
+                Ok(request) => ui_scene_reset_state(state, request).map(serde_json::to_value),
+                Err(error) => {
+                    return unix_error(
+                        id,
+                        "bad_request",
+                        error.to_string(),
+                        Some(StatusCode::BAD_REQUEST),
+                    )
+                }
+            }
+        }
+        "ui.scene.theme" => {
+            let params = request.params.unwrap_or_else(|| serde_json::json!({}));
+            match serde_json::from_value::<UiSceneThemeRequest>(params) {
+                Ok(request) => ui_scene_theme_state(state, request).map(serde_json::to_value),
                 Err(error) => {
                     return unix_error(
                         id,
@@ -4479,6 +4540,34 @@ async fn ui_island(
     Ok(Json(ui_island_state(&state, request)?))
 }
 
+async fn ui_scene(
+    State(state): State<DaemonState>,
+    Json(request): Json<UiSceneRequest>,
+) -> Result<Json<UiSceneResult>, ApiError> {
+    Ok(Json(ui_scene_state(&state, request)?))
+}
+
+async fn ui_scene_patch(
+    State(state): State<DaemonState>,
+    Json(request): Json<UiScenePatchRequest>,
+) -> Result<Json<UiSceneResult>, ApiError> {
+    Ok(Json(ui_scene_patch_state(&state, request)?))
+}
+
+async fn ui_scene_reset(
+    State(state): State<DaemonState>,
+    Json(request): Json<UiSceneResetRequest>,
+) -> Result<Json<UiSceneResult>, ApiError> {
+    Ok(Json(ui_scene_reset_state(&state, request)?))
+}
+
+async fn ui_scene_theme(
+    State(state): State<DaemonState>,
+    Json(request): Json<UiSceneThemeRequest>,
+) -> Result<Json<UiSceneResult>, ApiError> {
+    Ok(Json(ui_scene_theme_state(&state, request)?))
+}
+
 fn ui_step_state(state: &DaemonState, request: UiStepRequest) -> Result<UiStepResult, ApiError> {
     if request.schema_version != SCHEMA_VERSION {
         return Err(ApiError::bad_request(
@@ -4667,6 +4756,111 @@ fn ui_island_state(
         }),
     );
     Ok(result)
+}
+
+fn ui_scene_state(state: &DaemonState, request: UiSceneRequest) -> Result<UiSceneResult, ApiError> {
+    validate_ui_scene_request_version(request.schema_version)?;
+    request
+        .scene
+        .validate()
+        .map_err(|error| ApiError::bad_request("scene", error.to_string()))?;
+    let source = normalize_optional_step_field(request.source, 48);
+    let result = UiSceneResult {
+        schema_version: SCHEMA_VERSION.to_string(),
+        accepted: true,
+        source,
+        scene: Some(request.scene),
+    };
+    state.publish_event(
+        "ui_scene",
+        serde_json::json!({
+            "source": result.source,
+            "scene": result.scene,
+        }),
+    );
+    Ok(result)
+}
+
+fn ui_scene_patch_state(
+    state: &DaemonState,
+    request: UiScenePatchRequest,
+) -> Result<UiSceneResult, ApiError> {
+    validate_ui_scene_request_version(request.schema_version)?;
+    request
+        .scene
+        .validate()
+        .map_err(|error| ApiError::bad_request("scene", error.to_string()))?;
+    let source = normalize_optional_step_field(request.source, 48);
+    let result = UiSceneResult {
+        schema_version: SCHEMA_VERSION.to_string(),
+        accepted: true,
+        source,
+        scene: Some(request.scene),
+    };
+    state.publish_event(
+        "ui_scene",
+        serde_json::json!({
+            "source": result.source,
+            "scene": result.scene,
+            "patch": true,
+        }),
+    );
+    Ok(result)
+}
+
+fn ui_scene_reset_state(
+    state: &DaemonState,
+    request: UiSceneResetRequest,
+) -> Result<UiSceneResult, ApiError> {
+    validate_ui_scene_request_version(request.schema_version)?;
+    let source = normalize_optional_step_field(request.source, 48);
+    let result = UiSceneResult {
+        schema_version: SCHEMA_VERSION.to_string(),
+        accepted: true,
+        source,
+        scene: None,
+    };
+    state.publish_event(
+        "ui_scene_reset",
+        serde_json::json!({
+            "source": result.source,
+        }),
+    );
+    Ok(result)
+}
+
+fn ui_scene_theme_state(
+    state: &DaemonState,
+    request: UiSceneThemeRequest,
+) -> Result<UiSceneResult, ApiError> {
+    validate_ui_scene_request_version(request.schema_version)?;
+    cua_core::validate_island_theme(&request.theme)
+        .map_err(|error| ApiError::bad_request("theme", error.to_string()))?;
+    let source = normalize_optional_step_field(request.source, 48);
+    let result = UiSceneResult {
+        schema_version: SCHEMA_VERSION.to_string(),
+        accepted: true,
+        source,
+        scene: None,
+    };
+    state.publish_event(
+        "ui_scene_theme",
+        serde_json::json!({
+            "source": result.source,
+            "theme": request.theme,
+        }),
+    );
+    Ok(result)
+}
+
+fn validate_ui_scene_request_version(schema_version: String) -> Result<(), ApiError> {
+    if schema_version != SCHEMA_VERSION {
+        return Err(ApiError::bad_request(
+            "schema_version",
+            format!("expected {SCHEMA_VERSION}"),
+        ));
+    }
+    Ok(())
 }
 
 fn ui_reply_state(state: &DaemonState, request: UiReplyRequest) -> Result<UiReplyResult, ApiError> {

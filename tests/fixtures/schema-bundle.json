@@ -4633,6 +4633,567 @@
       "title": "InputResult",
       "type": "object"
     },
+    "IslandScene": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "IslandActor": {
+          "properties": {
+            "anchor": {
+              "$ref": "#/definitions/IslandAnchor"
+            },
+            "height": {
+              "format": "uint16",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "id": {
+              "type": "string"
+            },
+            "interactive": {
+              "type": "boolean"
+            },
+            "kind": {
+              "$ref": "#/definitions/IslandActorKind"
+            },
+            "layer": {
+              "$ref": "#/definitions/IslandLayer"
+            },
+            "motion": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/IslandMotion"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "width": {
+              "format": "uint16",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "x": {
+              "format": "int16",
+              "type": "integer"
+            },
+            "y": {
+              "format": "int16",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "anchor",
+            "height",
+            "id",
+            "interactive",
+            "kind",
+            "layer",
+            "width",
+            "x",
+            "y"
+          ],
+          "type": "object"
+        },
+        "IslandActorKind": {
+          "enum": [
+            "sprite",
+            "particle"
+          ],
+          "type": "string"
+        },
+        "IslandAnchor": {
+          "enum": [
+            "canvas",
+            "region_item"
+          ],
+          "type": "string"
+        },
+        "IslandItem": {
+          "oneOf": [
+            {
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "label"
+                  ],
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "kind",
+                "text"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "marquee"
+                  ],
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "kind",
+                "text"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "chip"
+                  ],
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "kind",
+                "text"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "index": {
+                  "format": "uint16",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "step_counter"
+                  ],
+                  "type": "string"
+                },
+                "total": {
+                  "format": "uint16",
+                  "minimum": 0.0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "id",
+                "index",
+                "kind",
+                "total"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "active": {
+                  "type": "boolean"
+                },
+                "count": {
+                  "format": "uint8",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "dot_chase"
+                  ],
+                  "type": "string"
+                },
+                "palette": {
+                  "$ref": "#/definitions/IslandPalette"
+                },
+                "speed": {
+                  "format": "uint8",
+                  "minimum": 0.0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "active",
+                "count",
+                "id",
+                "kind",
+                "palette",
+                "speed"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "active": {
+                  "type": "boolean"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "index": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "row"
+                  ],
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "active",
+                "id",
+                "index",
+                "kind",
+                "label",
+                "value"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "age": {
+                  "type": "string"
+                },
+                "app": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "index": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "tool_row"
+                  ],
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "tool": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "age",
+                "app",
+                "id",
+                "index",
+                "kind",
+                "label",
+                "tool"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "divider"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "flex": {
+                  "format": "uint8",
+                  "minimum": 0.0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "spacer"
+                  ],
+                  "type": "string"
+                },
+                "width": {
+                  "format": "uint16",
+                  "minimum": 0.0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "kind"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "IslandLayer": {
+          "enum": [
+            "background",
+            "content",
+            "ambient",
+            "actor",
+            "foreground"
+          ],
+          "type": "string"
+        },
+        "IslandLayout": {
+          "enum": [
+            "compact",
+            "expanded"
+          ],
+          "type": "string"
+        },
+        "IslandMotion": {
+          "oneOf": [
+            {
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "none"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "duration_ms": {
+                  "format": "uint16",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "fade"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "duration_ms",
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "duration_ms": {
+                  "format": "uint16",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "pulse"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "duration_ms",
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "duration_ms": {
+                  "format": "uint16",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "slide_to"
+                  ],
+                  "type": "string"
+                },
+                "x": {
+                  "format": "int16",
+                  "type": "integer"
+                },
+                "y": {
+                  "format": "int16",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "duration_ms",
+                "kind",
+                "x",
+                "y"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "duration_ms": {
+                  "format": "uint16",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "item": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "walk_to"
+                  ],
+                  "type": "string"
+                },
+                "region": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "duration_ms",
+                "item",
+                "kind",
+                "region"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "IslandPalette": {
+          "enum": [
+            "blue_neon",
+            "default"
+          ],
+          "type": "string"
+        },
+        "IslandRegion": {
+          "properties": {
+            "items": {
+              "items": {
+                "$ref": "#/definitions/IslandItem"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "items"
+          ],
+          "type": "object"
+        },
+        "IslandTheme": {
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "tokens": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            }
+          },
+          "required": [
+            "name",
+            "tokens"
+          ],
+          "type": "object"
+        },
+        "UiMode": {
+          "enum": [
+            "headful",
+            "headless"
+          ],
+          "type": "string"
+        }
+      },
+      "properties": {
+        "actors": {
+          "items": {
+            "$ref": "#/definitions/IslandActor"
+          },
+          "type": "array"
+        },
+        "layout": {
+          "$ref": "#/definitions/IslandLayout"
+        },
+        "mode": {
+          "$ref": "#/definitions/UiMode"
+        },
+        "regions": {
+          "additionalProperties": {
+            "$ref": "#/definitions/IslandRegion"
+          },
+          "type": "object"
+        },
+        "schema_version": {
+          "type": "string"
+        },
+        "theme": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/IslandTheme"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "actors",
+        "layout",
+        "mode",
+        "regions",
+        "schema_version"
+      ],
+      "title": "IslandScene",
+      "type": "object"
+    },
     "MachineAttestation": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "definitions": {
@@ -6626,6 +7187,1824 @@
         "text"
       ],
       "title": "UiReplyResult",
+      "type": "object"
+    },
+    "UiScenePatchRequest": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "IslandActor": {
+          "properties": {
+            "anchor": {
+              "$ref": "#/definitions/IslandAnchor"
+            },
+            "height": {
+              "format": "uint16",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "id": {
+              "type": "string"
+            },
+            "interactive": {
+              "type": "boolean"
+            },
+            "kind": {
+              "$ref": "#/definitions/IslandActorKind"
+            },
+            "layer": {
+              "$ref": "#/definitions/IslandLayer"
+            },
+            "motion": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/IslandMotion"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "width": {
+              "format": "uint16",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "x": {
+              "format": "int16",
+              "type": "integer"
+            },
+            "y": {
+              "format": "int16",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "anchor",
+            "height",
+            "id",
+            "interactive",
+            "kind",
+            "layer",
+            "width",
+            "x",
+            "y"
+          ],
+          "type": "object"
+        },
+        "IslandActorKind": {
+          "enum": [
+            "sprite",
+            "particle"
+          ],
+          "type": "string"
+        },
+        "IslandAnchor": {
+          "enum": [
+            "canvas",
+            "region_item"
+          ],
+          "type": "string"
+        },
+        "IslandItem": {
+          "oneOf": [
+            {
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "label"
+                  ],
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "kind",
+                "text"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "marquee"
+                  ],
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "kind",
+                "text"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "chip"
+                  ],
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "kind",
+                "text"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "index": {
+                  "format": "uint16",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "step_counter"
+                  ],
+                  "type": "string"
+                },
+                "total": {
+                  "format": "uint16",
+                  "minimum": 0.0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "id",
+                "index",
+                "kind",
+                "total"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "active": {
+                  "type": "boolean"
+                },
+                "count": {
+                  "format": "uint8",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "dot_chase"
+                  ],
+                  "type": "string"
+                },
+                "palette": {
+                  "$ref": "#/definitions/IslandPalette"
+                },
+                "speed": {
+                  "format": "uint8",
+                  "minimum": 0.0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "active",
+                "count",
+                "id",
+                "kind",
+                "palette",
+                "speed"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "active": {
+                  "type": "boolean"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "index": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "row"
+                  ],
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "active",
+                "id",
+                "index",
+                "kind",
+                "label",
+                "value"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "age": {
+                  "type": "string"
+                },
+                "app": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "index": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "tool_row"
+                  ],
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "tool": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "age",
+                "app",
+                "id",
+                "index",
+                "kind",
+                "label",
+                "tool"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "divider"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "flex": {
+                  "format": "uint8",
+                  "minimum": 0.0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "spacer"
+                  ],
+                  "type": "string"
+                },
+                "width": {
+                  "format": "uint16",
+                  "minimum": 0.0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "kind"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "IslandLayer": {
+          "enum": [
+            "background",
+            "content",
+            "ambient",
+            "actor",
+            "foreground"
+          ],
+          "type": "string"
+        },
+        "IslandLayout": {
+          "enum": [
+            "compact",
+            "expanded"
+          ],
+          "type": "string"
+        },
+        "IslandMotion": {
+          "oneOf": [
+            {
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "none"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "duration_ms": {
+                  "format": "uint16",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "fade"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "duration_ms",
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "duration_ms": {
+                  "format": "uint16",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "pulse"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "duration_ms",
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "duration_ms": {
+                  "format": "uint16",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "slide_to"
+                  ],
+                  "type": "string"
+                },
+                "x": {
+                  "format": "int16",
+                  "type": "integer"
+                },
+                "y": {
+                  "format": "int16",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "duration_ms",
+                "kind",
+                "x",
+                "y"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "duration_ms": {
+                  "format": "uint16",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "item": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "walk_to"
+                  ],
+                  "type": "string"
+                },
+                "region": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "duration_ms",
+                "item",
+                "kind",
+                "region"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "IslandPalette": {
+          "enum": [
+            "blue_neon",
+            "default"
+          ],
+          "type": "string"
+        },
+        "IslandRegion": {
+          "properties": {
+            "items": {
+              "items": {
+                "$ref": "#/definitions/IslandItem"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "items"
+          ],
+          "type": "object"
+        },
+        "IslandScene": {
+          "properties": {
+            "actors": {
+              "items": {
+                "$ref": "#/definitions/IslandActor"
+              },
+              "type": "array"
+            },
+            "layout": {
+              "$ref": "#/definitions/IslandLayout"
+            },
+            "mode": {
+              "$ref": "#/definitions/UiMode"
+            },
+            "regions": {
+              "additionalProperties": {
+                "$ref": "#/definitions/IslandRegion"
+              },
+              "type": "object"
+            },
+            "schema_version": {
+              "type": "string"
+            },
+            "theme": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/IslandTheme"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "actors",
+            "layout",
+            "mode",
+            "regions",
+            "schema_version"
+          ],
+          "type": "object"
+        },
+        "IslandTheme": {
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "tokens": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            }
+          },
+          "required": [
+            "name",
+            "tokens"
+          ],
+          "type": "object"
+        },
+        "UiMode": {
+          "enum": [
+            "headful",
+            "headless"
+          ],
+          "type": "string"
+        }
+      },
+      "properties": {
+        "scene": {
+          "$ref": "#/definitions/IslandScene"
+        },
+        "schema_version": {
+          "type": "string"
+        },
+        "source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "scene",
+        "schema_version"
+      ],
+      "title": "UiScenePatchRequest",
+      "type": "object"
+    },
+    "UiSceneRequest": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "IslandActor": {
+          "properties": {
+            "anchor": {
+              "$ref": "#/definitions/IslandAnchor"
+            },
+            "height": {
+              "format": "uint16",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "id": {
+              "type": "string"
+            },
+            "interactive": {
+              "type": "boolean"
+            },
+            "kind": {
+              "$ref": "#/definitions/IslandActorKind"
+            },
+            "layer": {
+              "$ref": "#/definitions/IslandLayer"
+            },
+            "motion": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/IslandMotion"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "width": {
+              "format": "uint16",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "x": {
+              "format": "int16",
+              "type": "integer"
+            },
+            "y": {
+              "format": "int16",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "anchor",
+            "height",
+            "id",
+            "interactive",
+            "kind",
+            "layer",
+            "width",
+            "x",
+            "y"
+          ],
+          "type": "object"
+        },
+        "IslandActorKind": {
+          "enum": [
+            "sprite",
+            "particle"
+          ],
+          "type": "string"
+        },
+        "IslandAnchor": {
+          "enum": [
+            "canvas",
+            "region_item"
+          ],
+          "type": "string"
+        },
+        "IslandItem": {
+          "oneOf": [
+            {
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "label"
+                  ],
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "kind",
+                "text"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "marquee"
+                  ],
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "kind",
+                "text"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "chip"
+                  ],
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "kind",
+                "text"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "index": {
+                  "format": "uint16",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "step_counter"
+                  ],
+                  "type": "string"
+                },
+                "total": {
+                  "format": "uint16",
+                  "minimum": 0.0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "id",
+                "index",
+                "kind",
+                "total"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "active": {
+                  "type": "boolean"
+                },
+                "count": {
+                  "format": "uint8",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "dot_chase"
+                  ],
+                  "type": "string"
+                },
+                "palette": {
+                  "$ref": "#/definitions/IslandPalette"
+                },
+                "speed": {
+                  "format": "uint8",
+                  "minimum": 0.0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "active",
+                "count",
+                "id",
+                "kind",
+                "palette",
+                "speed"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "active": {
+                  "type": "boolean"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "index": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "row"
+                  ],
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "active",
+                "id",
+                "index",
+                "kind",
+                "label",
+                "value"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "age": {
+                  "type": "string"
+                },
+                "app": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "index": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "tool_row"
+                  ],
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "tool": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "age",
+                "app",
+                "id",
+                "index",
+                "kind",
+                "label",
+                "tool"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "divider"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "flex": {
+                  "format": "uint8",
+                  "minimum": 0.0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "spacer"
+                  ],
+                  "type": "string"
+                },
+                "width": {
+                  "format": "uint16",
+                  "minimum": 0.0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "kind"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "IslandLayer": {
+          "enum": [
+            "background",
+            "content",
+            "ambient",
+            "actor",
+            "foreground"
+          ],
+          "type": "string"
+        },
+        "IslandLayout": {
+          "enum": [
+            "compact",
+            "expanded"
+          ],
+          "type": "string"
+        },
+        "IslandMotion": {
+          "oneOf": [
+            {
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "none"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "duration_ms": {
+                  "format": "uint16",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "fade"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "duration_ms",
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "duration_ms": {
+                  "format": "uint16",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "pulse"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "duration_ms",
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "duration_ms": {
+                  "format": "uint16",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "slide_to"
+                  ],
+                  "type": "string"
+                },
+                "x": {
+                  "format": "int16",
+                  "type": "integer"
+                },
+                "y": {
+                  "format": "int16",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "duration_ms",
+                "kind",
+                "x",
+                "y"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "duration_ms": {
+                  "format": "uint16",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "item": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "walk_to"
+                  ],
+                  "type": "string"
+                },
+                "region": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "duration_ms",
+                "item",
+                "kind",
+                "region"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "IslandPalette": {
+          "enum": [
+            "blue_neon",
+            "default"
+          ],
+          "type": "string"
+        },
+        "IslandRegion": {
+          "properties": {
+            "items": {
+              "items": {
+                "$ref": "#/definitions/IslandItem"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "items"
+          ],
+          "type": "object"
+        },
+        "IslandScene": {
+          "properties": {
+            "actors": {
+              "items": {
+                "$ref": "#/definitions/IslandActor"
+              },
+              "type": "array"
+            },
+            "layout": {
+              "$ref": "#/definitions/IslandLayout"
+            },
+            "mode": {
+              "$ref": "#/definitions/UiMode"
+            },
+            "regions": {
+              "additionalProperties": {
+                "$ref": "#/definitions/IslandRegion"
+              },
+              "type": "object"
+            },
+            "schema_version": {
+              "type": "string"
+            },
+            "theme": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/IslandTheme"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "actors",
+            "layout",
+            "mode",
+            "regions",
+            "schema_version"
+          ],
+          "type": "object"
+        },
+        "IslandTheme": {
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "tokens": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            }
+          },
+          "required": [
+            "name",
+            "tokens"
+          ],
+          "type": "object"
+        },
+        "UiMode": {
+          "enum": [
+            "headful",
+            "headless"
+          ],
+          "type": "string"
+        }
+      },
+      "properties": {
+        "scene": {
+          "$ref": "#/definitions/IslandScene"
+        },
+        "schema_version": {
+          "type": "string"
+        },
+        "source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "scene",
+        "schema_version"
+      ],
+      "title": "UiSceneRequest",
+      "type": "object"
+    },
+    "UiSceneResetRequest": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "schema_version": {
+          "type": "string"
+        },
+        "source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "schema_version"
+      ],
+      "title": "UiSceneResetRequest",
+      "type": "object"
+    },
+    "UiSceneResult": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "IslandActor": {
+          "properties": {
+            "anchor": {
+              "$ref": "#/definitions/IslandAnchor"
+            },
+            "height": {
+              "format": "uint16",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "id": {
+              "type": "string"
+            },
+            "interactive": {
+              "type": "boolean"
+            },
+            "kind": {
+              "$ref": "#/definitions/IslandActorKind"
+            },
+            "layer": {
+              "$ref": "#/definitions/IslandLayer"
+            },
+            "motion": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/IslandMotion"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "width": {
+              "format": "uint16",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "x": {
+              "format": "int16",
+              "type": "integer"
+            },
+            "y": {
+              "format": "int16",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "anchor",
+            "height",
+            "id",
+            "interactive",
+            "kind",
+            "layer",
+            "width",
+            "x",
+            "y"
+          ],
+          "type": "object"
+        },
+        "IslandActorKind": {
+          "enum": [
+            "sprite",
+            "particle"
+          ],
+          "type": "string"
+        },
+        "IslandAnchor": {
+          "enum": [
+            "canvas",
+            "region_item"
+          ],
+          "type": "string"
+        },
+        "IslandItem": {
+          "oneOf": [
+            {
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "label"
+                  ],
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "kind",
+                "text"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "marquee"
+                  ],
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "kind",
+                "text"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "chip"
+                  ],
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "kind",
+                "text"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "index": {
+                  "format": "uint16",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "step_counter"
+                  ],
+                  "type": "string"
+                },
+                "total": {
+                  "format": "uint16",
+                  "minimum": 0.0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "id",
+                "index",
+                "kind",
+                "total"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "active": {
+                  "type": "boolean"
+                },
+                "count": {
+                  "format": "uint8",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "dot_chase"
+                  ],
+                  "type": "string"
+                },
+                "palette": {
+                  "$ref": "#/definitions/IslandPalette"
+                },
+                "speed": {
+                  "format": "uint8",
+                  "minimum": 0.0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "active",
+                "count",
+                "id",
+                "kind",
+                "palette",
+                "speed"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "active": {
+                  "type": "boolean"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "index": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "row"
+                  ],
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "active",
+                "id",
+                "index",
+                "kind",
+                "label",
+                "value"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "age": {
+                  "type": "string"
+                },
+                "app": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "index": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "tool_row"
+                  ],
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "tool": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "age",
+                "app",
+                "id",
+                "index",
+                "kind",
+                "label",
+                "tool"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "divider"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "flex": {
+                  "format": "uint8",
+                  "minimum": 0.0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "spacer"
+                  ],
+                  "type": "string"
+                },
+                "width": {
+                  "format": "uint16",
+                  "minimum": 0.0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "kind"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "IslandLayer": {
+          "enum": [
+            "background",
+            "content",
+            "ambient",
+            "actor",
+            "foreground"
+          ],
+          "type": "string"
+        },
+        "IslandLayout": {
+          "enum": [
+            "compact",
+            "expanded"
+          ],
+          "type": "string"
+        },
+        "IslandMotion": {
+          "oneOf": [
+            {
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "none"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "duration_ms": {
+                  "format": "uint16",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "fade"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "duration_ms",
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "duration_ms": {
+                  "format": "uint16",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "pulse"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "duration_ms",
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "duration_ms": {
+                  "format": "uint16",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "slide_to"
+                  ],
+                  "type": "string"
+                },
+                "x": {
+                  "format": "int16",
+                  "type": "integer"
+                },
+                "y": {
+                  "format": "int16",
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "duration_ms",
+                "kind",
+                "x",
+                "y"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "duration_ms": {
+                  "format": "uint16",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "item": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "walk_to"
+                  ],
+                  "type": "string"
+                },
+                "region": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "duration_ms",
+                "item",
+                "kind",
+                "region"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "IslandPalette": {
+          "enum": [
+            "blue_neon",
+            "default"
+          ],
+          "type": "string"
+        },
+        "IslandRegion": {
+          "properties": {
+            "items": {
+              "items": {
+                "$ref": "#/definitions/IslandItem"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "items"
+          ],
+          "type": "object"
+        },
+        "IslandScene": {
+          "properties": {
+            "actors": {
+              "items": {
+                "$ref": "#/definitions/IslandActor"
+              },
+              "type": "array"
+            },
+            "layout": {
+              "$ref": "#/definitions/IslandLayout"
+            },
+            "mode": {
+              "$ref": "#/definitions/UiMode"
+            },
+            "regions": {
+              "additionalProperties": {
+                "$ref": "#/definitions/IslandRegion"
+              },
+              "type": "object"
+            },
+            "schema_version": {
+              "type": "string"
+            },
+            "theme": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/IslandTheme"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "actors",
+            "layout",
+            "mode",
+            "regions",
+            "schema_version"
+          ],
+          "type": "object"
+        },
+        "IslandTheme": {
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "tokens": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            }
+          },
+          "required": [
+            "name",
+            "tokens"
+          ],
+          "type": "object"
+        },
+        "UiMode": {
+          "enum": [
+            "headful",
+            "headless"
+          ],
+          "type": "string"
+        }
+      },
+      "properties": {
+        "accepted": {
+          "type": "boolean"
+        },
+        "scene": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/IslandScene"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "schema_version": {
+          "type": "string"
+        },
+        "source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "accepted",
+        "schema_version"
+      ],
+      "title": "UiSceneResult",
+      "type": "object"
+    },
+    "UiSceneThemeRequest": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "IslandTheme": {
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "tokens": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            }
+          },
+          "required": [
+            "name",
+            "tokens"
+          ],
+          "type": "object"
+        }
+      },
+      "properties": {
+        "schema_version": {
+          "type": "string"
+        },
+        "source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "theme": {
+          "$ref": "#/definitions/IslandTheme"
+        }
+      },
+      "required": [
+        "schema_version",
+        "theme"
+      ],
+      "title": "UiSceneThemeRequest",
       "type": "object"
     },
     "UiStepRequest": {

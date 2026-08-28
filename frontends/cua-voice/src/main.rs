@@ -1,6 +1,6 @@
 use clap::Parser;
 use cpal::traits::{DeviceTrait, HostTrait};
-use cua_core::{config_env_path, PermissionState, UiMode};
+use cua_core::{config_env_path, IslandItem, IslandScene, PermissionState, UiMode};
 use cua_voice::activation::ControlDoubleTap;
 use cua_voice::agent_events::{
     agent_reply_from_daemon_event, agent_step_from_daemon_event,
@@ -9,12 +9,12 @@ use cua_voice::agent_events::{
 use cua_voice::client::CuaClient;
 use cua_voice::daemon::{profile_daemon_is_alive, spawn_profile_daemon, wait_until_ready};
 use cua_voice::hud::{
-    compact_label, HudDisplay, HudMetrics, COMPACT_HEIGHT, EXPANDED_HEIGHT, TOP_MARGIN,
-    WINDOW_HEIGHT, WINDOW_WIDTH,
+    island_scene_from_snapshot, HudDisplay, HudMetrics, COMPACT_HEIGHT, EXPANDED_HEIGHT,
+    TOP_MARGIN, WINDOW_HEIGHT, WINDOW_WIDTH,
 };
 use cua_voice::orb::paint_orb;
 use cua_voice::stt::{DEFAULT_STT_BACKEND, DEFAULT_STT_MODEL};
-use cua_voice::ui_state::{HudPhase, HudSnapshot, VoiceUiEvent};
+use cua_voice::ui_state::{HudSnapshot, VoiceUiEvent};
 use cua_voice::{
     run_text_turn_checked, run_voice_turn_checked, run_voice_turn_until, run_wav_turn_checked,
     VoiceConfig, DEFAULT_PLANNER_MODEL,
@@ -40,7 +40,6 @@ const MARQUEE_START_DELAY_SECS: f32 = 1.6;
 const MARQUEE_END_HOLD_SECS: f32 = 0.9;
 const MARQUEE_SCROLL_SPEED_PX_PER_SEC: f32 = 24.0;
 const MARQUEE_CHAR_WIDTH_PX: f32 = 6.2;
-const ACTIVITY_DOT_COUNT: usize = 6;
 const CONTROL_SHORTCUT_POLL_INTERVAL: Duration = Duration::from_millis(4);
 const EDGE_SNAP_MARGIN_PX: f32 = 96.0;
 const MINIMIZED_WIDTH: f32 = 38.0;
@@ -217,7 +216,7 @@ impl VoiceHud {
 
     fn render_surface(
         &self,
-        display: &HudDisplay,
+        scene: &IslandScene,
         metrics: HudMetrics,
         center_text: String,
         cx: &mut Context<Self>,
@@ -225,7 +224,7 @@ impl VoiceHud {
         if minimized_content_visible(self.minimized_progress) {
             self.minimized_icon(cx).into_any_element()
         } else {
-            self.island_surface(display, metrics, center_text, cx)
+            self.island_surface(scene, metrics, center_text, cx)
                 .into_any_element()
         }
     }
@@ -248,17 +247,19 @@ impl VoiceHud {
         div().w(px(1.0)).h(px(14.0)).bg(hsla(0.0, 0.0, 1.0, 0.16))
     }
 
-    fn activity_dots(&self) -> impl IntoElement {
+    fn activity_dots_from_scene(&self, scene: &IslandScene) -> impl IntoElement {
         let elapsed = self.started.elapsed().as_secs_f32();
-        let active = dots_are_active(&self.snapshot);
-        let speed = dot_pulse_speed(&self.snapshot.phase);
+        let dot_chase = scene_dot_chase(scene).expect("IslandScene must include activity dots");
+        let active = dot_chase.active;
+        let speed = f32::from(dot_chase.speed);
+        let count = dot_chase.count as usize;
         let mut row = div()
             .h(px(COMPACT_ROW_ITEM_HEIGHT_PX))
             .flex()
             .items_center()
             .gap_1();
-        for index in 0..ACTIVITY_DOT_COUNT {
-            let style = activity_dot_style(index, elapsed, active, speed);
+        for index in 0..count {
+            let style = activity_dot_style(index, count, elapsed, active, speed);
             row = row.child(dot(style));
         }
         row
@@ -305,27 +306,21 @@ impl VoiceHud {
 
     fn island_surface(
         &self,
-        display: &HudDisplay,
+        scene: &IslandScene,
         metrics: HudMetrics,
         center: String,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let title = scene_text(scene, "left", "input")
+            .or_else(|| scene_text(scene, "header_left", "input"))
+            .expect("IslandScene must include an input label");
+        let tool = scene_text(scene, "right", "transport")
+            .or_else(|| scene_text(scene, "header_right", "transport"))
+            .expect("IslandScene must include a transport chip");
+        let app = scene_text(scene, "right", "target")
+            .or_else(|| scene_text(scene, "header_right", "target"))
+            .expect("IslandScene must include a target chip");
         let reply_visible = response_flash_visible(metrics);
-        let title = if reply_visible {
-            "Reply".to_string()
-        } else {
-            display.title.clone()
-        };
-        let tool = if reply_visible {
-            "cua".to_string()
-        } else {
-            display.tool.clone()
-        };
-        let app = if reply_visible {
-            display.phase.to_string()
-        } else {
-            display.target.clone()
-        };
 
         div()
             .w(px(island_width(metrics)))
@@ -420,9 +415,9 @@ impl VoiceHud {
                     .child(Self::chip(tool))
                     .child(Self::chip(app))
                     .child(div().flex_1())
-                    .child(self.activity_dots()),
+                    .child(self.activity_dots_from_scene(scene)),
             )
-            .child(self.expanded_body(display, metrics))
+            .child(self.expanded_body(scene, metrics))
     }
 
     fn stoplights(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -543,9 +538,12 @@ impl VoiceHud {
             .child(self.orb())
     }
 
-    fn expanded_body(&self, display: &HudDisplay, metrics: HudMetrics) -> impl IntoElement {
-        let step_counter = self.snapshot.step.counter();
-        let response = expanded_response_text(display);
+    fn expanded_body(&self, scene: &IslandScene, metrics: HudMetrics) -> impl IntoElement {
+        let step_counter = scene_step_counter(scene);
+        let task = scene_row(scene, "task", "task").expect("IslandScene must include task row");
+        let response =
+            scene_row(scene, "response", "response").expect("IslandScene must include response");
+        let footer = scene_footer(scene);
         div()
             .opacity(metrics.expansion_opacity)
             .h(px((EXPANDED_HEIGHT - COMPACT_HEIGHT).max(0.0)))
@@ -576,7 +574,7 @@ impl VoiceHud {
                                     .truncate()
                                     .text_color(rgb(0xd8d8de))
                                     .text_size(px(UI_TEXT_PX))
-                                    .child(display.prompt.clone()),
+                                    .child(task.value.clone()),
                             ),
                     )
                     .when_some(step_counter, |element, (step_index, step_total)| {
@@ -621,15 +619,15 @@ impl VoiceHud {
                             .line_height(px(16.0))
                             .text_color(rgb(0xd2d2d8))
                             .text_size(px(UI_TEXT_PX))
-                            .child(response),
+                            .child(response.value.clone()),
                     ),
             )
             .child(
                 div()
                     .flex()
                     .gap_6()
-                    .child(self.current_action_panel(display))
-                    .child(self.tools_panel(display)),
+                    .child(self.current_action_panel(scene))
+                    .child(self.tools_panel(scene)),
             )
             .child(
                 div()
@@ -638,45 +636,53 @@ impl VoiceHud {
                     .justify_between()
                     .text_size(px(UI_META_PX))
                     .text_color(rgb(0x74747d))
-                    .child(format!("Elapsed {}", elapsed_label(self.started.elapsed())))
-                    .child(format!("Model {}", compact_label(&self.model_label, 30)))
-                    .child(format!("Transport {}", display.tool)),
+                    .child(footer.elapsed)
+                    .child(footer.model)
+                    .child(footer.transport),
             )
     }
 
-    fn current_action_panel(&self, display: &HudDisplay) -> impl IntoElement {
+    fn current_action_panel(&self, scene: &IslandScene) -> impl IntoElement {
+        let action =
+            scene_row(scene, "details_left", "action").expect("IslandScene must include action");
+        let phase =
+            scene_row(scene, "details_left", "phase").expect("IslandScene must include phase");
+        let state =
+            scene_row(scene, "details_left", "state").expect("IslandScene must include state");
         div()
             .flex_1()
             .flex()
             .flex_col()
             .gap_1()
             .child(info_row(
-                "04",
-                "Action",
-                compact_label(&self.snapshot.step.label, 56),
-                true,
+                &action.index,
+                &action.label,
+                action.value.clone(),
+                action.active,
             ))
-            .child(info_row("05", "Phase", display.phase.to_string(), false))
             .child(info_row(
-                "06",
-                "State",
-                if dots_are_active(&self.snapshot) {
-                    "Live"
-                } else {
-                    "Idle"
-                },
-                dots_are_active(&self.snapshot),
+                &phase.index,
+                &phase.label,
+                phase.value.clone(),
+                phase.active,
+            ))
+            .child(info_row(
+                &state.index,
+                &state.label,
+                state.value.clone(),
+                state.active,
             ))
     }
 
-    fn tools_panel(&self, display: &HudDisplay) -> impl IntoElement {
+    fn tools_panel(&self, scene: &IslandScene) -> impl IntoElement {
+        let rows = scene_tool_rows(scene);
         div()
             .flex_1()
             .flex()
             .flex_col()
             .gap_1()
-            .child(tool_row("07", &display.rows[0]))
-            .child(tool_row("08", &display.rows[1]))
+            .child(tool_row(&rows[0]))
+            .child(tool_row(&rows[1]))
     }
 
     fn finish_drag(&mut self, window: &mut Window, cx: &mut App) {
@@ -688,24 +694,9 @@ impl VoiceHud {
     }
 }
 
-fn dots_are_active(snapshot: &HudSnapshot) -> bool {
-    !matches!(snapshot.phase, HudPhase::Idle)
-}
-
-fn dot_pulse_speed(phase: &HudPhase) -> f32 {
-    match phase {
-        HudPhase::Listening | HudPhase::RecordingStopped | HudPhase::Dispatching => 8.0,
-        HudPhase::Accepted | HudPhase::Planning | HudPhase::Transcribing => 6.0,
-        HudPhase::Reply => 5.0,
-        HudPhase::Error => 10.0,
-        HudPhase::Armed => 7.0,
-        HudPhase::Idle => 0.0,
-    }
-}
-
 #[cfg(test)]
 fn activity_dot_alpha(index: usize, elapsed_secs: f32, active: bool, speed: f32) -> f32 {
-    activity_dot_style(index, elapsed_secs, active, speed).alpha
+    activity_dot_style(index, 6, elapsed_secs, active, speed).alpha
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -716,6 +707,7 @@ struct ActivityDotStyle {
 
 fn activity_dot_style(
     index: usize,
+    dot_count: usize,
     elapsed_secs: f32,
     active: bool,
     steps_per_second: f32,
@@ -727,8 +719,9 @@ fn activity_dot_style(
         };
     }
 
-    let head = ((elapsed_secs * steps_per_second).floor() as usize) % ACTIVITY_DOT_COUNT;
-    let distance_behind = (head + ACTIVITY_DOT_COUNT - index) % ACTIVITY_DOT_COUNT;
+    let dot_count = dot_count.max(1);
+    let head = ((elapsed_secs * steps_per_second).floor() as usize) % dot_count;
+    let distance_behind = (head + dot_count - index) % dot_count;
     match distance_behind {
         0 => ActivityDotStyle {
             alpha: 1.0,
@@ -749,12 +742,10 @@ fn activity_dot_style(
     }
 }
 
-fn center_text_for(display: &HudDisplay, snapshot: &HudSnapshot, metrics: HudMetrics) -> String {
-    if response_flash_visible(metrics) {
-        display.result.clone()
-    } else {
-        center_status_text(snapshot)
-    }
+fn center_text_for(scene: &IslandScene) -> String {
+    scene_text(scene, "center", "status")
+        .or_else(|| scene_text(scene, "header_center", "status"))
+        .expect("IslandScene must include center status")
 }
 
 fn center_text_slot(center: String, reply_visible: bool, visible_secs: f32) -> impl IntoElement {
@@ -833,7 +824,9 @@ fn stoplight(color: u32) -> Div {
         )
 }
 
-fn index_tab(index: &'static str, label: &'static str, active: bool) -> impl IntoElement {
+fn index_tab(index: impl Into<String>, label: impl Into<String>, active: bool) -> impl IntoElement {
+    let index = index.into();
+    let label = label.into();
     div()
         .h(px(16.0))
         .px_1p5()
@@ -863,8 +856,8 @@ fn index_tab(index: &'static str, label: &'static str, active: bool) -> impl Int
 }
 
 fn info_row(
-    index: &'static str,
-    label: &'static str,
+    index: impl Into<String>,
+    label: impl Into<String>,
     value: impl Into<String>,
     active: bool,
 ) -> impl IntoElement {
@@ -887,7 +880,7 @@ fn info_row(
         )
 }
 
-fn tool_row(index: &'static str, row: &cua_voice::hud::HudRow) -> impl IntoElement {
+fn tool_row(row: &SceneToolRow) -> impl IntoElement {
     div()
         .h(px(24.0))
         .flex()
@@ -895,7 +888,7 @@ fn tool_row(index: &'static str, row: &cua_voice::hud::HudRow) -> impl IntoEleme
         .gap_3()
         .border_b_1()
         .border_color(hsla(0.0, 0.0, 1.0, 0.055))
-        .child(index_tab(index, "Tool", false))
+        .child(index_tab(row.index.clone(), "Tool", false))
         .child(
             div()
                 .flex()
@@ -948,22 +941,6 @@ fn step_segments(index: usize, total: usize) -> impl IntoElement {
         );
     }
     row
-}
-
-fn expanded_response_text(display: &HudDisplay) -> String {
-    let text = if display.result.trim().is_empty() {
-        display.prompt.as_str()
-    } else {
-        display.result.as_str()
-    };
-    compact_label(text, 460)
-}
-
-fn elapsed_label(duration: Duration) -> String {
-    let secs = duration.as_secs();
-    let minutes = secs / 60;
-    let seconds = secs % 60;
-    format!("{minutes:02}:{seconds:02}")
 }
 
 fn island_width(metrics: HudMetrics) -> f32 {
@@ -1026,30 +1003,166 @@ fn automation_double_click_point(label: &str) -> Option<Point<Pixels>> {
     ))
 }
 
-fn step_label(index: usize, total: usize, label: &str) -> String {
-    format!("Step {index}/{total}   {label}")
+#[derive(Clone, Copy)]
+struct DotChaseScene {
+    active: bool,
+    count: u8,
+    speed: u8,
 }
 
-fn center_status_text(snapshot: &HudSnapshot) -> String {
-    if snapshot.phase == HudPhase::Idle {
-        return snapshot.step.label.clone();
+#[derive(Clone)]
+struct SceneRow {
+    index: String,
+    label: String,
+    value: String,
+    active: bool,
+}
+
+#[derive(Clone)]
+struct SceneToolRow {
+    index: String,
+    label: String,
+    tool: String,
+    app: String,
+    age: String,
+}
+
+#[derive(Clone)]
+struct SceneFooter {
+    elapsed: String,
+    model: String,
+    transport: String,
+}
+
+fn scene_text(scene: &IslandScene, region: &str, id: &str) -> Option<String> {
+    let item = scene_item(scene, region, id)?;
+    match item {
+        IslandItem::Label { text, .. }
+        | IslandItem::Marquee { text, .. }
+        | IslandItem::Chip { text, .. } => Some(text.clone()),
+        _ => None,
     }
-    if snapshot.phase == HudPhase::Listening {
-        return "Listening".to_string();
+}
+
+fn scene_item<'a>(scene: &'a IslandScene, region: &str, id: &str) -> Option<&'a IslandItem> {
+    scene
+        .regions
+        .get(region)?
+        .items
+        .iter()
+        .find(|item| island_item_id(item) == id)
+}
+
+fn island_item_id(item: &IslandItem) -> &str {
+    match item {
+        IslandItem::Label { id, .. }
+        | IslandItem::Marquee { id, .. }
+        | IslandItem::Chip { id, .. }
+        | IslandItem::StepCounter { id, .. }
+        | IslandItem::DotChase { id, .. }
+        | IslandItem::Row { id, .. }
+        | IslandItem::ToolRow { id, .. }
+        | IslandItem::Divider { id }
+        | IslandItem::Spacer { id, .. } => id,
     }
-    if snapshot.phase == HudPhase::RecordingStopped {
-        return "Recording Stopped".to_string();
+}
+
+fn scene_dot_chase(scene: &IslandScene) -> Option<DotChaseScene> {
+    for region in ["right", "header_right"] {
+        if let Some(IslandItem::DotChase {
+            active,
+            count,
+            speed,
+            ..
+        }) = scene_item(scene, region, "activity")
+        {
+            return Some(DotChaseScene {
+                active: *active,
+                count: *count,
+                speed: *speed,
+            });
+        }
     }
-    if snapshot.phase == HudPhase::Transcribing {
-        return "Processing".to_string();
+    None
+}
+
+fn scene_step_counter(scene: &IslandScene) -> Option<(usize, usize)> {
+    let IslandItem::StepCounter { index, total, .. } = scene_item(scene, "task", "step")? else {
+        return None;
+    };
+    Some((*index as usize, *total as usize))
+}
+
+fn scene_row(scene: &IslandScene, region: &str, id: &str) -> Option<SceneRow> {
+    let IslandItem::Row {
+        index,
+        label,
+        value,
+        active,
+        ..
+    } = scene_item(scene, region, id)?
+    else {
+        return None;
+    };
+    Some(SceneRow {
+        index: index.clone(),
+        label: label.clone(),
+        value: value.clone(),
+        active: *active,
+    })
+}
+
+fn scene_tool_rows(scene: &IslandScene) -> [SceneToolRow; 2] {
+    let mut rows = scene
+        .regions
+        .get("details_right")
+        .map(|region| {
+            region
+                .items
+                .iter()
+                .filter_map(|item| {
+                    let IslandItem::ToolRow {
+                        index,
+                        label,
+                        tool,
+                        app,
+                        age,
+                        ..
+                    } = item
+                    else {
+                        return None;
+                    };
+                    Some(SceneToolRow {
+                        index: index.clone(),
+                        label: label.clone(),
+                        tool: tool.clone(),
+                        app: app.clone(),
+                        age: age.clone(),
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    while rows.len() < 2 {
+        rows.push(SceneToolRow {
+            index: format!("{:02}", rows.len() + 7),
+            label: String::new(),
+            tool: String::new(),
+            app: String::new(),
+            age: String::new(),
+        });
     }
-    if snapshot.phase == HudPhase::Accepted {
-        return "Accepted".to_string();
+    [rows.remove(0), rows.remove(0)]
+}
+
+fn scene_footer(scene: &IslandScene) -> SceneFooter {
+    SceneFooter {
+        elapsed: scene_text(scene, "footer", "elapsed")
+            .expect("IslandScene must include elapsed footer"),
+        model: scene_text(scene, "footer", "model").expect("IslandScene must include model footer"),
+        transport: scene_text(scene, "footer", "transport")
+            .expect("IslandScene must include transport footer"),
     }
-    if let Some((index, total)) = snapshot.step.counter() {
-        return step_label(index, total, &snapshot.step.label);
-    }
-    snapshot.step.label.clone()
 }
 
 fn should_reset_after_reply_collapse(reply_window_expired: bool, response_progress: f32) -> bool {
@@ -1080,7 +1193,17 @@ impl Render for VoiceHud {
         window.request_animation_frame();
         let display = HudDisplay::from_snapshot(&self.snapshot);
         let metrics = HudMetrics::with_expansion(self.response_progress, self.expansion_progress);
-        let center_text = center_text_for(&display, &self.snapshot, metrics);
+        let reply_visible = response_flash_visible(metrics);
+        let scene = island_scene_from_snapshot(
+            &self.snapshot,
+            &display,
+            self.expanded && !self.minimized,
+            reply_visible,
+            &self.model_label,
+            self.started.elapsed(),
+        )
+        .expect("internal IslandScene mapping must validate");
+        let center_text = center_text_for(&scene);
         self.sync_center_text(&center_text);
         if self.drag.is_none() {
             if let Some(display) = window.display(cx) {
@@ -1099,7 +1222,7 @@ impl Render for VoiceHud {
         div()
             .size_full()
             .relative()
-            .child(self.render_surface(&display, metrics, center_text, cx))
+            .child(self.render_surface(&scene, metrics, center_text, cx))
             .into_any_element()
     }
 }
@@ -2128,6 +2251,34 @@ mod tests {
     use super::*;
     use cua_voice::hud::{COMPACT_RADIUS, COMPACT_WIDTH};
 
+    fn scene_center_text_for_test(snapshot: HudSnapshot) -> String {
+        let display = HudDisplay::from_snapshot(&snapshot);
+        let scene = island_scene_from_snapshot(
+            &snapshot,
+            &display,
+            false,
+            false,
+            DEFAULT_PLANNER_MODEL,
+            Duration::ZERO,
+        )
+        .unwrap();
+        center_text_for(&scene)
+    }
+
+    fn step_snapshot(index: u16, total: u16, label: &str) -> HudSnapshot {
+        let mut snapshot = HudSnapshot::default();
+        snapshot.apply(VoiceUiEvent::AgentStep {
+            label: label.to_string(),
+            source: Some("remote".to_string()),
+            task: Some("Test".to_string()),
+            tool: Some("Unix socket".to_string()),
+            step_index: Some(index),
+            step_total: Some(total),
+            ttl_ms: None,
+        });
+        snapshot
+    }
+
     #[test]
     fn shortcut_controller_toggles_active_voice_turn_stop() {
         let active_stop = Mutex::new(None::<Arc<AtomicBool>>);
@@ -2501,7 +2652,7 @@ mod tests {
     #[test]
     fn step_label_stays_compact_and_structured() {
         assert_eq!(
-            step_label(2, 5, "checking target"),
+            scene_center_text_for_test(step_snapshot(2, 5, "checking target")),
             "Step 2/5   checking target"
         );
     }
@@ -2509,7 +2660,7 @@ mod tests {
     #[test]
     fn step_label_accepts_declarative_totals_beyond_voice_defaults() {
         assert_eq!(
-            step_label(37, 120, "verifying the selected window"),
+            scene_center_text_for_test(step_snapshot(37, 120, "verifying the selected window")),
             "Step 37/120   verifying the selected window"
         );
     }
@@ -2518,7 +2669,7 @@ mod tests {
     fn idle_center_text_does_not_show_zero_step_counter() {
         let snapshot = HudSnapshot::default();
 
-        assert_eq!(center_status_text(&snapshot), "Ready");
+        assert_eq!(scene_center_text_for_test(snapshot), "Ready");
     }
 
     #[test]
@@ -2526,7 +2677,7 @@ mod tests {
         let mut snapshot = HudSnapshot::default();
         snapshot.apply(VoiceUiEvent::Listening { ms: 1_250 });
 
-        assert_eq!(center_status_text(&snapshot), "Listening");
+        assert_eq!(scene_center_text_for_test(snapshot), "Listening");
     }
 
     #[test]
@@ -2534,7 +2685,7 @@ mod tests {
         let mut snapshot = HudSnapshot::default();
         snapshot.apply(VoiceUiEvent::Accepted);
 
-        assert_eq!(center_status_text(&snapshot), "Accepted");
+        assert_eq!(scene_center_text_for_test(snapshot), "Accepted");
     }
 
     #[test]
@@ -2542,7 +2693,7 @@ mod tests {
         let mut snapshot = HudSnapshot::default();
         snapshot.apply(VoiceUiEvent::RecordingStopped);
 
-        assert_eq!(center_status_text(&snapshot), "Recording Stopped");
+        assert_eq!(scene_center_text_for_test(snapshot), "Recording Stopped");
     }
 
     #[test]
@@ -2550,7 +2701,7 @@ mod tests {
         let mut snapshot = HudSnapshot::default();
         snapshot.apply(VoiceUiEvent::Transcribing);
 
-        assert_eq!(center_status_text(&snapshot), "Processing");
+        assert_eq!(scene_center_text_for_test(snapshot), "Processing");
     }
 
     #[test]
@@ -2689,7 +2840,7 @@ mod tests {
         });
 
         assert_eq!(
-            center_status_text(&snapshot),
+            scene_center_text_for_test(snapshot),
             "Step 2/5   Opening Safari with cua"
         );
     }
@@ -2700,7 +2851,10 @@ mod tests {
         snapshot.apply(VoiceUiEvent::Planning {
             tool: "OpenRouter Vision".to_string(),
         });
-        assert_eq!(center_status_text(&snapshot), "Choosing action");
+        assert_eq!(
+            scene_center_text_for_test(snapshot.clone()),
+            "Choosing action"
+        );
 
         snapshot.apply(VoiceUiEvent::AgentStep {
             label: "checking target".to_string(),
@@ -2711,7 +2865,7 @@ mod tests {
             step_total: None,
             ttl_ms: Some(2_000),
         });
-        assert_eq!(center_status_text(&snapshot), "checking target");
+        assert_eq!(scene_center_text_for_test(snapshot), "checking target");
     }
 
     #[test]
@@ -2752,24 +2906,60 @@ mod tests {
     #[test]
     fn activity_dots_are_static_when_idle() {
         let snapshot = HudSnapshot::default();
+        let display = HudDisplay::from_snapshot(&snapshot);
+        let scene = island_scene_from_snapshot(
+            &snapshot,
+            &display,
+            false,
+            false,
+            DEFAULT_PLANNER_MODEL,
+            Duration::ZERO,
+        )
+        .unwrap();
+        let activity = scene_dot_chase(&scene).unwrap();
 
-        assert!(!dots_are_active(&snapshot));
-        assert_eq!(activity_dot_alpha(0, 0.0, false, 0.0), 0.24);
-        assert_eq!(activity_dot_alpha(0, 10.0, false, 0.0), 0.24);
-        assert_eq!(activity_dot_alpha(5, 10.0, false, 0.0), 0.24);
+        assert!(!activity.active);
+        assert_eq!(
+            activity_dot_alpha(0, 0.0, activity.active, f32::from(activity.speed)),
+            0.24
+        );
+        assert_eq!(
+            activity_dot_alpha(0, 10.0, activity.active, f32::from(activity.speed)),
+            0.24
+        );
+        assert_eq!(
+            activity_dot_alpha(5, 10.0, activity.active, f32::from(activity.speed)),
+            0.24
+        );
     }
 
     #[test]
     fn activity_dots_run_a_circular_trailing_chase_when_active() {
-        let speed = dot_pulse_speed(&HudPhase::Dispatching);
-        let start = (0..ACTIVITY_DOT_COUNT)
+        let mut snapshot = HudSnapshot::default();
+        snapshot.apply(VoiceUiEvent::Dispatching(
+            "mouse click at 10,10".to_string(),
+        ));
+        let display = HudDisplay::from_snapshot(&snapshot);
+        let scene = island_scene_from_snapshot(
+            &snapshot,
+            &display,
+            false,
+            false,
+            DEFAULT_PLANNER_MODEL,
+            Duration::ZERO,
+        )
+        .unwrap();
+        let activity = scene_dot_chase(&scene).unwrap();
+        let speed = f32::from(activity.speed);
+        let count = activity.count as usize;
+        let start = (0..count)
             .map(|index| activity_dot_alpha(index, 0.0, true, speed))
             .collect::<Vec<_>>();
-        let later = (0..ACTIVITY_DOT_COUNT)
+        let later = (0..count)
             .map(|index| activity_dot_alpha(index, 1.0 / speed, true, speed))
             .collect::<Vec<_>>();
-        let wrapped = (0..ACTIVITY_DOT_COUNT)
-            .map(|index| activity_dot_alpha(index, ACTIVITY_DOT_COUNT as f32 / speed, true, speed))
+        let wrapped = (0..count)
+            .map(|index| activity_dot_alpha(index, count as f32 / speed, true, speed))
             .collect::<Vec<_>>();
         let brightest_start = start
             .iter()
@@ -2793,10 +2983,10 @@ mod tests {
 
     #[test]
     fn activity_dots_keep_one_neon_blue_family() {
-        let head = activity_dot_style(0, 0.0, true, 8.0);
-        let immediate_trail = activity_dot_style(5, 0.0, true, 8.0);
-        let older_trail = activity_dot_style(4, 0.0, true, 8.0);
-        let dormant = activity_dot_style(3, 0.0, true, 8.0);
+        let head = activity_dot_style(0, 6, 0.0, true, 8.0);
+        let immediate_trail = activity_dot_style(5, 6, 0.0, true, 8.0);
+        let older_trail = activity_dot_style(4, 6, 0.0, true, 8.0);
+        let dormant = activity_dot_style(3, 6, 0.0, true, 8.0);
 
         assert!(head.alpha > immediate_trail.alpha);
         assert!(immediate_trail.alpha > older_trail.alpha);
