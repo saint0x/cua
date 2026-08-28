@@ -17,17 +17,17 @@ use cua_voice::hud::{
 };
 use cua_voice::orb::paint_orb;
 use cua_voice::stt::{DEFAULT_STT_BACKEND, DEFAULT_STT_MODEL};
-use cua_voice::ui_state::{HudSnapshot, VoiceUiEvent};
+use cua_voice::ui_state::{HudPhase, HudSnapshot, VoiceUiEvent};
 use cua_voice::{
     run_text_turn_checked, run_voice_turn_checked, run_voice_turn_until, run_wav_turn_checked,
     VoiceConfig, DEFAULT_PLANNER_MODEL,
 };
 use gpui::{
-    canvas, div, hsla, linear_color_stop, linear_gradient, point, prelude::*, px, rgb, size,
-    AnyElement, App, Application, Background, Bounds, BoxShadow, Context, Div, Hsla, IntoElement,
-    MouseButton as GpuiMouseButton, MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Point,
-    Render, Rgba, Styled, Window, WindowBackgroundAppearance, WindowBounds, WindowKind,
-    WindowOptions,
+    canvas, div, fill, hsla, linear_color_stop, linear_gradient, point, prelude::*, px, rgb, size,
+    AnyElement, App, Application, Background, Bounds, BoxShadow, Context, Corners, Div, Hsla,
+    IntoElement, MouseButton as GpuiMouseButton, MouseDownEvent, MouseMoveEvent, ParentElement,
+    PathBuilder, Pixels, Point, Render, Rgba, Styled, Window, WindowBackgroundAppearance,
+    WindowBounds, WindowKind, WindowOptions,
 };
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -47,10 +47,17 @@ const MARQUEE_SCROLL_SPEED_PX_PER_SEC: f32 = 24.0;
 const MARQUEE_CHAR_WIDTH_PX: f32 = 6.2;
 const CONTROL_SHORTCUT_POLL_INTERVAL: Duration = Duration::from_millis(4);
 const EDGE_SNAP_MARGIN_PX: f32 = 96.0;
-const MINIMIZED_WIDTH: f32 = 38.0;
+const MINIMIZED_WIDTH: f32 = 74.0;
 const MINIMIZED_HEIGHT: f32 = 28.0;
 const MINIMIZED_RADIUS: f32 = 14.0;
 const MINIMIZED_RIGHT_OFFSET: f32 = 220.0;
+const HEADER_PAD_X_PX: f32 = 16.0;
+const HEADER_GAP_PX: f32 = 12.0;
+const HEADER_ORB_PX: f32 = 30.0;
+const HEADER_RING_PX: f32 = 22.0;
+const TASK_RING_PX: f32 = 34.0;
+const BODY_LABEL_WIDTH_PX: f32 = 68.0;
+const BODY_PAD_X_PX: f32 = 20.0;
 const UI_TEXT_PX: f32 = 12.0;
 const UI_META_PX: f32 = 11.0;
 const UI_LINE_HEIGHT_PX: f32 = 15.0;
@@ -237,7 +244,7 @@ impl VoiceHud {
                 paint_orb(window, bounds, &phase, elapsed);
             },
         )
-        .size(px(13.0))
+        .size(px(HEADER_ORB_PX))
     }
 
     fn render_surface(
@@ -255,51 +262,55 @@ impl VoiceHud {
         }
     }
 
-    fn chip(label: impl Into<String>, high_contrast: bool) -> impl IntoElement {
+    fn chip(label: impl Into<String>) -> impl IntoElement {
         div()
-            .h(px(COMPACT_ROW_ITEM_HEIGHT_PX))
-            .px_1()
-            .rounded(px(4.0))
-            .bg(if high_contrast {
-                hsla(0.0, 0.0, 0.0, 0.34)
-            } else {
-                hsla(0.0, 0.0, 1.0, 0.10)
-            })
+            .h(px(23.0))
+            .px(px(9.0))
+            .rounded(px(8.0))
+            .bg(hsla(0.0, 0.0, 1.0, 0.10))
             .flex()
             .items_center()
-            .text_color(if high_contrast {
-                rgb(0xf4f4f7)
-            } else {
-                rgb(0xb9b9c0)
-            })
+            .text_color(rgb(0xebebf0))
             .text_size(px(UI_TEXT_PX))
-            .line_height(px(UI_LINE_HEIGHT_PX))
+            .line_height(px(14.0))
             .child(label.into())
     }
 
-    fn divider(high_contrast: bool) -> impl IntoElement {
-        div()
-            .w(px(1.0))
-            .h(px(14.0))
-            .bg(rule_color(if high_contrast { 0.34 } else { 0.16 }))
+    fn divider() -> impl IntoElement {
+        div().w(px(1.0)).h(px(15.0)).bg(rule_color(0.16))
     }
 
-    fn activity_dots_from_scene(&self, scene: &IslandScene) -> impl IntoElement {
+    fn activity_ring_from_scene(&self, scene: &IslandScene) -> impl IntoElement {
         let elapsed = self.started.elapsed().as_secs_f32();
         let dot_chase = scene_dot_chase(scene).expect("IslandScene must include activity dots");
-        let active = dot_chase.active;
-        let speed = f32::from(dot_chase.speed);
-        let count = dot_chase.count as usize;
-        let mut row = div()
-            .h(px(COMPACT_ROW_ITEM_HEIGHT_PX))
-            .flex()
-            .items_center()
-            .gap_1();
-        for index in 0..count {
-            let style = activity_dot_style(index, count, elapsed, active, speed);
-            row = row.child(dot(style));
-        }
-        row
+        let step_counter = scene_step_counter(scene);
+        let accent = phase_accent(&self.snapshot.phase);
+        canvas(
+            move |_, _, _| {
+                (
+                    dot_chase.active,
+                    dot_chase.speed,
+                    dot_chase.count,
+                    step_counter,
+                    elapsed,
+                    accent,
+                )
+            },
+            move |bounds, (active, speed, count, step_counter, elapsed, accent), window, _| {
+                paint_activity_ring(
+                    window,
+                    bounds,
+                    accent,
+                    active,
+                    speed as f32,
+                    count as usize,
+                    step_counter,
+                    elapsed,
+                );
+            },
+        )
+        .size(px(HEADER_RING_PX))
+        .flex_none()
     }
 
     fn tick_animation(&mut self) {
@@ -358,18 +369,14 @@ impl VoiceHud {
             .or_else(|| scene_text(scene, "header_right", "target"))
             .expect("IslandScene must include a target chip");
         let reply_visible = response_flash_visible(metrics);
-        let high_contrast = background_needs_foreground_lift(&scene.background);
 
         div()
             .w(px(island_width(metrics)))
             .h(px(island_height(metrics)))
-            .rounded(px(island_radius(metrics)))
             .overflow_hidden()
             .group("cua-island")
             .opacity(metrics.bar_opacity)
             .bg(hsla(0.0, 0.0, 0.0, 0.0))
-            .border_1()
-            .border_color(rule_color(if high_contrast { 0.34 } else { 0.15 }))
             .shadow(vec![BoxShadow {
                 color: hsla(0.0, 0.0, 0.0, 0.58),
                 blur_radius: px(18.0),
@@ -421,8 +428,11 @@ impl VoiceHud {
             .px_3()
             .flex()
             .flex_col()
-            .child(self.background_layer(scene))
-            .child(self.background_contrast_layer(scene))
+            .child(shell_background_layer(
+                metrics,
+                &scene.background,
+                self.started.elapsed().as_secs_f32(),
+            ))
             .child(self.stoplights(cx))
             .child(self.actor_layer(scene, metrics))
             .child(
@@ -432,7 +442,8 @@ impl VoiceHud {
                     .top(px(COMPACT_CONTENT_Y_OFFSET_PX))
                     .flex()
                     .items_center()
-                    .gap_3()
+                    .gap(px(HEADER_GAP_PX))
+                    .px(px(HEADER_PAD_X_PX))
                     .child(self.orb())
                     .child(
                         div()
@@ -441,52 +452,32 @@ impl VoiceHud {
                             .flex()
                             .items_center()
                             .truncate()
-                            .text_color(if high_contrast {
-                                rgb(0xe9e9ee)
-                            } else {
-                                rgb(0x9f9fa6)
-                            })
-                            .text_size(px(UI_TEXT_PX))
+                            .text_color(rgb(0xffffff))
+                            .text_size(px(13.5))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
                             .line_height(px(UI_LINE_HEIGHT_PX))
                             .child(title),
                     )
-                    .child(Self::divider(high_contrast))
+                    .child(Self::divider())
                     .child(center_text_slot(
                         center,
                         reply_visible,
                         self.center_text_since.elapsed().as_secs_f32(),
-                        high_contrast,
                     ))
-                    .child(Self::divider(high_contrast))
-                    .child(Self::chip(tool, high_contrast))
-                    .child(Self::chip(app, high_contrast))
-                    .child(div().flex_1())
-                    .child(self.activity_dots_from_scene(scene)),
+                    .child(Self::divider())
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(7.0))
+                            .child(Self::chip(tool))
+                            .child(Self::chip(app)),
+                    )
+                    .child(self.activity_ring_from_scene(scene)),
             )
             .when(scene_renders_expanded_body(scene), |element| {
-                element.child(self.expanded_body(scene, metrics, high_contrast))
+                element.child(self.expanded_body(scene, metrics))
             })
-    }
-
-    fn background_layer(&self, scene: &IslandScene) -> impl IntoElement {
-        div()
-            .absolute()
-            .left_0()
-            .top_0()
-            .size_full()
-            .bg(background_paint(
-                &scene.background,
-                self.started.elapsed().as_secs_f32(),
-            ))
-    }
-
-    fn background_contrast_layer(&self, scene: &IslandScene) -> impl IntoElement {
-        div().absolute().left_0().top_0().size_full().bg(hsla(
-            0.0,
-            0.0,
-            0.0,
-            background_contrast_scrim_alpha(&scene.background),
-        ))
     }
 
     fn stoplights(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -638,12 +629,7 @@ impl VoiceHud {
             .child(self.orb())
     }
 
-    fn expanded_body(
-        &self,
-        scene: &IslandScene,
-        metrics: HudMetrics,
-        high_contrast: bool,
-    ) -> impl IntoElement {
+    fn expanded_body(&self, scene: &IslandScene, metrics: HudMetrics) -> impl IntoElement {
         let step_counter = scene_step_counter(scene);
         let Some(task) = scene_row(scene, "task", "task") else {
             return div();
@@ -657,149 +643,101 @@ impl VoiceHud {
         div()
             .opacity(metrics.expansion_opacity)
             .h(px((EXPANDED_HEIGHT - COMPACT_HEIGHT).max(0.0)))
-            .border_t_1()
-            .border_color(rule_color(if high_contrast { 0.20 } else { 0.08 }))
-            .px_3()
-            .pb_4()
-            .pt_4()
+            .px(px(BODY_PAD_X_PX))
+            .pt(px(4.0))
+            .pb(px(14.0))
             .flex()
             .flex_col()
-            .gap_3()
+            .gap(px(12.0))
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .justify_between()
-                    .gap_4()
+                    .gap(px(26.0))
                     .child(
                         div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
+                            .flex_1()
                             .min_w_0()
-                            .child(index_tab("01", "Task", true))
+                            .flex()
+                            .flex_col()
+                            .gap(px(10.0))
+                            .child(field_row("Task", task.value.clone(), 1))
+                            .child(field_row("Response", response.value.clone(), 2))
                             .child(
                                 div()
-                                    .w(px(540.0))
-                                    .truncate()
-                                    .text_color(content_text_color(high_contrast))
-                                    .text_size(px(UI_TEXT_PX))
-                                    .child(task.value.clone()),
-                            ),
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(16.0))
+                                    .min_w_0()
+                                    .child(field_label("Action"))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .flex()
+                                            .items_center()
+                                            .gap(px(14.0))
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .truncate()
+                                                    .text_color(content_text_color(false))
+                                                    .text_size(px(13.5))
+                                                    .line_height(px(19.0))
+                                                    .child(
+                                                        scene_row(scene, "details_left", "action")
+                                                            .map(|row| row.value)
+                                                            .unwrap_or_else(|| "None".to_string()),
+                                                    ),
+                                            )
+                                            .child(Self::chip(
+                                                scene_row(scene, "details_left", "phase")
+                                                    .map(|row| row.value)
+                                                    .unwrap_or_else(|| "Idle".to_string()),
+                                            ))
+                                            .child(Self::chip(
+                                                scene_row(scene, "details_left", "state")
+                                                    .map(|row| row.value)
+                                                    .unwrap_or_else(|| "Idle".to_string()),
+                                            )),
+                                    ),
+                            )
+                            .child(tools_field(scene)),
                     )
-                    .when_some(step_counter, |element, (step_index, step_total)| {
-                        element.child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap_1p5()
-                                .flex_none()
-                                .child(index_tab("02", "Step", true))
-                                .child(
-                                    div()
-                                        .h(px(15.0))
-                                        .px_1()
-                                        .rounded(px(3.0))
-                                        .bg(if high_contrast {
-                                            hsla(0.0, 0.0, 0.0, 0.30)
-                                        } else {
-                                            hsla(0.0, 0.0, 1.0, 0.045)
-                                        })
-                                        .flex()
-                                        .items_center()
-                                        .text_color(meta_text_color(high_contrast))
-                                        .text_size(px(UI_META_PX))
-                                        .child(format!("{step_index}/{step_total}")),
-                                )
-                                .child(step_segments(step_index, step_total)),
-                        )
-                    }),
-            )
-            .child(
-                div()
-                    .h(px(205.0))
-                    .border_t_1()
-                    .border_b_1()
-                    .border_color(rule_color(if high_contrast { 0.22 } else { 0.075 }))
-                    .py_3()
-                    .overflow_hidden()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .child(index_tab("03", "Response", true))
                     .child(
                         div()
-                            .whitespace_normal()
-                            .line_height(px(16.0))
-                            .text_color(content_text_color(high_contrast))
-                            .text_size(px(UI_TEXT_PX))
-                            .child(response.value.clone()),
+                            .w(px(54.0))
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .gap(px(5.0))
+                            .child(task_gauge(
+                                scene,
+                                &self.snapshot.phase,
+                                self.started.elapsed().as_secs_f32(),
+                            ))
+                            .child(
+                                div()
+                                    .text_size(px(UI_META_PX))
+                                    .line_height(px(13.0))
+                                    .text_color(rgb(0x9f9fa6))
+                                    .child(gauge_caption(step_counter, &self.snapshot.phase)),
+                            ),
                     ),
             )
             .child(
                 div()
+                    .mt_auto()
+                    .pt(px(11.0))
+                    .border_t_1()
+                    .border_color(rule_color(0.08))
                     .flex()
-                    .gap_6()
-                    .child(self.current_action_panel(scene, high_contrast))
-                    .child(self.tools_panel(scene, high_contrast)),
+                    .gap(px(40.0))
+                    .child(footer_cell("Elapsed", footer.elapsed))
+                    .child(footer_cell("Model", footer.model))
+                    .child(footer_cell("Transport", footer.transport)),
             )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .text_size(px(UI_META_PX))
-                    .text_color(meta_text_color(high_contrast))
-                    .child(footer.elapsed)
-                    .child(footer.model)
-                    .child(footer.transport),
-            )
-    }
-
-    fn current_action_panel(&self, scene: &IslandScene, high_contrast: bool) -> impl IntoElement {
-        let action =
-            scene_row(scene, "details_left", "action").expect("IslandScene must include action");
-        let phase =
-            scene_row(scene, "details_left", "phase").expect("IslandScene must include phase");
-        let state =
-            scene_row(scene, "details_left", "state").expect("IslandScene must include state");
-        div()
-            .flex_1()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .child(info_row(
-                &action.index,
-                &action.label,
-                action.value.clone(),
-                action.active,
-                high_contrast,
-            ))
-            .child(info_row(
-                &phase.index,
-                &phase.label,
-                phase.value.clone(),
-                phase.active,
-                high_contrast,
-            ))
-            .child(info_row(
-                &state.index,
-                &state.label,
-                state.value.clone(),
-                state.active,
-                high_contrast,
-            ))
-    }
-
-    fn tools_panel(&self, scene: &IslandScene, high_contrast: bool) -> impl IntoElement {
-        let rows = scene_tool_rows(scene);
-        div()
-            .flex_1()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .child(tool_row(&rows[0], high_contrast))
-            .child(tool_row(&rows[1], high_contrast))
     }
 
     fn finish_drag(&mut self, window: &mut Window, cx: &mut App) {
@@ -816,6 +754,7 @@ fn activity_dot_alpha(index: usize, elapsed_secs: f32, active: bool, speed: f32)
     activity_dot_style(index, 6, elapsed_secs, active, speed).alpha
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct ActivityDotStyle {
     alpha: f32,
@@ -1042,6 +981,7 @@ fn background_contrast_scrim_alpha(background: &IslandBackground) -> f32 {
     }
 }
 
+#[cfg(test)]
 fn background_needs_foreground_lift(background: &IslandBackground) -> bool {
     background_contrast_scrim_alpha(background) > 0.0
 }
@@ -1076,6 +1016,7 @@ fn lerp(start: f32, end: f32, t: f32) -> f32 {
     start + (end - start) * t
 }
 
+#[cfg(test)]
 fn activity_dot_style(
     index: usize,
     dot_count: usize,
@@ -1119,12 +1060,7 @@ fn center_text_for(scene: &IslandScene) -> String {
         .expect("IslandScene must include center status")
 }
 
-fn center_text_slot(
-    center: String,
-    reply_visible: bool,
-    visible_secs: f32,
-    high_contrast: bool,
-) -> impl IntoElement {
+fn center_text_slot(center: String, reply_visible: bool, visible_secs: f32) -> impl IntoElement {
     let offset = marquee_offset_px(&center, CENTER_LABEL_WIDTH, visible_secs);
     div()
         .w(px(CENTER_LABEL_WIDTH))
@@ -1133,9 +1069,7 @@ fn center_text_slot(
         .whitespace_nowrap()
         .flex()
         .items_center()
-        .text_color(if high_contrast {
-            rgb(0xffffff)
-        } else if reply_visible {
+        .text_color(if reply_visible {
             rgb(0xf1f1f4)
         } else {
             rgb(0xb9b9c0)
@@ -1172,13 +1106,274 @@ fn estimated_center_text_width_px(text: &str) -> f32 {
     text.chars().count() as f32 * MARQUEE_CHAR_WIDTH_PX
 }
 
-fn dot(style: ActivityDotStyle) -> impl IntoElement {
-    div().w(px(4.0)).h(px(4.0)).rounded_full().bg(hsla(
-        210.0 / 360.0,
-        1.0,
-        style.lightness,
-        style.alpha,
-    ))
+fn shell_background_layer(
+    metrics: HudMetrics,
+    background: &IslandBackground,
+    elapsed_secs: f32,
+) -> impl IntoElement {
+    let radius = island_radius(metrics);
+    let paint = background_paint(background, elapsed_secs);
+    let scrim = background_contrast_scrim_alpha(background);
+    canvas(
+        move |_, _, _| (radius, paint, scrim),
+        move |bounds, (radius, paint, scrim), window, _| {
+            window.paint_quad(fill(bounds, paint).corner_radii(Corners {
+                top_left: px(0.0),
+                top_right: px(0.0),
+                bottom_right: px(radius),
+                bottom_left: px(radius),
+            }));
+            if scrim > 0.0 {
+                window.paint_quad(
+                    fill(bounds, hsla(0.0, 0.0, 0.0, scrim)).corner_radii(Corners {
+                        top_left: px(0.0),
+                        top_right: px(0.0),
+                        bottom_right: px(radius),
+                        bottom_left: px(radius),
+                    }),
+                );
+            }
+        },
+    )
+    .absolute()
+    .left_0()
+    .top_0()
+    .size_full()
+}
+
+fn field_label(label: impl Into<String>) -> impl IntoElement {
+    div()
+        .w(px(BODY_LABEL_WIDTH_PX))
+        .flex_none()
+        .text_size(px(10.0))
+        .line_height(px(19.0))
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .text_color(hsla(0.0, 0.0, 1.0, 0.36))
+        .child(label.into().to_uppercase())
+}
+
+fn field_row(label: impl Into<String>, value: impl Into<String>, lines: usize) -> impl IntoElement {
+    div()
+        .flex()
+        .items_baseline()
+        .gap(px(16.0))
+        .min_w_0()
+        .child(field_label(label))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .max_h(px(if lines > 1 { 38.0 } else { 19.0 }))
+                .overflow_hidden()
+                .text_color(content_text_color(false))
+                .text_size(px(13.5))
+                .line_height(px(19.0))
+                .child(value.into()),
+        )
+}
+
+fn tools_field(scene: &IslandScene) -> impl IntoElement {
+    let rows = scene_tool_rows(scene);
+    div()
+        .flex()
+        .items_baseline()
+        .gap(px(16.0))
+        .min_w_0()
+        .child(field_label("Tools"))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(px(3.0))
+                .child(compact_tool_row(&rows[0]))
+                .child(compact_tool_row(&rows[1])),
+        )
+}
+
+fn compact_tool_row(row: &SceneToolRow) -> impl IntoElement {
+    div()
+        .flex()
+        .items_baseline()
+        .gap(px(14.0))
+        .min_w_0()
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .text_color(content_text_color(false))
+                .text_size(px(13.5))
+                .line_height(px(19.0))
+                .child(row.label.clone()),
+        )
+        .child(
+            div()
+                .flex_none()
+                .text_color(rgb(0x8e8e93))
+                .text_size(px(UI_META_PX))
+                .line_height(px(19.0))
+                .child(format!("{} - {} - {}", row.tool, row.app, row.age)),
+        )
+}
+
+fn footer_cell(label: impl Into<String>, value: impl Into<String>) -> impl IntoElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(2.0))
+        .min_w(px(118.0))
+        .child(
+            div()
+                .text_size(px(10.0))
+                .line_height(px(12.0))
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .text_color(hsla(0.0, 0.0, 1.0, 0.38))
+                .child(label.into().to_uppercase()),
+        )
+        .child(
+            div()
+                .truncate()
+                .text_size(px(12.5))
+                .line_height(px(15.0))
+                .text_color(hsla(0.0, 0.0, 1.0, 0.90))
+                .child(value.into()),
+        )
+}
+
+fn task_gauge(scene: &IslandScene, phase: &HudPhase, elapsed: f32) -> impl IntoElement {
+    let active = scene_dot_chase(scene).is_some_and(|dot| dot.active);
+    let speed = scene_dot_chase(scene)
+        .map(|dot| dot.speed as f32)
+        .unwrap_or(0.0);
+    let count = scene_dot_chase(scene)
+        .map(|dot| dot.count as usize)
+        .unwrap_or(6);
+    let step_counter = scene_step_counter(scene);
+    let accent = phase_accent(phase);
+    canvas(
+        move |_, _, _| (active, speed, count, step_counter, accent, elapsed),
+        move |bounds, (active, speed, count, step_counter, accent, elapsed), window, _| {
+            paint_activity_ring(
+                window,
+                bounds,
+                accent,
+                active,
+                speed,
+                count,
+                step_counter,
+                elapsed,
+            );
+        },
+    )
+    .size(px(TASK_RING_PX))
+}
+
+fn gauge_caption(step_counter: Option<(usize, usize)>, phase: &HudPhase) -> String {
+    if let Some((index, total)) = step_counter {
+        format!("{index} / {total}")
+    } else if matches!(phase, HudPhase::Reply | HudPhase::Error) {
+        "Holding".to_string()
+    } else {
+        phase.label().to_string()
+    }
+}
+
+fn phase_accent(phase: &HudPhase) -> Hsla {
+    match phase {
+        HudPhase::Listening => hsla(18.0 / 360.0, 1.0, 0.59, 1.0),
+        HudPhase::Dispatching | HudPhase::Reply => hsla(148.0 / 360.0, 1.0, 0.45, 1.0),
+        HudPhase::Error => hsla(3.0 / 360.0, 1.0, 0.61, 1.0),
+        HudPhase::RecordingStopped
+        | HudPhase::Accepted
+        | HudPhase::Transcribing
+        | HudPhase::Planning => hsla(276.0 / 360.0, 0.88, 0.65, 1.0),
+        _ => hsla(0.0, 0.0, 0.56, 1.0),
+    }
+}
+
+fn paint_activity_ring(
+    window: &mut Window,
+    bounds: Bounds<Pixels>,
+    accent: Hsla,
+    active: bool,
+    speed: f32,
+    count: usize,
+    step_counter: Option<(usize, usize)>,
+    elapsed: f32,
+) {
+    let size = bounds.size.width.min(bounds.size.height).to_f64() as f32;
+    let center = bounds.center();
+    let stroke = (size * 0.09).max(2.0);
+    let radius = size / 2.0 - stroke / 2.0;
+    paint_ring_arc(window, center, radius, stroke, 0.0, 360.0, rule_color(0.09));
+
+    let sweep = if let Some((index, total)) = step_counter {
+        360.0 * (index as f32 / total.max(1) as f32).clamp(0.0, 1.0)
+    } else if active {
+        64.0
+    } else {
+        0.0
+    };
+    if sweep <= 0.1 {
+        return;
+    }
+    let revolutions_per_second = speed.max(0.0) / count.max(1) as f32;
+    let start = if step_counter.is_some() {
+        -90.0
+    } else {
+        -90.0 + elapsed * revolutions_per_second * 360.0
+    };
+    paint_ring_arc(window, center, radius, stroke, start, sweep, accent);
+}
+
+fn paint_ring_arc(
+    window: &mut Window,
+    center: Point<Pixels>,
+    radius: f32,
+    stroke: f32,
+    start_deg: f32,
+    sweep_deg: f32,
+    color: Hsla,
+) {
+    let steps = ((sweep_deg.abs() / 9.0).ceil() as usize).clamp(4, 48);
+    let outer = radius + stroke / 2.0;
+    let inner = (radius - stroke / 2.0).max(0.0);
+    let mut outer_points = Vec::with_capacity(steps + 1);
+    let mut inner_points = Vec::with_capacity(steps + 1);
+    for step in 0..=steps {
+        let progress = step as f32 / steps as f32;
+        let theta = (start_deg + sweep_deg * progress).to_radians();
+        outer_points.push(point(
+            center.x + px(theta.cos() * outer),
+            center.y + px(theta.sin() * outer),
+        ));
+        inner_points.push(point(
+            center.x + px(theta.cos() * inner),
+            center.y + px(theta.sin() * inner),
+        ));
+    }
+    let mut builder = PathBuilder::fill();
+    builder.move_to(outer_points[0]);
+    for point in outer_points.iter().skip(1) {
+        builder.line_to(*point);
+    }
+    for point in inner_points.iter().rev() {
+        builder.line_to(*point);
+    }
+    builder.close();
+    if let Ok(path) = builder.build() {
+        window.paint_path(path, Background::from(color));
+    }
+    let cap = stroke / 2.0;
+    for endpoint in [outer_points[0], *outer_points.last().unwrap()] {
+        let cap_bounds = Bounds {
+            origin: point(endpoint.x - px(cap), endpoint.y - px(cap)),
+            size: size(px(stroke), px(stroke)),
+        };
+        window.paint_quad(fill(cap_bounds, color).corner_radii(Corners::all(px(cap))));
+    }
 }
 
 fn stoplight(color: u32) -> Div {
@@ -1202,37 +1397,6 @@ fn stoplight(color: u32) -> Div {
         )
 }
 
-fn index_tab(index: impl Into<String>, label: impl Into<String>, active: bool) -> impl IntoElement {
-    let index = index.into();
-    let label = label.into();
-    div()
-        .h(px(16.0))
-        .px_1p5()
-        .rounded(px(3.0))
-        .bg(if active {
-            hsla(210.0 / 360.0, 1.0, 0.50, 0.10)
-        } else {
-            hsla(0.0, 0.0, 1.0, 0.04)
-        })
-        .flex()
-        .items_center()
-        .gap_1()
-        .child(
-            div()
-                .text_size(px(UI_META_PX))
-                .line_height(px(UI_LINE_HEIGHT_PX))
-                .text_color(if active { rgb(0x66c7ff) } else { rgb(0x74747d) })
-                .child(index),
-        )
-        .child(
-            div()
-                .text_size(px(UI_META_PX))
-                .line_height(px(UI_LINE_HEIGHT_PX))
-                .text_color(if active { rgb(0xb9b9c0) } else { rgb(0x85858d) })
-                .child(label),
-        )
-}
-
 fn content_text_color(high_contrast: bool) -> Rgba {
     if high_contrast {
         rgb(0xffffff)
@@ -1241,113 +1405,8 @@ fn content_text_color(high_contrast: bool) -> Rgba {
     }
 }
 
-fn muted_text_color(high_contrast: bool) -> Rgba {
-    if high_contrast {
-        rgb(0xd7d7de)
-    } else {
-        rgb(0x85858d)
-    }
-}
-
-fn meta_text_color(high_contrast: bool) -> Rgba {
-    if high_contrast {
-        rgb(0xc4c4cc)
-    } else {
-        rgb(0x74747d)
-    }
-}
-
 fn rule_color(alpha: f32) -> Hsla {
     hsla(0.0, 0.0, 1.0, alpha)
-}
-
-fn info_row(
-    index: impl Into<String>,
-    label: impl Into<String>,
-    value: impl Into<String>,
-    active: bool,
-    high_contrast: bool,
-) -> impl IntoElement {
-    div()
-        .h(px(24.0))
-        .flex()
-        .items_center()
-        .gap_3()
-        .border_b_1()
-        .border_color(rule_color(if high_contrast { 0.18 } else { 0.055 }))
-        .child(index_tab(index, label, active))
-        .child(
-            div()
-                .flex_1()
-                .truncate()
-                .text_size(px(UI_TEXT_PX))
-                .line_height(px(UI_LINE_HEIGHT_PX))
-                .text_color(content_text_color(high_contrast))
-                .child(value.into()),
-        )
-}
-
-fn tool_row(row: &SceneToolRow, high_contrast: bool) -> impl IntoElement {
-    div()
-        .h(px(24.0))
-        .flex()
-        .items_center()
-        .gap_3()
-        .border_b_1()
-        .border_color(rule_color(if high_contrast { 0.18 } else { 0.055 }))
-        .child(index_tab(row.index.clone(), "Tool", false))
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap_2()
-                .flex_1()
-                .child(
-                    div()
-                        .truncate()
-                        .text_color(content_text_color(high_contrast))
-                        .text_size(px(UI_TEXT_PX))
-                        .line_height(px(UI_LINE_HEIGHT_PX))
-                        .child(row.label.clone()),
-                )
-                .child(
-                    div()
-                        .w(px(96.0))
-                        .truncate()
-                        .text_color(muted_text_color(high_contrast))
-                        .text_size(px(UI_META_PX))
-                        .line_height(px(UI_LINE_HEIGHT_PX))
-                        .child(format!("{}  {}", row.tool, row.app)),
-                ),
-        )
-        .child(
-            div()
-                .w(px(44.0))
-                .text_size(px(UI_META_PX))
-                .line_height(px(UI_LINE_HEIGHT_PX))
-                .text_color(meta_text_color(high_contrast))
-                .child(row.age.clone()),
-        )
-}
-
-fn step_segments(index: usize, total: usize) -> impl IntoElement {
-    let total = total.clamp(1, 24);
-    let complete = index.min(total);
-    let mut row = div().flex().items_center().gap_0p5();
-    for segment in 0..total {
-        row = row.child(
-            div()
-                .w(px(3.0))
-                .h(px(2.0))
-                .rounded_full()
-                .bg(if segment < complete {
-                    hsla(210.0 / 360.0, 1.0, 0.58, 0.86)
-                } else {
-                    hsla(0.0, 0.0, 1.0, 0.10)
-                }),
-        );
-    }
-    row
 }
 
 fn island_width(metrics: HudMetrics) -> f32 {
@@ -1429,15 +1488,11 @@ struct DotChaseScene {
 
 #[derive(Clone)]
 struct SceneRow {
-    index: String,
-    label: String,
     value: String,
-    active: bool,
 }
 
 #[derive(Clone)]
 struct SceneToolRow {
-    index: String,
     label: String,
     tool: String,
     app: String,
@@ -1511,21 +1566,11 @@ fn scene_step_counter(scene: &IslandScene) -> Option<(usize, usize)> {
 }
 
 fn scene_row(scene: &IslandScene, region: &str, id: &str) -> Option<SceneRow> {
-    let IslandItem::Row {
-        index,
-        label,
-        value,
-        active,
-        ..
-    } = scene_item(scene, region, id)?
-    else {
+    let IslandItem::Row { value, .. } = scene_item(scene, region, id)? else {
         return None;
     };
     Some(SceneRow {
-        index: index.clone(),
-        label: label.clone(),
         value: value.clone(),
-        active: *active,
     })
 }
 
@@ -1539,7 +1584,6 @@ fn scene_tool_rows(scene: &IslandScene) -> [SceneToolRow; 2] {
                 .iter()
                 .filter_map(|item| {
                     let IslandItem::ToolRow {
-                        index,
                         label,
                         tool,
                         app,
@@ -1550,7 +1594,6 @@ fn scene_tool_rows(scene: &IslandScene) -> [SceneToolRow; 2] {
                         return None;
                     };
                     Some(SceneToolRow {
-                        index: index.clone(),
                         label: label.clone(),
                         tool: tool.clone(),
                         app: app.clone(),
@@ -1562,7 +1605,6 @@ fn scene_tool_rows(scene: &IslandScene) -> [SceneToolRow; 2] {
         .unwrap_or_default();
     while rows.len() < 2 {
         rows.push(SceneToolRow {
-            index: format!("{:02}", rows.len() + 7),
             label: String::new(),
             tool: String::new(),
             app: String::new(),
@@ -2955,7 +2997,7 @@ mod tests {
 
         let snapped = snap_island_bounds(dropped, display);
 
-        assert_eq!(snapped.origin.x, px(697.0));
+        assert_eq!(snapped.origin.x, px(876.0));
         assert_eq!(snapped.origin.y, px(TOP_MARGIN));
         assert_eq!(snapped.size, dropped.size);
     }
@@ -2971,12 +3013,12 @@ mod tests {
             size: size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT)),
         };
         let right_drop = Bounds {
-            origin: point(px(660.0), px(80.0)),
+            origin: point(px(840.0), px(80.0)),
             size: size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT)),
         };
 
         assert_eq!(snap_island_bounds(left_drop, display).origin.x, px(0.0));
-        assert_eq!(snap_island_bounds(right_drop, display).origin.x, px(697.0));
+        assert_eq!(snap_island_bounds(right_drop, display).origin.x, px(876.0));
     }
 
     #[test]
@@ -3251,8 +3293,8 @@ mod tests {
         let expanded = animated_island_bounds(compact, expanded_metrics, 0.0, display);
 
         assert_eq!(expanded.origin.y, px(TOP_MARGIN));
-        assert_eq!(expanded.size, size(px(930.0), px(520.0)));
-        assert_eq!(expanded.origin.x, px(291.0));
+        assert_eq!(expanded.size, size(px(828.0), px(258.0)));
+        assert_eq!(expanded.origin.x, px(252.5));
     }
 
     #[test]

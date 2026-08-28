@@ -6,12 +6,12 @@ use cua_core::{
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-pub const COMPACT_WIDTH: f32 = 815.0;
+pub const COMPACT_WIDTH: f32 = 636.0;
 pub const COMPACT_HEIGHT: f32 = 42.0;
 pub const COMPACT_RADIUS: f32 = 21.0;
-pub const EXPANDED_WIDTH: f32 = 930.0;
-pub const EXPANDED_HEIGHT: f32 = 520.0;
-pub const EXPANDED_RADIUS: f32 = 18.0;
+pub const EXPANDED_WIDTH: f32 = 828.0;
+pub const EXPANDED_HEIGHT: f32 = 258.0;
+pub const EXPANDED_RADIUS: f32 = 26.0;
 pub const WINDOW_WIDTH: f32 = COMPACT_WIDTH;
 pub const WINDOW_HEIGHT: f32 = COMPACT_HEIGHT;
 pub const TOP_MARGIN: f32 = 0.0;
