@@ -292,6 +292,9 @@ export class Cua {
     async uiSceneTheme(options) {
         return this.step("ui.scene.theme", { theme: options.theme, source: options.source }, "ui");
     }
+    async uiSceneBackground(options) {
+        return this.step("ui.scene.background", { background: options.background, source: options.source }, "ui");
+    }
     async uiReply(options) {
         return this.step("ui.reply", { text: options.text, source: options.source, ttl_ms: options.ttlMs }, "ui");
     }

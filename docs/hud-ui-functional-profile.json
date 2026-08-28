@@ -1,0 +1,458 @@
+{
+  "document": {
+    "name": "CUA HUD Dynamic Island Functional Profile",
+    "version": "2026-08-28",
+    "purpose": "Designer-facing functional brief for redesigning the literal visual form of the HUD while preserving the existing IslandScene architecture, data contract, event model, and interaction behavior.",
+    "primary_sources": [
+      "frontends/cua-voice/src/main.rs",
+      "frontends/cua-voice/src/hud.rs",
+      "frontends/cua-voice/src/ui_state.rs",
+      "frontends/cua-voice/src/orb.rs",
+      "crates/cua-core/src/lib.rs",
+      "tests/fixtures/island-compact-scene.json"
+    ]
+  },
+  "architecture_contract": {
+    "core_model": "IslandScene",
+    "schema_version": "cua.island.v1",
+    "do_not_change_without_engineering_alignment": [
+      "scene schema",
+      "region names",
+      "required item ids",
+      "event names",
+      "headful/headless mode semantics",
+      "compact and expanded layout roles",
+      "programmatic scene/theme/background override behavior"
+    ],
+    "what_can_change_in_redesign": [
+      "visual shape of the island shell",
+      "proportions and silhouette as long as required content remains legible",
+      "placement treatment of regions within the same semantic roles",
+      "surface material, border, shadow, background style, and motion language",
+      "orb rendering style",
+      "activity indicator style, if it still represents active/inactive and speed",
+      "expanded panel composition, if every required region remains represented"
+    ],
+    "current_dimensions": {
+      "compact": {
+        "width_px": 815,
+        "height_px": 42,
+        "corner_radius_px": 21,
+        "top_margin_px": 0
+      },
+      "expanded": {
+        "width_px": 930,
+        "height_px": 520,
+        "corner_radius_px": 18
+      },
+      "minimized": {
+        "width_px": 38,
+        "height_px": 28,
+        "corner_radius_px": 14,
+        "right_offset_px": 220
+      }
+    },
+    "window_behavior": {
+      "platform": "macOS transparent popup window",
+      "initial_position": "top centered on display",
+      "resizable": false,
+      "mouse_passthrough": false,
+      "dragging": "Dragging anywhere on the island shell moves the HUD; release snaps to screen edges when near margins.",
+      "bounds_memory": "Current island bounds are remembered for click/toggle detection.",
+      "single_instance": "Only one HUD instance should be active per profile."
+    }
+  },
+  "scene_layouts": {
+    "compact": {
+      "role": "Always-available live status bar.",
+      "required_regions": {
+        "left": {
+          "required_items": [
+            {
+              "id": "orb",
+              "kind": "label",
+              "function": "Reserved slot for animated voice/status orb."
+            },
+            {
+              "id": "input",
+              "kind": "label",
+              "function": "Shows active source/title such as Voice control, Automation, Reply, or a compact transcript/response title."
+            }
+          ]
+        },
+        "center": {
+          "required_items": [
+            {
+              "id": "status",
+              "kind": "marquee",
+              "function": "Primary live status, step label, transcript, or reply text. Long text scrolls horizontally."
+            }
+          ]
+        },
+        "right": {
+          "required_items": [
+            {
+              "id": "transport",
+              "kind": "chip",
+              "function": "Shows active transport/tool class: Mic, STT, Socket, HTTP, Router, Screen, Safari, Terminal, Finder, or custom tool."
+            },
+            {
+              "id": "target",
+              "kind": "chip",
+              "function": "Shows active target surface: Microphone, STT, Model, macOS, Screen, Safari, Terminal, Finder, Result, or custom target."
+            },
+            {
+              "id": "activity",
+              "kind": "dot_chase",
+              "function": "Animated activity indicator with active/inactive state and phase-dependent speed."
+            }
+          ]
+        }
+      }
+    },
+    "expanded": {
+      "role": "Inspectable detail view opened by user/programmatic toggle or custom expanded scene.",
+      "required_regions": {
+        "header_left": "Orb plus input/title, equivalent to compact left.",
+        "header_center": "Primary status marquee, equivalent to compact center.",
+        "header_right": "Transport, target, and activity indicator, equivalent to compact right.",
+        "task": "Task row containing current prompt/task. May also include step counter.",
+        "response": "Large response/detail row for model reply or current result.",
+        "details_left": "Current action panel with action, phase, and live/idle state.",
+        "details_right": "Two tool rows summarizing transcript/action, tool, app/target, and age.",
+        "footer": "Elapsed time, model label, and transport label."
+      },
+      "required_item_ids": [
+        "header_left.orb",
+        "header_left.input",
+        "header_center.status",
+        "header_right.transport",
+        "header_right.target",
+        "header_right.activity",
+        "task.task",
+        "response.response",
+        "details_left.action",
+        "details_left.phase",
+        "details_left.state",
+        "details_right.tool_0",
+        "details_right.tool_1",
+        "footer.elapsed",
+        "footer.model",
+        "footer.transport"
+      ]
+    },
+    "minimized": {
+      "role": "Small restore capsule when the user presses the yellow stoplight/minimize control.",
+      "required_content": [
+        "orb"
+      ],
+      "interaction": "Click restores to compact, non-expanded state."
+    }
+  },
+  "hud_phases": [
+    {
+      "phase": "Idle",
+      "label": "Ready",
+      "meaning": "No active voice or automation work.",
+      "activity": { "active": false, "dot_speed": 0 },
+      "primary_status": "Ready"
+    },
+    {
+      "phase": "Armed",
+      "label": "Armed",
+      "meaning": "Keyboard shortcut started a fresh voice turn.",
+      "activity": { "active": true, "dot_speed": 7 },
+      "primary_status": "Starting recorder"
+    },
+    {
+      "phase": "Listening",
+      "label": "Listening",
+      "meaning": "Microphone is recording the user.",
+      "activity": { "active": true, "dot_speed": 8 },
+      "transport": "Mic",
+      "target": "Microphone",
+      "primary_status": "Listening"
+    },
+    {
+      "phase": "RecordingStopped",
+      "label": "Recording Stopped",
+      "meaning": "Recording has ended and audio is moving into processing.",
+      "activity": { "active": true, "dot_speed": 8 },
+      "transport": "Mic",
+      "target": "Microphone",
+      "primary_status": "Recording Stopped"
+    },
+    {
+      "phase": "Accepted",
+      "label": "Accepted",
+      "meaning": "The voice input has been accepted for processing.",
+      "activity": { "active": true, "dot_speed": 6 },
+      "transport": "Mic",
+      "target": "Microphone",
+      "primary_status": "Accepted"
+    },
+    {
+      "phase": "Transcribing",
+      "label": "Transcribing",
+      "meaning": "Speech-to-text is running.",
+      "activity": { "active": true, "dot_speed": 6 },
+      "transport": "STT",
+      "target": "STT",
+      "primary_status": "Processing"
+    },
+    {
+      "phase": "Planning",
+      "label": "Planning",
+      "meaning": "Planner/model or programmed agent step is choosing the next action.",
+      "activity": { "active": true, "dot_speed": 6 },
+      "transport_rules": ["OpenRouter => Router", "Whisper/STT => STT", "Screen/Capture => Screen", "Unix/socket => Socket", "otherwise use supplied tool"],
+      "target_rules": ["Screen/Capture => Screen", "Safari => Safari", "Terminal => Terminal", "Finder => Finder", "otherwise Model"]
+    },
+    {
+      "phase": "Dispatching",
+      "label": "Dispatching",
+      "meaning": "A concrete macOS/browser/clipboard/shell/action command is being executed.",
+      "activity": { "active": true, "dot_speed": 8 },
+      "transport": "Socket",
+      "target": "macOS"
+    },
+    {
+      "phase": "Reply",
+      "label": "Reply",
+      "meaning": "Final response is visible after voice or automation completion.",
+      "activity": { "active": true, "dot_speed": 5 },
+      "transport": "cua",
+      "target": "Reply",
+      "display_duration": "Minimum 8 seconds; longer if the reply marquee needs time to scroll."
+    },
+    {
+      "phase": "Error",
+      "label": "Needs attention",
+      "meaning": "A stopped/error state that should be visibly distinct and actionable.",
+      "activity": { "active": true, "dot_speed": 10 },
+      "display_duration": "Uses same minimum/scroll-aware duration as Reply."
+    }
+  ],
+  "event_inputs": {
+    "voice_events": [
+      "Armed",
+      "Listening(ms)",
+      "RecordingStopped",
+      "Accepted",
+      "Transcribing",
+      "Transcript(text)",
+      "Planning(tool)",
+      "Dispatching(action)",
+      "Reply(text)",
+      "Error(text)",
+      "Idle"
+    ],
+    "automation_events": [
+      "AgentStep(label, source, task, tool, step_index, step_total, ttl_ms)",
+      "AutomationActivity(label, source, tool)",
+      "AutomationReply(text)",
+      "UiMode(mode, source)"
+    ],
+    "scene_programming_events": [
+      "SceneSet(IslandScene)",
+      "SceneReset",
+      "SceneTheme(IslandTheme)",
+      "SceneBackground(IslandBackground)",
+      "ToggleExpanded",
+      "SetExpanded(bool)"
+    ],
+    "diagnostic_events_not_currently_rendered": [
+      "AudioDiagnostic",
+      "SttDiagnostic",
+      "Metric"
+    ]
+  },
+  "content_rules": {
+    "title_precedence": "response text compacted to 34 chars, then transcript compacted to 34 chars, otherwise input_label",
+    "prompt_precedence": "transcript if present, otherwise current step label",
+    "result_precedence": "response if present, otherwise transcript, otherwise current step label",
+    "compact_center_precedence": [
+      "reply result when reply flash is visible",
+      "Ready when Idle",
+      "Listening when Listening",
+      "Recording Stopped when RecordingStopped",
+      "Processing when Transcribing",
+      "Accepted when Accepted",
+      "Step index/total plus label when step counter exists",
+      "current step label"
+    ],
+    "transcript_visibility": "Transcript is kept for 1500ms after Transcript(text), then expires unless replaced.",
+    "reply_visibility": {
+      "minimum_ms": 8000,
+      "marquee_viewport_px": 270,
+      "estimated_char_width_px": 6.2,
+      "start_delay_seconds": 1.6,
+      "scroll_speed_px_per_second": 24,
+      "end_hold_seconds": 0.9
+    },
+    "text_truncation": {
+      "compact_title_chars": 34,
+      "row_label_chars": 36,
+      "expanded_action_chars": 56,
+      "expanded_response_chars": 460,
+      "model_label_chars": 30,
+      "ellipsis": "..."
+    }
+  },
+  "interactions": {
+    "drag": {
+      "gesture": "left mouse drag anywhere on island shell",
+      "result": "window follows cursor and snaps on release"
+    },
+    "hover_chrome": {
+      "trigger": "cursor inside island window bounds",
+      "result": "macOS-style stoplights fade in"
+    },
+    "stoplights": [
+      { "color": "red", "function": "quit HUD app" },
+      { "color": "yellow", "function": "minimize to restore capsule" },
+      { "color": "green", "function": "toggle compact/expanded" }
+    ],
+    "restore_minimized": {
+      "gesture": "click minimized capsule",
+      "result": "return to compact collapsed HUD"
+    },
+    "double_click_toggle": {
+      "gesture": "double left-click/tap that starts inside island bounds",
+      "debounce_ms": 260,
+      "result": "toggle compact/expanded"
+    },
+    "programmatic_toggle": {
+      "commands": ["expanded", "collapsed", "toggle"],
+      "result": "Set or toggle expanded state through ui.island"
+    }
+  },
+  "animation_and_motion": {
+    "shell": {
+      "compact_to_expanded": "Width, height, and radius interpolate independently from reply flash.",
+      "expansion_easing": "ease-out cubic applied to expansion progress.",
+      "response_flash_threshold": "Reply styling is active when response opacity is at least 0.35."
+    },
+    "activity_indicator": {
+      "kind": "dot_chase",
+      "default_count": 6,
+      "count_range": "3..12",
+      "speed_range": "0..24",
+      "inactive_dot_alpha": 0.24,
+      "active_behavior": "A leading dot advances by speed steps per second with trailing alpha/lightness falloff."
+    },
+    "orb": {
+      "role": "Animated phase-aware voice/status identity mark.",
+      "size_px": 13,
+      "phase_changes": {
+        "Listening": "higher glow/core/accent alpha",
+        "RecordingStopped_Accepted_Transcribing_Planning": "purple processing emphasis",
+        "Dispatching": "blue/green/yellow action emphasis",
+        "Error": "warm/error emphasis"
+      },
+      "motion": "Layered blob and ribbon paths driven by elapsed time and phase energy."
+    },
+    "actors": {
+      "max_count": 4,
+      "kinds": ["sprite", "particle"],
+      "layers": ["background", "content", "ambient", "actor", "foreground"],
+      "anchors": ["canvas", "region_item"],
+      "interactive": "false only; interactive actors are rejected today",
+      "motions": ["none", "fade", "pulse", "slide_to", "walk_to"],
+      "duration_range_ms": "50..5000",
+      "size_limit": "width <= 96, height <= 42"
+    },
+    "backgrounds": {
+      "default": { "kind": "solid", "color": "#000000", "opacity": 92 },
+      "supported_kinds": [
+        "solid",
+        "transparent",
+        "linear_gradient",
+        "animated_gradient",
+        "neon_sweep"
+      ],
+      "animated_duration_range_ms": "100..10000",
+      "gradient_stops": "2..8 sorted stops; offsets 0..1000; #rrggbb colors only"
+    }
+  },
+  "designer_scene_checklist": [
+    {
+      "scene": "compact_idle",
+      "must_show": ["orb", "Voice control or Automation label", "Ready marquee", "transport chip", "target chip", "inactive activity indicator"]
+    },
+    {
+      "scene": "compact_listening",
+      "must_show": ["active listening orb", "Listening status", "Mic chip", "Microphone chip", "fast active activity indicator"]
+    },
+    {
+      "scene": "compact_transcribing",
+      "must_show": ["processing orb state", "Processing status", "STT transport/target", "medium activity indicator"]
+    },
+    {
+      "scene": "compact_planning_with_step",
+      "must_show": ["status formatted as Step n/total plus label", "tool-derived transport", "target-derived chip", "active activity indicator"]
+    },
+    {
+      "scene": "compact_dispatching",
+      "must_show": ["current action label", "Socket transport", "macOS target", "fast activity indicator"]
+    },
+    {
+      "scene": "compact_reply",
+      "must_show": ["Reply title", "reply text in marquee", "cua transport", "Reply phase target", "reply flash text styling"]
+    },
+    {
+      "scene": "compact_error",
+      "must_show": ["Needs attention phase", "error text/reply behavior", "distinct error orb/status treatment", "fastest activity speed"]
+    },
+    {
+      "scene": "expanded_live_task",
+      "must_show": ["header triptych", "Task row", "optional Step counter with segments", "Response panel", "Action/Phase/State rows", "two Tool rows", "Elapsed/Model/Transport footer"]
+    },
+    {
+      "scene": "expanded_reply",
+      "must_show": ["Reply title", "full response area", "cua transport", "phase/state details", "footer metadata"]
+    },
+    {
+      "scene": "minimized_restore",
+      "must_show": ["small capsule", "orb only", "clickable restore target"]
+    },
+    {
+      "scene": "custom_programmed_scene",
+      "must_show": ["same required region/item ids", "custom background", "custom theme tokens", "optional non-interactive actors"]
+    }
+  ],
+  "validation_limits": {
+    "regions": {
+      "max_items_per_region": 16,
+      "max_items_per_scene": 64,
+      "compact_allowed_regions": ["left", "center", "right"],
+      "expanded_allowed_regions": ["header_left", "header_center", "header_right", "task", "response", "details_left", "details_right", "footer"]
+    },
+    "ids": {
+      "max_chars": 64,
+      "allowed_chars": "ASCII letters, numbers, dot, dash, underscore"
+    },
+    "text_fields": {
+      "label_chip_max_chars": 80,
+      "marquee_max_chars": 480,
+      "row_index_max_chars": 8,
+      "row_label_max_chars": 24,
+      "row_value_max_chars": 240,
+      "tool_row_label_max_chars": 240,
+      "tool_row_tool_max_chars": 48,
+      "tool_row_app_max_chars": 48,
+      "tool_row_age_max_chars": 24
+    },
+    "theme": {
+      "max_tokens": 32,
+      "token_values": "#rrggbb only"
+    }
+  },
+  "handoff_notes_for_designer": [
+    "Treat the dynamic island as a stateful HUD shell, not a static notification.",
+    "Every mockup should preserve the compact header information density: identity/source, primary status, transport, target, and activity.",
+    "Expanded is not a marketing card; it is an inspection surface for task, response, action, phase, state, tool history, elapsed time, model, and transport.",
+    "The redesign should include motion specs for compact-to-expanded, reply flash, long-text marquee, activity indicator, orb phase changes, hover chrome, drag feedback, and minimized restore.",
+    "Scene designs should be compatible with programmatic replacement of background/theme/actors through the existing IslandScene API."
+  ]
+}

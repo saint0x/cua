@@ -1,5 +1,5 @@
 use crate::ui_state::VoiceUiEvent;
-use cua_core::{IslandScene, IslandTheme, UiMode};
+use cua_core::{IslandBackground, IslandScene, IslandTheme, UiMode};
 use serde_json::Value;
 
 pub fn agent_ui_event_from_daemon_event_advancing_cursor(
@@ -59,6 +59,12 @@ pub fn agent_scene_from_daemon_event(
             let theme = serde_json::from_value::<IslandTheme>(theme.clone()).ok()?;
             cua_core::validate_island_theme(&theme).ok()?;
             Some((sequence, VoiceUiEvent::SceneTheme(theme)))
+        }
+        "ui_scene_background" => {
+            let background = event.get("data").and_then(|data| data.get("background"))?;
+            let background = serde_json::from_value::<IslandBackground>(background.clone()).ok()?;
+            cua_core::validate_island_background(&background).ok()?;
+            Some((sequence, VoiceUiEvent::SceneBackground(background)))
         }
         _ => None,
     }
@@ -496,6 +502,7 @@ mod tests {
                     "schema_version": "cua.island.v1",
                     "layout": "compact",
                     "mode": "headful",
+                    "background": {"kind": "solid", "color": "#000000", "opacity": 92},
                     "regions": {
                         "left": {
                             "items": [
@@ -531,6 +538,39 @@ mod tests {
         assert_eq!(sequence, 50);
         assert_eq!(scene.layout, cua_core::IslandLayout::Compact);
         assert!(agent_scene_from_daemon_event(&event, 50).is_none());
+    }
+
+    #[test]
+    fn daemon_ui_scene_background_event_maps_to_programmed_background() {
+        let event = serde_json::json!({
+            "sequence": 51,
+            "kind": "ui_scene_background",
+            "data": {
+                "background": {
+                    "kind": "neon_sweep",
+                    "base_color": "#000000",
+                    "sweep_color": "#1e9bff",
+                    "opacity": 88,
+                    "duration_ms": 1200
+                }
+            }
+        });
+
+        let Some((sequence, VoiceUiEvent::SceneBackground(background))) =
+            agent_scene_from_daemon_event(&event, 50)
+        else {
+            panic!("expected background event");
+        };
+
+        assert_eq!(sequence, 51);
+        assert!(matches!(
+            background,
+            cua_core::IslandBackground::NeonSweep {
+                duration_ms: 1200,
+                ..
+            }
+        ));
+        assert!(agent_scene_from_daemon_event(&event, 51).is_none());
     }
 
     #[test]

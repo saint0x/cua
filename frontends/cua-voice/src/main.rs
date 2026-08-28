@@ -1,8 +1,8 @@
 use clap::Parser;
 use cpal::traits::{DeviceTrait, HostTrait};
 use cua_core::{
-    config_env_path, IslandActorKind, IslandItem, IslandLayout, IslandMotion, IslandScene,
-    IslandTheme, PermissionState, UiMode,
+    config_env_path, IslandActorKind, IslandBackground, IslandColorStop, IslandItem, IslandLayout,
+    IslandMotion, IslandScene, IslandTheme, PermissionState, UiMode,
 };
 use cua_voice::activation::ControlDoubleTap;
 use cua_voice::agent_events::{
@@ -23,10 +23,10 @@ use cua_voice::{
     VoiceConfig, DEFAULT_PLANNER_MODEL,
 };
 use gpui::{
-    canvas, div, hsla, point, prelude::*, px, rgb, size, AnyElement, App, Application, Bounds,
-    BoxShadow, Context, Div, IntoElement, MouseButton as GpuiMouseButton, MouseDownEvent,
-    MouseMoveEvent, ParentElement, Pixels, Point, Render, Styled, Window,
-    WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions,
+    canvas, div, hsla, linear_color_stop, linear_gradient, point, prelude::*, px, rgb, size,
+    AnyElement, App, Application, Background, Bounds, BoxShadow, Context, Div, Hsla, IntoElement,
+    MouseButton as GpuiMouseButton, MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Point,
+    Render, Styled, Window, WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions,
 };
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -116,6 +116,7 @@ struct VoiceHud {
     last_island_toggle_at: Option<Instant>,
     custom_scene: Option<IslandScene>,
     custom_theme: Option<IslandTheme>,
+    custom_background: Option<IslandBackground>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -156,6 +157,7 @@ impl VoiceHud {
             last_island_toggle_at: None,
             custom_scene: None,
             custom_theme: None,
+            custom_background: None,
         }
     }
 
@@ -178,9 +180,13 @@ impl VoiceHud {
                 VoiceUiEvent::SceneReset => {
                     self.custom_scene = None;
                     self.custom_theme = None;
+                    self.custom_background = None;
                 }
                 VoiceUiEvent::SceneTheme(theme) => {
                     self.custom_theme = Some(theme);
+                }
+                VoiceUiEvent::SceneBackground(background) => {
+                    self.custom_background = Some(background);
                 }
                 VoiceUiEvent::AutomationActivity {
                     label,
@@ -402,6 +408,7 @@ impl VoiceHud {
             .px_3()
             .flex()
             .flex_col()
+            .child(self.background_layer(scene))
             .child(self.stoplights(cx))
             .child(self.actor_layer(scene, metrics))
             .child(
@@ -440,6 +447,18 @@ impl VoiceHud {
             .when(scene_renders_expanded_body(scene), |element| {
                 element.child(self.expanded_body(scene, metrics))
             })
+    }
+
+    fn background_layer(&self, scene: &IslandScene) -> impl IntoElement {
+        div()
+            .absolute()
+            .left_0()
+            .top_0()
+            .size_full()
+            .bg(background_paint(
+                &scene.background,
+                self.started.elapsed().as_secs_f32(),
+            ))
     }
 
     fn stoplights(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -841,6 +860,99 @@ fn actor_region_anchor(region: &str, item: &str, metrics: HudMetrics) -> Option<
         ("footer", _) => Some((width * 0.50, EXPANDED_HEIGHT - 42.0)),
         _ => None,
     }
+}
+
+fn background_paint(background: &IslandBackground, elapsed_secs: f32) -> Background {
+    match background {
+        IslandBackground::Solid { color, opacity } => {
+            Background::from(scene_color(color, *opacity).unwrap_or_else(default_background_color))
+        }
+        IslandBackground::Transparent { .. } => Background::from(hsla(0.0, 0.0, 0.0, 0.0)),
+        IslandBackground::LinearGradient {
+            angle_degrees,
+            opacity,
+            stops,
+        } => gradient_background(*angle_degrees, *opacity, gradient_edge_pair(stops)),
+        IslandBackground::AnimatedGradient {
+            angle_degrees,
+            opacity,
+            duration_ms,
+            stops,
+        } => {
+            let pair = animated_gradient_pair(stops, elapsed_secs, *duration_ms);
+            gradient_background(*angle_degrees, *opacity, pair)
+        }
+        IslandBackground::NeonSweep {
+            base_color,
+            sweep_color,
+            opacity,
+            duration_ms,
+        } => {
+            let progress = repeating_progress(elapsed_secs, *duration_ms);
+            let angle = (90.0 + progress * 360.0) % 360.0;
+            let base = scene_color(base_color, *opacity).unwrap_or_else(default_background_color);
+            let sweep = scene_color(sweep_color, *opacity).unwrap_or_else(default_background_color);
+            linear_gradient(
+                angle,
+                linear_color_stop(base, 0.18),
+                linear_color_stop(sweep, 0.82),
+            )
+        }
+    }
+}
+
+fn gradient_background(
+    angle_degrees: u16,
+    opacity: u8,
+    pair: Option<(&IslandColorStop, &IslandColorStop)>,
+) -> Background {
+    let Some((from, to)) = pair else {
+        return Background::from(default_background_color());
+    };
+    let from = scene_color(&from.color, opacity).unwrap_or_else(default_background_color);
+    let to = scene_color(&to.color, opacity).unwrap_or_else(default_background_color);
+    linear_gradient(
+        angle_degrees as f32,
+        linear_color_stop(from, 0.0),
+        linear_color_stop(to, 1.0),
+    )
+}
+
+fn gradient_edge_pair(stops: &[IslandColorStop]) -> Option<(&IslandColorStop, &IslandColorStop)> {
+    Some((stops.first()?, stops.last()?))
+}
+
+fn animated_gradient_pair(
+    stops: &[IslandColorStop],
+    elapsed_secs: f32,
+    duration_ms: u16,
+) -> Option<(&IslandColorStop, &IslandColorStop)> {
+    if stops.len() < 2 {
+        return None;
+    }
+    let progress = repeating_progress(elapsed_secs, duration_ms);
+    let head = ((progress * stops.len() as f32).floor() as usize) % stops.len();
+    let tail = (head + 1) % stops.len();
+    Some((&stops[head], &stops[tail]))
+}
+
+fn default_background_color() -> Hsla {
+    hsla(0.0, 0.0, 0.0, 0.92)
+}
+
+fn scene_color(hex: &str, opacity: u8) -> Option<Hsla> {
+    let value = parse_hex_color(hex)?;
+    let mut color: Hsla = rgb(value).into();
+    color.a = (opacity.min(100) as f32) / 100.0;
+    Some(color)
+}
+
+fn parse_hex_color(hex: &str) -> Option<u32> {
+    let digits = hex.strip_prefix('#')?;
+    if digits.len() != 6 || !digits.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return None;
+    }
+    u32::from_str_radix(digits, 16).ok()
 }
 
 fn repeating_progress(elapsed_secs: f32, duration_ms: u16) -> f32 {
@@ -1379,6 +1491,9 @@ impl Render for VoiceHud {
         if let Some(theme) = &self.custom_theme {
             scene.theme = Some(theme.clone());
         }
+        if let Some(background) = &self.custom_background {
+            scene.background = background.clone();
+        }
         let center_text = center_text_for(&scene);
         self.sync_center_text(&center_text);
         if self.drag.is_none() {
@@ -1679,6 +1794,9 @@ fn print_headless_events(rx: Receiver<VoiceUiEvent>) {
             VoiceUiEvent::SceneReset => serde_json::json!({"event": "scene_reset"}),
             VoiceUiEvent::SceneTheme(theme) => {
                 serde_json::json!({"event": "scene_theme", "theme": theme})
+            }
+            VoiceUiEvent::SceneBackground(background) => {
+                serde_json::json!({"event": "scene_background", "background": background})
             }
             VoiceUiEvent::ToggleExpanded => serde_json::json!({"event": "toggle_expanded"}),
             VoiceUiEvent::SetExpanded(expanded) => {
@@ -2489,6 +2607,44 @@ mod tests {
         )
         .unwrap();
         center_text_for(&scene)
+    }
+
+    #[test]
+    fn island_background_color_parser_accepts_only_hex_rgb() {
+        assert_eq!(parse_hex_color("#1e9bff"), Some(0x1e9bff));
+        assert_eq!(parse_hex_color("#000000"), Some(0x000000));
+        assert_eq!(parse_hex_color("1e9bff"), None);
+        assert_eq!(parse_hex_color("#fff"), None);
+        assert_eq!(parse_hex_color("#nothex"), None);
+    }
+
+    #[test]
+    fn animated_background_pair_cycles_without_reset_branch() {
+        let stops = vec![
+            IslandColorStop {
+                offset: 0,
+                color: "#000000".to_string(),
+            },
+            IslandColorStop {
+                offset: 500,
+                color: "#1e9bff".to_string(),
+            },
+            IslandColorStop {
+                offset: 1000,
+                color: "#9b5cff".to_string(),
+            },
+        ];
+
+        let first = animated_gradient_pair(&stops, 0.0, 900).unwrap();
+        let middle = animated_gradient_pair(&stops, 0.31, 900).unwrap();
+        let wrapped = animated_gradient_pair(&stops, 0.89, 900).unwrap();
+
+        assert_eq!(first.0.color, "#000000");
+        assert_eq!(first.1.color, "#1e9bff");
+        assert_eq!(middle.0.color, "#1e9bff");
+        assert_eq!(middle.1.color, "#9b5cff");
+        assert_eq!(wrapped.0.color, "#9b5cff");
+        assert_eq!(wrapped.1.color, "#000000");
     }
 
     fn step_snapshot(index: u16, total: u16, label: &str) -> HudSnapshot {

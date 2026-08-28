@@ -10,6 +10,8 @@ Public control surfaces are intentionally limited to:
 - profile-local Unix socket protocol
 - loopback local HTTP API
 
+The HUD is programmable through the same control surfaces. Agents can drive semantic state, set validated island scenes, and program the full island background plane with bounded solid, translucent, gradient, animated-gradient, or neon-sweep backdrops while preserving the default compact HUD as the baseline.
+
 ## Structure
 
 - `crates/cua-core`: shared protocol types and JSON schema bundle
@@ -35,6 +37,7 @@ cargo run -p cua -- ui step "checking target" --task "Click target" --tool visio
 cargo run -p cua -- ui reply "Done with the target." --json
 cargo run -p cua -- ui mode headless --json
 cargo run -p cua -- ui mode headful --json
+cargo run -p cua -- ui protocol examples/island-neon-background.cua.toml --json
 cargo run -p cua -- inbox publish "what do you see on my screen?" --json
 cargo run -p cua -- webhook subscribe local-alerts --secret "$CUA_WEBHOOK_SECRET" --json
 cargo run -p cua -- scratchpad write active-goal "verify Notes before replying" --session-id <owner-session-id> --json

@@ -1,7 +1,7 @@
 use crate::ui_state::{HudPhase, HudSnapshot};
 use cua_core::{
-    validate_island_scene, IslandItem, IslandLayout, IslandPalette, IslandRegion, IslandScene,
-    IslandSceneError, IslandTheme, ISLAND_SCHEMA_VERSION,
+    default_island_background, validate_island_scene, IslandItem, IslandLayout, IslandPalette,
+    IslandRegion, IslandScene, IslandSceneError, IslandTheme, ISLAND_SCHEMA_VERSION,
 };
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -267,6 +267,7 @@ fn compact_scene(snapshot: &HudSnapshot, display: &HudDisplay, reply_visible: bo
         schema_version: ISLAND_SCHEMA_VERSION.to_string(),
         layout: IslandLayout::Compact,
         mode: snapshot.mode.clone(),
+        background: default_island_background(),
         regions,
         actors: Vec::new(),
         theme: Some(default_island_theme()),
@@ -440,6 +441,7 @@ fn expanded_scene(
         schema_version: ISLAND_SCHEMA_VERSION.to_string(),
         layout: IslandLayout::Expanded,
         mode: snapshot.mode.clone(),
+        background: default_island_background(),
         regions,
         actors: Vec::new(),
         theme: Some(default_island_theme()),

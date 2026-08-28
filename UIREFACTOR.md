@@ -57,6 +57,8 @@ IslandScene
 
 The left, center, and right sections are stable layout regions. Programmable elements live inside those regions when they are part of normal HUD content. Cross-region animated elements live in the shared canvas coordinate space.
 
+The background layer is a full island-sized programmable plane, clipped by the same island mask as the production HUD. It is part of the scene contract, not a separate overlay. Labels, chips, rows, stoplights, activity dots, and actors render above it. This lets the HUD act like a bounded neon sign: the whole pixel field behind the information can be solid, transparent, translucent, a static gradient, or a bounded animated light field without changing layout or blocking clicks.
+
 This allows:
 
 - The left region to keep mode/source identity such as `Voice control` or `Automation`.
@@ -74,6 +76,11 @@ The first protocol should be intentionally small.
   "schema_version": "cua.island.v1",
   "layout": "compact",
   "mode": "headful",
+  "background": {
+    "kind": "solid",
+    "color": "#000000",
+    "opacity": 92
+  },
   "regions": {
     "left": {
       "items": [
@@ -116,6 +123,25 @@ The first protocol should be intentionally small.
   },
   "actors": []
 }
+```
+
+The background can also be programmed independently through a protocol file:
+
+```toml
+protocol = "cua.island.background.v1"
+source = "ambient-demo"
+
+[background]
+kind = "animated_gradient"
+angle_degrees = 90
+opacity = 88
+duration_ms = 1800
+stops = [
+  { offset = 0, color = "#000000" },
+  { offset = 380, color = "#003c66" },
+  { offset = 720, color = "#1e9bff" },
+  { offset = 1000, color = "#06121f" },
+]
 ```
 
 Expanded mode uses the same scene root, but with expanded layout regions:
@@ -273,6 +299,7 @@ Add a scene-level API:
 - `ui.scene.patch`
 - `ui.scene.reset`
 - `ui.scene.theme`
+- `ui.scene.background`
 
 The scene API should be available over the same control layers:
 
@@ -298,6 +325,7 @@ Validate:
 - Item count limits.
 - Actor count limits.
 - Pixel bounds.
+- Background color, opacity, stop count, stop ordering, and animation duration bounds.
 - Animation duration bounds.
 - Palette names or explicit color limits.
 - No negative sizes.
@@ -313,6 +341,8 @@ The current HUD should become the built-in default scene.
 
 Default compact regions:
 
+- `background`
+  - solid black at the existing island opacity
 - `left`
   - orb
   - input label
@@ -386,6 +416,25 @@ Themes should be small token sets, not arbitrary CSS.
 
 Agents can request approved theme tokens, but the app should preserve readability and contrast.
 
+## Background Plane
+
+The background plane owns the programmable pixel landscape. It is intentionally separate from theme tokens:
+
+- Theme tokens define the default design system.
+- Background programs define the active backdrop for a scene or demo.
+- Background programs never get raw shader code, CSS, timers, or executable hooks.
+- Background programs are validated before they reach GPUI.
+
+Initial background kinds:
+
+- `solid`
+- `transparent`
+- `linear_gradient`
+- `animated_gradient`
+- `neon_sweep`
+
+All durations are bounded. All colors are six-digit hex values. Gradients use two to eight sorted stops. The renderer may approximate multi-stop animation with native GPUI primitives as long as the full island background plane is controlled and remains clipped, fast, and click-clean.
+
 ## Refactor Plan
 
 1. Add `IslandScene` data types.
@@ -411,6 +460,7 @@ Agents can request approved theme tokens, but the app should preserve readabilit
    - `ui.scene.patch`
    - `ui.scene.reset`
    - `ui.scene.theme`
+   - `ui.scene.background`
 
 6. Wire scene events through daemon event lane.
    - HTTP, Unix socket, CLI, Runebook, and SDKs should all use the same core contract.
@@ -444,4 +494,3 @@ Agents can request approved theme tokens, but the app should preserve readabilit
 - Host visual proof passes.
 - Full workspace tests pass.
 - Release script installs and relaunches the app successfully.
-

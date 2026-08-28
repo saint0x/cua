@@ -2,6 +2,11 @@
   "schema_version": "cua.island.v1",
   "layout": "compact",
   "mode": "headful",
+  "background": {
+    "kind": "solid",
+    "color": "#000000",
+    "opacity": 92
+  },
   "regions": {
     "left": {
       "items": [

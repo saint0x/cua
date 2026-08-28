@@ -234,6 +234,12 @@ theme = { name = "default", tokens = { blue = "#1e9bff" } }
 source = "runebook-full-surface"
 
 [[steps]]
+id = "ui-scene-background"
+do = "ui.scene.background"
+background = { kind = "solid", color = "#000000", opacity = 92 }
+source = "runebook-full-surface"
+
+[[steps]]
 id = "ui-scene-reset"
 do = "ui.scene.reset"
 source = "runebook-full-surface"

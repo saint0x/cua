@@ -34,9 +34,9 @@ use cua_core::{
     ScratchpadListRequest, ScratchpadListResult, ScratchpadReadRequest, ScratchpadSummary,
     ScratchpadWriteRequest, SessionCancelRequest, SessionHeartbeatRequest, SessionLeaseRequest,
     SessionLeaseResult, UiIslandRequest, UiIslandResult, UiMode, UiModeRequest, UiModeResult,
-    UiReplyRequest, UiReplyResult, UiScenePatchRequest, UiSceneRequest, UiSceneResetRequest,
-    UiSceneResult, UiSceneThemeRequest, UiStepRequest, UiStepResult, VisualSessionRequest,
-    WebhookSourceStatus, WebhookSubscribeRequest, WindowInfo, SCHEMA_VERSION,
+    UiReplyRequest, UiReplyResult, UiSceneBackgroundRequest, UiScenePatchRequest, UiSceneRequest,
+    UiSceneResetRequest, UiSceneResult, UiSceneThemeRequest, UiStepRequest, UiStepResult,
+    VisualSessionRequest, WebhookSourceStatus, WebhookSubscribeRequest, WindowInfo, SCHEMA_VERSION,
 };
 use cua_input::InputBackend;
 use cua_model::{run_eval_report, EvalConfig, EvalReport};
@@ -1703,6 +1703,7 @@ pub fn router(state: DaemonState) -> Router {
         .route("/ui/scene/patch", post(ui_scene_patch))
         .route("/ui/scene/reset", post(ui_scene_reset))
         .route("/ui/scene/theme", post(ui_scene_theme))
+        .route("/ui/scene/background", post(ui_scene_background))
         .route(
             "/profile/create",
             post(profile_create).route_layer(middleware::from_fn_with_state(
@@ -2679,6 +2680,20 @@ async fn handle_unix_request(state: &DaemonState, request: UnixRequest) -> serde
                 }
             }
         }
+        "ui.scene.background" => {
+            let params = request.params.unwrap_or_else(|| serde_json::json!({}));
+            match serde_json::from_value::<UiSceneBackgroundRequest>(params) {
+                Ok(request) => ui_scene_background_state(state, request).map(serde_json::to_value),
+                Err(error) => {
+                    return unix_error(
+                        id,
+                        "bad_request",
+                        error.to_string(),
+                        Some(StatusCode::BAD_REQUEST),
+                    )
+                }
+            }
+        }
         "observe.desktop" => desktop_state(state).await.map(serde_json::to_value),
         "observe.displays" => cua_platform_macos::displays()
             .map_err(ApiError::internal)
@@ -3029,6 +3044,7 @@ fn manifest_payload() -> Manifest {
             "POST /ui/scene/patch".to_string(),
             "POST /ui/scene/reset".to_string(),
             "POST /ui/scene/theme".to_string(),
+            "POST /ui/scene/background".to_string(),
             "UNIX ui.step".to_string(),
             "UNIX ui.reply".to_string(),
             "UNIX ui.mode".to_string(),
@@ -3037,6 +3053,7 @@ fn manifest_payload() -> Manifest {
             "UNIX ui.scene.patch".to_string(),
             "UNIX ui.scene.reset".to_string(),
             "UNIX ui.scene.theme".to_string(),
+            "UNIX ui.scene.background".to_string(),
             "POST /profile/create".to_string(),
             "POST /profile/activate".to_string(),
             "GET /profile/status".to_string(),
@@ -3088,6 +3105,8 @@ fn manifest_payload() -> Manifest {
             "cua ui scene-patch <scene.json> --json".to_string(),
             "cua ui scene-reset --json".to_string(),
             "cua ui scene-theme <theme.json> --json".to_string(),
+            "cua ui background <background.json|background.cua.toml> --json".to_string(),
+            "cua ui protocol <file.cua.toml|file.json> --json".to_string(),
             "cua perf live --json".to_string(),
             "cua screenshot --out <path>".to_string(),
             "cua window-capture <window-id> --out <path>".to_string(),
@@ -4604,6 +4623,13 @@ async fn ui_scene_theme(
     Ok(Json(ui_scene_theme_state(&state, request)?))
 }
 
+async fn ui_scene_background(
+    State(state): State<DaemonState>,
+    Json(request): Json<UiSceneBackgroundRequest>,
+) -> Result<Json<UiSceneResult>, ApiError> {
+    Ok(Json(ui_scene_background_state(&state, request)?))
+}
+
 fn ui_step_state(state: &DaemonState, request: UiStepRequest) -> Result<UiStepResult, ApiError> {
     if request.schema_version != SCHEMA_VERSION {
         return Err(ApiError::bad_request(
@@ -4884,6 +4910,30 @@ fn ui_scene_theme_state(
         serde_json::json!({
             "source": result.source,
             "theme": request.theme,
+        }),
+    );
+    Ok(result)
+}
+
+fn ui_scene_background_state(
+    state: &DaemonState,
+    request: UiSceneBackgroundRequest,
+) -> Result<UiSceneResult, ApiError> {
+    validate_ui_scene_request_version(request.schema_version)?;
+    cua_core::validate_island_background(&request.background)
+        .map_err(|error| ApiError::bad_request("background", error.to_string()))?;
+    let source = normalize_optional_step_field(request.source, 48);
+    let result = UiSceneResult {
+        schema_version: SCHEMA_VERSION.to_string(),
+        accepted: true,
+        source,
+        scene: None,
+    };
+    state.publish_event(
+        "ui_scene_background",
+        serde_json::json!({
+            "source": result.source,
+            "background": request.background,
         }),
     );
     Ok(result)
@@ -6377,6 +6427,7 @@ mod tests {
             schema_version: cua_core::ISLAND_SCHEMA_VERSION.to_string(),
             layout: cua_core::IslandLayout::Compact,
             mode,
+            background: cua_core::default_island_background(),
             regions: BTreeMap::from([
                 (
                     "left".to_string(),
@@ -8063,6 +8114,37 @@ mod tests {
         let events = state.events.snapshot().await;
         assert!(events.iter().any(|event| event["kind"] == "ui_scene_theme"));
         assert!(events.iter().any(|event| event["kind"] == "ui_scene_reset"));
+    }
+
+    #[tokio::test]
+    async fn ui_scene_background_emits_validated_live_event() {
+        let state = DaemonState::synthetic("test", "token");
+
+        let Json(result) = ui_scene_background(
+            State(state.clone()),
+            Json(UiSceneBackgroundRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                background: cua_core::IslandBackground::NeonSweep {
+                    base_color: "#000000".to_string(),
+                    sweep_color: "#1e9bff".to_string(),
+                    opacity: 88,
+                    duration_ms: 1400,
+                },
+                source: Some("background-test".to_string()),
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(result.accepted);
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let events = state.events.snapshot().await;
+        let event = events
+            .iter()
+            .find(|event| event["kind"] == "ui_scene_background")
+            .expect("ui_scene_background event");
+        assert_eq!(event["data"]["source"], "background-test");
+        assert_eq!(event["data"]["background"]["kind"], "neon_sweep");
     }
 
     #[tokio::test]

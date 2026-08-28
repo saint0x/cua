@@ -1,0 +1,9 @@
+protocol = "cua.island.background.v1"
+source = "neon-demo"
+
+[background]
+kind = "neon_sweep"
+base_color = "#000000"
+sweep_color = "#1e9bff"
+opacity = 92
+duration_ms = 1400

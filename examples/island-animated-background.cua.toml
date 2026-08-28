@@ -1,0 +1,14 @@
+protocol = "cua.island.background.v1"
+source = "animated-background-demo"
+
+[background]
+kind = "animated_gradient"
+angle_degrees = 90
+opacity = 88
+duration_ms = 1800
+stops = [
+  { offset = 0, color = "#000000" },
+  { offset = 380, color = "#003c66" },
+  { offset = 720, color = "#1e9bff" },
+  { offset = 1000, color = "#06121f" },
+]

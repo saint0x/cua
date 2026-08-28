@@ -1260,9 +1260,45 @@ pub struct IslandScene {
     pub schema_version: String,
     pub layout: IslandLayout,
     pub mode: UiMode,
+    pub background: IslandBackground,
     pub regions: BTreeMap<String, IslandRegion>,
     pub actors: Vec<IslandActor>,
     pub theme: Option<IslandTheme>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum IslandBackground {
+    Solid {
+        color: String,
+        opacity: u8,
+    },
+    Transparent {
+        opacity: u8,
+    },
+    LinearGradient {
+        angle_degrees: u16,
+        opacity: u8,
+        stops: Vec<IslandColorStop>,
+    },
+    AnimatedGradient {
+        angle_degrees: u16,
+        opacity: u8,
+        duration_ms: u16,
+        stops: Vec<IslandColorStop>,
+    },
+    NeonSweep {
+        base_color: String,
+        sweep_color: String,
+        opacity: u8,
+        duration_ms: u16,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct IslandColorStop {
+    pub offset: u16,
+    pub color: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -1413,6 +1449,13 @@ pub struct UiSceneThemeRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct UiSceneBackgroundRequest {
+    pub schema_version: String,
+    pub background: IslandBackground,
+    pub source: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct UiSceneResult {
     pub schema_version: String,
     pub accepted: bool,
@@ -1450,6 +1493,7 @@ impl IslandScene {
             ));
         }
         validate_required_island_regions(self)?;
+        validate_island_background(&self.background)?;
         let allowed_regions = allowed_island_regions(&self.layout);
         let mut item_count = 0usize;
         for (name, region) in &self.regions {
@@ -1494,6 +1538,13 @@ impl IslandScene {
 
 pub fn validate_island_scene(scene: &IslandScene) -> Result<(), IslandSceneError> {
     scene.validate()
+}
+
+pub fn default_island_background() -> IslandBackground {
+    IslandBackground::Solid {
+        color: "#000000".to_string(),
+        opacity: 92,
+    }
 }
 
 fn allowed_island_regions(layout: &IslandLayout) -> &'static [&'static str] {
@@ -1638,6 +1689,116 @@ fn validate_island_item(region: &str, item: &IslandItem) -> Result<(), IslandSce
             Ok(())
         }
     }
+}
+
+pub fn validate_island_background(background: &IslandBackground) -> Result<(), IslandSceneError> {
+    match background {
+        IslandBackground::Solid { color, opacity } => {
+            validate_scene_opacity("background.opacity", *opacity)?;
+            validate_hex_color_field("background.color", color)
+        }
+        IslandBackground::Transparent { opacity } => {
+            validate_scene_opacity("background.opacity", *opacity)
+        }
+        IslandBackground::LinearGradient {
+            angle_degrees,
+            opacity,
+            stops,
+        } => {
+            validate_gradient_angle(*angle_degrees)?;
+            validate_scene_opacity("background.opacity", *opacity)?;
+            validate_color_stops(stops)
+        }
+        IslandBackground::AnimatedGradient {
+            angle_degrees,
+            opacity,
+            duration_ms,
+            stops,
+        } => {
+            validate_gradient_angle(*angle_degrees)?;
+            validate_scene_opacity("background.opacity", *opacity)?;
+            validate_background_duration(*duration_ms)?;
+            validate_color_stops(stops)
+        }
+        IslandBackground::NeonSweep {
+            base_color,
+            sweep_color,
+            opacity,
+            duration_ms,
+        } => {
+            validate_scene_opacity("background.opacity", *opacity)?;
+            validate_background_duration(*duration_ms)?;
+            validate_hex_color_field("background.base_color", base_color)?;
+            validate_hex_color_field("background.sweep_color", sweep_color)
+        }
+    }
+}
+
+fn validate_scene_opacity(field: &str, opacity: u8) -> Result<(), IslandSceneError> {
+    if opacity > 100 {
+        return Err(IslandSceneError::invalid(
+            field,
+            "opacity must be between 0 and 100",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_gradient_angle(angle_degrees: u16) -> Result<(), IslandSceneError> {
+    if angle_degrees > 359 {
+        return Err(IslandSceneError::invalid(
+            "background.angle_degrees",
+            "angle must be between 0 and 359",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_background_duration(duration_ms: u16) -> Result<(), IslandSceneError> {
+    if !(100..=10_000).contains(&duration_ms) {
+        return Err(IslandSceneError::invalid(
+            "background.duration_ms",
+            "duration must be between 100ms and 10000ms",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_color_stops(stops: &[IslandColorStop]) -> Result<(), IslandSceneError> {
+    if !(2..=8).contains(&stops.len()) {
+        return Err(IslandSceneError::invalid(
+            "background.stops",
+            "gradient must contain 2 to 8 stops",
+        ));
+    }
+    let mut previous = None;
+    for (index, stop) in stops.iter().enumerate() {
+        if stop.offset > 1000 {
+            return Err(IslandSceneError::invalid(
+                format!("background.stops.{index}.offset"),
+                "offset must be between 0 and 1000",
+            ));
+        }
+        if previous.is_some_and(|previous| stop.offset < previous) {
+            return Err(IslandSceneError::invalid(
+                format!("background.stops.{index}.offset"),
+                "gradient stops must be sorted by offset",
+            ));
+        }
+        previous = Some(stop.offset);
+        validate_hex_color_field(&format!("background.stops.{index}.color"), &stop.color)?;
+    }
+    Ok(())
+}
+
+fn validate_hex_color_field(field: &str, value: &str) -> Result<(), IslandSceneError> {
+    if !is_valid_hex_color(value) {
+        return Err(IslandSceneError::invalid(
+            field,
+            "color must be a #rrggbb value",
+        ));
+    }
+    Ok(())
 }
 
 fn island_item_id(item: &IslandItem) -> &str {
@@ -2252,6 +2413,14 @@ pub fn schema_bundle() -> SchemaBundle {
         serde_json::json!(schema_for!(IslandScene)),
     );
     schemas.insert(
+        "IslandBackground".to_string(),
+        serde_json::json!(schema_for!(IslandBackground)),
+    );
+    schemas.insert(
+        "IslandColorStop".to_string(),
+        serde_json::json!(schema_for!(IslandColorStop)),
+    );
+    schemas.insert(
         "UiSceneRequest".to_string(),
         serde_json::json!(schema_for!(UiSceneRequest)),
     );
@@ -2266,6 +2435,10 @@ pub fn schema_bundle() -> SchemaBundle {
     schemas.insert(
         "UiSceneThemeRequest".to_string(),
         serde_json::json!(schema_for!(UiSceneThemeRequest)),
+    );
+    schemas.insert(
+        "UiSceneBackgroundRequest".to_string(),
+        serde_json::json!(schema_for!(UiSceneBackgroundRequest)),
     );
     schemas.insert(
         "UiSceneResult".to_string(),
@@ -2385,6 +2558,7 @@ mod tests {
             schema_version: ISLAND_SCHEMA_VERSION.to_string(),
             layout: IslandLayout::Compact,
             mode: UiMode::Headful,
+            background: default_island_background(),
             regions,
             actors: Vec::new(),
             theme: None,
@@ -2915,6 +3089,48 @@ mod tests {
     }
 
     #[test]
+    fn island_scene_accepts_animated_gradient_background() {
+        let mut scene = sample_compact_island_scene();
+        scene.background = IslandBackground::AnimatedGradient {
+            angle_degrees: 72,
+            opacity: 86,
+            duration_ms: 1800,
+            stops: vec![
+                IslandColorStop {
+                    offset: 0,
+                    color: "#00111f".to_string(),
+                },
+                IslandColorStop {
+                    offset: 500,
+                    color: "#1e9bff".to_string(),
+                },
+                IslandColorStop {
+                    offset: 1000,
+                    color: "#9b5cff".to_string(),
+                },
+            ],
+        };
+
+        validate_island_scene(&scene).unwrap();
+    }
+
+    #[test]
+    fn island_scene_rejects_unbounded_background_specs() {
+        let mut scene = sample_compact_island_scene();
+        scene.background = IslandBackground::LinearGradient {
+            angle_degrees: 360,
+            opacity: 101,
+            stops: vec![IslandColorStop {
+                offset: 1001,
+                color: "blue".to_string(),
+            }],
+        };
+
+        let error = validate_island_scene(&scene).unwrap_err();
+        assert!(error.to_string().contains("angle"));
+    }
+
+    #[test]
     fn island_scene_rejects_unknown_region_for_layout() {
         let mut scene = sample_compact_island_scene();
         scene
@@ -2991,7 +3207,10 @@ mod tests {
         let bundle = schema_bundle();
 
         assert!(bundle.schemas.contains_key("IslandScene"));
+        assert!(bundle.schemas.contains_key("IslandBackground"));
+        assert!(bundle.schemas.contains_key("IslandColorStop"));
         assert!(bundle.schemas.contains_key("UiSceneRequest"));
+        assert!(bundle.schemas.contains_key("UiSceneBackgroundRequest"));
         assert!(bundle.schemas.contains_key("UiScenePatchRequest"));
         assert!(bundle.schemas.contains_key("UiSceneResetRequest"));
         assert!(bundle.schemas.contains_key("UiSceneThemeRequest"));

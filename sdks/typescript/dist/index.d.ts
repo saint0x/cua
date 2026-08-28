@@ -93,6 +93,10 @@ export interface UiSceneThemeOptions {
     theme: Json;
     source?: string;
 }
+export interface UiSceneBackgroundOptions {
+    background: Json;
+    source?: string;
+}
 export interface ProfileCreateOptions {
     name: string;
     mode?: "observe" | "supervised" | "autonomous";
@@ -168,6 +172,7 @@ export declare class Cua {
     uiScenePatch(options: UiSceneOptions): Promise<Json>;
     uiSceneReset(source?: string): Promise<Json>;
     uiSceneTheme(options: UiSceneThemeOptions): Promise<Json>;
+    uiSceneBackground(options: UiSceneBackgroundOptions): Promise<Json>;
     uiReply(options: UiReplyOptions): Promise<Json>;
     uiMode(mode: "headful" | "headless", source?: string): Promise<Json>;
     clipboardRead(allowSensitive?: boolean): Promise<Json>;

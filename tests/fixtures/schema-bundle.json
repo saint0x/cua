@@ -4633,6 +4633,200 @@
       "title": "InputResult",
       "type": "object"
     },
+    "IslandBackground": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "IslandColorStop": {
+          "properties": {
+            "color": {
+              "type": "string"
+            },
+            "offset": {
+              "format": "uint16",
+              "minimum": 0.0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "color",
+            "offset"
+          ],
+          "type": "object"
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "color": {
+              "type": "string"
+            },
+            "kind": {
+              "enum": [
+                "solid"
+              ],
+              "type": "string"
+            },
+            "opacity": {
+              "format": "uint8",
+              "minimum": 0.0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "color",
+            "kind",
+            "opacity"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "transparent"
+              ],
+              "type": "string"
+            },
+            "opacity": {
+              "format": "uint8",
+              "minimum": 0.0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "opacity"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "angle_degrees": {
+              "format": "uint16",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "kind": {
+              "enum": [
+                "linear_gradient"
+              ],
+              "type": "string"
+            },
+            "opacity": {
+              "format": "uint8",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "stops": {
+              "items": {
+                "$ref": "#/definitions/IslandColorStop"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "angle_degrees",
+            "kind",
+            "opacity",
+            "stops"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "angle_degrees": {
+              "format": "uint16",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "duration_ms": {
+              "format": "uint16",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "kind": {
+              "enum": [
+                "animated_gradient"
+              ],
+              "type": "string"
+            },
+            "opacity": {
+              "format": "uint8",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "stops": {
+              "items": {
+                "$ref": "#/definitions/IslandColorStop"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "angle_degrees",
+            "duration_ms",
+            "kind",
+            "opacity",
+            "stops"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "base_color": {
+              "type": "string"
+            },
+            "duration_ms": {
+              "format": "uint16",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "kind": {
+              "enum": [
+                "neon_sweep"
+              ],
+              "type": "string"
+            },
+            "opacity": {
+              "format": "uint8",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "sweep_color": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "base_color",
+            "duration_ms",
+            "kind",
+            "opacity",
+            "sweep_color"
+          ],
+          "type": "object"
+        }
+      ],
+      "title": "IslandBackground"
+    },
+    "IslandColorStop": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "color": {
+          "type": "string"
+        },
+        "offset": {
+          "format": "uint16",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "color",
+        "offset"
+      ],
+      "title": "IslandColorStop",
+      "type": "object"
+    },
     "IslandScene": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "definitions": {
@@ -4708,6 +4902,177 @@
             "region_item"
           ],
           "type": "string"
+        },
+        "IslandBackground": {
+          "oneOf": [
+            {
+              "properties": {
+                "color": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "solid"
+                  ],
+                  "type": "string"
+                },
+                "opacity": {
+                  "format": "uint8",
+                  "minimum": 0.0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "color",
+                "kind",
+                "opacity"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "transparent"
+                  ],
+                  "type": "string"
+                },
+                "opacity": {
+                  "format": "uint8",
+                  "minimum": 0.0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "kind",
+                "opacity"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "angle_degrees": {
+                  "format": "uint16",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "linear_gradient"
+                  ],
+                  "type": "string"
+                },
+                "opacity": {
+                  "format": "uint8",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "stops": {
+                  "items": {
+                    "$ref": "#/definitions/IslandColorStop"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "angle_degrees",
+                "kind",
+                "opacity",
+                "stops"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "angle_degrees": {
+                  "format": "uint16",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "duration_ms": {
+                  "format": "uint16",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "animated_gradient"
+                  ],
+                  "type": "string"
+                },
+                "opacity": {
+                  "format": "uint8",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "stops": {
+                  "items": {
+                    "$ref": "#/definitions/IslandColorStop"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "angle_degrees",
+                "duration_ms",
+                "kind",
+                "opacity",
+                "stops"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "base_color": {
+                  "type": "string"
+                },
+                "duration_ms": {
+                  "format": "uint16",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "neon_sweep"
+                  ],
+                  "type": "string"
+                },
+                "opacity": {
+                  "format": "uint8",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "sweep_color": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "base_color",
+                "duration_ms",
+                "kind",
+                "opacity",
+                "sweep_color"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "IslandColorStop": {
+          "properties": {
+            "color": {
+              "type": "string"
+            },
+            "offset": {
+              "format": "uint16",
+              "minimum": 0.0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "color",
+            "offset"
+          ],
+          "type": "object"
         },
         "IslandItem": {
           "oneOf": [
@@ -5158,6 +5523,9 @@
           },
           "type": "array"
         },
+        "background": {
+          "$ref": "#/definitions/IslandBackground"
+        },
         "layout": {
           "$ref": "#/definitions/IslandLayout"
         },
@@ -5186,6 +5554,7 @@
       },
       "required": [
         "actors",
+        "background",
         "layout",
         "mode",
         "regions",
@@ -7189,6 +7558,202 @@
       "title": "UiReplyResult",
       "type": "object"
     },
+    "UiSceneBackgroundRequest": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "IslandBackground": {
+          "oneOf": [
+            {
+              "properties": {
+                "color": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "solid"
+                  ],
+                  "type": "string"
+                },
+                "opacity": {
+                  "format": "uint8",
+                  "minimum": 0.0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "color",
+                "kind",
+                "opacity"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "transparent"
+                  ],
+                  "type": "string"
+                },
+                "opacity": {
+                  "format": "uint8",
+                  "minimum": 0.0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "kind",
+                "opacity"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "angle_degrees": {
+                  "format": "uint16",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "linear_gradient"
+                  ],
+                  "type": "string"
+                },
+                "opacity": {
+                  "format": "uint8",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "stops": {
+                  "items": {
+                    "$ref": "#/definitions/IslandColorStop"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "angle_degrees",
+                "kind",
+                "opacity",
+                "stops"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "angle_degrees": {
+                  "format": "uint16",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "duration_ms": {
+                  "format": "uint16",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "animated_gradient"
+                  ],
+                  "type": "string"
+                },
+                "opacity": {
+                  "format": "uint8",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "stops": {
+                  "items": {
+                    "$ref": "#/definitions/IslandColorStop"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "angle_degrees",
+                "duration_ms",
+                "kind",
+                "opacity",
+                "stops"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "base_color": {
+                  "type": "string"
+                },
+                "duration_ms": {
+                  "format": "uint16",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "neon_sweep"
+                  ],
+                  "type": "string"
+                },
+                "opacity": {
+                  "format": "uint8",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "sweep_color": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "base_color",
+                "duration_ms",
+                "kind",
+                "opacity",
+                "sweep_color"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "IslandColorStop": {
+          "properties": {
+            "color": {
+              "type": "string"
+            },
+            "offset": {
+              "format": "uint16",
+              "minimum": 0.0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "color",
+            "offset"
+          ],
+          "type": "object"
+        }
+      },
+      "properties": {
+        "background": {
+          "$ref": "#/definitions/IslandBackground"
+        },
+        "schema_version": {
+          "type": "string"
+        },
+        "source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "background",
+        "schema_version"
+      ],
+      "title": "UiSceneBackgroundRequest",
+      "type": "object"
+    },
     "UiScenePatchRequest": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "definitions": {
@@ -7264,6 +7829,177 @@
             "region_item"
           ],
           "type": "string"
+        },
+        "IslandBackground": {
+          "oneOf": [
+            {
+              "properties": {
+                "color": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "solid"
+                  ],
+                  "type": "string"
+                },
+                "opacity": {
+                  "format": "uint8",
+                  "minimum": 0.0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "color",
+                "kind",
+                "opacity"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "transparent"
+                  ],
+                  "type": "string"
+                },
+                "opacity": {
+                  "format": "uint8",
+                  "minimum": 0.0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "kind",
+                "opacity"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "angle_degrees": {
+                  "format": "uint16",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "linear_gradient"
+                  ],
+                  "type": "string"
+                },
+                "opacity": {
+                  "format": "uint8",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "stops": {
+                  "items": {
+                    "$ref": "#/definitions/IslandColorStop"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "angle_degrees",
+                "kind",
+                "opacity",
+                "stops"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "angle_degrees": {
+                  "format": "uint16",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "duration_ms": {
+                  "format": "uint16",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "animated_gradient"
+                  ],
+                  "type": "string"
+                },
+                "opacity": {
+                  "format": "uint8",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "stops": {
+                  "items": {
+                    "$ref": "#/definitions/IslandColorStop"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "angle_degrees",
+                "duration_ms",
+                "kind",
+                "opacity",
+                "stops"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "base_color": {
+                  "type": "string"
+                },
+                "duration_ms": {
+                  "format": "uint16",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "neon_sweep"
+                  ],
+                  "type": "string"
+                },
+                "opacity": {
+                  "format": "uint8",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "sweep_color": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "base_color",
+                "duration_ms",
+                "kind",
+                "opacity",
+                "sweep_color"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "IslandColorStop": {
+          "properties": {
+            "color": {
+              "type": "string"
+            },
+            "offset": {
+              "format": "uint16",
+              "minimum": 0.0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "color",
+            "offset"
+          ],
+          "type": "object"
         },
         "IslandItem": {
           "oneOf": [
@@ -7689,6 +8425,9 @@
               },
               "type": "array"
             },
+            "background": {
+              "$ref": "#/definitions/IslandBackground"
+            },
             "layout": {
               "$ref": "#/definitions/IslandLayout"
             },
@@ -7717,6 +8456,7 @@
           },
           "required": [
             "actors",
+            "background",
             "layout",
             "mode",
             "regions",
@@ -7847,6 +8587,177 @@
           ],
           "type": "string"
         },
+        "IslandBackground": {
+          "oneOf": [
+            {
+              "properties": {
+                "color": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "solid"
+                  ],
+                  "type": "string"
+                },
+                "opacity": {
+                  "format": "uint8",
+                  "minimum": 0.0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "color",
+                "kind",
+                "opacity"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "transparent"
+                  ],
+                  "type": "string"
+                },
+                "opacity": {
+                  "format": "uint8",
+                  "minimum": 0.0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "kind",
+                "opacity"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "angle_degrees": {
+                  "format": "uint16",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "linear_gradient"
+                  ],
+                  "type": "string"
+                },
+                "opacity": {
+                  "format": "uint8",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "stops": {
+                  "items": {
+                    "$ref": "#/definitions/IslandColorStop"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "angle_degrees",
+                "kind",
+                "opacity",
+                "stops"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "angle_degrees": {
+                  "format": "uint16",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "duration_ms": {
+                  "format": "uint16",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "animated_gradient"
+                  ],
+                  "type": "string"
+                },
+                "opacity": {
+                  "format": "uint8",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "stops": {
+                  "items": {
+                    "$ref": "#/definitions/IslandColorStop"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "angle_degrees",
+                "duration_ms",
+                "kind",
+                "opacity",
+                "stops"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "base_color": {
+                  "type": "string"
+                },
+                "duration_ms": {
+                  "format": "uint16",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "neon_sweep"
+                  ],
+                  "type": "string"
+                },
+                "opacity": {
+                  "format": "uint8",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "sweep_color": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "base_color",
+                "duration_ms",
+                "kind",
+                "opacity",
+                "sweep_color"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "IslandColorStop": {
+          "properties": {
+            "color": {
+              "type": "string"
+            },
+            "offset": {
+              "format": "uint16",
+              "minimum": 0.0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "color",
+            "offset"
+          ],
+          "type": "object"
+        },
         "IslandItem": {
           "oneOf": [
             {
@@ -8271,6 +9182,9 @@
               },
               "type": "array"
             },
+            "background": {
+              "$ref": "#/definitions/IslandBackground"
+            },
             "layout": {
               "$ref": "#/definitions/IslandLayout"
             },
@@ -8299,6 +9213,7 @@
           },
           "required": [
             "actors",
+            "background",
             "layout",
             "mode",
             "regions",
@@ -8448,6 +9363,177 @@
           ],
           "type": "string"
         },
+        "IslandBackground": {
+          "oneOf": [
+            {
+              "properties": {
+                "color": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "solid"
+                  ],
+                  "type": "string"
+                },
+                "opacity": {
+                  "format": "uint8",
+                  "minimum": 0.0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "color",
+                "kind",
+                "opacity"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "transparent"
+                  ],
+                  "type": "string"
+                },
+                "opacity": {
+                  "format": "uint8",
+                  "minimum": 0.0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "kind",
+                "opacity"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "angle_degrees": {
+                  "format": "uint16",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "linear_gradient"
+                  ],
+                  "type": "string"
+                },
+                "opacity": {
+                  "format": "uint8",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "stops": {
+                  "items": {
+                    "$ref": "#/definitions/IslandColorStop"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "angle_degrees",
+                "kind",
+                "opacity",
+                "stops"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "angle_degrees": {
+                  "format": "uint16",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "duration_ms": {
+                  "format": "uint16",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "animated_gradient"
+                  ],
+                  "type": "string"
+                },
+                "opacity": {
+                  "format": "uint8",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "stops": {
+                  "items": {
+                    "$ref": "#/definitions/IslandColorStop"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "angle_degrees",
+                "duration_ms",
+                "kind",
+                "opacity",
+                "stops"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "base_color": {
+                  "type": "string"
+                },
+                "duration_ms": {
+                  "format": "uint16",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "kind": {
+                  "enum": [
+                    "neon_sweep"
+                  ],
+                  "type": "string"
+                },
+                "opacity": {
+                  "format": "uint8",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "sweep_color": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "base_color",
+                "duration_ms",
+                "kind",
+                "opacity",
+                "sweep_color"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "IslandColorStop": {
+          "properties": {
+            "color": {
+              "type": "string"
+            },
+            "offset": {
+              "format": "uint16",
+              "minimum": 0.0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "color",
+            "offset"
+          ],
+          "type": "object"
+        },
         "IslandItem": {
           "oneOf": [
             {
@@ -8872,6 +9958,9 @@
               },
               "type": "array"
             },
+            "background": {
+              "$ref": "#/definitions/IslandBackground"
+            },
             "layout": {
               "$ref": "#/definitions/IslandLayout"
             },
@@ -8900,6 +9989,7 @@
           },
           "required": [
             "actors",
+            "background",
             "layout",
             "mode",
             "regions",

@@ -115,6 +115,11 @@ export interface UiSceneThemeOptions {
   source?: string;
 }
 
+export interface UiSceneBackgroundOptions {
+  background: Json;
+  source?: string;
+}
+
 export interface ProfileCreateOptions {
   name: string;
   mode?: "observe" | "supervised" | "autonomous";
@@ -514,6 +519,10 @@ export class Cua {
 
   async uiSceneTheme(options: UiSceneThemeOptions): Promise<Json> {
     return this.step("ui.scene.theme", { theme: options.theme, source: options.source }, "ui");
+  }
+
+  async uiSceneBackground(options: UiSceneBackgroundOptions): Promise<Json> {
+    return this.step("ui.scene.background", { background: options.background, source: options.source }, "ui");
   }
 
   async uiReply(options: UiReplyOptions): Promise<Json> {

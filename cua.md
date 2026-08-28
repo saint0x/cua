@@ -104,6 +104,7 @@ HTTP endpoints:
 - `POST /ui/scene/patch`
 - `POST /ui/scene/reset`
 - `POST /ui/scene/theme`
+- `POST /ui/scene/background`
 - `POST /profile/create`
 - `POST /profile/activate`
 - `GET /profile/status`
@@ -156,6 +157,7 @@ Unix socket RPC methods:
 - `ui.scene.patch`
 - `ui.scene.reset`
 - `ui.scene.theme`
+- `ui.scene.background`
 - `observe.desktop`
 - `clipboard.read`
 - `clipboard.write`
@@ -188,6 +190,8 @@ CLI commands:
 - `cua ui scene-patch <scene.json> --json`
 - `cua ui scene-reset --json`
 - `cua ui scene-theme <theme.json> --json`
+- `cua ui background <background.json|background.cua.toml> --json`
+- `cua ui protocol <file.json|file.cua.toml> --json`
 - `cua session acquire <session-id> --role owner|observer --json`
 - `cua session heartbeat <session-id> --json`
 - `cua session cancel <session-id> [--target-session-id <session-id>] --json`
@@ -237,6 +241,38 @@ CLI commands:
 - `cua trace inspect <dir> --json`
 - `cua trace verify <dir> --json`
 - `cua trace replay <dir> --json`
+
+## Island Background Protocol
+
+Every island scene has a validated background plane beneath labels, chips, rows, actors, and foreground controls. The default background is the existing black island surface, so the production HUD keeps its normal visual baseline unless a caller explicitly programs the background.
+
+Background kinds:
+
+- `solid`: one bounded `#rrggbb` color with opacity `0..100`.
+- `transparent`: transparent or translucent island backdrop.
+- `linear_gradient`: two to eight sorted color stops.
+- `animated_gradient`: bounded cyclic gradient animation.
+- `neon_sweep`: compact animated neon sweep over a base color.
+
+Example protocol file:
+
+```toml
+protocol = "cua.island.background.v1"
+source = "neon-demo"
+
+[background]
+kind = "neon_sweep"
+base_color = "#000000"
+sweep_color = "#1e9bff"
+opacity = 92
+duration_ms = 1400
+```
+
+Apply it with:
+
+```bash
+cua ui protocol examples/island-neon-background.cua.toml --json
+```
 
 ## System Prompts
 

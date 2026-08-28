@@ -7,13 +7,13 @@ use cua_core::{
     config_env_path, load_or_create_machine_identity, profile_ctx_dir, rotate_machine_identity,
     schema_bundle, verify_machine_attestation, AttestationChallengeRequest, AttestationSignRequest,
     CapabilityManifest, ClipboardReadRequest, ClipboardWriteRequest, DesktopContextSnapshot,
-    FrameEncoding, FramePayload, InboundMessageRequest, InboundReplyMode, InputAction, IslandScene,
-    IslandTheme, MachineAttestation, MouseButton, RuntimeMode, RuntimeSessionRole,
-    ScratchpadDeleteRequest, ScratchpadListRequest, ScratchpadReadRequest, ScratchpadWriteRequest,
-    SessionCancelRequest, SessionHeartbeatRequest, SessionLeaseRequest, UiIslandRequest,
-    UiIslandState, UiMode, UiModeRequest, UiReplyRequest, UiScenePatchRequest, UiSceneRequest,
-    UiSceneResetRequest, UiSceneThemeRequest, UiStepRequest, WebhookSubscribeRequest,
-    SCHEMA_VERSION,
+    FrameEncoding, FramePayload, InboundMessageRequest, InboundReplyMode, InputAction,
+    IslandBackground, IslandScene, IslandTheme, MachineAttestation, MouseButton, RuntimeMode,
+    RuntimeSessionRole, ScratchpadDeleteRequest, ScratchpadListRequest, ScratchpadReadRequest,
+    ScratchpadWriteRequest, SessionCancelRequest, SessionHeartbeatRequest, SessionLeaseRequest,
+    UiIslandRequest, UiIslandState, UiMode, UiModeRequest, UiReplyRequest,
+    UiSceneBackgroundRequest, UiScenePatchRequest, UiSceneRequest, UiSceneResetRequest,
+    UiSceneThemeRequest, UiStepRequest, WebhookSubscribeRequest, SCHEMA_VERSION,
 };
 use cua_model::{run_eval_report, EvalConfig};
 use cua_trace::{ActionTurnRecord, TraceRecord, TraceWriter};
@@ -610,6 +610,20 @@ enum UiCommand {
         #[arg(long)]
         json: bool,
     },
+    Background {
+        file: PathBuf,
+        #[arg(long)]
+        source: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    Protocol {
+        file: PathBuf,
+        #[arg(long)]
+        source: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Clone, Debug, clap::ValueEnum)]
@@ -865,6 +879,8 @@ async fn print_usage_and_status() -> anyhow::Result<()> {
     println!("       cua ui mode headless|headful --json");
     println!("       cua ui scene-set <scene.json> --json");
     println!("       cua ui scene-reset --json");
+    println!("       cua ui background <background.json|background.cua.toml> --json");
+    println!("       cua ui protocol <file.json|file.cua.toml> --json");
     println!("       cua perf live --json");
     println!("       cua context --json");
     println!("       cua screenshot --out /tmp/screen.png");
@@ -1004,6 +1020,16 @@ async fn ui(_addr: SocketAddr, profile: &str, command: UiCommand) -> anyhow::Res
             .await?;
             print_json_value(&value, json)
         }
+        UiCommand::Background { file, source, json } => {
+            let background: IslandBackground = read_json_or_toml_file(&file).await?;
+            let value = send_ui_background(profile, background, source).await?;
+            print_json_value(&value, json)
+        }
+        UiCommand::Protocol { file, source, json } => {
+            let protocol = read_protocol_file(&file).await?;
+            let value = apply_ui_protocol_file(profile, protocol, source).await?;
+            print_json_value(&value, json)
+        }
     }
 }
 
@@ -1012,6 +1038,125 @@ async fn read_json_file<T: serde::de::DeserializeOwned>(path: &Path) -> anyhow::
         .await
         .with_context(|| format!("read {}", path.display()))?;
     serde_json::from_slice(&bytes).with_context(|| format!("parse JSON {}", path.display()))
+}
+
+async fn read_json_or_toml_file<T: serde::de::DeserializeOwned>(path: &Path) -> anyhow::Result<T> {
+    let bytes = tokio::fs::read(path)
+        .await
+        .with_context(|| format!("read {}", path.display()))?;
+    if path.extension().and_then(|ext| ext.to_str()) == Some("toml") {
+        let text = std::str::from_utf8(&bytes)
+            .with_context(|| format!("read UTF-8 {}", path.display()))?;
+        toml::from_str(text).with_context(|| format!("parse TOML {}", path.display()))
+    } else {
+        serde_json::from_slice(&bytes).with_context(|| format!("parse JSON {}", path.display()))
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct UiProtocolFile {
+    protocol: String,
+    source: Option<String>,
+    scene: Option<IslandScene>,
+    background: Option<IslandBackground>,
+    theme: Option<IslandTheme>,
+}
+
+async fn read_protocol_file(path: &Path) -> anyhow::Result<UiProtocolFile> {
+    read_json_or_toml_file(path).await
+}
+
+async fn apply_ui_protocol_file(
+    profile: &str,
+    file: UiProtocolFile,
+    source_override: Option<String>,
+) -> anyhow::Result<serde_json::Value> {
+    let source = source_override.or(file.source);
+    match file.protocol.as_str() {
+        "cua.island.scene.v1" => {
+            let scene = file
+                .scene
+                .with_context(|| "protocol cua.island.scene.v1 requires scene")?;
+            send_ui_scene(profile, "ui.scene.set", scene, source).await
+        }
+        "cua.island.scene.patch.v1" => {
+            let scene = file
+                .scene
+                .with_context(|| "protocol cua.island.scene.patch.v1 requires scene")?;
+            send_ui_scene(profile, "ui.scene.patch", scene, source).await
+        }
+        "cua.island.background.v1" => {
+            let background = file
+                .background
+                .with_context(|| "protocol cua.island.background.v1 requires background")?;
+            send_ui_background(profile, background, source).await
+        }
+        "cua.island.theme.v1" => {
+            let theme = file
+                .theme
+                .with_context(|| "protocol cua.island.theme.v1 requires theme")?;
+            send_ui_theme(profile, theme, source).await
+        }
+        protocol => anyhow::bail!(
+            "unsupported ui protocol {protocol}; expected cua.island.scene.v1, cua.island.scene.patch.v1, cua.island.background.v1, or cua.island.theme.v1"
+        ),
+    }
+}
+
+async fn send_ui_scene(
+    profile: &str,
+    method: &str,
+    scene: IslandScene,
+    source: Option<String>,
+) -> anyhow::Result<serde_json::Value> {
+    let params = match method {
+        "ui.scene.set" => serde_json::to_value(UiSceneRequest {
+            schema_version: SCHEMA_VERSION.to_string(),
+            scene,
+            source,
+        })?,
+        "ui.scene.patch" => serde_json::to_value(UiScenePatchRequest {
+            schema_version: SCHEMA_VERSION.to_string(),
+            scene,
+            source,
+        })?,
+        _ => anyhow::bail!("unsupported scene method {method}"),
+    };
+    unix_request_json(profile, method, Some(params)).await
+}
+
+async fn send_ui_theme(
+    profile: &str,
+    theme: IslandTheme,
+    source: Option<String>,
+) -> anyhow::Result<serde_json::Value> {
+    unix_request_json(
+        profile,
+        "ui.scene.theme",
+        Some(serde_json::to_value(UiSceneThemeRequest {
+            schema_version: SCHEMA_VERSION.to_string(),
+            theme,
+            source,
+        })?),
+    )
+    .await
+}
+
+async fn send_ui_background(
+    profile: &str,
+    background: IslandBackground,
+    source: Option<String>,
+) -> anyhow::Result<serde_json::Value> {
+    unix_request_json(
+        profile,
+        "ui.scene.background",
+        Some(serde_json::to_value(UiSceneBackgroundRequest {
+            schema_version: SCHEMA_VERSION.to_string(),
+            background,
+            source,
+        })?),
+    )
+    .await
 }
 
 async fn unix_get(profile: &str, method: &str, json: bool) -> anyhow::Result<()> {
@@ -2436,6 +2581,19 @@ impl RunebookRuntime {
                     Some(serde_json::json!({
                         "schema_version": SCHEMA_VERSION,
                         "theme": theme,
+                        "source": self.string_field(step, "source")?,
+                    })),
+                    None,
+                )
+                .await
+            }
+            "ui.scene.background" => {
+                let background = self.json_field_or_file(step, "background", "file").await?;
+                self.request(
+                    "ui.scene.background",
+                    Some(serde_json::json!({
+                        "schema_version": SCHEMA_VERSION,
+                        "background": background,
                         "source": self.string_field(step, "source")?,
                     })),
                     None,
@@ -4511,6 +4669,55 @@ app = "${target}"
     }
 
     #[test]
+    fn ui_protocol_parses_toml_background_program() {
+        let raw = r##"
+protocol = "cua.island.background.v1"
+source = "neon-demo"
+
+[background]
+kind = "animated_gradient"
+angle_degrees = 90
+opacity = 88
+duration_ms = 1600
+stops = [
+  { offset = 0, color = "#000000" },
+  { offset = 500, color = "#1e9bff" },
+  { offset = 1000, color = "#9b5cff" },
+]
+"##;
+
+        let file: UiProtocolFile = toml::from_str(raw).unwrap();
+
+        assert_eq!(file.protocol, "cua.island.background.v1");
+        assert_eq!(file.source.as_deref(), Some("neon-demo"));
+        assert!(matches!(
+            file.background.unwrap(),
+            IslandBackground::AnimatedGradient {
+                angle_degrees: 90,
+                opacity: 88,
+                duration_ms: 1600,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn ui_protocol_parses_json_scene_program() {
+        let raw = include_str!("../../../tests/fixtures/island-compact-scene.json");
+        let scene: IslandScene = serde_json::from_str(raw).unwrap();
+        let file: UiProtocolFile = serde_json::from_value(serde_json::json!({
+            "protocol": "cua.island.scene.v1",
+            "source": "scene-demo",
+            "scene": scene,
+        }))
+        .unwrap();
+
+        assert_eq!(file.protocol, "cua.island.scene.v1");
+        assert_eq!(file.source.as_deref(), Some("scene-demo"));
+        file.scene.unwrap().validate().unwrap();
+    }
+
+    #[test]
     fn runebook_parses_full_documented_surface() {
         let raw = include_str!("../../../tests/fixtures/runebook-full-surface.cua.toml");
         let runebook: Runebook = toml::from_str(raw).unwrap();
@@ -4548,6 +4755,7 @@ app = "${target}"
             "ui.scene.set",
             "ui.scene.patch",
             "ui.scene.theme",
+            "ui.scene.background",
             "ui.scene.reset",
             "attest",
             "stt",
