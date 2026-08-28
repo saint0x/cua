@@ -1,0 +1,82 @@
+{
+  "schema_version": "cua.island.v1",
+  "layout": "compact",
+  "mode": "headful",
+  "regions": {
+    "left": {
+      "items": [
+        {
+          "kind": "label",
+          "id": "orb",
+          "text": "orb"
+        },
+        {
+          "kind": "label",
+          "id": "input",
+          "text": "Automation"
+        }
+      ]
+    },
+    "center": {
+      "items": [
+        {
+          "kind": "marquee",
+          "id": "status",
+          "text": "Programmable scene smoke"
+        }
+      ]
+    },
+    "right": {
+      "items": [
+        {
+          "kind": "chip",
+          "id": "transport",
+          "text": "Socket"
+        },
+        {
+          "kind": "chip",
+          "id": "target",
+          "text": "macOS"
+        },
+        {
+          "kind": "dot_chase",
+          "id": "activity",
+          "active": true,
+          "palette": "blue_neon",
+          "count": 6,
+          "speed": 8
+        }
+      ]
+    }
+  },
+  "actors": [
+    {
+      "id": "pet",
+      "kind": "sprite",
+      "layer": "actor",
+      "anchor": "canvas",
+      "x": 24,
+      "y": 14,
+      "width": 10,
+      "height": 10,
+      "motion": {
+        "kind": "walk_to",
+        "region": "right",
+        "item": "activity",
+        "duration_ms": 900
+      },
+      "interactive": false
+    }
+  ],
+  "theme": {
+    "name": "default",
+    "tokens": {
+      "background": "#000000",
+      "text": "#e8e8ec",
+      "muted": "#8b8b95",
+      "blue": "#1e9bff",
+      "chip_background": "#1f1f22",
+      "divider": "#1b1b1f"
+    }
+  }
+}

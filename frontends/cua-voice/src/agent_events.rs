@@ -1,5 +1,5 @@
 use crate::ui_state::VoiceUiEvent;
-use cua_core::UiMode;
+use cua_core::{IslandScene, IslandTheme, UiMode};
 use serde_json::Value;
 
 pub fn agent_ui_event_from_daemon_event_advancing_cursor(
@@ -33,8 +33,35 @@ pub fn agent_ui_event_from_daemon_event(
         .or_else(|| agent_reply_from_daemon_event(event, last_sequence))
         .or_else(|| agent_mode_from_daemon_event(event, last_sequence))
         .or_else(|| agent_island_from_daemon_event(event, last_sequence))
+        .or_else(|| agent_scene_from_daemon_event(event, last_sequence))
         .or_else(|| agent_visual_session_from_daemon_event(event, last_sequence))
         .or_else(|| agent_input_from_daemon_event(event, last_sequence))
+}
+
+pub fn agent_scene_from_daemon_event(
+    event: &Value,
+    last_sequence: u64,
+) -> Option<(u64, VoiceUiEvent)> {
+    let sequence = event.get("sequence").and_then(|value| value.as_u64())?;
+    if sequence <= last_sequence {
+        return None;
+    }
+    match event.get("kind").and_then(|value| value.as_str())? {
+        "ui_scene" => {
+            let scene = event.get("data").and_then(|data| data.get("scene"))?;
+            let scene = serde_json::from_value::<IslandScene>(scene.clone()).ok()?;
+            scene.validate().ok()?;
+            Some((sequence, VoiceUiEvent::SceneSet(scene)))
+        }
+        "ui_scene_reset" => Some((sequence, VoiceUiEvent::SceneReset)),
+        "ui_scene_theme" => {
+            let theme = event.get("data").and_then(|data| data.get("theme"))?;
+            let theme = serde_json::from_value::<IslandTheme>(theme.clone()).ok()?;
+            cua_core::validate_island_theme(&theme).ok()?;
+            Some((sequence, VoiceUiEvent::SceneTheme(theme)))
+        }
+        _ => None,
+    }
 }
 
 pub fn agent_island_from_daemon_event(
@@ -457,6 +484,94 @@ mod tests {
         };
         assert_eq!(sequence, 49);
         assert!(agent_island_from_daemon_event(&toggle, 49).is_none());
+    }
+
+    #[test]
+    fn daemon_ui_scene_event_maps_to_programmed_scene() {
+        let event = serde_json::json!({
+            "sequence": 50,
+            "kind": "ui_scene",
+            "data": {
+                "scene": {
+                    "schema_version": "cua.island.v1",
+                    "layout": "compact",
+                    "mode": "headful",
+                    "regions": {
+                        "left": {
+                            "items": [
+                                {"kind": "label", "id": "orb", "text": "orb"},
+                                {"kind": "label", "id": "input", "text": "Automation"}
+                            ]
+                        },
+                        "center": {
+                            "items": [
+                                {"kind": "marquee", "id": "status", "text": "Programmable scene"}
+                            ]
+                        },
+                        "right": {
+                            "items": [
+                                {"kind": "chip", "id": "transport", "text": "Socket"},
+                                {"kind": "chip", "id": "target", "text": "macOS"},
+                                {"kind": "dot_chase", "id": "activity", "active": true, "palette": "blue_neon", "count": 6, "speed": 8}
+                            ]
+                        }
+                    },
+                    "actors": [],
+                    "theme": null
+                }
+            }
+        });
+
+        let Some((sequence, VoiceUiEvent::SceneSet(scene))) =
+            agent_scene_from_daemon_event(&event, 49)
+        else {
+            panic!("expected scene event");
+        };
+
+        assert_eq!(sequence, 50);
+        assert_eq!(scene.layout, cua_core::IslandLayout::Compact);
+        assert!(agent_scene_from_daemon_event(&event, 50).is_none());
+    }
+
+    #[test]
+    fn daemon_ui_scene_reset_event_maps_to_scene_reset() {
+        let event = serde_json::json!({
+            "sequence": 51,
+            "kind": "ui_scene_reset",
+            "data": {"source": "test"}
+        });
+
+        let Some((sequence, VoiceUiEvent::SceneReset)) = agent_scene_from_daemon_event(&event, 50)
+        else {
+            panic!("expected scene reset");
+        };
+
+        assert_eq!(sequence, 51);
+        assert!(agent_scene_from_daemon_event(&event, 51).is_none());
+    }
+
+    #[test]
+    fn daemon_ui_scene_theme_event_maps_to_theme() {
+        let event = serde_json::json!({
+            "sequence": 52,
+            "kind": "ui_scene_theme",
+            "data": {
+                "theme": {
+                    "name": "default",
+                    "tokens": {"blue": "#1e9bff"}
+                }
+            }
+        });
+
+        let Some((sequence, VoiceUiEvent::SceneTheme(theme))) =
+            agent_scene_from_daemon_event(&event, 51)
+        else {
+            panic!("expected scene theme");
+        };
+
+        assert_eq!(sequence, 52);
+        assert_eq!(theme.name, "default");
+        assert_eq!(theme.tokens["blue"], "#1e9bff");
     }
 
     #[test]

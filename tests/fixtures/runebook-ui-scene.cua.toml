@@ -1,0 +1,13 @@
+schema = "cua.runebook.v1"
+name = "ui-scene-smoke"
+
+[[steps]]
+id = "set_scene"
+do = "ui.scene.set"
+file = "tests/fixtures/island-compact-scene.json"
+source = "runebook-smoke"
+
+[[steps]]
+id = "reset_scene"
+do = "ui.scene.reset"
+source = "runebook-smoke"

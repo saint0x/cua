@@ -1,4 +1,4 @@
-use cua_core::UiMode;
+use cua_core::{IslandScene, IslandTheme, UiMode};
 use std::time::{Duration, Instant};
 
 const TRANSCRIPT_VISIBLE_FOR: Duration = Duration::from_millis(1_500);
@@ -216,6 +216,9 @@ impl HudSnapshot {
             VoiceUiEvent::AudioDiagnostic { .. } => {}
             VoiceUiEvent::SttDiagnostic { .. } => {}
             VoiceUiEvent::Metric { .. } => {}
+            VoiceUiEvent::SceneSet(_) => {}
+            VoiceUiEvent::SceneReset => {}
+            VoiceUiEvent::SceneTheme(_) => {}
             VoiceUiEvent::ToggleExpanded => {}
             VoiceUiEvent::SetExpanded(_) => {}
             VoiceUiEvent::Idle => {
@@ -370,6 +373,9 @@ pub enum VoiceUiEvent {
         name: String,
         ms: u64,
     },
+    SceneSet(IslandScene),
+    SceneReset,
+    SceneTheme(IslandTheme),
     ToggleExpanded,
     SetExpanded(bool),
     Idle,

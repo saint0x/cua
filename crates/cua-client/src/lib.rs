@@ -3,13 +3,15 @@ use cua_core::{
     AttestationChallengeRequest, AttestationSignRequest, ClipboardReadRequest, ClipboardResult,
     ClipboardWriteRequest, ConfigInventory, DesktopContextSnapshot, DesktopState,
     FrameActionRequest, FrameEncoding, FrameEnvelope, FramePayload, HealthReport,
-    InboundMessageRequest, InboundStatus, InputAction, MachineAttestation, MachineIdentityStatus,
-    Manifest, RuntimeControlState, RuntimeInventory, RuntimeSessionRole, SchemaBundle,
-    ScratchpadDeleteRequest, ScratchpadDeleteResult, ScratchpadEntry, ScratchpadListRequest,
-    ScratchpadListResult, ScratchpadReadRequest, ScratchpadWriteRequest, SessionCancelRequest,
-    SessionHeartbeatRequest, SessionLeaseRequest, SessionLeaseResult, UiIslandRequest,
-    UiIslandResult, UiIslandState, UiMode, UiModeRequest, UiReplyRequest, UiStepRequest,
-    VisualSessionRequest, WebhookSourceStatus, WebhookSubscribeRequest, SCHEMA_VERSION,
+    InboundMessageRequest, InboundStatus, InputAction, IslandScene, IslandTheme,
+    MachineAttestation, MachineIdentityStatus, Manifest, RuntimeControlState, RuntimeInventory,
+    RuntimeSessionRole, SchemaBundle, ScratchpadDeleteRequest, ScratchpadDeleteResult,
+    ScratchpadEntry, ScratchpadListRequest, ScratchpadListResult, ScratchpadReadRequest,
+    ScratchpadWriteRequest, SessionCancelRequest, SessionHeartbeatRequest, SessionLeaseRequest,
+    SessionLeaseResult, UiIslandRequest, UiIslandResult, UiIslandState, UiMode, UiModeRequest,
+    UiReplyRequest, UiScenePatchRequest, UiSceneRequest, UiSceneResetRequest, UiSceneResult,
+    UiSceneThemeRequest, UiStepRequest, VisualSessionRequest, WebhookSourceStatus,
+    WebhookSubscribeRequest, SCHEMA_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -447,6 +449,65 @@ impl CuaClient {
         .await
     }
 
+    pub async fn ui_scene_set(
+        &self,
+        scene: IslandScene,
+        source: Option<String>,
+    ) -> Result<UiSceneResult> {
+        self.request(
+            "ui.scene.set",
+            Some(serde_json::to_value(UiSceneRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                scene,
+                source,
+            })?),
+        )
+        .await
+    }
+
+    pub async fn ui_scene_patch(
+        &self,
+        scene: IslandScene,
+        source: Option<String>,
+    ) -> Result<UiSceneResult> {
+        self.request(
+            "ui.scene.patch",
+            Some(serde_json::to_value(UiScenePatchRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                scene,
+                source,
+            })?),
+        )
+        .await
+    }
+
+    pub async fn ui_scene_reset(&self, source: Option<String>) -> Result<UiSceneResult> {
+        self.request(
+            "ui.scene.reset",
+            Some(serde_json::to_value(UiSceneResetRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                source,
+            })?),
+        )
+        .await
+    }
+
+    pub async fn ui_scene_theme(
+        &self,
+        theme: IslandTheme,
+        source: Option<String>,
+    ) -> Result<UiSceneResult> {
+        self.request(
+            "ui.scene.theme",
+            Some(serde_json::to_value(UiSceneThemeRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                theme,
+                source,
+            })?),
+        )
+        .await
+    }
+
     pub async fn clipboard_read(&self, allow_sensitive: bool) -> Result<ClipboardResult> {
         self.request(
             "clipboard.read",
@@ -870,6 +931,65 @@ impl CuaSession {
             Some(serde_json::to_value(UiModeRequest {
                 schema_version: SCHEMA_VERSION.to_string(),
                 mode,
+                source,
+            })?),
+        )
+        .await
+    }
+
+    pub async fn ui_scene_set(
+        &mut self,
+        scene: IslandScene,
+        source: Option<String>,
+    ) -> Result<UiSceneResult> {
+        self.request(
+            "ui.scene.set",
+            Some(serde_json::to_value(UiSceneRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                scene,
+                source,
+            })?),
+        )
+        .await
+    }
+
+    pub async fn ui_scene_patch(
+        &mut self,
+        scene: IslandScene,
+        source: Option<String>,
+    ) -> Result<UiSceneResult> {
+        self.request(
+            "ui.scene.patch",
+            Some(serde_json::to_value(UiScenePatchRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                scene,
+                source,
+            })?),
+        )
+        .await
+    }
+
+    pub async fn ui_scene_reset(&mut self, source: Option<String>) -> Result<UiSceneResult> {
+        self.request(
+            "ui.scene.reset",
+            Some(serde_json::to_value(UiSceneResetRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                source,
+            })?),
+        )
+        .await
+    }
+
+    pub async fn ui_scene_theme(
+        &mut self,
+        theme: IslandTheme,
+        source: Option<String>,
+    ) -> Result<UiSceneResult> {
+        self.request(
+            "ui.scene.theme",
+            Some(serde_json::to_value(UiSceneThemeRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                theme,
                 source,
             })?),
         )

@@ -100,6 +100,10 @@ HTTP endpoints:
 - `POST /ui/reply`
 - `POST /ui/mode`
 - `POST /ui/island`
+- `POST /ui/scene`
+- `POST /ui/scene/patch`
+- `POST /ui/scene/reset`
+- `POST /ui/scene/theme`
 - `POST /profile/create`
 - `POST /profile/activate`
 - `GET /profile/status`
@@ -148,6 +152,10 @@ Unix socket RPC methods:
 - `ui.reply`
 - `ui.mode`
 - `ui.island`
+- `ui.scene.set`
+- `ui.scene.patch`
+- `ui.scene.reset`
+- `ui.scene.theme`
 - `observe.desktop`
 - `clipboard.read`
 - `clipboard.write`
@@ -172,6 +180,14 @@ CLI commands:
 - `cua permissions status --json`
 - `cua permissions preflight --json`
 - `cua permissions request-accessibility --json`
+- `cua ui step <label> --step-index <n> --step-total <n> --json`
+- `cua ui reply <text> --json`
+- `cua ui mode headless|headful --json`
+- `cua ui island expanded|collapsed|toggle --json`
+- `cua ui scene-set <scene.json> --json`
+- `cua ui scene-patch <scene.json> --json`
+- `cua ui scene-reset --json`
+- `cua ui scene-theme <theme.json> --json`
 - `cua session acquire <session-id> --role owner|observer --json`
 - `cua session heartbeat <session-id> --json`
 - `cua session cancel <session-id> [--target-session-id <session-id>] --json`
@@ -193,10 +209,6 @@ CLI commands:
 - `cua scratchpad list --json`
 - `cua scratchpad delete <name> --session-id <owner-session-id> --json`
 - `cua stream --unix [--frames <n>] [--fps <n>] [--max-width <px>] [--duration-ms <ms>] [--queue-depth <n>] --json`
-- `cua ui step <label> --step-index <n> --step-total <n> --json`
-- `cua ui reply <text> --json`
-- `cua ui mode headless|headful --json`
-- `cua ui island expanded|collapsed|toggle --json`
 - `cua perf live --json`
 - `cua perf bench screenshot|stream|input|model-prep --json`
 - `cua screenshot --out <path>`

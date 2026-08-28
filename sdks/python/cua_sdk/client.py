@@ -483,6 +483,18 @@ class Cua:
     def ui_island(self, state: Literal["expanded", "collapsed", "toggle"], source: str | None = None) -> Json:
         return self._step("ui.island", _compact({"state": state, "source": source}), "ui")
 
+    def ui_scene_set(self, scene: Json, *, source: str | None = None) -> Json:
+        return self._step("ui.scene.set", _compact({"scene": scene, "source": source}), "ui")
+
+    def ui_scene_patch(self, scene: Json, *, source: str | None = None) -> Json:
+        return self._step("ui.scene.patch", _compact({"scene": scene, "source": source}), "ui")
+
+    def ui_scene_reset(self, *, source: str | None = None) -> Json:
+        return self._step("ui.scene.reset", _compact({"source": source}), "ui")
+
+    def ui_scene_theme(self, theme: Json, *, source: str | None = None) -> Json:
+        return self._step("ui.scene.theme", _compact({"theme": theme, "source": source}), "ui")
+
     def ui_reply(self, text: str, *, source: str | None = None, ttl_ms: int | None = None) -> Json:
         return self._step("ui.reply", _compact({"text": text, "source": source, "ttl_ms": ttl_ms}), "ui")
 

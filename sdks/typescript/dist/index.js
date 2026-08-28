@@ -280,6 +280,18 @@ export class Cua {
     async uiIsland(state, source) {
         return this.step("ui.island", { state, source }, "ui");
     }
+    async uiSceneSet(options) {
+        return this.step("ui.scene.set", { scene: options.scene, source: options.source }, "ui");
+    }
+    async uiScenePatch(options) {
+        return this.step("ui.scene.patch", { scene: options.scene, source: options.source }, "ui");
+    }
+    async uiSceneReset(source) {
+        return this.step("ui.scene.reset", { source }, "ui");
+    }
+    async uiSceneTheme(options) {
+        return this.step("ui.scene.theme", { theme: options.theme, source: options.source }, "ui");
+    }
     async uiReply(options) {
         return this.step("ui.reply", { text: options.text, source: options.source, ttl_ms: options.ttlMs }, "ui");
     }

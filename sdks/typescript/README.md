@@ -43,7 +43,7 @@ await cua.dispatchFrame({
 
 Use `heartbeatOwner(owner, ttlMs)` to renew a lease while a long-running controller is active.
 
-Available helpers include `manifest`, `schemas`, `metrics`, `status`, `configStatus`, `sessionStatus`, `acquireOwner`, `heartbeatOwner`, `cancelSession`, `profileStatus`, `createProfile`, `activateProfile`, `requestAccessibility`, `attest`, `observe`, `screenshot`, `windowCapture`, `context`, `events`, `visualFrames`, `uiStep`, `uiIsland`, `uiReply`, `uiMode`, `clipboardRead`, `clipboardWrite`, `pause`, `resume`, `killSwitch`, `dispatch`, `dispatchFrame`, `openApp`, `shell`, `aegis`, `ctx`, `traceVerify`, `traceReplay`, and `modelEval`.
+Available helpers include `manifest`, `schemas`, `metrics`, `status`, `configStatus`, `sessionStatus`, `acquireOwner`, `heartbeatOwner`, `cancelSession`, `profileStatus`, `createProfile`, `activateProfile`, `requestAccessibility`, `attest`, `observe`, `screenshot`, `windowCapture`, `context`, `events`, `visualFrames`, `uiStep`, `uiIsland`, `uiSceneSet`, `uiScenePatch`, `uiSceneReset`, `uiSceneTheme`, `uiReply`, `uiMode`, `clipboardRead`, `clipboardWrite`, `pause`, `resume`, `killSwitch`, `dispatch`, `dispatchFrame`, `openApp`, `shell`, `aegis`, `ctx`, `traceVerify`, `traceReplay`, and `modelEval`.
 
 ## Examples
 
@@ -102,6 +102,13 @@ Show UI progress in the HUD:
 ```ts
 await cua.uiStep({ label: "Checking desktop", task: "SDK example", tool: "cua", stepIndex: 1, stepTotal: 1 });
 await cua.uiReply({ text: "Desktop check complete." });
+```
+
+Set and reset a validated programmable island scene:
+
+```ts
+await cua.uiSceneSet({ scene, source: "typescript-sdk" });
+await cua.uiSceneReset("typescript-sdk");
 ```
 
 Read/write clipboard with explicit capability profile:

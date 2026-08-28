@@ -878,6 +878,9 @@ fn hud_wake_event(kind: &str) -> bool {
         "ui_step"
             | "ui_reply"
             | "ui_island"
+            | "ui_scene"
+            | "ui_scene_reset"
+            | "ui_scene_theme"
             | "input_started"
             | "input_completed"
             | "input_refused"
@@ -890,14 +893,25 @@ fn hud_wake_event(kind: &str) -> bool {
 }
 
 fn hud_mode_for_event(kind: &str, data: &serde_json::Value) -> Option<UiMode> {
-    if kind != "ui_mode" {
-        return None;
+    if kind == "ui_scene" {
+        return match data
+            .get("scene")
+            .and_then(|scene| scene.get("mode"))
+            .and_then(|value| value.as_str())
+        {
+            Some("headful") => Some(UiMode::Headful),
+            Some("headless") => Some(UiMode::Headless),
+            _ => None,
+        };
     }
-    match data.get("mode").and_then(|value| value.as_str()) {
-        Some("headful") => Some(UiMode::Headful),
-        Some("headless") => Some(UiMode::Headless),
-        _ => None,
+    if kind == "ui_mode" {
+        return match data.get("mode").and_then(|value| value.as_str()) {
+            Some("headful") => Some(UiMode::Headful),
+            Some("headless") => Some(UiMode::Headless),
+            _ => None,
+        };
     }
+    None
 }
 
 #[cfg(not(test))]
@@ -3006,6 +3020,19 @@ fn manifest_payload() -> Manifest {
             "POST /ui/step".to_string(),
             "POST /ui/reply".to_string(),
             "POST /ui/mode".to_string(),
+            "POST /ui/island".to_string(),
+            "POST /ui/scene".to_string(),
+            "POST /ui/scene/patch".to_string(),
+            "POST /ui/scene/reset".to_string(),
+            "POST /ui/scene/theme".to_string(),
+            "UNIX ui.step".to_string(),
+            "UNIX ui.reply".to_string(),
+            "UNIX ui.mode".to_string(),
+            "UNIX ui.island".to_string(),
+            "UNIX ui.scene.set".to_string(),
+            "UNIX ui.scene.patch".to_string(),
+            "UNIX ui.scene.reset".to_string(),
+            "UNIX ui.scene.theme".to_string(),
             "POST /profile/create".to_string(),
             "POST /profile/activate".to_string(),
             "GET /profile/status".to_string(),
@@ -3052,6 +3079,11 @@ fn manifest_payload() -> Manifest {
             "cua ui step <label> --step-index <n> --step-total <n> --json".to_string(),
             "cua ui reply <text> --json".to_string(),
             "cua ui mode headless|headful --json".to_string(),
+            "cua ui island expanded|collapsed|toggle --json".to_string(),
+            "cua ui scene-set <scene.json> --json".to_string(),
+            "cua ui scene-patch <scene.json> --json".to_string(),
+            "cua ui scene-reset --json".to_string(),
+            "cua ui scene-theme <theme.json> --json".to_string(),
             "cua perf live --json".to_string(),
             "cua screenshot --out <path>".to_string(),
             "cua window-capture <window-id> --out <path>".to_string(),
@@ -6336,6 +6368,64 @@ impl IntoResponse for ApiError {
 mod tests {
     use super::*;
 
+    fn test_compact_scene(mode: UiMode) -> cua_core::IslandScene {
+        cua_core::IslandScene {
+            schema_version: cua_core::ISLAND_SCHEMA_VERSION.to_string(),
+            layout: cua_core::IslandLayout::Compact,
+            mode,
+            regions: BTreeMap::from([
+                (
+                    "left".to_string(),
+                    cua_core::IslandRegion {
+                        items: vec![
+                            cua_core::IslandItem::Label {
+                                id: "orb".to_string(),
+                                text: "orb".to_string(),
+                            },
+                            cua_core::IslandItem::Label {
+                                id: "input".to_string(),
+                                text: "Automation".to_string(),
+                            },
+                        ],
+                    },
+                ),
+                (
+                    "center".to_string(),
+                    cua_core::IslandRegion {
+                        items: vec![cua_core::IslandItem::Marquee {
+                            id: "status".to_string(),
+                            text: "Programmable scene".to_string(),
+                        }],
+                    },
+                ),
+                (
+                    "right".to_string(),
+                    cua_core::IslandRegion {
+                        items: vec![
+                            cua_core::IslandItem::Chip {
+                                id: "transport".to_string(),
+                                text: "Socket".to_string(),
+                            },
+                            cua_core::IslandItem::Chip {
+                                id: "target".to_string(),
+                                text: "macOS".to_string(),
+                            },
+                            cua_core::IslandItem::DotChase {
+                                id: "activity".to_string(),
+                                active: true,
+                                palette: cua_core::IslandPalette::BlueNeon,
+                                count: 6,
+                                speed: 8,
+                            },
+                        ],
+                    },
+                ),
+            ]),
+            actors: Vec::new(),
+            theme: None,
+        }
+    }
+
     #[test]
     fn health_ready_ignores_optional_unknown_permissions() {
         let permissions = PermissionReport {
@@ -7864,6 +7954,98 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ui_scene_emits_validated_live_scene_event() {
+        let state = DaemonState::synthetic("test", "token");
+        let scene = test_compact_scene(UiMode::Headless);
+
+        let Json(result) = ui_scene(
+            State(state.clone()),
+            Json(UiSceneRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                scene: scene.clone(),
+                source: Some(" automation ".to_string()),
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert!(result.accepted);
+        assert_eq!(result.source.as_deref(), Some("automation"));
+        assert_eq!(result.scene.as_ref(), Some(&scene));
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let events = state.events.snapshot().await;
+        let scene_event = events
+            .iter()
+            .find(|event| event["kind"] == "ui_scene")
+            .expect("ui_scene event");
+        assert_eq!(scene_event["data"]["source"], "automation");
+        assert_eq!(
+            scene_event["data"]["scene"]["schema_version"],
+            cua_core::ISLAND_SCHEMA_VERSION
+        );
+        assert_eq!(scene_event["data"]["scene"]["mode"], "headless");
+    }
+
+    #[tokio::test]
+    async fn ui_scene_rejects_invalid_scene_with_typed_error() {
+        let state = DaemonState::synthetic("test", "token");
+        let mut scene = test_compact_scene(UiMode::Headful);
+        scene.regions.remove("center");
+
+        let error = ui_scene(
+            State(state),
+            Json(UiSceneRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                scene,
+                source: None,
+            }),
+        )
+        .await
+        .unwrap_err();
+
+        let ApiError(body, _) = error;
+        assert_eq!(body.code, "bad_request");
+        assert_eq!(body.details["field"], "scene");
+    }
+
+    #[tokio::test]
+    async fn ui_scene_reset_and_theme_emit_live_events() {
+        let state = DaemonState::synthetic("test", "token");
+
+        let Json(theme_result) = ui_scene_theme(
+            State(state.clone()),
+            Json(UiSceneThemeRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                theme: cua_core::IslandTheme {
+                    name: "default".to_string(),
+                    tokens: BTreeMap::from([("blue".to_string(), "#1e9bff".to_string())]),
+                },
+                source: Some("theme-test".to_string()),
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(theme_result.accepted);
+
+        let Json(reset_result) = ui_scene_reset(
+            State(state.clone()),
+            Json(UiSceneResetRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                source: Some("reset-test".to_string()),
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(reset_result.accepted);
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let events = state.events.snapshot().await;
+        assert!(events.iter().any(|event| event["kind"] == "ui_scene_theme"));
+        assert!(events.iter().any(|event| event["kind"] == "ui_scene_reset"));
+    }
+
+    #[tokio::test]
     async fn sequence_dispatch_emits_leaf_protocol_steps() {
         let state = DaemonState::synthetic("test", "token");
 
@@ -7936,6 +8118,13 @@ mod tests {
                 &serde_json::json!({ "mode": "headless" })
             ),
             None
+        );
+        assert_eq!(
+            hud_mode_for_event(
+                "ui_scene",
+                &serde_json::json!({ "scene": { "mode": "headless" } })
+            ),
+            Some(cua_core::UiMode::Headless)
         );
     }
 

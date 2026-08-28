@@ -105,6 +105,16 @@ export interface UiReplyOptions {
   ttlMs?: number;
 }
 
+export interface UiSceneOptions {
+  scene: Json;
+  source?: string;
+}
+
+export interface UiSceneThemeOptions {
+  theme: Json;
+  source?: string;
+}
+
 export interface ProfileCreateOptions {
   name: string;
   mode?: "observe" | "supervised" | "autonomous";
@@ -488,6 +498,22 @@ export class Cua {
 
   async uiIsland(state: "expanded" | "collapsed" | "toggle", source?: string): Promise<Json> {
     return this.step("ui.island", { state, source }, "ui");
+  }
+
+  async uiSceneSet(options: UiSceneOptions): Promise<Json> {
+    return this.step("ui.scene.set", { scene: options.scene, source: options.source }, "ui");
+  }
+
+  async uiScenePatch(options: UiSceneOptions): Promise<Json> {
+    return this.step("ui.scene.patch", { scene: options.scene, source: options.source }, "ui");
+  }
+
+  async uiSceneReset(source?: string): Promise<Json> {
+    return this.step("ui.scene.reset", { source }, "ui");
+  }
+
+  async uiSceneTheme(options: UiSceneThemeOptions): Promise<Json> {
+    return this.step("ui.scene.theme", { theme: options.theme, source: options.source }, "ui");
   }
 
   async uiReply(options: UiReplyOptions): Promise<Json> {

@@ -7,11 +7,13 @@ use cua_core::{
     config_env_path, load_or_create_machine_identity, profile_ctx_dir, rotate_machine_identity,
     schema_bundle, verify_machine_attestation, AttestationChallengeRequest, AttestationSignRequest,
     CapabilityManifest, ClipboardReadRequest, ClipboardWriteRequest, DesktopContextSnapshot,
-    FrameEncoding, FramePayload, InboundMessageRequest, InboundReplyMode, InputAction,
-    MachineAttestation, MouseButton, RuntimeMode, RuntimeSessionRole, ScratchpadDeleteRequest,
-    ScratchpadListRequest, ScratchpadReadRequest, ScratchpadWriteRequest, SessionCancelRequest,
-    SessionHeartbeatRequest, SessionLeaseRequest, UiIslandRequest, UiIslandState, UiMode,
-    UiModeRequest, UiReplyRequest, UiStepRequest, WebhookSubscribeRequest, SCHEMA_VERSION,
+    FrameEncoding, FramePayload, InboundMessageRequest, InboundReplyMode, InputAction, IslandScene,
+    IslandTheme, MachineAttestation, MouseButton, RuntimeMode, RuntimeSessionRole,
+    ScratchpadDeleteRequest, ScratchpadListRequest, ScratchpadReadRequest, ScratchpadWriteRequest,
+    SessionCancelRequest, SessionHeartbeatRequest, SessionLeaseRequest, UiIslandRequest,
+    UiIslandState, UiMode, UiModeRequest, UiReplyRequest, UiScenePatchRequest, UiSceneRequest,
+    UiSceneResetRequest, UiSceneThemeRequest, UiStepRequest, WebhookSubscribeRequest,
+    SCHEMA_VERSION,
 };
 use cua_model::{run_eval_report, EvalConfig};
 use cua_trace::{ActionTurnRecord, TraceRecord, TraceWriter};
@@ -581,6 +583,33 @@ enum UiCommand {
         #[arg(long)]
         json: bool,
     },
+    SceneSet {
+        file: PathBuf,
+        #[arg(long)]
+        source: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    ScenePatch {
+        file: PathBuf,
+        #[arg(long)]
+        source: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    SceneReset {
+        #[arg(long)]
+        source: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    SceneTheme {
+        file: PathBuf,
+        #[arg(long)]
+        source: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Clone, Debug, clap::ValueEnum)]
@@ -834,6 +863,8 @@ async fn print_usage_and_status() -> anyhow::Result<()> {
     println!("       cua ui step <label> --step-index 2 --step-total 5 --json");
     println!("       cua ui reply <text> --json");
     println!("       cua ui mode headless|headful --json");
+    println!("       cua ui scene-set <scene.json> --json");
+    println!("       cua ui scene-reset --json");
     println!("       cua perf live --json");
     println!("       cua context --json");
     println!("       cua screenshot --out /tmp/screen.png");
@@ -919,7 +950,68 @@ async fn ui(_addr: SocketAddr, profile: &str, command: UiCommand) -> anyhow::Res
             .await?;
             print_json_value(&value, json)
         }
+        UiCommand::SceneSet { file, source, json } => {
+            let scene: IslandScene = read_json_file(&file).await?;
+            let value = unix_request_json(
+                profile,
+                "ui.scene.set",
+                Some(serde_json::to_value(UiSceneRequest {
+                    schema_version: SCHEMA_VERSION.to_string(),
+                    scene,
+                    source,
+                })?),
+            )
+            .await?;
+            print_json_value(&value, json)
+        }
+        UiCommand::ScenePatch { file, source, json } => {
+            let scene: IslandScene = read_json_file(&file).await?;
+            let value = unix_request_json(
+                profile,
+                "ui.scene.patch",
+                Some(serde_json::to_value(UiScenePatchRequest {
+                    schema_version: SCHEMA_VERSION.to_string(),
+                    scene,
+                    source,
+                })?),
+            )
+            .await?;
+            print_json_value(&value, json)
+        }
+        UiCommand::SceneReset { source, json } => {
+            let value = unix_request_json(
+                profile,
+                "ui.scene.reset",
+                Some(serde_json::to_value(UiSceneResetRequest {
+                    schema_version: SCHEMA_VERSION.to_string(),
+                    source,
+                })?),
+            )
+            .await?;
+            print_json_value(&value, json)
+        }
+        UiCommand::SceneTheme { file, source, json } => {
+            let theme: IslandTheme = read_json_file(&file).await?;
+            let value = unix_request_json(
+                profile,
+                "ui.scene.theme",
+                Some(serde_json::to_value(UiSceneThemeRequest {
+                    schema_version: SCHEMA_VERSION.to_string(),
+                    theme,
+                    source,
+                })?),
+            )
+            .await?;
+            print_json_value(&value, json)
+        }
     }
+}
+
+async fn read_json_file<T: serde::de::DeserializeOwned>(path: &Path) -> anyhow::Result<T> {
+    let bytes = tokio::fs::read(path)
+        .await
+        .with_context(|| format!("read {}", path.display()))?;
+    serde_json::from_slice(&bytes).with_context(|| format!("parse JSON {}", path.display()))
 }
 
 async fn unix_get(profile: &str, method: &str, json: bool) -> anyhow::Result<()> {
@@ -2316,6 +2408,40 @@ impl RunebookRuntime {
                 )
                 .await
             }
+            "ui.scene.set" | "ui.scene.patch" => {
+                let method = step.action.as_str();
+                let scene = self.json_field_or_file(step, "scene", "file").await?;
+                let params = serde_json::json!({
+                    "schema_version": SCHEMA_VERSION,
+                    "scene": scene,
+                    "source": self.string_field(step, "source")?,
+                });
+                self.request(method, Some(params), None).await
+            }
+            "ui.scene.reset" => {
+                self.request(
+                    "ui.scene.reset",
+                    Some(serde_json::json!({
+                        "schema_version": SCHEMA_VERSION,
+                        "source": self.string_field(step, "source")?,
+                    })),
+                    None,
+                )
+                .await
+            }
+            "ui.scene.theme" => {
+                let theme = self.json_field_or_file(step, "theme", "file").await?;
+                self.request(
+                    "ui.scene.theme",
+                    Some(serde_json::json!({
+                        "schema_version": SCHEMA_VERSION,
+                        "theme": theme,
+                        "source": self.string_field(step, "source")?,
+                    })),
+                    None,
+                )
+                .await
+            }
             "ui.reply" => {
                 self.request(
                     "ui.reply",
@@ -2941,6 +3067,22 @@ impl RunebookRuntime {
             .get(key)
             .map(|value| self.interpolate_toml_json(value))
             .transpose()
+    }
+
+    async fn json_field_or_file(
+        &self,
+        step: &RunebookStep,
+        json_key: &str,
+        file_key: &str,
+    ) -> anyhow::Result<serde_json::Value> {
+        if let Some(value) = self.json_field_optional(step, json_key)? {
+            return Ok(value);
+        }
+        let path = expand_home_path(&self.required_string(step, file_key)?)?;
+        let bytes = tokio::fs::read(&path)
+            .await
+            .with_context(|| format!("read {}", path.display()))?;
+        serde_json::from_slice(&bytes).with_context(|| format!("parse JSON {}", path.display()))
     }
 
     fn step_fields_json(&self, step: &RunebookStep) -> anyhow::Result<serde_json::Value> {
@@ -4403,6 +4545,10 @@ app = "${target}"
             "timer",
             "delayed_message",
             "wait_event",
+            "ui.scene.set",
+            "ui.scene.patch",
+            "ui.scene.theme",
+            "ui.scene.reset",
             "attest",
             "stt",
             "planner",

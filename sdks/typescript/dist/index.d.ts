@@ -85,6 +85,14 @@ export interface UiReplyOptions {
     source?: string;
     ttlMs?: number;
 }
+export interface UiSceneOptions {
+    scene: Json;
+    source?: string;
+}
+export interface UiSceneThemeOptions {
+    theme: Json;
+    source?: string;
+}
 export interface ProfileCreateOptions {
     name: string;
     mode?: "observe" | "supervised" | "autonomous";
@@ -156,6 +164,10 @@ export declare class Cua {
     visualFrames(options?: VisualSessionOptions): Promise<Json>;
     uiStep(options: UiStepOptions): Promise<Json>;
     uiIsland(state: "expanded" | "collapsed" | "toggle", source?: string): Promise<Json>;
+    uiSceneSet(options: UiSceneOptions): Promise<Json>;
+    uiScenePatch(options: UiSceneOptions): Promise<Json>;
+    uiSceneReset(source?: string): Promise<Json>;
+    uiSceneTheme(options: UiSceneThemeOptions): Promise<Json>;
     uiReply(options: UiReplyOptions): Promise<Json>;
     uiMode(mode: "headful" | "headless", source?: string): Promise<Json>;
     clipboardRead(allowSensitive?: boolean): Promise<Json>;

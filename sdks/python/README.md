@@ -45,7 +45,7 @@ cua.dispatch_frame(
 
 Use `heartbeat_owner(owner, ttl_ms)` to renew a lease while a long-running controller is active.
 
-Available helpers include `manifest`, `schemas`, `metrics`, `status`, `config_status`, `session_status`, `acquire_owner`, `heartbeat_owner`, `cancel_session`, `profile_status`, `create_profile`, `activate_profile`, `request_accessibility`, `attest`, `observe`, `screenshot`, `window_capture`, `context`, `events`, `visual_frames`, `ui_step`, `ui_island`, `ui_reply`, `ui_mode`, `clipboard_read`, `clipboard_write`, `pause`, `resume`, `kill_switch`, `dispatch`, `dispatch_frame`, `open_app`, `shell`, `aegis`, `ctx`, `trace_verify`, `trace_replay`, and `model_eval`.
+Available helpers include `manifest`, `schemas`, `metrics`, `status`, `config_status`, `session_status`, `acquire_owner`, `heartbeat_owner`, `cancel_session`, `profile_status`, `create_profile`, `activate_profile`, `request_accessibility`, `attest`, `observe`, `screenshot`, `window_capture`, `context`, `events`, `visual_frames`, `ui_step`, `ui_island`, `ui_scene_set`, `ui_scene_patch`, `ui_scene_reset`, `ui_scene_theme`, `ui_reply`, `ui_mode`, `clipboard_read`, `clipboard_write`, `pause`, `resume`, `kill_switch`, `dispatch`, `dispatch_frame`, `open_app`, `shell`, `aegis`, `ctx`, `trace_verify`, `trace_replay`, and `model_eval`.
 
 ## Examples
 
@@ -104,6 +104,13 @@ Show UI progress in the HUD:
 ```python
 cua.ui_step("Checking desktop", task="SDK example", tool="cua", step_index=1, step_total=1)
 cua.ui_reply("Desktop check complete.")
+```
+
+Set and reset a validated programmable island scene:
+
+```python
+cua.ui_scene_set(scene, source="python-sdk")
+cua.ui_scene_reset(source="python-sdk")
 ```
 
 Read/write clipboard with explicit capability profile:

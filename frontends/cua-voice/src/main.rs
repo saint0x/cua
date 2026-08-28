@@ -1,6 +1,9 @@
 use clap::Parser;
 use cpal::traits::{DeviceTrait, HostTrait};
-use cua_core::{config_env_path, IslandItem, IslandScene, PermissionState, UiMode};
+use cua_core::{
+    config_env_path, IslandActorKind, IslandItem, IslandLayout, IslandMotion, IslandScene,
+    IslandTheme, PermissionState, UiMode,
+};
 use cua_voice::activation::ControlDoubleTap;
 use cua_voice::agent_events::{
     agent_reply_from_daemon_event, agent_step_from_daemon_event,
@@ -110,6 +113,8 @@ struct VoiceHud {
     model_label: String,
     island_bounds: Arc<Mutex<Option<Bounds<Pixels>>>>,
     last_island_toggle_at: Option<Instant>,
+    custom_scene: Option<IslandScene>,
+    custom_theme: Option<IslandTheme>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -148,6 +153,8 @@ impl VoiceHud {
             model_label,
             island_bounds,
             last_island_toggle_at: None,
+            custom_scene: None,
+            custom_theme: None,
         }
     }
 
@@ -162,6 +169,17 @@ impl VoiceHud {
                 }
                 VoiceUiEvent::SetExpanded(expanded) => {
                     expansion_command = Some(expanded);
+                }
+                VoiceUiEvent::SceneSet(scene) => {
+                    expansion_command = Some(scene.layout == IslandLayout::Expanded);
+                    self.custom_scene = Some(scene);
+                }
+                VoiceUiEvent::SceneReset => {
+                    self.custom_scene = None;
+                    self.custom_theme = None;
+                }
+                VoiceUiEvent::SceneTheme(theme) => {
+                    self.custom_theme = Some(theme);
                 }
                 VoiceUiEvent::AutomationActivity {
                     label,
@@ -384,6 +402,7 @@ impl VoiceHud {
             .flex()
             .flex_col()
             .child(self.stoplights(cx))
+            .child(self.actor_layer(scene, metrics))
             .child(
                 div()
                     .h(px(COMPACT_HEIGHT))
@@ -454,6 +473,37 @@ impl VoiceHud {
                     cx.stop_propagation();
                 }),
             ))
+    }
+
+    fn actor_layer(&self, scene: &IslandScene, metrics: HudMetrics) -> impl IntoElement {
+        let elapsed = self.started.elapsed().as_secs_f32();
+        let mut layer = div().absolute().left_0().top_0().size_full();
+        for actor in &scene.actors {
+            let style = actor_style(actor, metrics, elapsed);
+            let color = match actor.kind {
+                IslandActorKind::Sprite => 0x1e9bff,
+                IslandActorKind::Particle => 0x7ecbff,
+            };
+            layer = layer.child(
+                div()
+                    .absolute()
+                    .left(px(style.x))
+                    .top(px(style.y))
+                    .w(px(actor.width as f32))
+                    .h(px(actor.height as f32))
+                    .rounded_full()
+                    .opacity(style.opacity)
+                    .bg(hsla(
+                        207.0 / 360.0,
+                        1.0,
+                        if color == 0x1e9bff { 0.56 } else { 0.75 },
+                        0.92,
+                    ))
+                    .border_1()
+                    .border_color(hsla(207.0 / 360.0, 1.0, 0.64, 0.45)),
+            );
+        }
+        layer
     }
 
     fn toggle_expanded(&mut self, window: &mut Window, cx: &mut App) {
@@ -703,6 +753,104 @@ fn activity_dot_alpha(index: usize, elapsed_secs: f32, active: bool, speed: f32)
 struct ActivityDotStyle {
     alpha: f32,
     lightness: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ActorStyle {
+    x: f32,
+    y: f32,
+    opacity: f32,
+}
+
+fn actor_style(
+    actor: &cua_core::IslandActor,
+    metrics: HudMetrics,
+    elapsed_secs: f32,
+) -> ActorStyle {
+    let base = ActorStyle {
+        x: actor.x as f32,
+        y: actor.y as f32,
+        opacity: 0.92,
+    };
+    let Some(motion) = &actor.motion else {
+        return base;
+    };
+    match motion {
+        IslandMotion::None => base,
+        IslandMotion::Fade { duration_ms } => {
+            let progress = repeating_progress(elapsed_secs, *duration_ms);
+            ActorStyle {
+                opacity: 0.32 + (progress * std::f32::consts::PI).sin().max(0.0) * 0.6,
+                ..base
+            }
+        }
+        IslandMotion::Pulse { duration_ms } => {
+            let progress = repeating_progress(elapsed_secs, *duration_ms);
+            ActorStyle {
+                opacity: 0.42 + (progress * std::f32::consts::TAU).sin().abs() * 0.5,
+                ..base
+            }
+        }
+        IslandMotion::SlideTo { x, y, duration_ms } => {
+            let progress = smooth_progress(repeating_progress(elapsed_secs, *duration_ms));
+            ActorStyle {
+                x: lerp(actor.x as f32, *x as f32, progress),
+                y: lerp(actor.y as f32, *y as f32, progress),
+                ..base
+            }
+        }
+        IslandMotion::WalkTo {
+            region,
+            item,
+            duration_ms,
+        } => {
+            let (target_x, target_y) = actor_region_anchor(region, item, metrics)
+                .unwrap_or((actor.x as f32, actor.y as f32));
+            let progress = smooth_progress(repeating_progress(elapsed_secs, *duration_ms));
+            ActorStyle {
+                x: lerp(actor.x as f32, target_x, progress),
+                y: lerp(actor.y as f32, target_y, progress),
+                ..base
+            }
+        }
+    }
+}
+
+fn actor_region_anchor(region: &str, item: &str, metrics: HudMetrics) -> Option<(f32, f32)> {
+    let width = island_width(metrics);
+    let header_y = 12.0;
+    match (region, item) {
+        ("left", "orb") | ("header_left", "orb") => Some((20.0, header_y)),
+        ("left", "input") | ("header_left", "input") => Some((56.0, header_y)),
+        ("center", "status") | ("header_center", "status") => Some((width * 0.5, header_y)),
+        ("right", "transport") | ("header_right", "transport") => Some((width - 240.0, header_y)),
+        ("right", "target") | ("header_right", "target") => Some((width - 170.0, header_y)),
+        ("right", "activity") | ("header_right", "activity") => Some((width - 58.0, header_y)),
+        ("task", _) => Some((width * 0.24, 92.0)),
+        ("response", _) => Some((width * 0.50, 160.0)),
+        ("details_left", _) => Some((width * 0.24, 312.0)),
+        ("details_right", _) => Some((width * 0.66, 312.0)),
+        ("footer", _) => Some((width * 0.50, EXPANDED_HEIGHT - 42.0)),
+        _ => None,
+    }
+}
+
+fn repeating_progress(elapsed_secs: f32, duration_ms: u16) -> f32 {
+    let duration = (duration_ms as f32 / 1_000.0).max(0.05);
+    (elapsed_secs % duration) / duration
+}
+
+fn smooth_progress(progress: f32) -> f32 {
+    let forward = if progress <= 0.5 {
+        progress * 2.0
+    } else {
+        (1.0 - progress) * 2.0
+    };
+    forward * forward * (3.0 - 2.0 * forward)
+}
+
+fn lerp(start: f32, end: f32, t: f32) -> f32 {
+    start + (end - start) * t
 }
 
 fn activity_dot_style(
@@ -1194,15 +1342,20 @@ impl Render for VoiceHud {
         let display = HudDisplay::from_snapshot(&self.snapshot);
         let metrics = HudMetrics::with_expansion(self.response_progress, self.expansion_progress);
         let reply_visible = response_flash_visible(metrics);
-        let scene = island_scene_from_snapshot(
-            &self.snapshot,
-            &display,
-            self.expanded && !self.minimized,
-            reply_visible,
-            &self.model_label,
-            self.started.elapsed(),
-        )
-        .expect("internal IslandScene mapping must validate");
+        let mut scene = self.custom_scene.clone().unwrap_or_else(|| {
+            island_scene_from_snapshot(
+                &self.snapshot,
+                &display,
+                self.expanded && !self.minimized,
+                reply_visible,
+                &self.model_label,
+                self.started.elapsed(),
+            )
+            .expect("internal IslandScene mapping must validate")
+        });
+        if let Some(theme) = &self.custom_theme {
+            scene.theme = Some(theme.clone());
+        }
         let center_text = center_text_for(&scene);
         self.sync_center_text(&center_text);
         if self.drag.is_none() {
@@ -1485,6 +1638,13 @@ fn print_headless_events(rx: Receiver<VoiceUiEvent>) {
             }),
             VoiceUiEvent::Metric { name, ms } => {
                 serde_json::json!({"event": "metric", "name": name, "ms": ms})
+            }
+            VoiceUiEvent::SceneSet(scene) => {
+                serde_json::json!({"event": "scene_set", "scene": scene})
+            }
+            VoiceUiEvent::SceneReset => serde_json::json!({"event": "scene_reset"}),
+            VoiceUiEvent::SceneTheme(theme) => {
+                serde_json::json!({"event": "scene_theme", "theme": theme})
             }
             VoiceUiEvent::ToggleExpanded => serde_json::json!({"event": "toggle_expanded"}),
             VoiceUiEvent::SetExpanded(expanded) => {
@@ -2605,6 +2765,46 @@ mod tests {
     }
 
     #[test]
+    fn programmed_scene_drives_hud_until_reset() {
+        let (tx, rx) = channel();
+        let island_bounds = Arc::new(Mutex::new(None));
+        let mut hud = VoiceHud::new(
+            rx,
+            UiMode::Headful,
+            DEFAULT_PLANNER_MODEL.to_string(),
+            island_bounds,
+        );
+        let mut snapshot = HudSnapshot::default();
+        snapshot.apply(VoiceUiEvent::AgentStep {
+            label: "render programmable scene".to_string(),
+            source: Some("automation".to_string()),
+            task: Some("UI protocol".to_string()),
+            tool: Some("Unix socket".to_string()),
+            step_index: Some(2),
+            step_total: Some(3),
+            ttl_ms: None,
+        });
+        let display = HudDisplay::from_snapshot(&snapshot);
+        let scene = island_scene_from_snapshot(
+            &snapshot,
+            &display,
+            true,
+            false,
+            DEFAULT_PLANNER_MODEL,
+            Duration::ZERO,
+        )
+        .unwrap();
+
+        tx.send(VoiceUiEvent::SceneSet(scene.clone())).unwrap();
+        assert_eq!(hud.drain_events(), Some(true));
+        assert_eq!(hud.custom_scene.as_ref(), Some(&scene));
+
+        tx.send(VoiceUiEvent::SceneReset).unwrap();
+        assert_eq!(hud.drain_events(), None);
+        assert!(hud.custom_scene.is_none());
+    }
+
+    #[test]
     fn animated_island_bounds_preserves_center_and_top_attachment() {
         let display = Bounds {
             origin: point(px(0.0), px(0.0)),
@@ -2993,6 +3193,37 @@ mod tests {
         assert!(older_trail.alpha > dormant.alpha);
         assert!(head.lightness < immediate_trail.lightness);
         assert!(immediate_trail.lightness < older_trail.lightness);
+    }
+
+    #[test]
+    fn actor_motion_resolves_without_changing_layout_metrics() {
+        let actor = cua_core::IslandActor {
+            id: "pet".to_string(),
+            kind: cua_core::IslandActorKind::Sprite,
+            layer: cua_core::IslandLayer::Actor,
+            anchor: cua_core::IslandAnchor::Canvas,
+            x: 20,
+            y: 10,
+            width: 12,
+            height: 12,
+            motion: Some(cua_core::IslandMotion::WalkTo {
+                region: "right".to_string(),
+                item: "activity".to_string(),
+                duration_ms: 1_000,
+            }),
+            interactive: false,
+        };
+        let metrics = HudMetrics::with_expansion(0.0, 0.0);
+
+        let start = actor_style(&actor, metrics, 0.0);
+        let middle = actor_style(&actor, metrics, 0.25);
+        let end = actor_style(&actor, metrics, 0.5);
+
+        assert_eq!(island_width(metrics), COMPACT_WIDTH);
+        assert_eq!(start.x, 20.0);
+        assert!(middle.x > start.x);
+        assert!(end.x > middle.x);
+        assert_eq!(start.y, 10.0);
     }
 
     #[test]
