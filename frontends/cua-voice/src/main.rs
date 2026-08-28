@@ -51,8 +51,9 @@ const UI_TEXT_PX: f32 = 12.0;
 const UI_META_PX: f32 = 11.0;
 const UI_LINE_HEIGHT_PX: f32 = 15.0;
 const COMPACT_ROW_ITEM_HEIGHT_PX: f32 = 18.0;
+const COMPACT_CONTENT_Y_OFFSET_PX: f32 = 2.0;
 const STOPLIGHT_HITBOX_HEIGHT_PX: f32 = 9.0;
-const STOPLIGHT_TOP_PX: f32 = (COMPACT_HEIGHT - STOPLIGHT_HITBOX_HEIGHT_PX) / 2.0;
+const STOPLIGHT_TOP_PX: f32 = compact_content_axis_y() - (STOPLIGHT_HITBOX_HEIGHT_PX / 2.0);
 
 #[derive(Debug, Parser)]
 #[command(name = "cua-voice", version, about = "Rust voice HUD for cua")]
@@ -391,6 +392,8 @@ impl VoiceHud {
             .child(
                 div()
                     .h(px(COMPACT_HEIGHT))
+                    .relative()
+                    .top(px(COMPACT_CONTENT_Y_OFFSET_PX))
                     .flex()
                     .items_center()
                     .gap_3()
@@ -977,6 +980,10 @@ fn island_radius(metrics: HudMetrics) -> f32 {
 
 fn minimized_content_visible(progress: f32) -> bool {
     progress >= 0.55
+}
+
+const fn compact_content_axis_y() -> f32 {
+    (COMPACT_HEIGHT / 2.0) + COMPACT_CONTENT_Y_OFFSET_PX
 }
 
 #[cfg(test)]
@@ -2122,7 +2129,7 @@ mod tests {
     fn hover_chrome_centers_on_compact_bar_axis() {
         assert_eq!(
             STOPLIGHT_TOP_PX + (STOPLIGHT_HITBOX_HEIGHT_PX / 2.0),
-            COMPACT_HEIGHT / 2.0
+            compact_content_axis_y()
         );
     }
 
@@ -2131,6 +2138,7 @@ mod tests {
         assert_eq!(COMPACT_ROW_ITEM_HEIGHT_PX % 2.0, 0.0);
         assert!(COMPACT_ROW_ITEM_HEIGHT_PX < COMPACT_HEIGHT);
         assert!(UI_LINE_HEIGHT_PX <= COMPACT_ROW_ITEM_HEIGHT_PX);
+        assert_eq!(compact_content_axis_y(), 23.0);
         assert_eq!(UI_TEXT_PX, 12.0);
         assert_eq!(UI_META_PX, 11.0);
     }
