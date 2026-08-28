@@ -4,6 +4,14 @@ This file documents the tools and prompts currently exposed to the cua agent/run
 
 ## Voice Planner Tools
 
+Current voice defaults:
+
+- planner model: `anthropic/claude-sonnet-5`
+- speech-to-text backend: `local`
+- speech-to-text model: `tiny.en`
+- local speech-to-text fallback model: `base.en`
+- OpenRouter speech-to-text model, when explicitly selected: `openai/gpt-4o-mini-transcribe`
+
 The voice planner returns one JSON object per turn. That object can contain `action:null`, a single action, or a `sequence` action with many concrete actions for low-latency batching:
 
 ```json
@@ -67,6 +75,7 @@ HTTP endpoints:
 - `GET /events/live?after=<sequence>&timeout_ms=<ms>`
 - `POST /permissions/accessibility/request`
 - `POST /session/acquire`
+- `POST /session/heartbeat`
 - `POST /session/cancel`
 - `GET /session/status`
 - `POST /inbox/message`
@@ -162,14 +171,15 @@ CLI commands:
 - `cua permissions preflight --json`
 - `cua permissions request-accessibility --json`
 - `cua session acquire <session-id> --role owner|observer --json`
-- `cua session cancel <session-id> --json`
+- `cua session heartbeat <session-id> --json`
+- `cua session cancel <session-id> [--target-session-id <session-id>] --json`
 - `cua session status --json`
 - `cua attestation identity --json`
 - `cua attestation challenge --audience <audience> --json`
-- `cua attestation sign --audience <audience> --nonce <nonce> --json`
+- `cua attestation sign --audience <audience> --nonce <nonce> [--challenge-id <id>] [--session-id <session-id>] --json`
 - `cua attestation verify <attestation.json> --audience <audience> --json`
-- `cua identity status --json`
-- `cua identity rotate --json`
+- `cua identity status [--audience <audience>] --json`
+- `cua identity rotate [--audience <audience>] --json`
 - `cua inbox publish <text> --source <source> --json`
 - `cua inbox wait --after <sequence> --json`
 - `cua inbox status <message-id> --json`
@@ -180,7 +190,7 @@ CLI commands:
 - `cua scratchpad read <name> --json`
 - `cua scratchpad list --json`
 - `cua scratchpad delete <name> --session-id <owner-session-id> --json`
-- `cua stream --unix --json`
+- `cua stream --unix [--frames <n>] [--fps <n>] [--max-width <px>] [--duration-ms <ms>] [--queue-depth <n>] --json`
 - `cua ui step <label> --step-index <n> --step-total <n> --json`
 - `cua ui reply <text> --json`
 - `cua ui mode headless|headful --json`
@@ -191,21 +201,23 @@ CLI commands:
 - `cua window-capture <window-id> --out <path>`
 - `cua context --json`
 - `cua observe --json`
-- `cua mouse move <x> <y>`
-- `cua mouse click <x> <y> [--button left|right|middle] [--count <n>]`
-- `cua key press <combo>`
-- `cua key type <text>`
-- `cua key paste <text>`
-- `cua shell <command> [--timeout-ms <ms>]`
-- `cua aegis [--timeout-ms <ms>] -- <aegis args...>`
-- `cua ctx [--timeout-ms <ms>] -- <ctx args...>`
+- `cua mouse --session-id <owner-session-id> move <x> <y>`
+- `cua mouse --session-id <owner-session-id> click <x> <y> [--button left|right|middle] [--count <n>]`
+- `cua key --session-id <owner-session-id> press <combo>`
+- `cua key --session-id <owner-session-id> type <text>`
+- `cua key --session-id <owner-session-id> paste <text>`
+- `cua shell <command> --session-id <owner-session-id> [--timeout-ms <ms>]`
+- `cua aegis --session-id <owner-session-id> [--timeout-ms <ms>] -- <aegis args...>`
+- `cua ctx --session-id <owner-session-id> [--timeout-ms <ms>] -- <ctx args...>`
 - `cua profile status --json`
 - `cua clipboard read --allow-sensitive --json`
-- `cua clipboard write <text> --json`
-- `cua pause --json`
-- `cua resume --json`
-- `cua kill-switch --json`
-- `cua model eval`
+- `cua profile create <name> --mode observe|supervised|autonomous --session-id <owner-session-id> --json`
+- `cua profile activate --session-id <owner-session-id> --json`
+- `cua clipboard write <text> --session-id <owner-session-id> --json`
+- `cua pause --session-id <owner-session-id> --json`
+- `cua resume --session-id <owner-session-id> --json`
+- `cua kill-switch --session-id <owner-session-id> --json`
+- `cua model eval [--live] [--max-calls <n>] [--max-output-tokens <n>] --json`
 - `cua schema export --out <path>`
 - `cua trace start <dir>`
 - `cua trace inspect <dir> --json`
@@ -293,6 +305,17 @@ Decision rules:
 Short spoken macOS computer control command.
 ```
 
+### Inbound Message Addendum
+
+When a subscribed inbox/webhook message wakes the headless agent loop, cua wraps the payload as a user-equivalent command with this addendum:
+
+```text
+Inbound cua message received at <utc timestamp> via <delivery method> from source <source>.
+Treat this exactly like a user command. Check current desktop context when useful, use tools when needed, and verify visible effects before finishing.
+Message: <message text>
+Payload JSON: <payload json>
+```
+
 ## Persistent Chat And Context
 
 cua keeps local chat history in the active profile at `~/.cua/profiles/<profile>/chat.db`. The chat database is owned by cua and records user/assistant turns, action JSON, action evidence, model, profile, and turn id.
@@ -315,4 +338,4 @@ For non-fast voice planner turns, cua automatically:
 
 Fast local commands still bypass model planning for latency, then persist the completed turn afterward.
 
-There are no other production system prompts in the current cua voice/control path. The model eval prompts in `crates/cua-model` are test fixtures, not production system prompts.
+The voice planner prompt, local speech-to-text prompt, and inbound message addendum are the production prompt surfaces in the current cua voice/control path. The model eval prompts in `crates/cua-model` are test fixtures, not production system prompts.
