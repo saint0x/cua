@@ -1411,8 +1411,12 @@ fn compact_tool_row(row: &SceneToolRow) -> impl IntoElement {
                 .text_color(rgb(0x8e8e93))
                 .text_size(px(UI_META_PX))
                 .line_height(px(UI_LINE_HEIGHT_PX))
-                .child(format!("{} - {} - {}", row.tool, row.app, row.age)),
+                .child(tool_meta_text(row)),
         )
+}
+
+fn tool_meta_text(row: &SceneToolRow) -> String {
+    format!("{} · {} · {}", row.tool, row.app, row.age)
 }
 
 fn footer_cell(label: impl Into<String>, value: impl Into<String>) -> impl IntoElement {
@@ -3353,6 +3357,18 @@ mod tests {
         assert!(automation.center > voice.center);
         assert!(automation.center >= HEADER_CENTER_MIN_WIDTH_PX);
         assert!(voice.center >= HEADER_CENTER_MIN_WIDTH_PX);
+    }
+
+    #[test]
+    fn tool_meta_uses_reference_separator_rhythm() {
+        let row = SceneToolRow {
+            label: "Choosing action".to_string(),
+            tool: "Router".to_string(),
+            app: "Model".to_string(),
+            age: "now".to_string(),
+        };
+
+        assert_eq!(tool_meta_text(&row), "Router · Model · now");
     }
 
     #[test]
