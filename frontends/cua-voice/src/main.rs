@@ -1001,16 +1001,16 @@ fn background_contrast_scrim_alpha(background: &IslandBackground) -> f32 {
             if is_default_solid_background(color, *opacity) {
                 0.0
             } else if *opacity < 75 || color_luminance(color).unwrap_or(0.0) > 0.18 {
-                0.68
+                0.82
             } else {
-                0.24
+                0.34
             }
         }
         IslandBackground::Transparent { opacity } => {
             if *opacity >= 90 {
                 0.0
             } else {
-                0.72
+                0.78
             }
         }
         IslandBackground::LinearGradient { opacity, stops, .. }
@@ -1020,9 +1020,9 @@ fn background_contrast_scrim_alpha(background: &IslandBackground) -> f32 {
                     .iter()
                     .any(|stop| color_luminance(&stop.color).unwrap_or(0.0) > 0.18)
             {
-                0.66
+                0.82
             } else {
-                0.30
+                0.38
             }
         }
         IslandBackground::NeonSweep {
@@ -1034,9 +1034,9 @@ fn background_contrast_scrim_alpha(background: &IslandBackground) -> f32 {
             let base = color_luminance(base_color).unwrap_or(0.0);
             let sweep = color_luminance(sweep_color).unwrap_or(0.0);
             if *opacity < 80 || base.max(sweep) > 0.18 {
-                0.58
+                0.74
             } else {
-                0.26
+                0.34
             }
         }
     }
@@ -2770,11 +2770,11 @@ mod tests {
             color: "#eef8ff".to_string(),
             opacity: 92,
         };
-        assert!(background_contrast_scrim_alpha(&light_background) >= 0.65);
+        assert!(background_contrast_scrim_alpha(&light_background) >= 0.80);
         assert!(background_needs_foreground_lift(&light_background));
 
         let translucent_background = IslandBackground::Transparent { opacity: 16 };
-        assert!(background_contrast_scrim_alpha(&translucent_background) >= 0.70);
+        assert!(background_contrast_scrim_alpha(&translucent_background) >= 0.75);
         assert!(background_needs_foreground_lift(&translucent_background));
 
         let gradient_background = IslandBackground::AnimatedGradient {
@@ -2792,7 +2792,7 @@ mod tests {
                 },
             ],
         };
-        assert!(background_contrast_scrim_alpha(&gradient_background) >= 0.65);
+        assert!(background_contrast_scrim_alpha(&gradient_background) >= 0.80);
         assert!(background_needs_foreground_lift(&gradient_background));
     }
 
