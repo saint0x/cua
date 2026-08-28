@@ -61,7 +61,7 @@ const TASK_RING_PX: f32 = 34.0;
 const BODY_LABEL_WIDTH_PX: f32 = 68.0;
 const BODY_PAD_X_PX: f32 = 20.0;
 const UI_TEXT_PX: f32 = 12.0;
-const UI_META_PX: f32 = 11.0;
+const UI_META_PX: f32 = UI_TEXT_PX;
 const UI_LINE_HEIGHT_PX: f32 = 15.0;
 const COMPACT_ROW_ITEM_HEIGHT_PX: f32 = 18.0;
 const COMPACT_CONTENT_Y_OFFSET_PX: f32 = 0.0;
@@ -274,7 +274,7 @@ impl VoiceHud {
             .items_center()
             .text_color(rgb(0xebebf0))
             .text_size(px(UI_TEXT_PX))
-            .line_height(px(14.0))
+            .line_height(px(UI_LINE_HEIGHT_PX))
             .child(label.into())
     }
 
@@ -469,7 +469,6 @@ impl VoiceHud {
                             .truncate()
                             .text_color(rgb(0xffffff))
                             .text_size(px(UI_TEXT_PX))
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
                             .line_height(px(UI_LINE_HEIGHT_PX))
                             .child(title),
                     )
@@ -737,7 +736,7 @@ impl VoiceHud {
                             .child(
                                 div()
                                     .text_size(px(UI_META_PX))
-                                    .line_height(px(13.0))
+                                    .line_height(px(UI_LINE_HEIGHT_PX))
                                     .text_color(rgb(0x9f9fa6))
                                     .child(gauge_caption(step_counter, &self.snapshot.phase)),
                             ),
@@ -1238,9 +1237,8 @@ fn field_label(label: impl Into<String>) -> impl IntoElement {
     div()
         .w(px(BODY_LABEL_WIDTH_PX))
         .flex_none()
-        .text_size(px(10.0))
+        .text_size(px(UI_TEXT_PX))
         .line_height(px(UI_LINE_HEIGHT_PX))
-        .font_weight(gpui::FontWeight::SEMIBOLD)
         .text_color(hsla(0.0, 0.0, 1.0, 0.36))
         .child(label.into().to_uppercase())
 }
@@ -1319,9 +1317,8 @@ fn footer_cell(label: impl Into<String>, value: impl Into<String>) -> impl IntoE
         .min_w(px(118.0))
         .child(
             div()
-                .text_size(px(10.0))
-                .line_height(px(12.0))
-                .font_weight(gpui::FontWeight::MEDIUM)
+                .text_size(px(UI_TEXT_PX))
+                .line_height(px(UI_LINE_HEIGHT_PX))
                 .text_color(hsla(0.0, 0.0, 1.0, 0.38))
                 .child(label.into().to_uppercase()),
         )
@@ -3070,7 +3067,7 @@ mod tests {
             COMPACT_HEIGHT / 2.0
         );
         assert_eq!(UI_TEXT_PX, 12.0);
-        assert_eq!(UI_META_PX, 11.0);
+        assert_eq!(UI_META_PX, UI_TEXT_PX);
     }
 
     #[test]
