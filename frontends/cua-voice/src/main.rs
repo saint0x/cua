@@ -41,8 +41,9 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-const LEFT_LABEL_WIDTH: f32 = 88.0;
-const CENTER_LABEL_WIDTH: f32 = 356.0;
+const HEADER_TITLE_MIN_WIDTH_PX: f32 = 64.0;
+const HEADER_TITLE_MAX_WIDTH_PX: f32 = 92.0;
+const HEADER_CENTER_MIN_WIDTH_PX: f32 = 260.0;
 const MARQUEE_START_DELAY_SECS: f32 = 1.6;
 const MARQUEE_END_HOLD_SECS: f32 = 0.9;
 const MARQUEE_SCROLL_SPEED_PX_PER_SEC: f32 = 24.0;
@@ -394,6 +395,7 @@ impl VoiceHud {
             .or_else(|| scene_text(scene, "header_right", "target"))
             .expect("IslandScene must include a target chip");
         let reply_visible = response_flash_visible(metrics);
+        let header_widths = header_layout_widths(metrics, &title, &tool, &app);
 
         div()
             .w(px(island_window_width(metrics)))
@@ -479,7 +481,7 @@ impl VoiceHud {
                     )
                     .child(
                         div()
-                            .w(px(LEFT_LABEL_WIDTH))
+                            .w(px(header_widths.title))
                             .h(px(COMPACT_ROW_ITEM_HEIGHT_PX))
                             .flex()
                             .items_center()
@@ -493,6 +495,7 @@ impl VoiceHud {
                     .child(center_text_slot(
                         center,
                         reply_visible,
+                        header_widths.center,
                         motion_elapsed_secs(
                             self.center_text_since.elapsed().as_secs_f32(),
                             self.reduced_motion,
@@ -1094,10 +1097,61 @@ fn center_text_for(scene: &IslandScene) -> String {
         .expect("IslandScene must include center status")
 }
 
-fn center_text_slot(center: String, reply_visible: bool, visible_secs: f32) -> impl IntoElement {
-    let offset = marquee_offset_px(&center, CENTER_LABEL_WIDTH, visible_secs);
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct HeaderLayoutWidths {
+    title: f32,
+    center: f32,
+}
+
+fn header_layout_widths(
+    metrics: HudMetrics,
+    title: &str,
+    transport: &str,
+    target: &str,
+) -> HeaderLayoutWidths {
+    let title_width = header_title_width_px(title);
+    let chrome_width = HEADER_LEAD_WIDTH_PX
+        + title_width
+        + 2.0
+        + header_chips_width_px(transport, target)
+        + HEADER_RING_PX;
+    let gap_width = HEADER_GAP_PX * 6.0;
+    let center_width =
+        (island_shell_width(metrics) - (HEADER_PAD_X_PX * 2.0) - chrome_width - gap_width)
+            .max(HEADER_CENTER_MIN_WIDTH_PX);
+
+    HeaderLayoutWidths {
+        title: title_width,
+        center: center_width,
+    }
+}
+
+fn header_title_width_px(title: &str) -> f32 {
+    (estimated_header_text_width_px(title) + 2.0)
+        .clamp(HEADER_TITLE_MIN_WIDTH_PX, HEADER_TITLE_MAX_WIDTH_PX)
+}
+
+fn header_chips_width_px(transport: &str, target: &str) -> f32 {
+    chip_width_px(transport) + chip_width_px(target) + 7.0
+}
+
+fn chip_width_px(label: &str) -> f32 {
+    (estimated_header_text_width_px(label) + 18.0).max(32.0)
+}
+
+fn estimated_header_text_width_px(text: &str) -> f32 {
+    text.chars().count() as f32 * MARQUEE_CHAR_WIDTH_PX
+}
+
+fn center_text_slot(
+    center: String,
+    reply_visible: bool,
+    viewport_width_px: f32,
+    visible_secs: f32,
+) -> impl IntoElement {
+    let offset = marquee_offset_px(&center, viewport_width_px, visible_secs);
     div()
-        .w(px(CENTER_LABEL_WIDTH))
+        .w(px(viewport_width_px))
         .h(px(COMPACT_ROW_ITEM_HEIGHT_PX))
         .overflow_hidden()
         .whitespace_nowrap()
@@ -3230,14 +3284,38 @@ mod tests {
         assert_eq!(UI_META_PX, UI_TEXT_PX);
         assert_eq!(HEADER_ORB_PX, 18.0);
         assert_eq!(HEADER_GAP_PX, 8.0);
-        assert_eq!(LEFT_LABEL_WIDTH, 88.0);
-        assert_eq!(CENTER_LABEL_WIDTH, 356.0);
+        assert_eq!(HEADER_TITLE_MIN_WIDTH_PX, 64.0);
+        assert_eq!(HEADER_TITLE_MAX_WIDTH_PX, 92.0);
+        assert_eq!(HEADER_CENTER_MIN_WIDTH_PX, 260.0);
         assert_eq!(HEADER_LEAD_WIDTH_PX, 28.0);
         let stoplight_cluster_width = (STOPLIGHT_SIZE_PX * 3.0) + 8.0;
         let stoplight_title_gap = HEADER_LEAD_WIDTH_PX + HEADER_GAP_PX - stoplight_cluster_width;
         assert!(stoplight_title_gap >= 4.0);
-        assert!(LEFT_LABEL_WIDTH >= estimated_center_text_width_px("Voice control"));
-        assert!(CENTER_LABEL_WIDTH - LEFT_LABEL_WIDTH > 260.0);
+        assert!(
+            header_title_width_px("Voice control")
+                >= estimated_header_text_width_px("Voice control")
+        );
+    }
+
+    #[test]
+    fn compact_header_title_rail_tracks_label_length() {
+        let automation = header_layout_widths(
+            HudMetrics::with_expansion(0.0, 0.0),
+            "Automation",
+            "HTTP",
+            "Model",
+        );
+        let voice = header_layout_widths(
+            HudMetrics::with_expansion(0.0, 0.0),
+            "Voice control",
+            "HTTP",
+            "Model",
+        );
+
+        assert!(automation.title < voice.title);
+        assert!(automation.center > voice.center);
+        assert!(automation.center >= HEADER_CENTER_MIN_WIDTH_PX);
+        assert!(voice.center >= HEADER_CENTER_MIN_WIDTH_PX);
     }
 
     #[test]
@@ -3859,35 +3937,37 @@ mod tests {
 
     #[test]
     fn marquee_stays_still_for_short_center_text() {
-        assert_eq!(marquee_offset_px("Ready", CENTER_LABEL_WIDTH, 10.0), 0.0);
+        assert_eq!(marquee_offset_px("Ready", 356.0, 10.0), 0.0);
     }
 
     #[test]
     fn marquee_waits_then_scrolls_long_center_text() {
         let text =
             "Step 7/120   validating a long custom agent step that needs to reveal itself slowly";
+        let viewport_width = 356.0;
 
         assert_eq!(
-            marquee_offset_px(text, CENTER_LABEL_WIDTH, MARQUEE_START_DELAY_SECS - 0.1),
+            marquee_offset_px(text, viewport_width, MARQUEE_START_DELAY_SECS - 0.1),
             0.0
         );
         assert_eq!(
-            marquee_offset_px(text, CENTER_LABEL_WIDTH, MARQUEE_START_DELAY_SECS),
+            marquee_offset_px(text, viewport_width, MARQUEE_START_DELAY_SECS),
             0.0
         );
-        assert!(marquee_offset_px(text, CENTER_LABEL_WIDTH, MARQUEE_START_DELAY_SECS + 1.0) > 0.0);
+        assert!(marquee_offset_px(text, viewport_width, MARQUEE_START_DELAY_SECS + 1.0) > 0.0);
     }
 
     #[test]
     fn marquee_holds_at_end_before_looping() {
         let text =
             "Step 9/42   long custom step label for reviewing every visible change carefully";
-        let overflow = (estimated_center_text_width_px(text) - CENTER_LABEL_WIDTH).max(0.0);
+        let viewport_width = 356.0;
+        let overflow = (estimated_center_text_width_px(text) - viewport_width).max(0.0);
         let scroll_duration = overflow / MARQUEE_SCROLL_SPEED_PX_PER_SEC;
         let end_hold_time = MARQUEE_START_DELAY_SECS + scroll_duration + 0.2;
 
         assert_eq!(
-            marquee_offset_px(text, CENTER_LABEL_WIDTH, end_hold_time),
+            marquee_offset_px(text, viewport_width, end_hold_time),
             overflow
         );
     }
