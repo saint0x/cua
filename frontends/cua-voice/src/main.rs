@@ -409,6 +409,7 @@ impl VoiceHud {
             .flex()
             .flex_col()
             .child(self.background_layer(scene))
+            .child(self.background_contrast_layer(scene))
             .child(self.stoplights(cx))
             .child(self.actor_layer(scene, metrics))
             .child(
@@ -459,6 +460,15 @@ impl VoiceHud {
                 &scene.background,
                 self.started.elapsed().as_secs_f32(),
             ))
+    }
+
+    fn background_contrast_layer(&self, scene: &IslandScene) -> impl IntoElement {
+        div().absolute().left_0().top_0().size_full().bg(hsla(
+            0.0,
+            0.0,
+            0.0,
+            background_contrast_scrim_alpha(&scene.background),
+        ))
     }
 
     fn stoplights(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -953,6 +963,65 @@ fn parse_hex_color(hex: &str) -> Option<u32> {
         return None;
     }
     u32::from_str_radix(digits, 16).ok()
+}
+
+fn background_contrast_scrim_alpha(background: &IslandBackground) -> f32 {
+    match background {
+        IslandBackground::Solid { color, opacity } => {
+            if is_default_solid_background(color, *opacity) {
+                0.0
+            } else if *opacity < 75 || color_luminance(color).unwrap_or(0.0) > 0.18 {
+                0.56
+            } else {
+                0.18
+            }
+        }
+        IslandBackground::Transparent { opacity } => {
+            if *opacity >= 90 {
+                0.0
+            } else {
+                0.60
+            }
+        }
+        IslandBackground::LinearGradient { opacity, stops, .. }
+        | IslandBackground::AnimatedGradient { opacity, stops, .. } => {
+            if *opacity < 80
+                || stops
+                    .iter()
+                    .any(|stop| color_luminance(&stop.color).unwrap_or(0.0) > 0.18)
+            {
+                0.54
+            } else {
+                0.24
+            }
+        }
+        IslandBackground::NeonSweep {
+            base_color,
+            sweep_color,
+            opacity,
+            ..
+        } => {
+            let base = color_luminance(base_color).unwrap_or(0.0);
+            let sweep = color_luminance(sweep_color).unwrap_or(0.0);
+            if *opacity < 80 || base.max(sweep) > 0.18 {
+                0.46
+            } else {
+                0.20
+            }
+        }
+    }
+}
+
+fn is_default_solid_background(color: &str, opacity: u8) -> bool {
+    opacity == 92 && color.eq_ignore_ascii_case("#000000")
+}
+
+fn color_luminance(hex: &str) -> Option<f32> {
+    let value = parse_hex_color(hex)?;
+    let r = ((value >> 16) & 0xff) as f32 / 255.0;
+    let g = ((value >> 8) & 0xff) as f32 / 255.0;
+    let b = (value & 0xff) as f32 / 255.0;
+    Some(0.2126 * r + 0.7152 * g + 0.0722 * b)
 }
 
 fn repeating_progress(elapsed_secs: f32, duration_ms: u16) -> f32 {
@@ -2616,6 +2685,26 @@ mod tests {
         assert_eq!(parse_hex_color("1e9bff"), None);
         assert_eq!(parse_hex_color("#fff"), None);
         assert_eq!(parse_hex_color("#nothex"), None);
+    }
+
+    #[test]
+    fn background_contrast_scrim_preserves_default_and_protects_light_backdrops() {
+        assert_eq!(
+            background_contrast_scrim_alpha(&IslandBackground::Solid {
+                color: "#000000".to_string(),
+                opacity: 92,
+            }),
+            0.0
+        );
+        assert!(
+            background_contrast_scrim_alpha(&IslandBackground::Solid {
+                color: "#eef8ff".to_string(),
+                opacity: 92,
+            }) >= 0.5
+        );
+        assert!(
+            background_contrast_scrim_alpha(&IslandBackground::Transparent { opacity: 16 }) >= 0.5
+        );
     }
 
     #[test]
