@@ -35,6 +35,10 @@ pub fn support_status() -> &'static str {
     "macos_native_capture_and_input_enabled"
 }
 
+pub fn system_reduce_motion_enabled() -> bool {
+    native_system_reduce_motion_enabled()
+}
+
 pub fn capture_backend_or_unavailable() -> Arc<dyn CaptureBackend> {
     if permission_report().screen_recording == PermissionState::Granted {
         Arc::new(MacosCaptureBackend::default())
@@ -1518,6 +1522,19 @@ fn native_request_microphone_access() -> PermissionState {
 #[cfg(not(target_os = "macos"))]
 fn native_request_microphone_access() -> PermissionState {
     PermissionState::NotApplicable
+}
+
+#[cfg(target_os = "macos")]
+fn native_system_reduce_motion_enabled() -> bool {
+    use objc2_app_kit::NSWorkspace;
+
+    let workspace = NSWorkspace::sharedWorkspace();
+    workspace.accessibilityDisplayShouldReduceMotion()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn native_system_reduce_motion_enabled() -> bool {
+    false
 }
 
 #[cfg(target_os = "macos")]

@@ -1968,7 +1968,7 @@ fn main() -> anyhow::Result<()> {
     let once_agent_step_after = args.once_agent_step_after;
     let once_agent_reply_wait_ms = args.once_agent_reply_wait_ms;
     let once_agent_reply_after = args.once_agent_reply_after;
-    let reduced_motion = args.reduced_motion;
+    let reduced_motion = reduced_motion_enabled(args.reduced_motion);
     let config = VoiceConfig {
         profile: args.profile,
         record_ms: args.record_ms,
@@ -2600,6 +2600,17 @@ fn demo_should_run(requested: bool) -> bool {
         && std::env::current_exe()
             .map(|path| !path_looks_packaged_app(&path))
             .unwrap_or(true)
+}
+
+fn reduced_motion_enabled(requested: bool) -> bool {
+    resolve_reduced_motion(
+        requested,
+        cua_platform_macos::system_reduce_motion_enabled(),
+    )
+}
+
+fn resolve_reduced_motion(requested: bool, system_enabled: bool) -> bool {
+    requested || system_enabled
 }
 
 fn path_looks_packaged_app(path: &Path) -> bool {
@@ -3238,6 +3249,14 @@ mod tests {
         assert!(ring_ambient_active(true, Some((1, 4)), true));
         assert!(!ring_ambient_active(true, None, true));
         assert!(ring_ambient_active(true, None, false));
+    }
+
+    #[test]
+    fn reduced_motion_respects_explicit_or_system_request() {
+        assert!(!resolve_reduced_motion(false, false));
+        assert!(resolve_reduced_motion(true, false));
+        assert!(resolve_reduced_motion(false, true));
+        assert!(resolve_reduced_motion(true, true));
     }
 
     #[test]
