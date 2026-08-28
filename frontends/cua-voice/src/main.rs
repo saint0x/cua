@@ -657,6 +657,8 @@ impl VoiceHud {
             return div();
         };
         div()
+            .relative()
+            .top(px(expanded_body_offset_y(metrics)))
             .opacity(metrics.expansion_opacity)
             .h(px((EXPANDED_HEIGHT - COMPACT_HEIGHT).max(0.0)))
             .ml(px(island_fillet(metrics)))
@@ -1575,6 +1577,10 @@ fn compact_bar_radius(_: HudMetrics) -> f32 {
 
 fn response_flash_visible(metrics: HudMetrics) -> bool {
     metrics.response_opacity >= 0.35
+}
+
+fn expanded_body_offset_y(metrics: HudMetrics) -> f32 {
+    -6.0 * (1.0 - metrics.expansion_opacity.clamp(0.0, 1.0))
 }
 
 fn advance_motion_progress(current: f32, target: f32, dt_secs: f32, duration_secs: f32) -> f32 {
@@ -3080,6 +3086,18 @@ mod tests {
             advance_motion_progress(0.0, 1.0, SHELL_MOTION_SECS / 2.0, SHELL_MOTION_SECS),
             0.5
         );
+    }
+
+    #[test]
+    fn expanded_body_uses_reference_entry_offset() {
+        let closed = expanded_body_offset_y(HudMetrics::with_expansion(0.0, 0.0));
+        let settling = expanded_body_offset_y(HudMetrics::with_expansion(0.0, 0.5));
+        let open = expanded_body_offset_y(HudMetrics::with_expansion(0.0, 1.0));
+
+        assert_eq!(closed, -6.0);
+        assert!(settling > closed);
+        assert!(settling < open);
+        assert_eq!(open, -0.0);
     }
 
     #[test]
