@@ -70,6 +70,8 @@ const STOPLIGHT_SIZE_PX: f32 = 8.0;
 const STOPLIGHT_TOP_PX: f32 = compact_content_axis_y() - (STOPLIGHT_SIZE_PX / 2.0);
 const SHELL_MOTION_SECS: f32 = 0.320;
 const CONTENT_MOTION_SECS: f32 = 0.210;
+const REDUCED_SHELL_MOTION_SECS: f32 = 0.110;
+const REDUCED_CONTENT_MOTION_SECS: f32 = 0.110;
 
 #[derive(Debug, Parser)]
 #[command(name = "cua-voice", version, about = "Rust voice HUD for cua")]
@@ -88,6 +90,8 @@ struct Args {
     planner_model: String,
     #[arg(long, env = "CUA_VOICE_DEBUG_TRACE")]
     debug_trace: bool,
+    #[arg(long, env = "CUA_REDUCED_MOTION")]
+    reduced_motion: bool,
     #[arg(long)]
     demo: bool,
     #[arg(long, conflicts_with = "headless")]
@@ -130,6 +134,7 @@ struct VoiceHud {
     custom_scene: Option<IslandScene>,
     custom_theme: Option<IslandTheme>,
     custom_background: Option<IslandBackground>,
+    reduced_motion: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -144,6 +149,7 @@ impl VoiceHud {
         mode: UiMode,
         model_label: String,
         island_bounds: Arc<Mutex<Option<Bounds<Pixels>>>>,
+        reduced_motion: bool,
     ) -> Self {
         let mut snapshot = HudSnapshot::default();
         let source = initial_ui_source(&mode).to_string();
@@ -171,6 +177,7 @@ impl VoiceHud {
             custom_scene: None,
             custom_theme: None,
             custom_background: None,
+            reduced_motion,
         }
     }
 
@@ -250,7 +257,8 @@ impl VoiceHud {
 
     fn orb(&self) -> impl IntoElement {
         let phase = self.snapshot.phase.clone();
-        let elapsed = self.started.elapsed().as_secs_f32();
+        let elapsed =
+            motion_elapsed_secs(self.started.elapsed().as_secs_f32(), self.reduced_motion);
         canvas(
             move |_, _, _| (phase, elapsed),
             move |bounds, (phase, elapsed), window, _| {
@@ -294,7 +302,8 @@ impl VoiceHud {
     }
 
     fn activity_ring_from_scene(&self, scene: &IslandScene) -> impl IntoElement {
-        let elapsed = self.started.elapsed().as_secs_f32();
+        let reduced_motion = self.reduced_motion;
+        let elapsed = motion_elapsed_secs(self.started.elapsed().as_secs_f32(), reduced_motion);
         let dot_chase = scene_dot_chase(scene).expect("IslandScene must include activity dots");
         let step_counter = scene_step_counter(scene);
         let accent = phase_accent(&self.snapshot.phase);
@@ -314,7 +323,7 @@ impl VoiceHud {
                     window,
                     bounds,
                     accent,
-                    active,
+                    ring_ambient_active(active, step_counter, reduced_motion),
                     speed as f32,
                     count as usize,
                     step_counter,
@@ -335,8 +344,12 @@ impl VoiceHud {
         } else {
             0.0
         };
-        self.response_progress =
-            advance_motion_progress(self.response_progress, target, dt, CONTENT_MOTION_SECS);
+        self.response_progress = advance_motion_progress(
+            self.response_progress,
+            target,
+            dt,
+            content_motion_secs(self.reduced_motion),
+        );
         let expansion_target = if self.expanded && !self.minimized {
             1.0
         } else {
@@ -346,14 +359,14 @@ impl VoiceHud {
             self.expansion_progress,
             expansion_target,
             dt,
-            SHELL_MOTION_SECS,
+            shell_motion_secs(self.reduced_motion),
         );
         let minimized_target = if self.minimized { 1.0 } else { 0.0 };
         self.minimized_progress = advance_motion_progress(
             self.minimized_progress,
             minimized_target,
             dt,
-            SHELL_MOTION_SECS,
+            shell_motion_secs(self.reduced_motion),
         );
     }
 
@@ -436,7 +449,7 @@ impl VoiceHud {
             .child(shell_background_layer(
                 metrics,
                 &scene.background,
-                self.started.elapsed().as_secs_f32(),
+                motion_elapsed_secs(self.started.elapsed().as_secs_f32(), self.reduced_motion),
             ))
             .child(self.stoplights(metrics, cx))
             .child(self.actor_layer(scene, metrics))
@@ -480,7 +493,10 @@ impl VoiceHud {
                     .child(center_text_slot(
                         center,
                         reply_visible,
-                        self.center_text_since.elapsed().as_secs_f32(),
+                        motion_elapsed_secs(
+                            self.center_text_since.elapsed().as_secs_f32(),
+                            self.reduced_motion,
+                        ),
                     ))
                     .child(Self::divider())
                     .child(
@@ -535,7 +551,8 @@ impl VoiceHud {
     }
 
     fn actor_layer(&self, scene: &IslandScene, metrics: HudMetrics) -> impl IntoElement {
-        let elapsed = self.started.elapsed().as_secs_f32();
+        let elapsed =
+            motion_elapsed_secs(self.started.elapsed().as_secs_f32(), self.reduced_motion);
         let mut layer = div().absolute().left_0().top_0().size_full();
         for actor in &scene.actors {
             let style = actor_style(actor, metrics, elapsed);
@@ -729,7 +746,10 @@ impl VoiceHud {
                             .child(task_gauge(
                                 scene,
                                 &self.snapshot.phase,
-                                self.started.elapsed().as_secs_f32(),
+                                motion_elapsed_secs(
+                                    self.started.elapsed().as_secs_f32(),
+                                    self.reduced_motion,
+                                ),
                             ))
                             .child(
                                 div()
@@ -1573,6 +1593,38 @@ fn response_flash_visible(metrics: HudMetrics) -> bool {
     metrics.response_opacity >= 0.35
 }
 
+fn shell_motion_secs(reduced_motion: bool) -> f32 {
+    if reduced_motion {
+        REDUCED_SHELL_MOTION_SECS
+    } else {
+        SHELL_MOTION_SECS
+    }
+}
+
+fn content_motion_secs(reduced_motion: bool) -> f32 {
+    if reduced_motion {
+        REDUCED_CONTENT_MOTION_SECS
+    } else {
+        CONTENT_MOTION_SECS
+    }
+}
+
+fn motion_elapsed_secs(elapsed_secs: f32, reduced_motion: bool) -> f32 {
+    if reduced_motion {
+        0.0
+    } else {
+        elapsed_secs
+    }
+}
+
+fn ring_ambient_active(
+    active: bool,
+    step_counter: Option<(usize, usize)>,
+    reduced_motion: bool,
+) -> bool {
+    active && (!reduced_motion || step_counter.is_some())
+}
+
 fn expanded_body_offset_y(metrics: HudMetrics) -> f32 {
     -6.0 * (1.0 - metrics.expansion_opacity.clamp(0.0, 1.0))
 }
@@ -1848,6 +1900,7 @@ fn main() -> anyhow::Result<()> {
     let once_agent_step_after = args.once_agent_step_after;
     let once_agent_reply_wait_ms = args.once_agent_reply_wait_ms;
     let once_agent_reply_after = args.once_agent_reply_after;
+    let reduced_motion = args.reduced_motion;
     let config = VoiceConfig {
         profile: args.profile,
         record_ms: args.record_ms,
@@ -1946,6 +1999,7 @@ fn main() -> anyhow::Result<()> {
                         ui_mode.clone(),
                         model_label.clone(),
                         island_bounds.clone(),
+                        reduced_motion,
                     )
                 })
             },
@@ -3074,6 +3128,10 @@ mod tests {
     fn hud_motion_uses_reference_durations() {
         assert_eq!(SHELL_MOTION_SECS, 0.320);
         assert_eq!(CONTENT_MOTION_SECS, 0.210);
+        assert_eq!(shell_motion_secs(false), SHELL_MOTION_SECS);
+        assert_eq!(content_motion_secs(false), CONTENT_MOTION_SECS);
+        assert_eq!(shell_motion_secs(true), 0.110);
+        assert_eq!(content_motion_secs(true), 0.110);
 
         assert_eq!(
             advance_motion_progress(0.0, 1.0, SHELL_MOTION_SECS, SHELL_MOTION_SECS),
@@ -3087,6 +3145,15 @@ mod tests {
             advance_motion_progress(0.0, 1.0, SHELL_MOTION_SECS / 2.0, SHELL_MOTION_SECS),
             0.5
         );
+    }
+
+    #[test]
+    fn reduced_motion_freezes_ambient_loops_but_keeps_step_progress() {
+        assert_eq!(motion_elapsed_secs(14.0, false), 14.0);
+        assert_eq!(motion_elapsed_secs(14.0, true), 0.0);
+        assert!(ring_ambient_active(true, Some((1, 4)), true));
+        assert!(!ring_ambient_active(true, None, true));
+        assert!(ring_ambient_active(true, None, false));
     }
 
     #[test]
@@ -3431,6 +3498,7 @@ mod tests {
             UiMode::Headless,
             DEFAULT_PLANNER_MODEL.to_string(),
             island_bounds,
+            false,
         );
 
         tx.send(VoiceUiEvent::AutomationActivity {
@@ -3459,6 +3527,7 @@ mod tests {
             UiMode::Headful,
             DEFAULT_PLANNER_MODEL.to_string(),
             island_bounds,
+            false,
         );
         let mut snapshot = HudSnapshot::default();
         snapshot.apply(VoiceUiEvent::AgentStep {
@@ -3609,6 +3678,7 @@ mod tests {
             UiMode::Headless,
             DEFAULT_PLANNER_MODEL.to_string(),
             Arc::new(Mutex::new(None)),
+            false,
         );
 
         assert_eq!(hud.snapshot.mode, UiMode::Headless);
