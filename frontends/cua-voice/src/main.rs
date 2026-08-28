@@ -41,8 +41,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-const LEFT_LABEL_WIDTH: f32 = 112.0;
-const CENTER_LABEL_WIDTH: f32 = 330.0;
+const LEFT_LABEL_WIDTH: f32 = 88.0;
+const CENTER_LABEL_WIDTH: f32 = 356.0;
 const MARQUEE_START_DELAY_SECS: f32 = 1.6;
 const MARQUEE_END_HOLD_SECS: f32 = 0.9;
 const MARQUEE_SCROLL_SPEED_PX_PER_SEC: f32 = 24.0;
@@ -54,7 +54,7 @@ const MINIMIZED_HEIGHT: f32 = 28.0;
 const MINIMIZED_RADIUS: f32 = 14.0;
 const MINIMIZED_RIGHT_OFFSET: f32 = 220.0;
 const HEADER_PAD_X_PX: f32 = 16.0;
-const HEADER_GAP_PX: f32 = 12.0;
+const HEADER_GAP_PX: f32 = 10.0;
 const HEADER_LEAD_WIDTH_PX: f32 = 22.0;
 const HEADER_ORB_PX: f32 = 18.0;
 const HEADER_RING_PX: f32 = 22.0;
@@ -3132,9 +3132,11 @@ mod tests {
         assert_eq!(UI_META_PX, UI_TEXT_PX);
         assert_eq!(HEADER_ORB_PX, 18.0);
         assert_eq!(HEADER_LEAD_WIDTH_PX, 22.0);
-        assert_eq!(LEFT_LABEL_WIDTH, 112.0);
-        assert_eq!(CENTER_LABEL_WIDTH, 330.0);
-        assert!(CENTER_LABEL_WIDTH - LEFT_LABEL_WIDTH > 200.0);
+        assert_eq!(HEADER_GAP_PX, 10.0);
+        assert_eq!(LEFT_LABEL_WIDTH, 88.0);
+        assert_eq!(CENTER_LABEL_WIDTH, 356.0);
+        assert!(LEFT_LABEL_WIDTH >= estimated_center_text_width_px("Voice control"));
+        assert!(CENTER_LABEL_WIDTH - LEFT_LABEL_WIDTH > 260.0);
     }
 
     #[test]
