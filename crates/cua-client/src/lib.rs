@@ -3,15 +3,15 @@ use cua_core::{
     AttestationChallengeRequest, AttestationSignRequest, ClipboardReadRequest, ClipboardResult,
     ClipboardWriteRequest, ConfigInventory, DesktopContextSnapshot, DesktopState,
     FrameActionRequest, FrameEncoding, FrameEnvelope, FramePayload, HealthReport,
-    InboundMessageRequest, InboundStatus, InputAction, IslandScene, IslandTheme,
+    InboundMessageRequest, InboundStatus, InputAction, IslandBackground, IslandScene, IslandTheme,
     MachineAttestation, MachineIdentityStatus, Manifest, RuntimeControlState, RuntimeInventory,
     RuntimeSessionRole, SchemaBundle, ScratchpadDeleteRequest, ScratchpadDeleteResult,
     ScratchpadEntry, ScratchpadListRequest, ScratchpadListResult, ScratchpadReadRequest,
     ScratchpadWriteRequest, SessionCancelRequest, SessionHeartbeatRequest, SessionLeaseRequest,
     SessionLeaseResult, UiIslandRequest, UiIslandResult, UiIslandState, UiMode, UiModeRequest,
-    UiReplyRequest, UiScenePatchRequest, UiSceneRequest, UiSceneResetRequest, UiSceneResult,
-    UiSceneThemeRequest, UiStepRequest, VisualSessionRequest, WebhookSourceStatus,
-    WebhookSubscribeRequest, SCHEMA_VERSION,
+    UiReplyRequest, UiSceneBackgroundRequest, UiScenePatchRequest, UiSceneRequest,
+    UiSceneResetRequest, UiSceneResult, UiSceneThemeRequest, UiStepRequest, VisualSessionRequest,
+    WebhookSourceStatus, WebhookSubscribeRequest, SCHEMA_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -508,6 +508,22 @@ impl CuaClient {
         .await
     }
 
+    pub async fn ui_scene_background(
+        &self,
+        background: IslandBackground,
+        source: Option<String>,
+    ) -> Result<UiSceneResult> {
+        self.request(
+            "ui.scene.background",
+            Some(serde_json::to_value(UiSceneBackgroundRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                background,
+                source,
+            })?),
+        )
+        .await
+    }
+
     pub async fn clipboard_read(&self, allow_sensitive: bool) -> Result<ClipboardResult> {
         self.request(
             "clipboard.read",
@@ -990,6 +1006,22 @@ impl CuaSession {
             Some(serde_json::to_value(UiSceneThemeRequest {
                 schema_version: SCHEMA_VERSION.to_string(),
                 theme,
+                source,
+            })?),
+        )
+        .await
+    }
+
+    pub async fn ui_scene_background(
+        &mut self,
+        background: IslandBackground,
+        source: Option<String>,
+    ) -> Result<UiSceneResult> {
+        self.request(
+            "ui.scene.background",
+            Some(serde_json::to_value(UiSceneBackgroundRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                background,
                 source,
             })?),
         )
