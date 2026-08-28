@@ -49,6 +49,8 @@ const MINIMIZED_RADIUS: f32 = 14.0;
 const MINIMIZED_RIGHT_OFFSET: f32 = 220.0;
 const UI_TEXT_PX: f32 = 12.0;
 const UI_META_PX: f32 = 11.0;
+const UI_LINE_HEIGHT_PX: f32 = 15.0;
+const COMPACT_ROW_ITEM_HEIGHT_PX: f32 = 18.0;
 const STOPLIGHT_HITBOX_HEIGHT_PX: f32 = 9.0;
 const STOPLIGHT_TOP_PX: f32 = (COMPACT_HEIGHT - STOPLIGHT_HITBOX_HEIGHT_PX) / 2.0;
 
@@ -229,12 +231,15 @@ impl VoiceHud {
 
     fn chip(label: impl Into<String>) -> impl IntoElement {
         div()
+            .h(px(COMPACT_ROW_ITEM_HEIGHT_PX))
             .px_1()
-            .py_0p5()
             .rounded(px(4.0))
             .bg(hsla(0.0, 0.0, 1.0, 0.10))
+            .flex()
+            .items_center()
             .text_color(rgb(0xb9b9c0))
             .text_size(px(UI_TEXT_PX))
+            .line_height(px(UI_LINE_HEIGHT_PX))
             .child(label.into())
     }
 
@@ -246,7 +251,11 @@ impl VoiceHud {
         let elapsed = self.started.elapsed().as_secs_f32();
         let active = dots_are_active(&self.snapshot);
         let speed = dot_pulse_speed(&self.snapshot.phase);
-        let mut row = div().flex().items_center().gap_1();
+        let mut row = div()
+            .h(px(COMPACT_ROW_ITEM_HEIGHT_PX))
+            .flex()
+            .items_center()
+            .gap_1();
         for index in 0..ACTIVITY_DOT_COUNT {
             let style = activity_dot_style(index, elapsed, active, speed);
             row = row.child(dot(style));
@@ -389,9 +398,13 @@ impl VoiceHud {
                     .child(
                         div()
                             .w(px(190.0))
+                            .h(px(COMPACT_ROW_ITEM_HEIGHT_PX))
+                            .flex()
+                            .items_center()
                             .truncate()
                             .text_color(rgb(0x9f9fa6))
                             .text_size(px(UI_TEXT_PX))
+                            .line_height(px(UI_LINE_HEIGHT_PX))
                             .child(title),
                     )
                     .child(Self::divider())
@@ -745,18 +758,23 @@ fn center_text_slot(center: String, reply_visible: bool, visible_secs: f32) -> i
     let offset = marquee_offset_px(&center, CENTER_LABEL_WIDTH, visible_secs);
     div()
         .w(px(CENTER_LABEL_WIDTH))
+        .h(px(COMPACT_ROW_ITEM_HEIGHT_PX))
         .overflow_hidden()
         .whitespace_nowrap()
+        .flex()
+        .items_center()
         .text_color(if reply_visible {
             rgb(0xf1f1f4)
         } else {
             rgb(0xb9b9c0)
         })
         .text_size(px(UI_TEXT_PX))
+        .line_height(px(UI_LINE_HEIGHT_PX))
         .child(
             div()
                 .flex_none()
                 .whitespace_nowrap()
+                .line_height(px(UI_LINE_HEIGHT_PX))
                 .ml(px(-offset))
                 .child(center),
         )
@@ -828,12 +846,14 @@ fn index_tab(index: &'static str, label: &'static str, active: bool) -> impl Int
         .child(
             div()
                 .text_size(px(UI_META_PX))
+                .line_height(px(UI_LINE_HEIGHT_PX))
                 .text_color(if active { rgb(0x66c7ff) } else { rgb(0x74747d) })
                 .child(index),
         )
         .child(
             div()
                 .text_size(px(UI_META_PX))
+                .line_height(px(UI_LINE_HEIGHT_PX))
                 .text_color(if active { rgb(0xb9b9c0) } else { rgb(0x85858d) })
                 .child(label),
         )
@@ -858,6 +878,7 @@ fn info_row(
                 .flex_1()
                 .truncate()
                 .text_size(px(UI_TEXT_PX))
+                .line_height(px(UI_LINE_HEIGHT_PX))
                 .text_color(rgb(0xd8d8de))
                 .child(value.into()),
         )
@@ -883,6 +904,7 @@ fn tool_row(index: &'static str, row: &cua_voice::hud::HudRow) -> impl IntoEleme
                         .truncate()
                         .text_color(rgb(0xd8d8de))
                         .text_size(px(UI_TEXT_PX))
+                        .line_height(px(UI_LINE_HEIGHT_PX))
                         .child(row.label.clone()),
                 )
                 .child(
@@ -891,6 +913,7 @@ fn tool_row(index: &'static str, row: &cua_voice::hud::HudRow) -> impl IntoEleme
                         .truncate()
                         .text_color(rgb(0x85858d))
                         .text_size(px(UI_META_PX))
+                        .line_height(px(UI_LINE_HEIGHT_PX))
                         .child(format!("{}  {}", row.tool, row.app)),
                 ),
         )
@@ -898,6 +921,7 @@ fn tool_row(index: &'static str, row: &cua_voice::hud::HudRow) -> impl IntoEleme
             div()
                 .w(px(44.0))
                 .text_size(px(UI_META_PX))
+                .line_height(px(UI_LINE_HEIGHT_PX))
                 .text_color(rgb(0x74747d))
                 .child(row.age.clone()),
         )
@@ -2100,6 +2124,15 @@ mod tests {
             STOPLIGHT_TOP_PX + (STOPLIGHT_HITBOX_HEIGHT_PX / 2.0),
             COMPACT_HEIGHT / 2.0
         );
+    }
+
+    #[test]
+    fn compact_hud_controls_share_center_axis() {
+        assert_eq!(COMPACT_ROW_ITEM_HEIGHT_PX % 2.0, 0.0);
+        assert!(COMPACT_ROW_ITEM_HEIGHT_PX < COMPACT_HEIGHT);
+        assert!(UI_LINE_HEIGHT_PX <= COMPACT_ROW_ITEM_HEIGHT_PX);
+        assert_eq!(UI_TEXT_PX, 12.0);
+        assert_eq!(UI_META_PX, 11.0);
     }
 
     #[test]
