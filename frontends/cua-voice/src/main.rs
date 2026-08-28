@@ -30,12 +30,13 @@ use gpui::{
 };
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::{Duration, Instant};
 
 const CENTER_LABEL_WIDTH: f32 = 270.0;
@@ -53,7 +54,7 @@ const UI_TEXT_PX: f32 = 12.0;
 const UI_META_PX: f32 = 11.0;
 const UI_LINE_HEIGHT_PX: f32 = 15.0;
 const COMPACT_ROW_ITEM_HEIGHT_PX: f32 = 18.0;
-const COMPACT_CONTENT_Y_OFFSET_PX: f32 = 11.0;
+const COMPACT_CONTENT_Y_OFFSET_PX: f32 = 0.0;
 const STOPLIGHT_HITBOX_HEIGHT_PX: f32 = 9.0;
 const STOPLIGHT_TOP_PX: f32 = compact_content_axis_y() - (STOPLIGHT_HITBOX_HEIGHT_PX / 2.0);
 
@@ -436,7 +437,9 @@ impl VoiceHud {
                     .child(div().flex_1())
                     .child(self.activity_dots_from_scene(scene)),
             )
-            .child(self.expanded_body(scene, metrics))
+            .when(scene_renders_expanded_body(scene), |element| {
+                element.child(self.expanded_body(scene, metrics))
+            })
     }
 
     fn stoplights(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -590,10 +593,15 @@ impl VoiceHud {
 
     fn expanded_body(&self, scene: &IslandScene, metrics: HudMetrics) -> impl IntoElement {
         let step_counter = scene_step_counter(scene);
-        let task = scene_row(scene, "task", "task").expect("IslandScene must include task row");
-        let response =
-            scene_row(scene, "response", "response").expect("IslandScene must include response");
-        let footer = scene_footer(scene);
+        let Some(task) = scene_row(scene, "task", "task") else {
+            return div();
+        };
+        let Some(response) = scene_row(scene, "response", "response") else {
+            return div();
+        };
+        let Some(footer) = scene_footer(scene) else {
+            return div();
+        };
         div()
             .opacity(metrics.expansion_opacity)
             .h(px((EXPANDED_HEIGHT - COMPACT_HEIGHT).max(0.0)))
@@ -1112,6 +1120,16 @@ const fn compact_content_axis_y() -> f32 {
 }
 
 #[cfg(test)]
+const fn compact_row_frame_axis_y() -> f32 {
+    (COMPACT_HEIGHT / 2.0) + COMPACT_CONTENT_Y_OFFSET_PX
+}
+
+#[cfg(test)]
+const fn compact_row_item_top_y() -> f32 {
+    compact_row_frame_axis_y() - (COMPACT_ROW_ITEM_HEIGHT_PX / 2.0)
+}
+
+#[cfg(test)]
 fn compact_bar_width(_: HudMetrics) -> f32 {
     cua_voice::hud::COMPACT_WIDTH
 }
@@ -1303,18 +1321,23 @@ fn scene_tool_rows(scene: &IslandScene) -> [SceneToolRow; 2] {
     [rows.remove(0), rows.remove(0)]
 }
 
-fn scene_footer(scene: &IslandScene) -> SceneFooter {
-    SceneFooter {
-        elapsed: scene_text(scene, "footer", "elapsed")
-            .expect("IslandScene must include elapsed footer"),
-        model: scene_text(scene, "footer", "model").expect("IslandScene must include model footer"),
-        transport: scene_text(scene, "footer", "transport")
-            .expect("IslandScene must include transport footer"),
-    }
+fn scene_footer(scene: &IslandScene) -> Option<SceneFooter> {
+    Some(SceneFooter {
+        elapsed: scene_text(scene, "footer", "elapsed")?,
+        model: scene_text(scene, "footer", "model")?,
+        transport: scene_text(scene, "footer", "transport")?,
+    })
 }
 
 fn should_reset_after_reply_collapse(reply_window_expired: bool, response_progress: f32) -> bool {
     reply_window_expired && response_progress == 0.0
+}
+
+fn scene_renders_expanded_body(scene: &IslandScene) -> bool {
+    scene.layout == IslandLayout::Expanded
+        && scene_row(scene, "task", "task").is_some()
+        && scene_row(scene, "response", "response").is_some()
+        && scene_footer(scene).is_some()
 }
 
 impl Render for VoiceHud {
@@ -1453,11 +1476,22 @@ fn main() -> anyhow::Result<()> {
     if demo {
         start_demo_cycle(tx.clone());
     } else {
-        start_embedded_daemon_if_needed(config.profile.clone(), runtime.clone(), tx.clone());
-        start_control_shortcut_controller(config.clone(), runtime.clone(), tx.clone());
-        start_island_double_tap_listener(tx.clone(), island_bounds.clone());
-        start_agent_step_poll(config.profile.clone(), runtime.clone(), tx.clone());
-        start_inbox_turn_poll(config.clone(), runtime.clone(), tx.clone());
+        let daemon_ready = match start_embedded_daemon_if_needed(&config.profile, runtime.clone()) {
+            Ok(()) => true,
+            Err(error) => {
+                tx.send(VoiceUiEvent::Error(format!(
+                    "Daemon start failed: {error:#}"
+                )))
+                .ok();
+                false
+            }
+        };
+        if daemon_ready {
+            start_control_shortcut_controller(config.clone(), runtime.clone(), tx.clone());
+            start_island_double_tap_listener(tx.clone(), island_bounds.clone());
+            start_agent_step_poll(config.profile.clone(), runtime.clone(), tx.clone());
+            start_inbox_turn_poll(config.clone(), runtime.clone(), tx.clone());
+        }
     }
     Application::new().run(move |cx: &mut App| {
         if should_request_desktop_access {
@@ -1657,37 +1691,83 @@ fn print_headless_events(rx: Receiver<VoiceUiEvent>) {
 }
 
 struct SingleInstance {
-    _listener: UnixListener,
     path: PathBuf,
+    running: Arc<AtomicBool>,
 }
 
 impl SingleInstance {
     fn acquire(profile: &str) -> anyhow::Result<Option<Self>> {
         let path = single_instance_socket_path(profile);
         match UnixListener::bind(&path) {
-            Ok(listener) => Ok(Some(Self {
-                _listener: listener,
-                path,
-            })),
+            Ok(listener) => Ok(Some(Self::from_listener(path, listener)?)),
             Err(error) if error.kind() == ErrorKind::AddrInUse => {
-                if UnixStream::connect(&path).is_ok() {
+                if single_instance_socket_is_responsive(&path) {
                     return Ok(None);
                 }
                 std::fs::remove_file(&path).ok();
                 let listener = UnixListener::bind(&path)?;
-                Ok(Some(Self {
-                    _listener: listener,
-                    path,
-                }))
+                Ok(Some(Self::from_listener(path, listener)?))
             }
             Err(error) => Err(error.into()),
         }
+    }
+
+    fn from_listener(path: PathBuf, listener: UnixListener) -> anyhow::Result<Self> {
+        listener.set_nonblocking(true)?;
+        let running = Arc::new(AtomicBool::new(true));
+        let thread_running = running.clone();
+        thread::spawn(move || single_instance_ping_loop(listener, thread_running));
+        Ok(Self { path, running })
     }
 }
 
 impl Drop for SingleInstance {
     fn drop(&mut self) {
+        self.running.store(false, Ordering::Relaxed);
         std::fs::remove_file(&self.path).ok();
+    }
+}
+
+const SINGLE_INSTANCE_PING: &[u8] = b"cua-voice ping\n";
+const SINGLE_INSTANCE_ACK: &[u8] = b"cua-voice alive\n";
+
+fn single_instance_socket_is_responsive(path: &Path) -> bool {
+    let Ok(mut stream) = UnixStream::connect(path) else {
+        return false;
+    };
+    let timeout = Some(Duration::from_millis(120));
+    let _ = stream.set_read_timeout(timeout);
+    let _ = stream.set_write_timeout(timeout);
+    if stream.write_all(SINGLE_INSTANCE_PING).is_err() {
+        return false;
+    }
+    let mut buffer = [0_u8; 16];
+    matches!(
+        stream.read(&mut buffer),
+        Ok(read) if &buffer[..read] == SINGLE_INSTANCE_ACK
+    )
+}
+
+fn single_instance_ping_loop(listener: UnixListener, running: Arc<AtomicBool>) {
+    while running.load(Ordering::Relaxed) {
+        match listener.accept() {
+            Ok((mut stream, _)) => {
+                let timeout = Some(Duration::from_millis(120));
+                let _ = stream.set_read_timeout(timeout);
+                let _ = stream.set_write_timeout(timeout);
+                let mut buffer = [0_u8; 15];
+                if matches!(
+                    stream.read(&mut buffer),
+                    Ok(read) if &buffer[..read] == SINGLE_INSTANCE_PING
+                ) {
+                    let _ = stream.write_all(SINGLE_INSTANCE_ACK);
+                }
+            }
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(25));
+            }
+            Err(_) => break,
+        }
     }
 }
 
@@ -2261,37 +2341,23 @@ fn control_poll_sample_triggers_arm(
 }
 
 fn start_embedded_daemon_if_needed(
-    profile: String,
+    profile: &str,
     runtime: Arc<tokio::runtime::Runtime>,
-    tx: Sender<VoiceUiEvent>,
-) {
-    if profile_daemon_is_alive(&profile) {
-        return;
+) -> anyhow::Result<()> {
+    if profile_daemon_is_alive(profile) {
+        return Ok(());
     }
-    if let Err(error) = spawn_profile_daemon(&profile) {
-        tx.send(VoiceUiEvent::Error(format!("Daemon start failed: {error}")))
-            .ok();
-        return;
-    }
-    runtime.spawn(async move {
-        let result = wait_until_ready(Duration::from_secs(3), || {
-            let profile = profile.clone();
-            async move {
-                if profile_daemon_is_alive(&profile) {
-                    Ok(())
-                } else {
-                    anyhow::bail!("daemon socket is not accepting connections")
-                }
+    spawn_profile_daemon(profile)?;
+    runtime.block_on(wait_until_ready(Duration::from_secs(3), || {
+        let profile = profile.to_string();
+        async move {
+            if profile_daemon_is_alive(&profile) {
+                Ok(())
+            } else {
+                anyhow::bail!("daemon socket is not accepting connections")
             }
-        })
-        .await;
-        if let Err(error) = result {
-            tx.send(VoiceUiEvent::Error(format!(
-                "Daemon start failed: {error:#}"
-            )))
-            .ok();
         }
-    });
+    }))
 }
 
 fn request_desktop_access_once_if_packaged_app(profile: &str) {
@@ -2505,9 +2571,41 @@ mod tests {
         assert_eq!(COMPACT_ROW_ITEM_HEIGHT_PX % 2.0, 0.0);
         assert!(COMPACT_ROW_ITEM_HEIGHT_PX < COMPACT_HEIGHT);
         assert!(UI_LINE_HEIGHT_PX <= COMPACT_ROW_ITEM_HEIGHT_PX);
-        assert_eq!(compact_content_axis_y(), 32.0);
+        assert_eq!(compact_content_axis_y(), COMPACT_HEIGHT / 2.0);
+        assert_eq!(compact_row_frame_axis_y(), COMPACT_HEIGHT / 2.0);
+        assert_eq!(
+            compact_row_item_top_y() + (COMPACT_ROW_ITEM_HEIGHT_PX / 2.0),
+            COMPACT_HEIGHT / 2.0
+        );
         assert_eq!(UI_TEXT_PX, 12.0);
         assert_eq!(UI_META_PX, 11.0);
+    }
+
+    #[test]
+    fn compact_scene_never_renders_expanded_body() {
+        let snapshot = HudSnapshot::default();
+        let display = HudDisplay::from_snapshot(&snapshot);
+        let compact = island_scene_from_snapshot(
+            &snapshot,
+            &display,
+            false,
+            false,
+            DEFAULT_PLANNER_MODEL,
+            Duration::ZERO,
+        )
+        .unwrap();
+        let expanded = island_scene_from_snapshot(
+            &snapshot,
+            &display,
+            true,
+            false,
+            DEFAULT_PLANNER_MODEL,
+            Duration::ZERO,
+        )
+        .unwrap();
+
+        assert!(!scene_renders_expanded_body(&compact));
+        assert!(scene_renders_expanded_body(&expanded));
     }
 
     #[test]
@@ -3234,6 +3332,20 @@ mod tests {
 
         assert!(first.is_some());
         assert!(second.is_none());
+    }
+
+    #[test]
+    fn stale_single_instance_socket_is_replaced() {
+        let profile = format!("test-{}", uuid::Uuid::new_v4());
+        let path = single_instance_socket_path(&profile);
+        let listener = UnixListener::bind(&path).unwrap();
+
+        assert!(!single_instance_socket_is_responsive(&path));
+
+        drop(listener);
+        let instance = SingleInstance::acquire(&profile).unwrap();
+        assert!(instance.is_some());
+        assert!(single_instance_socket_is_responsive(&path));
     }
 
     #[test]

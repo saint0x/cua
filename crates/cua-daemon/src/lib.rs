@@ -2855,6 +2855,10 @@ fn unix_error(
     message: impl Into<String>,
     status: Option<StatusCode>,
 ) -> serde_json::Value {
+    let mut details = BTreeMap::new();
+    if let Some(status) = status {
+        details.insert("status".to_string(), status.as_u16().to_string());
+    }
     serde_json::json!({
         "id": id,
         "ok": false,
@@ -2862,7 +2866,7 @@ fn unix_error(
             "schema_version": SCHEMA_VERSION,
             "code": code.into(),
             "message": message.into(),
-            "status": status.map(|status| status.as_u16())
+            "details": details
         }
     })
 }
@@ -7575,6 +7579,22 @@ mod tests {
         assert!(event_kinds.contains(&"scratchpad_deleted"));
 
         let _ = tokio::fs::remove_dir_all(cua_core::profile_dir(&profile).unwrap()).await;
+    }
+
+    #[test]
+    fn unix_errors_use_canonical_api_error_body() {
+        let response = unix_error(
+            Some(serde_json::json!("request-1")),
+            "busy",
+            "capture backend timed out",
+            Some(StatusCode::SERVICE_UNAVAILABLE),
+        );
+        let body: ApiErrorBody = serde_json::from_value(response["error"].clone())
+            .expect("unix error should decode as ApiErrorBody");
+        assert_eq!(body.schema_version, SCHEMA_VERSION);
+        assert_eq!(body.code, "busy");
+        assert_eq!(body.message, "capture backend timed out");
+        assert_eq!(body.details["status"], "503");
     }
 
     fn unix_request(method: &str, params: serde_json::Value) -> UnixRequest {
