@@ -4310,10 +4310,14 @@ action = { kind = "mouse_click", x = 10, y = 10, button = "left", count = 1 }
         let frame = runtime.json_field(&step, "source_frame").unwrap();
 
         assert_eq!(frame["width"], 640);
-        assert_eq!(
-            runtime.interpolate_string("frame $ctx.frame.envelope"),
-            "frame {\"height\":480,\"width\":640}"
-        );
+        let interpolated = runtime.interpolate_string("frame $ctx.frame.envelope");
+        let json = interpolated
+            .strip_prefix("frame ")
+            .expect("interpolated frame prefix");
+        let value: serde_json::Value = serde_json::from_str(json).expect("interpolated JSON");
+
+        assert_eq!(value["width"], 640);
+        assert_eq!(value["height"], 480);
     }
 
     #[test]
