@@ -2500,7 +2500,7 @@ fn path_looks_packaged_app(path: &Path) -> bool {
 fn top_centered_bounds(cx: &App) -> Bounds<gpui::Pixels> {
     let window_size = size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT));
     let Some(display) = cx.primary_display() else {
-        return Bounds::centered(None, window_size, cx);
+        return top_attached_fallback_bounds(window_size);
     };
     let display_bounds = display.bounds();
     let x = display_bounds.origin.x.to_f64() as f32
@@ -2508,6 +2508,13 @@ fn top_centered_bounds(cx: &App) -> Bounds<gpui::Pixels> {
     let y = display_bounds.origin.y.to_f64() as f32 + TOP_MARGIN;
     Bounds {
         origin: point(px(x), px(y)),
+        size: window_size,
+    }
+}
+
+fn top_attached_fallback_bounds(window_size: gpui::Size<Pixels>) -> Bounds<Pixels> {
+    Bounds {
+        origin: point(px(0.0), px(TOP_MARGIN)),
         size: window_size,
     }
 }
@@ -3203,6 +3210,14 @@ mod tests {
         assert_eq!(snapped.origin.x, px(832.0));
         assert_eq!(snapped.origin.y, px(TOP_MARGIN));
         assert_eq!(snapped.size, dropped.size);
+    }
+
+    #[test]
+    fn startup_fallback_bounds_stay_attached_to_top_edge() {
+        let fallback = top_attached_fallback_bounds(size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT)));
+
+        assert_eq!(fallback.origin, point(px(0.0), px(TOP_MARGIN)));
+        assert_eq!(fallback.size, size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT)));
     }
 
     #[test]
