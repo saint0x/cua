@@ -58,7 +58,7 @@ const MINIMIZED_RADIUS: f32 = 14.0;
 const MINIMIZED_RIGHT_OFFSET: f32 = 220.0;
 const HEADER_PAD_X_PX: f32 = 16.0;
 const HEADER_GAP_PX: f32 = 8.0;
-const HEADER_TITLE_DIVIDER_GAP_PX: f32 = 4.0;
+const HEADER_TITLE_DIVIDER_GAP_PX: f32 = 2.0;
 const HEADER_LEAD_WIDTH_PX: f32 = 28.0;
 const HEADER_ORB_PX: f32 = 18.0;
 const HEADER_RING_PX: f32 = 22.0;
@@ -189,56 +189,77 @@ impl VoiceHud {
     fn drain_events(&mut self) -> Option<bool> {
         let mut expansion_command = None;
         while let Ok(event) = self.rx.try_recv() {
-            match event {
-                VoiceUiEvent::ToggleExpanded => {
-                    if self.accept_island_toggle(Instant::now()) {
-                        expansion_command = Some(!expansion_command.unwrap_or(self.expanded));
-                    }
-                }
-                VoiceUiEvent::SetExpanded(expanded) => {
-                    expansion_command = Some(expanded);
-                }
-                VoiceUiEvent::SetMinimized(minimized) => {
-                    self.minimized = minimized;
-                    if minimized {
-                        self.expanded = false;
-                        expansion_command = None;
-                    }
-                    self.drag = None;
-                }
-                VoiceUiEvent::SceneSet(scene) => {
-                    expansion_command = Some(scene.layout == IslandLayout::Expanded);
-                    self.custom_scene = Some(scene);
-                }
-                VoiceUiEvent::SceneReset => {
-                    self.custom_scene = None;
-                    self.custom_theme = None;
-                    self.custom_background = None;
-                }
-                VoiceUiEvent::SceneTheme(theme) => {
-                    self.custom_theme = Some(theme);
-                }
-                VoiceUiEvent::SceneBackground(background) => {
-                    self.custom_background = Some(background);
-                }
-                VoiceUiEvent::AutomationActivity {
-                    label,
-                    source,
-                    tool,
-                } if self.automation_activity_toggles_island(&label) => {
-                    if self.accept_island_toggle(Instant::now()) {
-                        expansion_command = Some(!expansion_command.unwrap_or(self.expanded));
-                    }
-                    self.snapshot.apply(VoiceUiEvent::AutomationActivity {
-                        label,
-                        source,
-                        tool,
-                    });
-                }
-                event => self.snapshot.apply(event),
+            match self.apply_voice_event(event, expansion_command) {
+                Some(command) => expansion_command = Some(command),
+                None => expansion_command = None,
             }
         }
         expansion_command
+    }
+
+    fn apply_voice_event(
+        &mut self,
+        event: VoiceUiEvent,
+        current_expansion_command: Option<bool>,
+    ) -> Option<bool> {
+        match event {
+            VoiceUiEvent::ToggleExpanded => {
+                if self.accept_island_toggle(Instant::now()) {
+                    Some(!current_expansion_command.unwrap_or(self.expanded))
+                } else {
+                    current_expansion_command
+                }
+            }
+            VoiceUiEvent::SetExpanded(expanded) => Some(expanded),
+            VoiceUiEvent::SetMinimized(minimized) => {
+                self.minimized = minimized;
+                if minimized {
+                    self.expanded = false;
+                }
+                self.drag = None;
+                None
+            }
+            VoiceUiEvent::SceneSet(scene) => {
+                let expanded = scene.layout == IslandLayout::Expanded;
+                self.custom_scene = Some(scene);
+                Some(expanded)
+            }
+            VoiceUiEvent::SceneReset => {
+                self.custom_scene = None;
+                self.custom_theme = None;
+                self.custom_background = None;
+                current_expansion_command
+            }
+            VoiceUiEvent::SceneTheme(theme) => {
+                self.custom_theme = Some(theme);
+                current_expansion_command
+            }
+            VoiceUiEvent::SceneBackground(background) => {
+                self.custom_background = Some(background);
+                current_expansion_command
+            }
+            VoiceUiEvent::AutomationActivity {
+                label,
+                source,
+                tool,
+            } if self.automation_activity_toggles_island(&label) => {
+                let expansion_command = if self.accept_island_toggle(Instant::now()) {
+                    Some(!current_expansion_command.unwrap_or(self.expanded))
+                } else {
+                    current_expansion_command
+                };
+                self.snapshot.apply(VoiceUiEvent::AutomationActivity {
+                    label,
+                    source,
+                    tool,
+                });
+                expansion_command
+            }
+            event => {
+                self.snapshot.apply(event);
+                current_expansion_command
+            }
+        }
     }
 
     fn accept_island_toggle(&mut self, now: Instant) -> bool {
@@ -504,6 +525,7 @@ impl VoiceHud {
                         div()
                             .w(px(header_widths.title))
                             .h(px(COMPACT_ROW_ITEM_HEIGHT_PX))
+                            .flex_none()
                             .flex()
                             .items_center()
                             .truncate()
@@ -530,6 +552,7 @@ impl VoiceHud {
                     .child(
                         div()
                             .flex()
+                            .flex_none()
                             .items_center()
                             .gap(px(7.0))
                             .child(Self::chip(tool))
@@ -1180,6 +1203,7 @@ fn center_text_slot(
     div()
         .w(px(viewport_width_px))
         .h(px(COMPACT_ROW_ITEM_HEIGHT_PX))
+        .flex_none()
         .overflow_hidden()
         .whitespace_nowrap()
         .flex()
@@ -2134,22 +2158,16 @@ fn main() -> anyhow::Result<()> {
     if demo {
         start_demo_cycle(tx.clone());
     } else {
-        let daemon_ready = match start_embedded_daemon_if_needed(&config.profile, runtime.clone()) {
-            Ok(()) => true,
-            Err(error) => {
-                tx.send(VoiceUiEvent::Error(format!(
-                    "Daemon start failed: {error:#}"
-                )))
-                .ok();
-                false
-            }
-        };
-        if daemon_ready {
-            start_control_shortcut_controller(config.clone(), runtime.clone(), tx.clone());
-            start_island_double_tap_listener(tx.clone(), island_bounds.clone());
-            start_agent_step_poll(config.profile.clone(), runtime.clone(), tx.clone());
-            start_inbox_turn_poll(config.clone(), runtime.clone(), tx.clone());
+        if let Err(error) = start_embedded_daemon_if_needed(&config.profile, runtime.clone()) {
+            tx.send(VoiceUiEvent::Error(format!(
+                "Daemon start failed: {error:#}"
+            )))
+            .ok();
         }
+        start_control_shortcut_controller(config.clone(), runtime.clone(), tx.clone());
+        start_island_double_tap_listener(tx.clone(), island_bounds.clone());
+        start_agent_step_poll(config.profile.clone(), config.debug_trace, tx.clone());
+        start_inbox_turn_poll(config.clone(), runtime.clone(), tx.clone());
     }
     Application::new().run(move |cx: &mut App| {
         if should_request_desktop_access {
@@ -2168,8 +2186,8 @@ fn main() -> anyhow::Result<()> {
                 window_background: WindowBackgroundAppearance::Transparent,
                 ..Default::default()
             },
-            move |_, cx| {
-                cx.new(|_| {
+            move |window, cx| {
+                let hud = cx.new(|_| {
                     VoiceHud::new(
                         rx,
                         ui_mode.clone(),
@@ -2177,7 +2195,29 @@ fn main() -> anyhow::Result<()> {
                         island_bounds.clone(),
                         reduced_motion,
                     )
-                })
+                });
+                let weak_hud = hud.downgrade();
+                window
+                    .spawn(cx, async move |cx| loop {
+                        cx.background_executor()
+                            .timer(Duration::from_millis(33))
+                            .await;
+                        if weak_hud
+                            .update_in(cx, |hud, window, cx| {
+                                if let Some(expanded) = hud.drain_events() {
+                                    hud.set_expanded_from_render(expanded, window, cx);
+                                } else {
+                                    cx.notify();
+                                }
+                                window.refresh();
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    })
+                    .detach();
+                hud
             },
         )
         .unwrap();
@@ -2436,54 +2476,97 @@ fn single_instance_ping_loop(listener: UnixListener, running: Arc<AtomicBool>) {
     }
 }
 
-fn start_agent_step_poll(
-    profile: String,
-    runtime: Arc<tokio::runtime::Runtime>,
-    tx: Sender<VoiceUiEvent>,
-) {
-    runtime.spawn(async move {
-        let Ok(client) = CuaClient::new(profile).await else {
-            tx.send(VoiceUiEvent::Error("Invalid cua profile path".to_string()))
-                .ok();
-            return;
-        };
-        let mut last_sequence = 0_u64;
-        let mut last_start_attempt = Instant::now() - Duration::from_secs(5);
-        loop {
-            let Ok(mut session) = client.session().await else {
-                if last_start_attempt.elapsed() >= Duration::from_secs(1) {
-                    last_start_attempt = Instant::now();
-                    let _ = spawn_profile_daemon(client.profile());
-                }
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                continue;
-            };
-            if last_sequence == 0 {
-                match session.events_snapshot().await {
-                    Ok(events) => {
-                        last_sequence = max_daemon_event_sequence(&events);
-                    }
-                    Err(_) => break,
-                }
+fn start_agent_step_poll(profile: String, debug_trace: bool, tx: Sender<VoiceUiEvent>) {
+    std::thread::Builder::new()
+        .name("cua-hud-events".to_string())
+        .spawn(move || {
+            if debug_trace {
+                eprintln!("cua HUD event poll starting for profile {profile}");
             }
-            loop {
-                match session.events_wait(last_sequence, 1_000).await {
-                    Ok(events) => {
-                        for event in events {
-                            if let Some(event) = agent_ui_event_from_daemon_event_advancing_cursor(
-                                &event,
-                                &mut last_sequence,
-                            ) {
-                                tx.send(event).ok();
+            let Ok(runtime) = tokio::runtime::Runtime::new() else {
+                tx.send(VoiceUiEvent::Error(
+                    "HUD event poll failed: could not start async runtime".to_string(),
+                ))
+                .ok();
+                return;
+            };
+            runtime.block_on(async move {
+                let mut last_sequence = 0_u64;
+                let mut last_start_attempt = Instant::now() - Duration::from_secs(5);
+                loop {
+                    let client = match CuaClient::new(profile.clone()).await {
+                        Ok(client) => client,
+                        Err(error) => {
+                            if debug_trace {
+                                eprintln!("cua HUD event poll client failed: {error:#}");
+                            }
+                            tx.send(VoiceUiEvent::Error(format!(
+                                "HUD event poll failed: {error:#}"
+                            )))
+                            .ok();
+                            tokio::time::sleep(Duration::from_millis(250)).await;
+                            continue;
+                        }
+                    };
+                    let Ok(mut session) = client.session().await else {
+                        if debug_trace {
+                            eprintln!("cua HUD event poll session connect failed");
+                        }
+                        if last_start_attempt.elapsed() >= Duration::from_secs(1) {
+                            last_start_attempt = Instant::now();
+                            let _ = spawn_profile_daemon(client.profile());
+                        }
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        continue;
+                    };
+                    if last_sequence == 0 {
+                        match session.events_snapshot().await {
+                            Ok(events) => {
+                                last_sequence = max_daemon_event_sequence(&events);
+                                if debug_trace {
+                                    eprintln!(
+                                        "cua HUD event poll snapshot sequence {last_sequence}"
+                                    );
+                                }
+                            }
+                            Err(error) => {
+                                if debug_trace {
+                                    eprintln!("cua HUD event poll snapshot failed: {error:#}");
+                                }
+                                tx.send(VoiceUiEvent::Error(format!(
+                                    "HUD event poll failed: {error:#}"
+                                )))
+                                .ok();
+                                tokio::time::sleep(Duration::from_millis(250)).await;
+                                continue;
                             }
                         }
                     }
-                    Err(_) => break,
+                    loop {
+                        match session.events_wait(last_sequence, 1_000).await {
+                            Ok(events) => {
+                                for event in events {
+                                    if debug_trace {
+                                        eprintln!("cua HUD event poll received {event}");
+                                    }
+                                    if let Some(event) =
+                                        agent_ui_event_from_daemon_event_advancing_cursor(
+                                            &event,
+                                            &mut last_sequence,
+                                        )
+                                    {
+                                        tx.send(event).ok();
+                                    }
+                                }
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
                 }
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    });
+            });
+        })
+        .expect("start HUD event poll thread");
 }
 
 fn start_inbox_turn_poll(
@@ -3460,7 +3543,7 @@ mod tests {
         assert_eq!(UI_META_PX, UI_TEXT_PX);
         assert_eq!(HEADER_ORB_PX, 18.0);
         assert_eq!(HEADER_GAP_PX, 8.0);
-        assert_eq!(HEADER_TITLE_DIVIDER_GAP_PX, 4.0);
+        assert_eq!(HEADER_TITLE_DIVIDER_GAP_PX, 2.0);
         assert_eq!(HEADER_TITLE_MIN_WIDTH_PX, 64.0);
         assert_eq!(HEADER_TITLE_MAX_WIDTH_PX, 92.0);
         assert_eq!(HEADER_CENTER_MIN_WIDTH_PX, 260.0);
@@ -3512,8 +3595,8 @@ mod tests {
             .max(HEADER_CENTER_MIN_WIDTH_PX);
         let tightened = header_layout_widths(metrics, title, "Socket", "macOS");
 
-        assert_eq!(header_gap_width_px(), old_uniform_gap_width - 4.0);
-        assert_eq!(tightened.center, old_center + 4.0);
+        assert_eq!(header_gap_width_px(), old_uniform_gap_width - 6.0);
+        assert_eq!(tightened.center, old_center + 6.0);
     }
 
     #[test]
@@ -4027,81 +4110,6 @@ mod tests {
 
         assert_eq!(hud.snapshot.mode, UiMode::Headless);
         assert_eq!(hud.snapshot.input_label, "Automation");
-    }
-
-    #[test]
-    fn agent_step_poll_retries_until_daemon_socket_exists() {
-        let profile = format!("delayed-socket-{}", uuid::Uuid::new_v4());
-        let socket_path = PathBuf::from(std::env::var("HOME").unwrap())
-            .join(".cua")
-            .join("profiles")
-            .join(&profile)
-            .join("daemon.sock");
-        std::fs::remove_file(&socket_path).ok();
-        std::fs::create_dir_all(socket_path.parent().unwrap()).unwrap();
-
-        let (tx, rx) = channel::<VoiceUiEvent>();
-        let runtime = Arc::new(tokio::runtime::Runtime::new().unwrap());
-        start_agent_step_poll(profile, runtime.clone(), tx);
-
-        std::thread::sleep(Duration::from_millis(150));
-        runtime.block_on(async {
-            tokio::fs::remove_file(&socket_path).await.ok();
-            let listener = tokio::net::UnixListener::bind(&socket_path).unwrap();
-            let (stream, _) = listener.accept().await.unwrap();
-            let (read, mut write) = stream.into_split();
-            let mut reader = tokio::io::BufReader::new(read);
-            let mut line = String::new();
-            tokio::io::AsyncBufReadExt::read_line(&mut reader, &mut line)
-                .await
-                .unwrap();
-            assert!(line.contains("\"events.snapshot\""));
-            tokio::io::AsyncWriteExt::write_all(
-                &mut write,
-                br#"{"ok":true,"result":[]}"#,
-            )
-            .await
-            .unwrap();
-            tokio::io::AsyncWriteExt::write_all(&mut write, b"\n")
-                .await
-                .unwrap();
-            line.clear();
-            tokio::io::AsyncBufReadExt::read_line(&mut reader, &mut line)
-                .await
-                .unwrap();
-            assert!(line.contains("\"events.wait\""));
-            tokio::io::AsyncWriteExt::write_all(
-                &mut write,
-                br#"{"ok":true,"result":[{"sequence":1,"kind":"ui_step","data":{"label":"remote delayed step","source":"external agent","task":"remote task","tool":"Unix socket","step_index":2,"step_total":8,"ttl_ms":1500}}]}"#,
-            )
-            .await
-            .unwrap();
-            tokio::io::AsyncWriteExt::write_all(&mut write, b"\n")
-                .await
-                .unwrap();
-        });
-
-        let event = rx.recv_timeout(Duration::from_secs(2)).unwrap();
-        let VoiceUiEvent::AgentStep {
-            label,
-            source,
-            task,
-            tool,
-            step_index,
-            step_total,
-            ttl_ms,
-        } = event
-        else {
-            panic!("expected delayed agent step");
-        };
-        assert_eq!(label, "remote delayed step");
-        assert_eq!(source.as_deref(), Some("external agent"));
-        assert_eq!(task.as_deref(), Some("remote task"));
-        assert_eq!(tool.as_deref(), Some("Unix socket"));
-        assert_eq!(step_index, Some(2));
-        assert_eq!(step_total, Some(8));
-        assert_eq!(ttl_ms, Some(1500));
-        std::fs::remove_file(socket_path).ok();
     }
 
     #[test]

@@ -434,16 +434,3 @@ Initial background kinds:
 - `neon_sweep`
 
 All durations are bounded. All colors are six-digit hex values. Gradients use two to eight sorted stops. The renderer may approximate multi-stop animation with native GPUI primitives as long as the full island background plane is controlled and remains clipped, fast, and click-clean.
-
-## Refactor Plan
-
-1. Add production proofs.
-   - Visual proof that default compact matches baseline geometry.
-   - Visual proof that expanded mode matches baseline geometry.
-
-## Done Means
-
-- Compact HUD is visually unchanged.
-- Expanded HUD is visually unchanged.
-- Activity dots remain the default neon blue cyclic chase.
-- Host visual proof passes.

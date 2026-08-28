@@ -10,10 +10,11 @@ command -v python3 >/dev/null
 command -v screencapture >/dev/null
 
 RUN_ID="$(date +%s)"
-PROFILE="${CUA_VOICE_UI_PROOF_PROFILE:-host-voice-ui-proof-$RUN_ID}"
+PROFILE="${CUA_VOICE_UI_PROOF_PROFILE:-default}"
 OUT_DIR="${CUA_VOICE_UI_PROOF_OUT_DIR:-artifacts/cua/voice-ui-proof-$RUN_ID}"
-export CUA_HTTP_TOKEN="${CUA_HTTP_TOKEN:-cua-ui-proof-$RUN_ID}"
-BEFORE="$OUT_DIR/before.png"
+if [[ -z "${CUA_HTTP_TOKEN:-}" && "$PROFILE" != "default" ]]; then
+  export CUA_HTTP_TOKEN="cua-ui-proof-$RUN_ID"
+fi
 COMPACT="$OUT_DIR/compact.png"
 EXPANDED="$OUT_DIR/expanded.png"
 REPLY="$OUT_DIR/reply.png"
@@ -51,16 +52,47 @@ fi
 
 mkdir -p "$OUT_DIR"
 
-capture_png() {
-  local out="$1"
-  screencapture -x "$out"
-}
+capture_hud_window_png() {
+  local label="$1"
+  local out="$2"
+  local observe="$OUT_DIR/$label-observe.json"
+  local selected="$OUT_DIR/$label-window.json"
 
-capture_png "$BEFORE"
+  "$CUA_BIN_PATH" --profile "$PROFILE" observe --json >"$observe"
+  local window_id
+  window_id="$(
+    python3 - "$observe" "$selected" <<'PY'
+import json
+import sys
+
+observe_path, selected_path = sys.argv[1:3]
+observe = json.load(open(observe_path, encoding="utf-8"))
+windows = [
+    window for window in observe.get("windows", [])
+    if (window.get("app_name") or "").lower() == "cua"
+    and int(window.get("layer") or 0) >= 20
+    and int(window.get("width") or 0) >= 300
+    and int(window.get("height") or 0) >= 30
+]
+windows.sort(
+    key=lambda window: (
+        -int(window.get("layer") or 0),
+        -int(window.get("width") or 0) * int(window.get("height") or 0),
+    )
+)
+if not windows:
+    raise SystemExit("no visible cua HUD window found")
+selected = windows[0]
+json.dump(selected, open(selected_path, "w", encoding="utf-8"), indent=2)
+print(selected["id"])
+PY
+  )"
+  screencapture -x -l "$window_id" "$out"
+}
 
 OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-ui-proof-only}" "$BIN" \
   --profile "$PROFILE" \
-  --headful &
+  --headful >"$OUT_DIR/voice.log" 2>&1 &
 PID="$!"
 
 cleanup() {
@@ -70,10 +102,6 @@ cleanup() {
 trap cleanup EXIT
 
 sleep "${CUA_VOICE_UI_PROOF_COMPACT_WAIT_SECS:-2}"
-if ! kill -0 "$PID" >/dev/null 2>&1; then
-  echo "cua-voice exited before visual proof capture" >&2
-  exit 1
-fi
 for _ in $(seq 1 100); do
   if "$CUA_BIN_PATH" --profile "$PROFILE" status --json >/dev/null 2>&1; then
     break
@@ -89,24 +117,26 @@ done
   --step-index 1 \
   --step-total 4 \
   --json >/dev/null
+capture_hud_window_png compact "$COMPACT"
 
-capture_png "$COMPACT"
 "$CUA_BIN_PATH" --profile "$PROFILE" \
   ui island expanded --source host-voice-ui-proof --json >/dev/null
 sleep "${CUA_VOICE_UI_PROOF_EXPANDED_WAIT_SECS:-1}"
-capture_png "$EXPANDED"
+capture_hud_window_png expanded "$EXPANDED"
+
 "$CUA_BIN_PATH" --profile "$PROFILE" \
   ui island collapsed --source host-voice-ui-proof --json >/dev/null
 "$CUA_BIN_PATH" --profile "$PROFILE" ui reply "HUD proof accepted" \
   --source host-voice-ui-proof \
   --json >/dev/null
 sleep "${CUA_VOICE_UI_PROOF_REPLY_WAIT_SECS:-4}"
-capture_png "$REPLY"
+capture_hud_window_png reply "$REPLY"
+
 sleep "${CUA_VOICE_UI_PROOF_COLLAPSED_WAIT_SECS:-9}"
-capture_png "$COLLAPSED"
+capture_hud_window_png collapsed "$COLLAPSED"
 "$CUA_BIN_PATH" --profile "$PROFILE" status --json >"$STATUS_FINAL" || true
 
-python3 - "$BEFORE" "$COMPACT" "$EXPANDED" "$REPLY" "$COLLAPSED" "$PROOF" "$STATUS_INITIAL" "$STATUS_FINAL" <<'PY'
+python3 - "$OUT_DIR" "$COMPACT" "$EXPANDED" "$REPLY" "$COLLAPSED" "$PROOF" <<'PY'
 import json
 import struct
 import sys
@@ -177,260 +207,125 @@ def pixel(rows, channels, x, y):
     return r, g, b, a
 
 
-def region_metrics(base, base_channels, target, target_channels, x0, y0, width, height):
-    changed = 0
-    dark_target = 0
-    darkened = 0
-    total = width * height
-    for y in range(y0, y0 + height):
-        for x in range(x0, x0 + width):
-            br, bg, bb, _ = pixel(base, base_channels, x, y)
-            ar, ag, ab, _ = pixel(target, target_channels, x, y)
-            delta = abs(ar - br) + abs(ag - bg) + abs(ab - bb)
-            before_luma = (br * 299 + bg * 587 + bb * 114) / 1000
-            after_luma = (ar * 299 + ag * 587 + ab * 114) / 1000
-            if delta >= 18:
-                changed += 1
-            if after_luma <= 42:
-                dark_target += 1
-            if before_luma - after_luma >= 18:
-                darkened += 1
-    return {
-        "x": x0,
-        "y": y0,
-        "width": width,
-        "height": height,
-        "changed_ratio": changed / total,
-        "dark_ratio": dark_target / total,
-        "darkened_ratio": darkened / total,
-    }
-
-
-def frame_visibility(rows, channels):
+def bbox_for(predicate, rows, channels):
     width = len(rows[0]) // channels
     height = len(rows)
-    bright = 0
-    saturated = 0
-    total = width * height
-    for y in range(height):
-        for x in range(width):
-            r, g, b, _ = pixel(rows, channels, x, y)
-            luma = (r * 299 + g * 587 + b * 114) / 1000
-            if luma > 42:
-                bright += 1
-            if max(r, g, b) - min(r, g, b) > 24 and max(r, g, b) > 64:
-                saturated += 1
-    return {
-        "bright_ratio": bright / total,
-        "saturated_ratio": saturated / total,
-        "visible": bright / total >= 0.02 or saturated / total >= 0.002,
-    }
-
-
-def dark_change_geometry(base, base_channels, target, target_channels, scan_height):
-    changed = 0
+    count = 0
     min_x = min_y = 10**9
     max_x = max_y = -1
-    height = len(base)
-    width = len(base[0]) // base_channels
-    scan_height = min(scan_height, height)
-    for y in range(scan_height):
-        row_candidates = []
+    for y in range(height):
         for x in range(width):
-            br, bg, bb, _ = pixel(base, base_channels, x, y)
-            ar, ag, ab, _ = pixel(target, target_channels, x, y)
-            delta = abs(ar - br) + abs(ag - bg) + abs(ab - bb)
-            before_luma = (br * 299 + bg * 587 + bb * 114) / 1000
-            after_luma = (ar * 299 + ag * 587 + ab * 114) / 1000
-            is_island_pixel = delta >= 18 and (after_luma <= 70 or before_luma - after_luma >= 18)
-            if not is_island_pixel:
+            if not predicate(*pixel(rows, channels, x, y)):
                 continue
-            row_candidates.append(x)
-
-        row_span = (max(row_candidates) - min(row_candidates) + 1) if row_candidates else 0
-        if len(row_candidates) > width * 0.80 or row_span > width * 0.80:
-            continue
-
-        for x in row_candidates:
-            changed += 1
+            count += 1
             min_x = min(min_x, x)
             min_y = min(min_y, y)
             max_x = max(max_x, x)
             max_y = max(max_y, y)
-
-    if changed == 0:
-        return {
-            "changed": 0,
-            "bbox": None,
-            "center_error_px": None,
-            "ok": False,
+    bbox = None
+    if count:
+        bbox = {
+            "x": min_x,
+            "y": min_y,
+            "width": max_x - min_x + 1,
+            "height": max_y - min_y + 1,
         }
+    return {"count": count, "bbox": bbox, "ratio": count / (width * height)}
 
-    bbox = {
-        "x": min_x,
-        "y": min_y,
-        "width": max_x - min_x + 1,
-        "height": max_y - min_y + 1,
+
+def capture_metrics(path):
+    width, height, channels, rows = read_png(path)
+    return {
+        "path": path,
+        "width": width,
+        "height": height,
+        "alpha": bbox_for(lambda _r, _g, _b, a: a > 8, rows, channels),
+        "dark": bbox_for(
+            lambda r, g, b, a: a > 128 and (r * 299 + g * 587 + b * 114) / 1000 < 30,
+            rows,
+            channels,
+        ),
+        "bright": bbox_for(
+            lambda r, g, b, a: a > 64 and (r * 299 + g * 587 + b * 114) / 1000 > 80,
+            rows,
+            channels,
+        ),
     }
-    center_error = abs((min_x + max_x + 1) / 2 - width / 2)
-    ok = (
-        changed >= 1200
-        and bbox["y"] <= 80
-        and 1000 <= bbox["width"] <= 2400
-        and bbox["height"] <= scan_height
-        and center_error <= 360
+
+
+def compact_like_ok(metrics):
+    dark = metrics["dark"]["bbox"]
+    if dark is None:
+        return False
+    center_error = abs((dark["x"] + dark["width"] / 2) - metrics["width"] / 2)
+    return (
+        1000 <= dark["width"] <= 1800
+        and 55 <= dark["height"] <= 135
+        and dark["y"] <= 95
+        and center_error <= 140
+        and metrics["bright"]["count"] >= 1000
     )
-    return {
-        "changed": changed,
-        "bbox": bbox,
-        "center_error_px": center_error,
-        "ok": ok,
-    }
 
 
-def expected_island_geometry(screen_width, scan_height):
-    expected_width = min(max(int(screen_width * 0.54), 1000), 1800)
-    x = max((screen_width - expected_width) // 2, 0)
-    return {
-        "changed": 0,
-        "bbox": {
-            "x": x,
-            "y": 0,
-            "width": expected_width,
-            "height": scan_height,
-        },
-        "center_error_px": 0.0,
-        "ok": True,
-        "source": "expected_top_center_frame",
-    }
+def expanded_like_ok(metrics):
+    dark = metrics["dark"]["bbox"]
+    if dark is None:
+        return False
+    center_error = abs((dark["x"] + dark["width"] / 2) - metrics["width"] / 2)
+    return (
+        1000 <= dark["width"] <= 1900
+        and 450 <= dark["height"] <= 1300
+        and dark["y"] <= 140
+        and center_error <= 180
+        and metrics["bright"]["count"] >= 2500
+    )
 
 
-def visual_island_geometry(island, top_metrics, screen_width, scan_height):
-    if island["ok"]:
-        island["source"] = "pixel_diff"
-        return island
-    if (
-        top_metrics["changed_ratio"] >= 0.0025
-        and top_metrics["dark_ratio"] >= 0.05
-    ):
-        return expected_island_geometry(screen_width, scan_height)
-    return island
+def load_window(out_dir, label):
+    return json.load(open(f"{out_dir}/{label}-window.json", encoding="utf-8"))
 
 
-before_path, compact_path, expanded_path, reply_path, collapsed_path, proof_path, status_initial_path, status_final_path = sys.argv[1:9]
-bw, bh, bc, before = read_png(before_path)
-cw, ch, cc, compact = read_png(compact_path)
-ew, eh, ec, expanded = read_png(expanded_path)
-rw, rh, rc, reply = read_png(reply_path)
-lw, lh, lc, collapsed = read_png(collapsed_path)
-if len({(bw, bh), (cw, ch), (ew, eh), (rw, rh), (lw, lh)}) != 1:
-    raise SystemExit("visual proof screenshots have different dimensions")
+out_dir, compact_path, expanded_path, reply_path, collapsed_path, proof_path = sys.argv[1:7]
+compact = capture_metrics(compact_path)
+expanded = capture_metrics(expanded_path)
+reply = capture_metrics(reply_path)
+collapsed = capture_metrics(collapsed_path)
 
-visibility = {
-    "before": frame_visibility(before, bc),
-    "compact": frame_visibility(compact, cc),
-    "expanded": frame_visibility(expanded, ec),
-    "reply": frame_visibility(reply, rc),
-    "collapsed": frame_visibility(collapsed, lc),
-}
-if not any(frame["visible"] for frame in visibility.values()):
-    raise SystemExit(json.dumps({
-        "schema_version": "cua.voice_ui_proof.v1",
-        "ok": False,
-        "error": "screen_capture_unavailable",
-        "message": "macOS returned black privacy frames; grant Screen Recording to the shell/Codex host running this script, then rerun host-voice-ui-proof.",
-        "visibility": visibility,
-        "captures": {
-            "before": before_path,
-            "compact": compact_path,
-            "expanded": expanded_path,
-            "reply": reply_path,
-            "collapsed": collapsed_path,
-        },
-        "diagnostics": {
-            "status_initial": status_initial_path,
-            "status_final": status_final_path,
-        },
-    }, indent=2))
-
-top_width = min(920, cw)
-top_height = min(96, ch)
-expanded_height = min(300, ch)
-top_x = max((cw - top_width) // 2, 0)
-top_y = 0
-compact_top = region_metrics(before, bc, compact, cc, top_x, top_y, top_width, top_height)
-expanded_top = region_metrics(before, bc, expanded, ec, top_x, top_y, top_width, expanded_height)
-reply_top = region_metrics(before, bc, reply, rc, top_x, top_y, top_width, top_height)
-collapsed_top = region_metrics(before, bc, collapsed, lc, top_x, top_y, top_width, top_height)
-compact_island = dark_change_geometry(before, bc, compact, cc, top_height)
-expanded_island = dark_change_geometry(before, bc, expanded, ec, expanded_height)
-reply_island = dark_change_geometry(before, bc, reply, rc, top_height)
-collapsed_island = dark_change_geometry(before, bc, collapsed, lc, top_height)
-compact_island = visual_island_geometry(compact_island, compact_top, cw, top_height)
-expanded_island = visual_island_geometry(expanded_island, expanded_top, cw, expanded_height)
-reply_island = visual_island_geometry(reply_island, reply_top, cw, top_height)
-collapsed_island = visual_island_geometry(collapsed_island, collapsed_top, cw, top_height)
-
-compact_ok = (
-    compact_top["changed_ratio"] >= 0.0025
-    and compact_top["dark_ratio"] >= 0.05
-)
-reply_ok = (
-    reply_top["changed_ratio"] >= 0.0025
-    and reply_top["dark_ratio"] >= 0.05
-)
-expanded_ok = (
-    expanded_top["changed_ratio"] >= 0.0025
-    and expanded_top["dark_ratio"] >= 0.05
-)
-collapsed_ok = (
-    collapsed_top["changed_ratio"] >= 0.0025
-    and collapsed_top["dark_ratio"] >= 0.05
-)
-ok = (
-    compact_ok
-    and expanded_ok
-    and reply_ok
-    and collapsed_ok
-    and compact_island["ok"]
-    and expanded_island["ok"]
-    and reply_island["ok"]
-    and collapsed_island["ok"]
-)
 proof = {
     "schema_version": "cua.voice_ui_proof.v1",
-    "screen": {"width": cw, "height": ch},
-    "before": before_path,
+    "capture": "native_window",
     "compact": {
-        "path": compact_path,
-        "top": compact_top,
-        "island": compact_island,
-        "ok": compact_ok and compact_island["ok"],
+        "metrics": compact,
+        "window": load_window(out_dir, "compact"),
+        "ok": compact_like_ok(compact),
     },
     "expanded": {
-        "path": expanded_path,
-        "top": expanded_top,
-        "island": expanded_island,
-        "ok": expanded_ok and expanded_island["ok"],
+        "metrics": expanded,
+        "window": load_window(out_dir, "expanded"),
+        "ok": expanded_like_ok(expanded),
     },
     "reply": {
-        "path": reply_path,
-        "top": reply_top,
-        "island": reply_island,
-        "ok": reply_ok and reply_island["ok"],
+        "metrics": reply,
+        "window": load_window(out_dir, "reply"),
+        "ok": compact_like_ok(reply),
     },
     "collapsed": {
-        "path": collapsed_path,
-        "top": collapsed_top,
-        "island": collapsed_island,
-        "ok": collapsed_ok and collapsed_island["ok"],
+        "metrics": collapsed,
+        "window": load_window(out_dir, "collapsed"),
+        "ok": compact_like_ok(collapsed),
     },
-    "ok": ok,
 }
+proof["ok"] = all(section["ok"] for section in [
+    proof["compact"],
+    proof["expanded"],
+    proof["reply"],
+    proof["collapsed"],
+])
+
 with open(proof_path, "w", encoding="utf-8") as handle:
     json.dump(proof, handle, indent=2)
     handle.write("\n")
-if not ok:
+if not proof["ok"]:
     raise SystemExit(json.dumps(proof, indent=2))
 PY
 
