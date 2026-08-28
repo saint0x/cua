@@ -866,21 +866,27 @@ fn actor_style(
 
 fn actor_region_anchor(region: &str, item: &str, metrics: HudMetrics) -> Option<(f32, f32)> {
     let width = island_width(metrics);
-    let header_y = 12.0;
-    match (region, item) {
+    let height = island_height(metrics);
+    let header_y = actor_anchor_y(12.0, height);
+    let (x, y) = match (region, item) {
         ("left", "orb") | ("header_left", "orb") => Some((20.0, header_y)),
         ("left", "input") | ("header_left", "input") => Some((56.0, header_y)),
         ("center", "status") | ("header_center", "status") => Some((width * 0.5, header_y)),
         ("right", "transport") | ("header_right", "transport") => Some((width - 240.0, header_y)),
         ("right", "target") | ("header_right", "target") => Some((width - 170.0, header_y)),
         ("right", "activity") | ("header_right", "activity") => Some((width - 58.0, header_y)),
-        ("task", _) => Some((width * 0.24, 92.0)),
-        ("response", _) => Some((width * 0.50, 160.0)),
-        ("details_left", _) => Some((width * 0.24, 312.0)),
-        ("details_right", _) => Some((width * 0.66, 312.0)),
-        ("footer", _) => Some((width * 0.50, EXPANDED_HEIGHT - 42.0)),
+        ("task", _) => Some((width * 0.24, actor_anchor_y(92.0, height))),
+        ("response", _) => Some((width * 0.50, actor_anchor_y(142.0, height))),
+        ("details_left", _) => Some((width * 0.24, actor_anchor_y(194.0, height))),
+        ("details_right", _) => Some((width * 0.66, actor_anchor_y(194.0, height))),
+        ("footer", _) => Some((width * 0.50, actor_anchor_y(EXPANDED_HEIGHT - 42.0, height))),
         _ => None,
-    }
+    }?;
+    Some((x.clamp(0.0, width), y))
+}
+
+fn actor_anchor_y(y: f32, island_height: f32) -> f32 {
+    y.clamp(0.0, (island_height - HEADER_ORB_PX).max(0.0))
 }
 
 fn background_paint(background: &IslandBackground, elapsed_secs: f32) -> Background {
@@ -4173,6 +4179,36 @@ mod tests {
         assert!(middle.x > start.x);
         assert!(end.x > middle.x);
         assert_eq!(start.y, 10.0);
+    }
+
+    #[test]
+    fn actor_region_anchors_stay_inside_visible_island() {
+        let metrics = HudMetrics::with_expansion(0.0, 1.0);
+        let regions = [
+            ("header_left", "orb"),
+            ("header_left", "input"),
+            ("header_center", "status"),
+            ("header_right", "transport"),
+            ("header_right", "target"),
+            ("header_right", "activity"),
+            ("task", "task"),
+            ("response", "response"),
+            ("details_left", "action"),
+            ("details_right", "tool_0"),
+            ("footer", "elapsed"),
+        ];
+
+        for (region, item) in regions {
+            let (x, y) = actor_region_anchor(region, item, metrics).unwrap();
+            assert!(
+                (0.0..=island_width(metrics)).contains(&x),
+                "{region}.{item} x={x}"
+            );
+            assert!(
+                (0.0..=(island_height(metrics) - HEADER_ORB_PX)).contains(&y),
+                "{region}.{item} y={y}"
+            );
+        }
     }
 
     #[test]
