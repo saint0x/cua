@@ -437,60 +437,17 @@ All durations are bounded. All colors are six-digit hex values. Gradients use tw
 
 ## Refactor Plan
 
-1. Add `IslandScene` data types.
-   - Put protocol structs in a shared crate if daemon, CLI, SDKs, and HUD all need them.
-   - Keep item kinds strict enums.
-   - Derive serde types.
-
-2. Add `IslandScene::from_snapshot`.
-   - Map the existing `HudSnapshot` into the default compact/expanded scene.
-   - This must render identically to the current UI.
-
-3. Add scene validation.
-   - Unit test every item kind.
-   - Unit test invalid bounds, invalid region, too much text, too many actors.
-
-4. Cut GPUI rendering over to `IslandScene`.
-   - Preserve exact current metrics.
-   - Preserve hover controls, click-through behavior, drag behavior, and magnetic top placement.
-   - Do not expose customization until the baseline renders 1:1.
-
-5. Add protocol methods.
-   - `ui.scene.set`
-   - `ui.scene.patch`
-   - `ui.scene.reset`
-   - `ui.scene.theme`
-   - `ui.scene.background`
-
-6. Wire scene events through daemon event lane.
-   - HTTP, Unix socket, CLI, Runebook, and SDKs should all use the same core contract.
-
-7. Add actor support.
-   - Start with noninteractive bounded sprites.
-   - Add anchor references to region items.
-   - Add deterministic motion presets.
-
-8. Add programmable ambient patterns.
+1. Add programmable ambient patterns.
    - Keep `dot_chase` as the default.
    - Add named patterns only after the baseline is proven.
 
-9. Add production proofs.
+2. Add production proofs.
    - Visual proof that default compact matches baseline geometry.
    - Visual proof that expanded mode matches baseline geometry.
-   - Protocol proof that scene set/patch/reset works over Unix, HTTP, CLI, Runebook, and SDK.
-   - Regression proof that actors cannot reflow content or block clicks.
 
 ## Done Means
 
-- The current UI renders through `IslandScene`.
 - Compact HUD is visually unchanged.
 - Expanded HUD is visually unchanged.
-- All labels, chips, dots, marquee behavior, response persistence, hover controls, and drag/minimize behavior are unchanged.
-- `ui.step`, `ui.reply`, and `ui.mode` still work.
-- New scene protocol works through Unix socket, HTTP, CLI, Runebook, and SDKs.
-- Invalid scenes produce typed errors.
-- Actors can move across left, center, and right regions without shifting layout.
 - Activity dots remain the default neon blue cyclic chase.
 - Host visual proof passes.
-- Full workspace tests pass.
-- Release script installs and relaunches the app successfully.
