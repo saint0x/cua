@@ -1263,6 +1263,7 @@ pub struct IslandScene {
     pub mode: UiMode,
     pub background: IslandBackground,
     pub regions: BTreeMap<String, IslandRegion>,
+    pub ambient: Vec<IslandAmbientPattern>,
     pub actors: Vec<IslandActor>,
     pub theme: Option<IslandTheme>,
 }
@@ -1364,6 +1365,23 @@ pub enum IslandItem {
 pub enum IslandPalette {
     BlueNeon,
     Default,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct IslandAmbientPattern {
+    pub id: String,
+    pub kind: IslandAmbientKind,
+    pub active: bool,
+    pub color: String,
+    pub opacity: u8,
+    pub speed: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum IslandAmbientKind {
+    SoftSweep,
+    BreathingGlow,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -1520,6 +1538,15 @@ impl IslandScene {
                 "regions",
                 "scene may contain at most 64 items",
             ));
+        }
+        if self.ambient.len() > 4 {
+            return Err(IslandSceneError::invalid(
+                "ambient",
+                "scene may contain at most 4 ambient patterns",
+            ));
+        }
+        for pattern in &self.ambient {
+            validate_island_ambient_pattern(pattern)?;
         }
         if self.actors.len() > 4 {
             return Err(IslandSceneError::invalid(
@@ -1690,6 +1717,19 @@ fn validate_island_item(region: &str, item: &IslandItem) -> Result<(), IslandSce
             Ok(())
         }
     }
+}
+
+fn validate_island_ambient_pattern(pattern: &IslandAmbientPattern) -> Result<(), IslandSceneError> {
+    validate_island_id(&format!("ambient.{}.id", pattern.id), &pattern.id)?;
+    validate_hex_color_field(&format!("ambient.{}.color", pattern.id), &pattern.color)?;
+    validate_scene_opacity(&format!("ambient.{}.opacity", pattern.id), pattern.opacity)?;
+    if pattern.speed > 24 {
+        return Err(IslandSceneError::invalid(
+            format!("ambient.{}.speed", pattern.id),
+            "ambient speed must be 24 or lower",
+        ));
+    }
+    Ok(())
 }
 
 pub fn validate_island_background(background: &IslandBackground) -> Result<(), IslandSceneError> {
@@ -2561,6 +2601,7 @@ mod tests {
             mode: UiMode::Headful,
             background: default_island_background(),
             regions,
+            ambient: Vec::new(),
             actors: Vec::new(),
             theme: None,
         }
@@ -3113,6 +3154,47 @@ mod tests {
         };
 
         validate_island_scene(&scene).unwrap();
+    }
+
+    #[test]
+    fn island_scene_accepts_bounded_ambient_patterns() {
+        let mut scene = sample_compact_island_scene();
+        scene.ambient = vec![
+            IslandAmbientPattern {
+                id: "sweep".to_string(),
+                kind: IslandAmbientKind::SoftSweep,
+                active: true,
+                color: "#1e9bff".to_string(),
+                opacity: 18,
+                speed: 2,
+            },
+            IslandAmbientPattern {
+                id: "glow".to_string(),
+                kind: IslandAmbientKind::BreathingGlow,
+                active: false,
+                color: "#1e9bff".to_string(),
+                opacity: 12,
+                speed: 1,
+            },
+        ];
+
+        validate_island_scene(&scene).unwrap();
+    }
+
+    #[test]
+    fn island_scene_rejects_unbounded_ambient_patterns() {
+        let mut scene = sample_compact_island_scene();
+        scene.ambient = vec![IslandAmbientPattern {
+            id: "bad ambient".to_string(),
+            kind: IslandAmbientKind::SoftSweep,
+            active: true,
+            color: "blue".to_string(),
+            opacity: 101,
+            speed: 25,
+        }];
+
+        let error = validate_island_scene(&scene).unwrap_err();
+        assert!(error.to_string().contains("ambient"));
     }
 
     #[test]

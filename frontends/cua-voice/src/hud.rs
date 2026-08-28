@@ -275,6 +275,7 @@ fn compact_scene(snapshot: &HudSnapshot, display: &HudDisplay, reply_visible: bo
         mode: snapshot.mode.clone(),
         background: default_island_background(),
         regions,
+        ambient: Vec::new(),
         actors: Vec::new(),
         theme: Some(default_island_theme()),
     }
@@ -449,6 +450,7 @@ fn expanded_scene(
         mode: snapshot.mode.clone(),
         background: default_island_background(),
         regions,
+        ambient: Vec::new(),
         actors: Vec::new(),
         theme: Some(default_island_theme()),
     }

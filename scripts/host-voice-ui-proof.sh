@@ -12,6 +12,7 @@ command -v screencapture >/dev/null
 RUN_ID="$(date +%s)"
 PROFILE="${CUA_VOICE_UI_PROOF_PROFILE:-host-voice-ui-proof-$RUN_ID}"
 OUT_DIR="${CUA_VOICE_UI_PROOF_OUT_DIR:-artifacts/cua/voice-ui-proof-$RUN_ID}"
+export CUA_HTTP_TOKEN="${CUA_HTTP_TOKEN:-cua-ui-proof-$RUN_ID}"
 BEFORE="$OUT_DIR/before.png"
 COMPACT="$OUT_DIR/compact.png"
 EXPANDED="$OUT_DIR/expanded.png"

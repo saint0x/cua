@@ -10,7 +10,7 @@ Public control surfaces are intentionally limited to:
 - profile-local Unix socket protocol
 - loopback local HTTP API
 
-The HUD is programmable through the same control surfaces. Agents can drive semantic state, set validated island scenes, and program the full island background plane with bounded solid, translucent, gradient, animated-gradient, or neon-sweep backdrops while preserving the default compact HUD as the baseline.
+The HUD is programmable through the same control surfaces. Agents can drive semantic state, set validated island scenes, program the full island background plane with bounded solid, translucent, gradient, animated-gradient, or neon-sweep backdrops, and add bounded ambient light presets while preserving the default compact HUD as the baseline.
 
 ## Structure
 

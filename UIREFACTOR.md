@@ -437,11 +437,7 @@ All durations are bounded. All colors are six-digit hex values. Gradients use tw
 
 ## Refactor Plan
 
-1. Add programmable ambient patterns.
-   - Keep `dot_chase` as the default.
-   - Add named patterns only after the baseline is proven.
-
-2. Add production proofs.
+1. Add production proofs.
    - Visual proof that default compact matches baseline geometry.
    - Visual proof that expanded mode matches baseline geometry.
 

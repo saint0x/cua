@@ -537,6 +537,7 @@ mod tests {
                             ]
                         }
                     },
+                    "ambient": [],
                     "actors": [],
                     "theme": null
                 }

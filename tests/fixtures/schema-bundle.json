@@ -4896,6 +4896,48 @@
           ],
           "type": "string"
         },
+        "IslandAmbientKind": {
+          "enum": [
+            "soft_sweep",
+            "breathing_glow"
+          ],
+          "type": "string"
+        },
+        "IslandAmbientPattern": {
+          "properties": {
+            "active": {
+              "type": "boolean"
+            },
+            "color": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/definitions/IslandAmbientKind"
+            },
+            "opacity": {
+              "format": "uint8",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "speed": {
+              "format": "uint8",
+              "minimum": 0.0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "active",
+            "color",
+            "id",
+            "kind",
+            "opacity",
+            "speed"
+          ],
+          "type": "object"
+        },
         "IslandAnchor": {
           "enum": [
             "canvas",
@@ -5523,6 +5565,12 @@
           },
           "type": "array"
         },
+        "ambient": {
+          "items": {
+            "$ref": "#/definitions/IslandAmbientPattern"
+          },
+          "type": "array"
+        },
         "background": {
           "$ref": "#/definitions/IslandBackground"
         },
@@ -5554,6 +5602,7 @@
       },
       "required": [
         "actors",
+        "ambient",
         "background",
         "layout",
         "mode",
@@ -7361,6 +7410,7 @@
           "enum": [
             "expanded",
             "collapsed",
+            "minimized",
             "toggle"
           ],
           "type": "string"
@@ -7394,6 +7444,7 @@
           "enum": [
             "expanded",
             "collapsed",
+            "minimized",
             "toggle"
           ],
           "type": "string"
@@ -7823,6 +7874,48 @@
           ],
           "type": "string"
         },
+        "IslandAmbientKind": {
+          "enum": [
+            "soft_sweep",
+            "breathing_glow"
+          ],
+          "type": "string"
+        },
+        "IslandAmbientPattern": {
+          "properties": {
+            "active": {
+              "type": "boolean"
+            },
+            "color": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/definitions/IslandAmbientKind"
+            },
+            "opacity": {
+              "format": "uint8",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "speed": {
+              "format": "uint8",
+              "minimum": 0.0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "active",
+            "color",
+            "id",
+            "kind",
+            "opacity",
+            "speed"
+          ],
+          "type": "object"
+        },
         "IslandAnchor": {
           "enum": [
             "canvas",
@@ -8425,6 +8518,12 @@
               },
               "type": "array"
             },
+            "ambient": {
+              "items": {
+                "$ref": "#/definitions/IslandAmbientPattern"
+              },
+              "type": "array"
+            },
             "background": {
               "$ref": "#/definitions/IslandBackground"
             },
@@ -8456,6 +8555,7 @@
           },
           "required": [
             "actors",
+            "ambient",
             "background",
             "layout",
             "mode",
@@ -8580,6 +8680,48 @@
           ],
           "type": "string"
         },
+        "IslandAmbientKind": {
+          "enum": [
+            "soft_sweep",
+            "breathing_glow"
+          ],
+          "type": "string"
+        },
+        "IslandAmbientPattern": {
+          "properties": {
+            "active": {
+              "type": "boolean"
+            },
+            "color": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/definitions/IslandAmbientKind"
+            },
+            "opacity": {
+              "format": "uint8",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "speed": {
+              "format": "uint8",
+              "minimum": 0.0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "active",
+            "color",
+            "id",
+            "kind",
+            "opacity",
+            "speed"
+          ],
+          "type": "object"
+        },
         "IslandAnchor": {
           "enum": [
             "canvas",
@@ -9182,6 +9324,12 @@
               },
               "type": "array"
             },
+            "ambient": {
+              "items": {
+                "$ref": "#/definitions/IslandAmbientPattern"
+              },
+              "type": "array"
+            },
             "background": {
               "$ref": "#/definitions/IslandBackground"
             },
@@ -9213,6 +9361,7 @@
           },
           "required": [
             "actors",
+            "ambient",
             "background",
             "layout",
             "mode",
@@ -9356,6 +9505,48 @@
           ],
           "type": "string"
         },
+        "IslandAmbientKind": {
+          "enum": [
+            "soft_sweep",
+            "breathing_glow"
+          ],
+          "type": "string"
+        },
+        "IslandAmbientPattern": {
+          "properties": {
+            "active": {
+              "type": "boolean"
+            },
+            "color": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/definitions/IslandAmbientKind"
+            },
+            "opacity": {
+              "format": "uint8",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "speed": {
+              "format": "uint8",
+              "minimum": 0.0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "active",
+            "color",
+            "id",
+            "kind",
+            "opacity",
+            "speed"
+          ],
+          "type": "object"
+        },
         "IslandAnchor": {
           "enum": [
             "canvas",
@@ -9958,6 +10149,12 @@
               },
               "type": "array"
             },
+            "ambient": {
+              "items": {
+                "$ref": "#/definitions/IslandAmbientPattern"
+              },
+              "type": "array"
+            },
             "background": {
               "$ref": "#/definitions/IslandBackground"
             },
@@ -9989,6 +10186,7 @@
           },
           "required": [
             "actors",
+            "ambient",
             "background",
             "layout",
             "mode",

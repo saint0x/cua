@@ -1,8 +1,9 @@
 use clap::Parser;
 use cpal::traits::{DeviceTrait, HostTrait};
 use cua_core::{
-    config_env_path, IslandActorKind, IslandBackground, IslandColorStop, IslandItem, IslandLayout,
-    IslandMotion, IslandScene, IslandTheme, PermissionState, UiMode,
+    config_env_path, IslandActorKind, IslandAmbientKind, IslandAmbientPattern, IslandBackground,
+    IslandColorStop, IslandItem, IslandLayout, IslandMotion, IslandScene, IslandTheme,
+    PermissionState, UiMode,
 };
 use cua_voice::activation::ControlDoubleTap;
 use cua_voice::agent_events::{
@@ -466,6 +467,11 @@ impl VoiceHud {
             .child(shell_background_layer(
                 metrics,
                 &scene.background,
+                motion_elapsed_secs(self.started.elapsed().as_secs_f32(), self.reduced_motion),
+            ))
+            .child(ambient_layer(
+                scene,
+                metrics,
                 motion_elapsed_secs(self.started.elapsed().as_secs_f32(), self.reduced_motion),
             ))
             .child(self.stoplights(metrics, cx))
@@ -1213,6 +1219,89 @@ fn marquee_offset_px(text: &str, viewport_width_px: f32, visible_secs: f32) -> f
 
 fn estimated_center_text_width_px(text: &str) -> f32 {
     text.chars().count() as f32 * MARQUEE_CHAR_WIDTH_PX
+}
+
+fn ambient_layer(scene: &IslandScene, metrics: HudMetrics, elapsed_secs: f32) -> impl IntoElement {
+    let radius = island_radius(metrics);
+    let fillet = island_fillet(metrics);
+    let shell_width = island_shell_width(metrics);
+    let patterns = scene.ambient.clone();
+    canvas(
+        move |_, _, _| (radius, fillet, shell_width, patterns.clone(), elapsed_secs),
+        move |bounds, (radius, fillet, shell_width, patterns, elapsed_secs), window, _| {
+            for pattern in patterns.iter().filter(|pattern| pattern.active) {
+                paint_ambient_pattern(
+                    window,
+                    bounds,
+                    radius,
+                    fillet,
+                    shell_width,
+                    pattern,
+                    elapsed_secs,
+                );
+            }
+        },
+    )
+    .absolute()
+    .left_0()
+    .top_0()
+    .size_full()
+}
+
+fn paint_ambient_pattern(
+    window: &mut Window,
+    bounds: Bounds<Pixels>,
+    radius: f32,
+    fillet: f32,
+    shell_width: f32,
+    pattern: &IslandAmbientPattern,
+    elapsed_secs: f32,
+) {
+    let Some(color) = ambient_color(pattern, elapsed_secs) else {
+        return;
+    };
+    let background = match pattern.kind {
+        IslandAmbientKind::SoftSweep => {
+            let angle =
+                90.0 + repeating_progress(elapsed_secs, ambient_duration_ms(pattern)) * 45.0;
+            linear_gradient(
+                angle,
+                linear_color_stop(hsla(color.h, color.s, color.l, 0.0), 0.0),
+                linear_color_stop(color, 1.0),
+            )
+        }
+        IslandAmbientKind::BreathingGlow => Background::from(color),
+    };
+    let shell_bounds = Bounds {
+        origin: point(bounds.origin.x + px(fillet), bounds.origin.y),
+        size: size(px(shell_width), bounds.size.height),
+    };
+
+    paint_concave_fillet(window, bounds, fillet, shell_width, background, false);
+    paint_concave_fillet(window, bounds, fillet, shell_width, background, true);
+    window.paint_quad(fill(shell_bounds, background).corner_radii(Corners {
+        top_left: px(0.0),
+        top_right: px(0.0),
+        bottom_right: px(radius),
+        bottom_left: px(radius),
+    }));
+}
+
+fn ambient_color(pattern: &IslandAmbientPattern, elapsed_secs: f32) -> Option<Hsla> {
+    let mut color = scene_color(&pattern.color, pattern.opacity)?;
+    let speed = pattern.speed.max(1) as f32;
+    let progress = ((elapsed_secs * speed) % 1.0) * std::f32::consts::TAU;
+    let pulse = match pattern.kind {
+        IslandAmbientKind::SoftSweep => 0.72 + progress.sin().abs() * 0.18,
+        IslandAmbientKind::BreathingGlow => 0.44 + ((progress.sin() + 1.0) * 0.5) * 0.32,
+    };
+    color.a *= pulse;
+    Some(color)
+}
+
+fn ambient_duration_ms(pattern: &IslandAmbientPattern) -> u16 {
+    let speed = pattern.speed.max(1) as u16;
+    (6_000 / speed).clamp(250, 6_000)
 }
 
 fn shell_background_layer(
@@ -3180,6 +3269,37 @@ mod tests {
         assert_eq!(middle.1.color, "#9b5cff");
         assert_eq!(wrapped.0.color, "#9b5cff");
         assert_eq!(wrapped.1.color, "#000000");
+    }
+
+    #[test]
+    fn ambient_patterns_are_bounded_and_never_part_of_the_default_scene() {
+        let snapshot = HudSnapshot::default();
+        let display = HudDisplay::from_snapshot(&snapshot);
+        let scene = island_scene_from_snapshot(
+            &snapshot,
+            &display,
+            false,
+            false,
+            DEFAULT_PLANNER_MODEL,
+            Duration::ZERO,
+        )
+        .unwrap();
+        assert!(scene.ambient.is_empty());
+
+        let pattern = IslandAmbientPattern {
+            id: "soft-sweep".to_string(),
+            kind: IslandAmbientKind::SoftSweep,
+            active: true,
+            color: "#1e9bff".to_string(),
+            opacity: 24,
+            speed: 2,
+        };
+        let first = ambient_color(&pattern, 0.0).unwrap();
+        let second = ambient_color(&pattern, 0.125).unwrap();
+
+        assert_eq!(ambient_duration_ms(&pattern), 3_000);
+        assert!(first.a > 0.0 && first.a <= 0.24);
+        assert!(second.a > first.a);
     }
 
     fn step_snapshot(index: u16, total: u16, label: &str) -> HudSnapshot {

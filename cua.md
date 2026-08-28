@@ -244,7 +244,7 @@ CLI commands:
 
 ## Island Background Protocol
 
-Every island scene has a validated background plane beneath labels, chips, rows, actors, and foreground controls. The default background is the existing black island surface, so the production HUD keeps its normal visual baseline unless a caller explicitly programs the background.
+Every island scene has a validated background plane beneath labels, chips, rows, ambient patterns, actors, and foreground controls. The default background is the existing black island surface, so the production HUD keeps its normal visual baseline unless a caller explicitly programs the background.
 
 Background kinds:
 
@@ -273,6 +273,21 @@ Apply it with:
 ```bash
 cua ui protocol examples/island-neon-background.cua.toml --json
 ```
+
+## Island Ambient Protocol
+
+Every island scene may include an `ambient` array for bounded light programs that render inside the same clipped island shape. The default scene uses `ambient: []`, so the production HUD remains visually unchanged unless a caller explicitly sends ambient patterns as part of `ui.scene.set` or `ui.scene.patch`.
+
+Ambient pattern fields:
+
+- `id`: stable scene id.
+- `kind`: `soft_sweep` or `breathing_glow`.
+- `active`: whether the preset is rendered.
+- `color`: one `#rrggbb` color.
+- `opacity`: `0..100`.
+- `speed`: `0..24`.
+
+The ambient layer is declarative only. It cannot resize the HUD, intercept clicks, run code, or escape the island mask.
 
 ## System Prompts
 

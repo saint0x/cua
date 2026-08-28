@@ -1,4 +1,5 @@
 use anyhow::{bail, Context};
+use cua_core::profile_token_path;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -31,6 +32,7 @@ pub fn spawn_profile_daemon(profile: &str) -> anyhow::Result<()> {
         return Ok(());
     }
     let binary = bundled_cua_binary()?;
+    let token = load_or_create_profile_token(profile)?;
     Command::new(&binary)
         .args([
             "--profile",
@@ -41,12 +43,43 @@ pub fn spawn_profile_daemon(profile: &str) -> anyhow::Result<()> {
             "--hud-mode",
             "headless",
         ])
+        .env("CUA_HTTP_TOKEN", token)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .with_context(|| format!("spawn {}", binary.display()))?;
     Ok(())
+}
+
+fn load_or_create_profile_token(profile: &str) -> anyhow::Result<String> {
+    if http_token_override_allowed() {
+        if let Ok(token) = std::env::var("CUA_HTTP_TOKEN") {
+            if !token.trim().is_empty() {
+                return Ok(token);
+            }
+        }
+    }
+    let path = profile_token_path(profile)?;
+    if let Ok(token) = std::fs::read_to_string(&path) {
+        let token = token.trim().to_string();
+        if !token.is_empty() {
+            return Ok(token);
+        }
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let token = format!("cua-{}", uuid::Uuid::new_v4());
+    std::fs::write(path, format!("{token}\n"))?;
+    Ok(token)
+}
+
+fn http_token_override_allowed() -> bool {
+    cfg!(test)
+        || std::env::var("CUA_DEV_HTTP_TOKEN_OVERRIDE")
+            .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
 }
 
 pub fn profile_daemon_is_alive(profile: &str) -> bool {

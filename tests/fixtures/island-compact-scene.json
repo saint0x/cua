@@ -54,6 +54,7 @@
       ]
     }
   },
+  "ambient": [],
   "actors": [
     {
       "id": "pet",

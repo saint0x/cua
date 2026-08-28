@@ -352,6 +352,15 @@
       },
       "motion": "Layered blob and ribbon paths driven by elapsed time and phase energy."
     },
+    "ambient": {
+      "default": [],
+      "max_count": 4,
+      "kinds": ["soft_sweep", "breathing_glow"],
+      "color": "#rrggbb only",
+      "opacity_range": "0..100",
+      "speed_range": "0..24",
+      "behavior": "Declarative light presets render inside the clipped island mask and never resize content, intercept clicks, or execute arbitrary code."
+    },
     "actors": {
       "max_count": 4,
       "kinds": ["sprite", "particle"],

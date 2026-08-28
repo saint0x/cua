@@ -6476,6 +6476,7 @@ mod tests {
                     },
                 ),
             ]),
+            ambient: Vec::new(),
             actors: Vec::new(),
             theme: None,
         }
