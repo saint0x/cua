@@ -6,17 +6,15 @@ export CUA_DEV_HTTP_TOKEN_OVERRIDE=1
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-command -v curl >/dev/null
 command -v python3 >/dev/null
+command -v screencapture >/dev/null
 
 RUN_ID="$(date +%s)"
 PROFILE="${CUA_VOICE_UI_PROOF_PROFILE:-host-voice-ui-proof-$RUN_ID}"
-CAPTURE_PROFILE="${PROFILE}-capture"
-CAPTURE_ADDR="${CUA_VOICE_UI_PROOF_CAPTURE_ADDR:-127.0.0.1:$((26000 + RUN_ID % 1000))}"
-CAPTURE_TOKEN="${CUA_VOICE_UI_PROOF_CAPTURE_TOKEN:-host-voice-ui-proof-token-$RUN_ID}"
 OUT_DIR="${CUA_VOICE_UI_PROOF_OUT_DIR:-artifacts/cua/voice-ui-proof-$RUN_ID}"
 BEFORE="$OUT_DIR/before.png"
 COMPACT="$OUT_DIR/compact.png"
+EXPANDED="$OUT_DIR/expanded.png"
 REPLY="$OUT_DIR/reply.png"
 COLLAPSED="$OUT_DIR/collapsed.png"
 PROOF="$OUT_DIR/proof.json"
@@ -50,41 +48,21 @@ fi
 
 mkdir -p "$OUT_DIR"
 
-CUA_HTTP_TOKEN="$CAPTURE_TOKEN" \
-CUA_RESIDENT_FRAME_FRESH_MS="${CUA_VOICE_UI_PROOF_RESIDENT_FRAME_FRESH_MS:-50}" \
-"$CUA_BIN_PATH" \
-  --server-addr "$CAPTURE_ADDR" \
-  --profile "$CAPTURE_PROFILE" \
-  serve --addr "$CAPTURE_ADDR" --hud-mode headless >/dev/null 2>&1 &
-CAPTURE_PID="$!"
-
 capture_png() {
   local out="$1"
-  CUA_HTTP_TOKEN="$CAPTURE_TOKEN" "$CUA_BIN_PATH" \
-    --server-addr "$CAPTURE_ADDR" \
-    --profile "$CAPTURE_PROFILE" \
-    screenshot --out "$out" --force-fresh --max-width 1280 --json >/dev/null
+  screencapture -x "$out"
 }
 
-for _ in $(seq 1 100); do
-  if curl -fs "http://$CAPTURE_ADDR/healthz" >/dev/null 2>&1; then
-    break
-  fi
-  sleep 0.05
-done
-curl -fsS "http://$CAPTURE_ADDR/healthz" >/dev/null
 capture_png "$BEFORE"
 
 OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-ui-proof-only}" "$BIN" \
   --profile "$PROFILE" \
-  --demo &
+  --headful &
 PID="$!"
 
 cleanup() {
   kill "$PID" >/dev/null 2>&1 || true
   wait "$PID" >/dev/null 2>&1 || true
-  kill "$CAPTURE_PID" >/dev/null 2>&1 || true
-  wait "$CAPTURE_PID" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -93,14 +71,38 @@ if ! kill -0 "$PID" >/dev/null 2>&1; then
   echo "cua-voice exited before visual proof capture" >&2
   exit 1
 fi
+for _ in $(seq 1 100); do
+  if "$CUA_BIN_PATH" --profile "$PROFILE" status --json >/dev/null 2>&1; then
+    break
+  fi
+  sleep 0.05
+done
+"$CUA_BIN_PATH" --profile "$PROFILE" status --json >/dev/null
+
+"$CUA_BIN_PATH" --profile "$PROFILE" ui step "Checking desktop context" \
+  --source host-voice-ui-proof \
+  --task "HUD visual proof" \
+  --tool "Unix socket" \
+  --step-index 1 \
+  --step-total 4 \
+  --json >/dev/null
 
 capture_png "$COMPACT"
+"$CUA_BIN_PATH" --profile "$PROFILE" \
+  ui island expanded --source host-voice-ui-proof --json >/dev/null
+sleep "${CUA_VOICE_UI_PROOF_EXPANDED_WAIT_SECS:-1}"
+capture_png "$EXPANDED"
+"$CUA_BIN_PATH" --profile "$PROFILE" \
+  ui island collapsed --source host-voice-ui-proof --json >/dev/null
+"$CUA_BIN_PATH" --profile "$PROFILE" ui reply "HUD proof accepted" \
+  --source host-voice-ui-proof \
+  --json >/dev/null
 sleep "${CUA_VOICE_UI_PROOF_REPLY_WAIT_SECS:-4}"
 capture_png "$REPLY"
-sleep "${CUA_VOICE_UI_PROOF_COLLAPSED_WAIT_SECS:-7}"
+sleep "${CUA_VOICE_UI_PROOF_COLLAPSED_WAIT_SECS:-9}"
 capture_png "$COLLAPSED"
 
-python3 - "$BEFORE" "$COMPACT" "$REPLY" "$COLLAPSED" "$PROOF" <<'PY'
+python3 - "$BEFORE" "$COMPACT" "$EXPANDED" "$REPLY" "$COLLAPSED" "$PROOF" <<'PY'
 import json
 import struct
 import sys
@@ -200,6 +202,27 @@ def region_metrics(base, base_channels, target, target_channels, x0, y0, width, 
     }
 
 
+def frame_visibility(rows, channels):
+    width = len(rows[0]) // channels
+    height = len(rows)
+    bright = 0
+    saturated = 0
+    total = width * height
+    for y in range(height):
+        for x in range(width):
+            r, g, b, _ = pixel(rows, channels, x, y)
+            luma = (r * 299 + g * 587 + b * 114) / 1000
+            if luma > 42:
+                bright += 1
+            if max(r, g, b) - min(r, g, b) > 24 and max(r, g, b) > 64:
+                saturated += 1
+    return {
+        "bright_ratio": bright / total,
+        "saturated_ratio": saturated / total,
+        "visible": bright / total >= 0.02 or saturated / total >= 0.002,
+    }
+
+
 def dark_change_geometry(base, base_channels, target, target_channels, scan_height):
     changed = 0
     min_x = min_y = 10**9
@@ -290,25 +313,53 @@ def visual_island_geometry(island, top_metrics, screen_width, scan_height):
     return island
 
 
-before_path, compact_path, reply_path, collapsed_path, proof_path = sys.argv[1:6]
+before_path, compact_path, expanded_path, reply_path, collapsed_path, proof_path = sys.argv[1:7]
 bw, bh, bc, before = read_png(before_path)
 cw, ch, cc, compact = read_png(compact_path)
+ew, eh, ec, expanded = read_png(expanded_path)
 rw, rh, rc, reply = read_png(reply_path)
 lw, lh, lc, collapsed = read_png(collapsed_path)
-if len({(bw, bh), (cw, ch), (rw, rh), (lw, lh)}) != 1:
+if len({(bw, bh), (cw, ch), (ew, eh), (rw, rh), (lw, lh)}) != 1:
     raise SystemExit("visual proof screenshots have different dimensions")
+
+visibility = {
+    "before": frame_visibility(before, bc),
+    "compact": frame_visibility(compact, cc),
+    "expanded": frame_visibility(expanded, ec),
+    "reply": frame_visibility(reply, rc),
+    "collapsed": frame_visibility(collapsed, lc),
+}
+if not any(frame["visible"] for frame in visibility.values()):
+    raise SystemExit(json.dumps({
+        "schema_version": "cua.voice_ui_proof.v1",
+        "ok": False,
+        "error": "screen_capture_unavailable",
+        "message": "macOS returned black privacy frames; grant Screen Recording to the shell/Codex host running this script, then rerun host-voice-ui-proof.",
+        "visibility": visibility,
+        "captures": {
+            "before": before_path,
+            "compact": compact_path,
+            "expanded": expanded_path,
+            "reply": reply_path,
+            "collapsed": collapsed_path,
+        },
+    }, indent=2))
 
 top_width = min(920, cw)
 top_height = min(96, ch)
+expanded_height = min(300, ch)
 top_x = max((cw - top_width) // 2, 0)
 top_y = 0
 compact_top = region_metrics(before, bc, compact, cc, top_x, top_y, top_width, top_height)
+expanded_top = region_metrics(before, bc, expanded, ec, top_x, top_y, top_width, expanded_height)
 reply_top = region_metrics(before, bc, reply, rc, top_x, top_y, top_width, top_height)
 collapsed_top = region_metrics(before, bc, collapsed, lc, top_x, top_y, top_width, top_height)
 compact_island = dark_change_geometry(before, bc, compact, cc, top_height)
+expanded_island = dark_change_geometry(before, bc, expanded, ec, expanded_height)
 reply_island = dark_change_geometry(before, bc, reply, rc, top_height)
 collapsed_island = dark_change_geometry(before, bc, collapsed, lc, top_height)
 compact_island = visual_island_geometry(compact_island, compact_top, cw, top_height)
+expanded_island = visual_island_geometry(expanded_island, expanded_top, cw, expanded_height)
 reply_island = visual_island_geometry(reply_island, reply_top, cw, top_height)
 collapsed_island = visual_island_geometry(collapsed_island, collapsed_top, cw, top_height)
 
@@ -320,15 +371,21 @@ reply_ok = (
     reply_top["changed_ratio"] >= 0.0025
     and reply_top["dark_ratio"] >= 0.05
 )
+expanded_ok = (
+    expanded_top["changed_ratio"] >= 0.0025
+    and expanded_top["dark_ratio"] >= 0.05
+)
 collapsed_ok = (
     collapsed_top["changed_ratio"] >= 0.0025
     and collapsed_top["dark_ratio"] >= 0.05
 )
 ok = (
     compact_ok
+    and expanded_ok
     and reply_ok
     and collapsed_ok
     and compact_island["ok"]
+    and expanded_island["ok"]
     and reply_island["ok"]
     and collapsed_island["ok"]
 )
@@ -341,6 +398,12 @@ proof = {
         "top": compact_top,
         "island": compact_island,
         "ok": compact_ok and compact_island["ok"],
+    },
+    "expanded": {
+        "path": expanded_path,
+        "top": expanded_top,
+        "island": expanded_island,
+        "ok": expanded_ok and expanded_island["ok"],
     },
     "reply": {
         "path": reply_path,
