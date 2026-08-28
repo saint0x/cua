@@ -19,6 +19,8 @@ EXPANDED="$OUT_DIR/expanded.png"
 REPLY="$OUT_DIR/reply.png"
 COLLAPSED="$OUT_DIR/collapsed.png"
 PROOF="$OUT_DIR/proof.json"
+STATUS_INITIAL="$OUT_DIR/status-initial.json"
+STATUS_FINAL="$OUT_DIR/status-final.json"
 
 cargo build -p cua -p cua-voice
 
@@ -78,7 +80,7 @@ for _ in $(seq 1 100); do
   fi
   sleep 0.05
 done
-"$CUA_BIN_PATH" --profile "$PROFILE" status --json >/dev/null
+"$CUA_BIN_PATH" --profile "$PROFILE" status --json >"$STATUS_INITIAL"
 
 "$CUA_BIN_PATH" --profile "$PROFILE" ui step "Checking desktop context" \
   --source host-voice-ui-proof \
@@ -102,8 +104,9 @@ sleep "${CUA_VOICE_UI_PROOF_REPLY_WAIT_SECS:-4}"
 capture_png "$REPLY"
 sleep "${CUA_VOICE_UI_PROOF_COLLAPSED_WAIT_SECS:-9}"
 capture_png "$COLLAPSED"
+"$CUA_BIN_PATH" --profile "$PROFILE" status --json >"$STATUS_FINAL" || true
 
-python3 - "$BEFORE" "$COMPACT" "$EXPANDED" "$REPLY" "$COLLAPSED" "$PROOF" <<'PY'
+python3 - "$BEFORE" "$COMPACT" "$EXPANDED" "$REPLY" "$COLLAPSED" "$PROOF" "$STATUS_INITIAL" "$STATUS_FINAL" <<'PY'
 import json
 import struct
 import sys
@@ -314,7 +317,7 @@ def visual_island_geometry(island, top_metrics, screen_width, scan_height):
     return island
 
 
-before_path, compact_path, expanded_path, reply_path, collapsed_path, proof_path = sys.argv[1:7]
+before_path, compact_path, expanded_path, reply_path, collapsed_path, proof_path, status_initial_path, status_final_path = sys.argv[1:9]
 bw, bh, bc, before = read_png(before_path)
 cw, ch, cc, compact = read_png(compact_path)
 ew, eh, ec, expanded = read_png(expanded_path)
@@ -343,6 +346,10 @@ if not any(frame["visible"] for frame in visibility.values()):
             "expanded": expanded_path,
             "reply": reply_path,
             "collapsed": collapsed_path,
+        },
+        "diagnostics": {
+            "status_initial": status_initial_path,
+            "status_final": status_final_path,
         },
     }, indent=2))
 
