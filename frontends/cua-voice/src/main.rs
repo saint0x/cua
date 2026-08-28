@@ -26,7 +26,8 @@ use gpui::{
     canvas, div, hsla, linear_color_stop, linear_gradient, point, prelude::*, px, rgb, size,
     AnyElement, App, Application, Background, Bounds, BoxShadow, Context, Div, Hsla, IntoElement,
     MouseButton as GpuiMouseButton, MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Point,
-    Render, Styled, Window, WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions,
+    Render, Rgba, Styled, Window, WindowBackgroundAppearance, WindowBounds, WindowKind,
+    WindowOptions,
 };
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -254,22 +255,33 @@ impl VoiceHud {
         }
     }
 
-    fn chip(label: impl Into<String>) -> impl IntoElement {
+    fn chip(label: impl Into<String>, high_contrast: bool) -> impl IntoElement {
         div()
             .h(px(COMPACT_ROW_ITEM_HEIGHT_PX))
             .px_1()
             .rounded(px(4.0))
-            .bg(hsla(0.0, 0.0, 1.0, 0.10))
+            .bg(if high_contrast {
+                hsla(0.0, 0.0, 0.0, 0.34)
+            } else {
+                hsla(0.0, 0.0, 1.0, 0.10)
+            })
             .flex()
             .items_center()
-            .text_color(rgb(0xb9b9c0))
+            .text_color(if high_contrast {
+                rgb(0xf4f4f7)
+            } else {
+                rgb(0xb9b9c0)
+            })
             .text_size(px(UI_TEXT_PX))
             .line_height(px(UI_LINE_HEIGHT_PX))
             .child(label.into())
     }
 
-    fn divider() -> impl IntoElement {
-        div().w(px(1.0)).h(px(14.0)).bg(hsla(0.0, 0.0, 1.0, 0.16))
+    fn divider(high_contrast: bool) -> impl IntoElement {
+        div()
+            .w(px(1.0))
+            .h(px(14.0))
+            .bg(rule_color(if high_contrast { 0.34 } else { 0.16 }))
     }
 
     fn activity_dots_from_scene(&self, scene: &IslandScene) -> impl IntoElement {
@@ -346,6 +358,7 @@ impl VoiceHud {
             .or_else(|| scene_text(scene, "header_right", "target"))
             .expect("IslandScene must include a target chip");
         let reply_visible = response_flash_visible(metrics);
+        let high_contrast = background_needs_foreground_lift(&scene.background);
 
         div()
             .w(px(island_width(metrics)))
@@ -354,9 +367,9 @@ impl VoiceHud {
             .overflow_hidden()
             .group("cua-island")
             .opacity(metrics.bar_opacity)
-            .bg(hsla(0.0, 0.0, 0.0, 0.92))
+            .bg(hsla(0.0, 0.0, 0.0, 0.0))
             .border_1()
-            .border_color(hsla(0.0, 0.0, 1.0, 0.15))
+            .border_color(rule_color(if high_contrast { 0.34 } else { 0.15 }))
             .shadow(vec![BoxShadow {
                 color: hsla(0.0, 0.0, 0.0, 0.58),
                 blur_radius: px(18.0),
@@ -428,25 +441,30 @@ impl VoiceHud {
                             .flex()
                             .items_center()
                             .truncate()
-                            .text_color(rgb(0x9f9fa6))
+                            .text_color(if high_contrast {
+                                rgb(0xe9e9ee)
+                            } else {
+                                rgb(0x9f9fa6)
+                            })
                             .text_size(px(UI_TEXT_PX))
                             .line_height(px(UI_LINE_HEIGHT_PX))
                             .child(title),
                     )
-                    .child(Self::divider())
+                    .child(Self::divider(high_contrast))
                     .child(center_text_slot(
                         center,
                         reply_visible,
                         self.center_text_since.elapsed().as_secs_f32(),
+                        high_contrast,
                     ))
-                    .child(Self::divider())
-                    .child(Self::chip(tool))
-                    .child(Self::chip(app))
+                    .child(Self::divider(high_contrast))
+                    .child(Self::chip(tool, high_contrast))
+                    .child(Self::chip(app, high_contrast))
                     .child(div().flex_1())
                     .child(self.activity_dots_from_scene(scene)),
             )
             .when(scene_renders_expanded_body(scene), |element| {
-                element.child(self.expanded_body(scene, metrics))
+                element.child(self.expanded_body(scene, metrics, high_contrast))
             })
     }
 
@@ -620,7 +638,12 @@ impl VoiceHud {
             .child(self.orb())
     }
 
-    fn expanded_body(&self, scene: &IslandScene, metrics: HudMetrics) -> impl IntoElement {
+    fn expanded_body(
+        &self,
+        scene: &IslandScene,
+        metrics: HudMetrics,
+        high_contrast: bool,
+    ) -> impl IntoElement {
         let step_counter = scene_step_counter(scene);
         let Some(task) = scene_row(scene, "task", "task") else {
             return div();
@@ -635,7 +658,7 @@ impl VoiceHud {
             .opacity(metrics.expansion_opacity)
             .h(px((EXPANDED_HEIGHT - COMPACT_HEIGHT).max(0.0)))
             .border_t_1()
-            .border_color(hsla(0.0, 0.0, 1.0, 0.08))
+            .border_color(rule_color(if high_contrast { 0.20 } else { 0.08 }))
             .px_3()
             .pb_4()
             .pt_4()
@@ -659,7 +682,7 @@ impl VoiceHud {
                                 div()
                                     .w(px(540.0))
                                     .truncate()
-                                    .text_color(rgb(0xd8d8de))
+                                    .text_color(content_text_color(high_contrast))
                                     .text_size(px(UI_TEXT_PX))
                                     .child(task.value.clone()),
                             ),
@@ -677,10 +700,14 @@ impl VoiceHud {
                                         .h(px(15.0))
                                         .px_1()
                                         .rounded(px(3.0))
-                                        .bg(hsla(0.0, 0.0, 1.0, 0.045))
+                                        .bg(if high_contrast {
+                                            hsla(0.0, 0.0, 0.0, 0.30)
+                                        } else {
+                                            hsla(0.0, 0.0, 1.0, 0.045)
+                                        })
                                         .flex()
                                         .items_center()
-                                        .text_color(rgb(0x8d8d96))
+                                        .text_color(meta_text_color(high_contrast))
                                         .text_size(px(UI_META_PX))
                                         .child(format!("{step_index}/{step_total}")),
                                 )
@@ -693,7 +720,7 @@ impl VoiceHud {
                     .h(px(205.0))
                     .border_t_1()
                     .border_b_1()
-                    .border_color(hsla(0.0, 0.0, 1.0, 0.075))
+                    .border_color(rule_color(if high_contrast { 0.22 } else { 0.075 }))
                     .py_3()
                     .overflow_hidden()
                     .flex()
@@ -704,7 +731,7 @@ impl VoiceHud {
                         div()
                             .whitespace_normal()
                             .line_height(px(16.0))
-                            .text_color(rgb(0xd2d2d8))
+                            .text_color(content_text_color(high_contrast))
                             .text_size(px(UI_TEXT_PX))
                             .child(response.value.clone()),
                     ),
@@ -713,8 +740,8 @@ impl VoiceHud {
                 div()
                     .flex()
                     .gap_6()
-                    .child(self.current_action_panel(scene))
-                    .child(self.tools_panel(scene)),
+                    .child(self.current_action_panel(scene, high_contrast))
+                    .child(self.tools_panel(scene, high_contrast)),
             )
             .child(
                 div()
@@ -722,14 +749,14 @@ impl VoiceHud {
                     .items_center()
                     .justify_between()
                     .text_size(px(UI_META_PX))
-                    .text_color(rgb(0x74747d))
+                    .text_color(meta_text_color(high_contrast))
                     .child(footer.elapsed)
                     .child(footer.model)
                     .child(footer.transport),
             )
     }
 
-    fn current_action_panel(&self, scene: &IslandScene) -> impl IntoElement {
+    fn current_action_panel(&self, scene: &IslandScene, high_contrast: bool) -> impl IntoElement {
         let action =
             scene_row(scene, "details_left", "action").expect("IslandScene must include action");
         let phase =
@@ -746,30 +773,33 @@ impl VoiceHud {
                 &action.label,
                 action.value.clone(),
                 action.active,
+                high_contrast,
             ))
             .child(info_row(
                 &phase.index,
                 &phase.label,
                 phase.value.clone(),
                 phase.active,
+                high_contrast,
             ))
             .child(info_row(
                 &state.index,
                 &state.label,
                 state.value.clone(),
                 state.active,
+                high_contrast,
             ))
     }
 
-    fn tools_panel(&self, scene: &IslandScene) -> impl IntoElement {
+    fn tools_panel(&self, scene: &IslandScene, high_contrast: bool) -> impl IntoElement {
         let rows = scene_tool_rows(scene);
         div()
             .flex_1()
             .flex()
             .flex_col()
             .gap_1()
-            .child(tool_row(&rows[0]))
-            .child(tool_row(&rows[1]))
+            .child(tool_row(&rows[0], high_contrast))
+            .child(tool_row(&rows[1], high_contrast))
     }
 
     fn finish_drag(&mut self, window: &mut Window, cx: &mut App) {
@@ -971,16 +1001,16 @@ fn background_contrast_scrim_alpha(background: &IslandBackground) -> f32 {
             if is_default_solid_background(color, *opacity) {
                 0.0
             } else if *opacity < 75 || color_luminance(color).unwrap_or(0.0) > 0.18 {
-                0.56
+                0.68
             } else {
-                0.18
+                0.24
             }
         }
         IslandBackground::Transparent { opacity } => {
             if *opacity >= 90 {
                 0.0
             } else {
-                0.60
+                0.72
             }
         }
         IslandBackground::LinearGradient { opacity, stops, .. }
@@ -990,9 +1020,9 @@ fn background_contrast_scrim_alpha(background: &IslandBackground) -> f32 {
                     .iter()
                     .any(|stop| color_luminance(&stop.color).unwrap_or(0.0) > 0.18)
             {
-                0.54
+                0.66
             } else {
-                0.24
+                0.30
             }
         }
         IslandBackground::NeonSweep {
@@ -1004,12 +1034,16 @@ fn background_contrast_scrim_alpha(background: &IslandBackground) -> f32 {
             let base = color_luminance(base_color).unwrap_or(0.0);
             let sweep = color_luminance(sweep_color).unwrap_or(0.0);
             if *opacity < 80 || base.max(sweep) > 0.18 {
-                0.46
+                0.58
             } else {
-                0.20
+                0.26
             }
         }
     }
+}
+
+fn background_needs_foreground_lift(background: &IslandBackground) -> bool {
+    background_contrast_scrim_alpha(background) > 0.0
 }
 
 fn is_default_solid_background(color: &str, opacity: u8) -> bool {
@@ -1085,7 +1119,12 @@ fn center_text_for(scene: &IslandScene) -> String {
         .expect("IslandScene must include center status")
 }
 
-fn center_text_slot(center: String, reply_visible: bool, visible_secs: f32) -> impl IntoElement {
+fn center_text_slot(
+    center: String,
+    reply_visible: bool,
+    visible_secs: f32,
+    high_contrast: bool,
+) -> impl IntoElement {
     let offset = marquee_offset_px(&center, CENTER_LABEL_WIDTH, visible_secs);
     div()
         .w(px(CENTER_LABEL_WIDTH))
@@ -1094,7 +1133,9 @@ fn center_text_slot(center: String, reply_visible: bool, visible_secs: f32) -> i
         .whitespace_nowrap()
         .flex()
         .items_center()
-        .text_color(if reply_visible {
+        .text_color(if high_contrast {
+            rgb(0xffffff)
+        } else if reply_visible {
             rgb(0xf1f1f4)
         } else {
             rgb(0xb9b9c0)
@@ -1192,11 +1233,40 @@ fn index_tab(index: impl Into<String>, label: impl Into<String>, active: bool) -
         )
 }
 
+fn content_text_color(high_contrast: bool) -> Rgba {
+    if high_contrast {
+        rgb(0xffffff)
+    } else {
+        rgb(0xd8d8de)
+    }
+}
+
+fn muted_text_color(high_contrast: bool) -> Rgba {
+    if high_contrast {
+        rgb(0xd7d7de)
+    } else {
+        rgb(0x85858d)
+    }
+}
+
+fn meta_text_color(high_contrast: bool) -> Rgba {
+    if high_contrast {
+        rgb(0xc4c4cc)
+    } else {
+        rgb(0x74747d)
+    }
+}
+
+fn rule_color(alpha: f32) -> Hsla {
+    hsla(0.0, 0.0, 1.0, alpha)
+}
+
 fn info_row(
     index: impl Into<String>,
     label: impl Into<String>,
     value: impl Into<String>,
     active: bool,
+    high_contrast: bool,
 ) -> impl IntoElement {
     div()
         .h(px(24.0))
@@ -1204,7 +1274,7 @@ fn info_row(
         .items_center()
         .gap_3()
         .border_b_1()
-        .border_color(hsla(0.0, 0.0, 1.0, 0.055))
+        .border_color(rule_color(if high_contrast { 0.18 } else { 0.055 }))
         .child(index_tab(index, label, active))
         .child(
             div()
@@ -1212,19 +1282,19 @@ fn info_row(
                 .truncate()
                 .text_size(px(UI_TEXT_PX))
                 .line_height(px(UI_LINE_HEIGHT_PX))
-                .text_color(rgb(0xd8d8de))
+                .text_color(content_text_color(high_contrast))
                 .child(value.into()),
         )
 }
 
-fn tool_row(row: &SceneToolRow) -> impl IntoElement {
+fn tool_row(row: &SceneToolRow, high_contrast: bool) -> impl IntoElement {
     div()
         .h(px(24.0))
         .flex()
         .items_center()
         .gap_3()
         .border_b_1()
-        .border_color(hsla(0.0, 0.0, 1.0, 0.055))
+        .border_color(rule_color(if high_contrast { 0.18 } else { 0.055 }))
         .child(index_tab(row.index.clone(), "Tool", false))
         .child(
             div()
@@ -1235,7 +1305,7 @@ fn tool_row(row: &SceneToolRow) -> impl IntoElement {
                 .child(
                     div()
                         .truncate()
-                        .text_color(rgb(0xd8d8de))
+                        .text_color(content_text_color(high_contrast))
                         .text_size(px(UI_TEXT_PX))
                         .line_height(px(UI_LINE_HEIGHT_PX))
                         .child(row.label.clone()),
@@ -1244,7 +1314,7 @@ fn tool_row(row: &SceneToolRow) -> impl IntoElement {
                     div()
                         .w(px(96.0))
                         .truncate()
-                        .text_color(rgb(0x85858d))
+                        .text_color(muted_text_color(high_contrast))
                         .text_size(px(UI_META_PX))
                         .line_height(px(UI_LINE_HEIGHT_PX))
                         .child(format!("{}  {}", row.tool, row.app)),
@@ -1255,7 +1325,7 @@ fn tool_row(row: &SceneToolRow) -> impl IntoElement {
                 .w(px(44.0))
                 .text_size(px(UI_META_PX))
                 .line_height(px(UI_LINE_HEIGHT_PX))
-                .text_color(rgb(0x74747d))
+                .text_color(meta_text_color(high_contrast))
                 .child(row.age.clone()),
         )
 }
@@ -2689,22 +2759,41 @@ mod tests {
 
     #[test]
     fn background_contrast_scrim_preserves_default_and_protects_light_backdrops() {
-        assert_eq!(
-            background_contrast_scrim_alpha(&IslandBackground::Solid {
-                color: "#000000".to_string(),
-                opacity: 92,
-            }),
-            0.0
-        );
-        assert!(
-            background_contrast_scrim_alpha(&IslandBackground::Solid {
-                color: "#eef8ff".to_string(),
-                opacity: 92,
-            }) >= 0.5
-        );
-        assert!(
-            background_contrast_scrim_alpha(&IslandBackground::Transparent { opacity: 16 }) >= 0.5
-        );
+        let default_background = IslandBackground::Solid {
+            color: "#000000".to_string(),
+            opacity: 92,
+        };
+        assert_eq!(background_contrast_scrim_alpha(&default_background), 0.0);
+        assert!(!background_needs_foreground_lift(&default_background));
+
+        let light_background = IslandBackground::Solid {
+            color: "#eef8ff".to_string(),
+            opacity: 92,
+        };
+        assert!(background_contrast_scrim_alpha(&light_background) >= 0.65);
+        assert!(background_needs_foreground_lift(&light_background));
+
+        let translucent_background = IslandBackground::Transparent { opacity: 16 };
+        assert!(background_contrast_scrim_alpha(&translucent_background) >= 0.70);
+        assert!(background_needs_foreground_lift(&translucent_background));
+
+        let gradient_background = IslandBackground::AnimatedGradient {
+            angle_degrees: 92,
+            opacity: 82,
+            duration_ms: 7200,
+            stops: vec![
+                IslandColorStop {
+                    offset: 0,
+                    color: "#eef8ff".to_string(),
+                },
+                IslandColorStop {
+                    offset: 1000,
+                    color: "#f4eaff".to_string(),
+                },
+            ],
+        };
+        assert!(background_contrast_scrim_alpha(&gradient_background) >= 0.65);
+        assert!(background_needs_foreground_lift(&gradient_background));
     }
 
     #[test]
