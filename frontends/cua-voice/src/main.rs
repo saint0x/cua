@@ -54,8 +54,8 @@ const MINIMIZED_HEIGHT: f32 = 28.0;
 const MINIMIZED_RADIUS: f32 = 14.0;
 const MINIMIZED_RIGHT_OFFSET: f32 = 220.0;
 const HEADER_PAD_X_PX: f32 = 16.0;
-const HEADER_GAP_PX: f32 = 10.0;
-const HEADER_LEAD_WIDTH_PX: f32 = 22.0;
+const HEADER_GAP_PX: f32 = 8.0;
+const HEADER_LEAD_WIDTH_PX: f32 = 28.0;
 const HEADER_ORB_PX: f32 = 18.0;
 const HEADER_RING_PX: f32 = 22.0;
 const TASK_RING_PX: f32 = 34.0;
@@ -3149,10 +3149,13 @@ mod tests {
         assert_eq!(UI_TEXT_PX, 12.0);
         assert_eq!(UI_META_PX, UI_TEXT_PX);
         assert_eq!(HEADER_ORB_PX, 18.0);
-        assert_eq!(HEADER_LEAD_WIDTH_PX, 22.0);
-        assert_eq!(HEADER_GAP_PX, 10.0);
+        assert_eq!(HEADER_GAP_PX, 8.0);
         assert_eq!(LEFT_LABEL_WIDTH, 88.0);
         assert_eq!(CENTER_LABEL_WIDTH, 356.0);
+        assert_eq!(HEADER_LEAD_WIDTH_PX, 28.0);
+        let stoplight_cluster_width = (STOPLIGHT_SIZE_PX * 3.0) + 8.0;
+        let stoplight_title_gap = HEADER_LEAD_WIDTH_PX + HEADER_GAP_PX - stoplight_cluster_width;
+        assert!(stoplight_title_gap >= 4.0);
         assert!(LEFT_LABEL_WIDTH >= estimated_center_text_width_px("Voice control"));
         assert!(CENTER_LABEL_WIDTH - LEFT_LABEL_WIDTH > 260.0);
     }
