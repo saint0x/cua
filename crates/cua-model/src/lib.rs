@@ -371,7 +371,7 @@ pub async fn run_eval(
             }
             let case_frame = case
                 .fixture_frame()
-                .unwrap_or_else(|_| None)
+                .unwrap_or(None)
                 .or_else(|| frame.clone());
             let outcome =
                 call_openrouter(&candidate, case, case_frame.as_ref(), api_key.as_deref()).await;

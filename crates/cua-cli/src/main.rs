@@ -3,6 +3,7 @@ use base64::Engine;
 use clap::{Args, Parser, Subcommand};
 use cua_capture::{CaptureRequest, FrameBus, SyntheticCaptureBackend};
 use cua_client::{CuaClient, VisualSessionMessage};
+use cua_computer::{ComputerAllocationRequest, ComputerProvider, OciCliProvider};
 use cua_core::{
     config_env_path, load_or_create_machine_identity, profile_ctx_dir, rotate_machine_identity,
     schema_bundle, verify_machine_attestation, AttestationChallengeRequest, AttestationSignRequest,
@@ -58,6 +59,10 @@ enum Command {
     Config {
         #[command(subcommand)]
         command: ConfigCommand,
+    },
+    Cloud {
+        #[command(subcommand)]
+        command: CloudCommand,
     },
     Identity {
         #[command(subcommand)]
@@ -200,6 +205,70 @@ enum PerfCommand {
 #[derive(Debug, Subcommand)]
 enum ConfigCommand {
     Status(JsonFlag),
+}
+
+#[derive(Debug, Subcommand)]
+enum CloudCommand {
+    Oci {
+        #[command(subcommand)]
+        command: OciCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum OciCommand {
+    Doctor(JsonFlag),
+    AvailabilityDomains {
+        #[arg(long)]
+        compartment_id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Launch(Box<OciLaunchArgs>),
+    Status {
+        instance_id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Terminate {
+        instance_id: String,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Args)]
+struct OciLaunchArgs {
+    #[arg(long)]
+    compartment_id: String,
+    #[arg(long)]
+    availability_domain: String,
+    #[arg(long)]
+    subnet_id: String,
+    #[arg(long)]
+    image_id: String,
+    #[arg(long, default_value = "VM.Standard.A1.Flex")]
+    shape: String,
+    #[arg(long, default_value_t = 1.0)]
+    ocpus: f32,
+    #[arg(long, default_value_t = 6.0)]
+    memory_gbs: f32,
+    #[arg(long)]
+    display_name: Option<String>,
+    #[arg(long)]
+    pool_id: Option<String>,
+    #[arg(long)]
+    region: Option<String>,
+    #[arg(long)]
+    ssh_authorized_keys: Option<PathBuf>,
+    #[arg(long)]
+    cloud_init: Option<PathBuf>,
+    #[arg(long)]
+    cua_endpoint: Option<String>,
+    #[arg(long)]
+    cua_token: Option<String>,
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -775,6 +844,7 @@ async fn main() -> anyhow::Result<()> {
         Some(Command::Manifest(flag)) => unix_get(&cli.profile, "manifest", flag.json).await,
         Some(Command::Metrics(flag)) => unix_get(&cli.profile, "metrics", flag.json).await,
         Some(Command::Config { command }) => config(&cli.profile, command).await,
+        Some(Command::Cloud { command }) => cloud(command).await,
         Some(Command::Identity { command }) => identity(command).await,
         Some(Command::Attestation { command }) => attestation(&cli.profile, command).await,
         Some(Command::Events(args)) => events(&cli.profile, args).await,
@@ -1549,7 +1619,7 @@ async fn permissions(profile: &str, command: PermissionCommand) -> anyhow::Resul
 }
 
 fn permission_report_json(preflight: bool) -> serde_json::Value {
-    let permission_report = cua_platform_macos::permission_report();
+    let permission_report = local_permission_report();
     serde_json::json!({
         "schema_version": SCHEMA_VERSION,
         "screen_recording": permission_report.screen_recording,
@@ -1563,8 +1633,26 @@ fn permission_report_json(preflight: bool) -> serde_json::Value {
     })
 }
 
+#[cfg(target_os = "macos")]
+fn local_permission_report() -> cua_core::PermissionReport {
+    cua_platform_macos::permission_report()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn local_permission_report() -> cua_core::PermissionReport {
+    cua_core::PermissionReport {
+        screen_recording: cua_core::PermissionState::NotApplicable,
+        accessibility_input: cua_core::PermissionState::NotApplicable,
+        input_monitoring: cua_core::PermissionState::NotApplicable,
+        automation: cua_core::PermissionState::NotApplicable,
+        clipboard: cua_core::PermissionState::NotApplicable,
+        portal: cua_core::PermissionState::NotApplicable,
+    }
+}
+
+#[cfg(target_os = "macos")]
 fn request_missing_desktop_permissions() {
-    let report = cua_platform_macos::permission_report();
+    let report = local_permission_report();
     if should_request_permission(report.screen_recording) {
         let _ = cua_platform_macos::request_screen_recording_access();
     }
@@ -1573,6 +1661,10 @@ fn request_missing_desktop_permissions() {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
+fn request_missing_desktop_permissions() {}
+
+#[cfg(any(target_os = "macos", test))]
 fn should_request_permission(state: cua_core::PermissionState) -> bool {
     matches!(
         state,
@@ -1611,6 +1703,106 @@ async fn config(profile: &str, command: ConfigCommand) -> anyhow::Result<()> {
     match command {
         ConfigCommand::Status(flag) => unix_get(profile, "config.status", flag.json).await,
     }
+}
+
+async fn cloud(command: CloudCommand) -> anyhow::Result<()> {
+    match command {
+        CloudCommand::Oci { command } => cloud_oci(command).await,
+    }
+}
+
+async fn cloud_oci(command: OciCommand) -> anyhow::Result<()> {
+    let provider = OciCliProvider::new();
+    match command {
+        OciCommand::Doctor(flag) => {
+            let namespace = provider.tenancy_namespace().await?;
+            let value = serde_json::json!({
+                "schema_version": SCHEMA_VERSION,
+                "provider": provider.provider_name(),
+                "authenticated": true,
+                "namespace": namespace,
+            });
+            print_json_value(&value, flag.json)
+        }
+        OciCommand::AvailabilityDomains {
+            compartment_id,
+            json,
+        } => {
+            let domains = provider.availability_domains(&compartment_id).await?;
+            print_json_value(
+                &serde_json::json!({
+                    "schema_version": SCHEMA_VERSION,
+                    "provider": provider.provider_name(),
+                    "availability_domains": domains,
+                }),
+                json,
+            )
+        }
+        OciCommand::Launch(args) => {
+            let allocation = provider
+                .allocate(ComputerAllocationRequest {
+                    provider: provider.provider_name().to_string(),
+                    pool_id: args.pool_id.clone(),
+                    region: args.region.clone(),
+                    ttl_ms: None,
+                    metadata: oci_launch_metadata(&args),
+                })
+                .await?;
+            print_json_value(
+                &serde_json::json!({
+                    "schema_version": SCHEMA_VERSION,
+                    "lease": allocation.lease,
+                    "computer_connected": allocation.computer.is_some(),
+                }),
+                args.json,
+            )
+        }
+        OciCommand::Status { instance_id, json } => {
+            let status = provider.status(&instance_id).await?;
+            print_json_value(&serde_json::to_value(status)?, json)
+        }
+        OciCommand::Terminate { instance_id, json } => {
+            let status = provider.release(&instance_id).await?;
+            print_json_value(&serde_json::to_value(status)?, json)
+        }
+    }
+}
+
+fn oci_launch_metadata(args: &OciLaunchArgs) -> BTreeMap<String, String> {
+    let mut metadata = BTreeMap::from([
+        ("compartment_id".to_string(), args.compartment_id.clone()),
+        (
+            "availability_domain".to_string(),
+            args.availability_domain.clone(),
+        ),
+        ("subnet_id".to_string(), args.subnet_id.clone()),
+        ("image_id".to_string(), args.image_id.clone()),
+        ("shape".to_string(), args.shape.clone()),
+        ("ocpus".to_string(), args.ocpus.to_string()),
+        ("memory_gbs".to_string(), args.memory_gbs.to_string()),
+    ]);
+    if let Some(display_name) = args.display_name.as_ref() {
+        metadata.insert("display_name".to_string(), display_name.clone());
+    }
+    if let Some(region) = args.region.as_ref() {
+        metadata.insert("region".to_string(), region.clone());
+    }
+    if let Some(path) = args.ssh_authorized_keys.as_ref() {
+        metadata.insert(
+            "ssh_authorized_keys".to_string(),
+            path.display().to_string(),
+        );
+    }
+    if let Some(path) = args.cloud_init.as_ref() {
+        metadata.insert("cloud_init_file".to_string(), path.display().to_string());
+    }
+    if let Some(endpoint) = args.cua_endpoint.as_ref() {
+        metadata.insert("cua_endpoint".to_string(), endpoint.clone());
+    }
+    if let Some(token) = args.cua_token.as_ref() {
+        metadata.insert("cua_token".to_string(), token.clone());
+    }
+    metadata
 }
 
 async fn identity(command: IdentityCommand) -> anyhow::Result<()> {
@@ -1933,7 +2125,7 @@ async fn runebook_command(
     }
 
     if let Some(session) = runebook.session.as_ref() {
-        let role = session.role.clone().unwrap_or(SessionRoleArg::Owner);
+        let role = session.role.unwrap_or(SessionRoleArg::Owner);
         let session_id = format!("runebook-{}", uuid::Uuid::new_v4());
         let request = SessionLeaseRequest {
             schema_version: SCHEMA_VERSION.to_string(),
@@ -4199,7 +4391,7 @@ async fn replay_trace(
     Ok(())
 }
 
-async fn read_action_turns(dir: &PathBuf) -> anyhow::Result<Vec<ActionTurnRecord>> {
+async fn read_action_turns(dir: &Path) -> anyhow::Result<Vec<ActionTurnRecord>> {
     let path = dir.join("trajectory.jsonl");
     let content = tokio::fs::read_to_string(&path)
         .await
@@ -4328,8 +4520,10 @@ async fn profile(active_profile: &str, command: ProfileCommand) -> anyhow::Resul
             session_id,
             json,
         } => {
-            let mut capabilities = CapabilityManifest::default();
-            capabilities.clipboard = clipboard;
+            let capabilities = CapabilityManifest {
+                clipboard,
+                ..Default::default()
+            };
             let value = unix_request_json_with_session(
                 active_profile,
                 "profile.create",

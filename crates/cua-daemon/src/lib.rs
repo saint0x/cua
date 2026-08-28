@@ -12,12 +12,13 @@ use axum::{
 };
 use bytes::Bytes;
 use chrono::Utc;
-#[cfg(test)]
-use cua_capture::SyntheticCaptureBackend;
 use cua_capture::{
     encode_image, CaptureRequest, CaptureSource, CapturedFrame, CapturedFrameTimings, FrameBus,
     FrameLookup,
 };
+use cua_computer::{ComputerBackend, SyntheticComputerBackend};
+#[cfg(not(test))]
+use cua_computer::{RemoteCuaComputerBackend, RemoteCuaConfig, UnavailableComputerBackend};
 use cua_core::{
     load_or_create_machine_identity, now_wall_ms, profile_daemon_trace_dir,
     profile_scratchpads_dir, profile_socket_path, profile_token_path, schema_bundle,
@@ -67,8 +68,8 @@ type HmacSha256 = Hmac<Sha256>;
 pub struct DaemonState {
     pub profile: String,
     pub started_at: chrono::DateTime<Utc>,
+    computer: Arc<dyn ComputerBackend>,
     pub frame_bus: Arc<FrameBus>,
-    pub input: Arc<dyn InputBackend>,
     encode_lane: EncodeLane,
     input_lane: InputLane,
     model_lane: ModelLane,
@@ -96,27 +97,46 @@ struct UiStepContext {
 }
 
 impl DaemonState {
-    pub fn synthetic(profile: impl Into<String>, bearer_token: impl Into<String>) -> Self {
-        Self::synthetic_with_hud_mode(profile, bearer_token, UiMode::Headful)
+    pub fn default(profile: impl Into<String>, bearer_token: impl Into<String>) -> Self {
+        Self::default_with_hud_mode(profile, bearer_token, UiMode::Headful)
     }
 
-    pub fn synthetic_with_hud_mode(
+    pub fn default_with_hud_mode(
         profile: impl Into<String>,
         bearer_token: impl Into<String>,
         hud_mode: UiMode,
     ) -> Self {
+        Self::with_computer_backend(profile, bearer_token, hud_mode, default_computer_backend())
+    }
+
+    pub fn synthetic(profile: impl Into<String>, bearer_token: impl Into<String>) -> Self {
+        Self::with_computer_backend(
+            profile,
+            bearer_token,
+            UiMode::Headful,
+            Arc::new(SyntheticComputerBackend::default()),
+        )
+    }
+
+    pub fn with_computer_backend(
+        profile: impl Into<String>,
+        bearer_token: impl Into<String>,
+        hud_mode: UiMode,
+        computer: Arc<dyn ComputerBackend>,
+    ) -> Self {
         let profile = profile.into();
-        let input = cua_platform_macos::input_backend();
+        let capture = computer.capture_backend();
+        let input = computer.input_backend();
         let events = EventLane::spawn(event_lane_capacity(), event_lane_retention());
         let state = Self {
             profile: profile.clone(),
             started_at: Utc::now(),
-            frame_bus: Arc::new(FrameBus::new(default_capture_backend())),
+            computer: computer.clone(),
+            frame_bus: Arc::new(FrameBus::new(capture)),
             encode_lane: EncodeLane::spawn(encode_lane_capacity()),
             input_lane: InputLane::spawn(input.clone(), input_lane_capacity()),
             model_lane: ModelLane::spawn(model_lane_capacity()),
-            permission_lane: PermissionLane::spawn(permission_lane_capacity()),
-            input,
+            permission_lane: PermissionLane::spawn(computer, permission_lane_capacity()),
             active_streams: Arc::new(AtomicU32::new(0)),
             bearer_token: Arc::new(bearer_token.into()),
             control: Arc::new(RwLock::new(default_control_state(&profile))),
@@ -156,6 +176,7 @@ impl DaemonState {
             active_profile: control.active_profile.name.clone(),
             active_streams: self.active_streams.load(Ordering::Relaxed),
             model_sessions: self.model_lane.active_count(),
+            computer_backend: self.computer.descriptor(),
             inventory: self.runtime_inventory().await,
             last_error: None,
         }
@@ -176,6 +197,7 @@ impl DaemonState {
                 .lock()
                 .map(|value| value.clone())
                 .unwrap_or_default(),
+            computer_backend: self.computer.descriptor(),
             config: config_inventory_state(self),
             hud_pid: self.hud_supervisor.pid().or_else(discover_hud_pid),
             connected_clients: session_snapshot.sessions.len() as u32,
@@ -211,13 +233,85 @@ fn health_status(
 }
 
 #[cfg(test)]
-fn default_capture_backend() -> Arc<dyn cua_capture::CaptureBackend> {
-    Arc::new(SyntheticCaptureBackend::default())
+fn default_computer_backend() -> Arc<dyn ComputerBackend> {
+    Arc::new(SyntheticComputerBackend::default())
 }
 
 #[cfg(not(test))]
-fn default_capture_backend() -> Arc<dyn cua_capture::CaptureBackend> {
-    cua_platform_macos::capture_backend_or_unavailable()
+fn default_computer_backend() -> Arc<dyn ComputerBackend> {
+    match std::env::var("CUA_COMPUTER_BACKEND")
+        .unwrap_or_else(|_| "local".to_string())
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "" | "local" | "macos" => configured_local_computer_backend(),
+        "remote" | "remote_cua" | "remote-cua" => configured_remote_cua_backend(
+            cua_core::ComputerBackendKind::RemoteCua,
+            std::env::var("CUA_REMOTE_CUA_PROVIDER").unwrap_or_else(|_| "remote-cua".to_string()),
+        ),
+        "oci" | "oracle_oci" | "oracle-oci" => {
+            configured_remote_cua_backend(cua_core::ComputerBackendKind::OracleOci, "oracle-oci")
+        }
+        other => Arc::new(UnavailableComputerBackend::new(format!(
+            "unknown CUA_COMPUTER_BACKEND '{other}'"
+        ))),
+    }
+}
+
+#[cfg(not(test))]
+#[cfg(target_os = "macos")]
+fn configured_local_computer_backend() -> Arc<dyn ComputerBackend> {
+    cua_platform_macos::computer_backend()
+}
+
+#[cfg(not(test))]
+#[cfg(not(target_os = "macos"))]
+fn configured_local_computer_backend() -> Arc<dyn ComputerBackend> {
+    Arc::new(UnavailableComputerBackend::new(
+        "local computer backend is only implemented for macOS; set CUA_COMPUTER_BACKEND=remote or CUA_COMPUTER_BACKEND=oci with a remote CUA endpoint on this host",
+    ))
+}
+
+#[cfg(not(test))]
+fn configured_remote_cua_backend(
+    kind: cua_core::ComputerBackendKind,
+    provider: impl Into<String>,
+) -> Arc<dyn ComputerBackend> {
+    let endpoint = match std::env::var("CUA_REMOTE_CUA_URL") {
+        Ok(value) if !value.trim().is_empty() => value,
+        _ => {
+            return Arc::new(UnavailableComputerBackend::new(
+                "CUA_REMOTE_CUA_URL is required for remote computer backends",
+            ))
+        }
+    };
+    let bearer_token = match std::env::var("CUA_REMOTE_CUA_TOKEN") {
+        Ok(value) if !value.trim().is_empty() => value,
+        _ => {
+            return Arc::new(UnavailableComputerBackend::new(
+                "CUA_REMOTE_CUA_TOKEN is required for remote computer backends",
+            ))
+        }
+    };
+    match RemoteCuaComputerBackend::new(RemoteCuaConfig {
+        kind,
+        endpoint,
+        bearer_token,
+        owner_session_id: std::env::var("CUA_REMOTE_CUA_OWNER_SESSION_ID").ok(),
+        provider: provider.into(),
+        instance_id: std::env::var("CUA_REMOTE_CUA_INSTANCE_ID").ok(),
+        pool_id: std::env::var("CUA_REMOTE_CUA_POOL_ID").ok(),
+        region: std::env::var("CUA_REMOTE_CUA_REGION")
+            .ok()
+            .or_else(|| std::env::var("OCI_REGION").ok()),
+        os: std::env::var("CUA_REMOTE_CUA_OS").unwrap_or_else(|_| "linux".to_string()),
+    }) {
+        Ok(backend) => Arc::new(backend),
+        Err(error) => Arc::new(UnavailableComputerBackend::new(format!(
+            "remote computer backend is misconfigured: {error}"
+        ))),
+    }
 }
 
 impl DaemonState {
@@ -298,7 +392,6 @@ impl HudSupervisor {
         {
             let _ = self.last_attempt_wall_ms.load(Ordering::Relaxed);
             let _ = (profile, token, mode);
-            return;
         }
         #[cfg(not(test))]
         {
@@ -1353,13 +1446,13 @@ struct PermissionLaneResult {
 }
 
 impl PermissionLane {
-    fn spawn(capacity: usize) -> Self {
+    fn spawn(computer: Arc<dyn ComputerBackend>, capacity: usize) -> Self {
         let (sender, mut receiver) = mpsc::channel::<PermissionJob>(capacity);
         tokio::spawn(async move {
             while let Some(job) = receiver.recv().await {
                 let queue_wait = job.enqueued_at.elapsed();
                 let probe_started = Instant::now();
-                let report = cua_platform_macos::permission_report();
+                let report = computer.permission_report().await;
                 let _ = job.reply.send(PermissionLaneResult {
                     queue_wait,
                     probe_duration: probe_started.elapsed(),
@@ -1527,6 +1620,7 @@ struct TraceLane {
     dir: PathBuf,
 }
 
+#[allow(clippy::large_enum_variant)]
 enum TraceJob {
     Artifact {
         relative_path: String,
@@ -1748,6 +1842,13 @@ pub fn router(state: DaemonState) -> Router {
             )),
         )
         .route(
+            "/input/dispatch",
+            post(input_action).route_layer(middleware::from_fn_with_state(
+                write_state.clone(),
+                require_http_owner_write,
+            )),
+        )
+        .route(
             "/input/keyboard",
             post(input_action).route_layer(middleware::from_fn_with_state(
                 write_state.clone(),
@@ -1796,7 +1897,7 @@ pub async fn serve(
     let token = load_or_create_profile_token(&profile).await?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let bound_addr = listener.local_addr()?;
-    let state = DaemonState::synthetic_with_hud_mode(profile, token, hud_mode);
+    let state = DaemonState::default_with_hud_mode(profile, token, hud_mode);
     if let Ok(mut http_addr) = state.http_addr.lock() {
         *http_addr = bound_addr.to_string();
     }
@@ -2120,6 +2221,7 @@ async fn handle_visual_session(
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)]
 enum VisualSessionMessage {
     Started {
         schema_version: String,
@@ -2695,10 +2797,13 @@ async fn handle_unix_request(state: &DaemonState, request: UnixRequest) -> serde
             }
         }
         "observe.desktop" => desktop_state(state).await.map(serde_json::to_value),
-        "observe.displays" => cua_platform_macos::displays()
+        "observe.displays" => state
+            .frame_bus
+            .displays()
+            .await
             .map_err(ApiError::internal)
             .map(serde_json::to_value),
-        "observe.cursor" => Ok(serde_json::to_value(cua_platform_macos::cursor_state())),
+        "observe.cursor" => Ok(serde_json::to_value(state.computer.cursor_state().await)),
         "context.snapshot" => {
             let params = request.params.unwrap_or_else(|| serde_json::json!({}));
             match serde_json::from_value::<ContextSnapshotRequest>(params) {
@@ -3014,6 +3119,7 @@ fn manifest_payload() -> Manifest {
             "GET /attestation/identity".to_string(),
             "POST /attestation/challenge".to_string(),
             "POST /attestation/sign".to_string(),
+            "POST /input/dispatch".to_string(),
             "UNIX session.acquire".to_string(),
             "UNIX session.heartbeat".to_string(),
             "UNIX session.cancel".to_string(),
@@ -3170,7 +3276,7 @@ async fn request_accessibility(State(state): State<DaemonState>) -> Json<Permiss
 
 async fn request_accessibility_state(state: &DaemonState) -> PermissionReport {
     let before = state.permission_report().await;
-    let requested = cua_platform_macos::request_accessibility_input_access();
+    let requested = state.computer.request_accessibility_input_access().await;
     let after = state.permission_report().await;
     state.publish_event(
         "permission_request",
@@ -3239,7 +3345,10 @@ async fn capture_window_payload(
     };
     let window_id = request.window_id;
     let timeout = window_capture_timeout();
-    let window = cua_platform_macos::window_list()
+    let window = state
+        .computer
+        .window_list()
+        .await
         .map_err(ApiError::internal)?
         .into_iter()
         .find(|window| window.id == window_id.to_string())
@@ -3443,7 +3552,7 @@ async fn screenshot_payload_with_step(
             Some(frame) => FrameLookup {
                 frame: frame
                     .transformed(&capture_request)
-                    .map_err(ApiError::internal)?,
+                    .map_err(ApiError::computer_backend)?,
                 cache_hit: true,
                 wait_ns: started.elapsed().as_nanos().min(u64::MAX as u128) as u64,
             },
@@ -3451,14 +3560,14 @@ async fn screenshot_payload_with_step(
                 .frame_bus
                 .latest_or_capture_timed(capture_request)
                 .await
-                .map_err(ApiError::internal)?,
+                .map_err(ApiError::computer_backend)?,
         }
     } else {
         state
             .frame_bus
             .latest_or_capture_timed(capture_request)
             .await
-            .map_err(ApiError::internal)?
+            .map_err(ApiError::computer_backend)?
     };
     observe_frame_lookup(&state.metrics, &lookup);
     state
@@ -3659,22 +3768,15 @@ async fn observe_desktop(State(state): State<DaemonState>) -> Result<Json<Deskto
 }
 
 async fn desktop_state(state: &DaemonState) -> Result<DesktopState, ApiError> {
-    let (permissions, displays, latest_frame, platform_state) = tokio::join!(
+    let (permissions, displays, latest_frame, cursor, windows) = tokio::join!(
         state.permission_report(),
         state.frame_bus.displays(),
         state.frame_bus.latest_envelope(),
-        tokio::task::spawn_blocking(|| {
-            let cursor = cua_platform_macos::cursor_state();
-            let windows = cua_platform_macos::window_list()?;
-            anyhow::Ok((cursor, windows))
-        })
+        state.computer.cursor_state(),
+        state.computer.window_list()
     );
-    let displays = displays.map_err(ApiError::internal)?;
-    let (cursor, windows) = platform_state
-        .map_err(|error| {
-            ApiError::internal(anyhow::anyhow!("desktop platform worker failed: {error}"))
-        })?
-        .map_err(ApiError::internal)?;
+    let displays = displays.map_err(ApiError::computer_backend)?;
+    let windows = windows.map_err(ApiError::computer_backend)?;
     Ok(DesktopState {
         schema_version: SCHEMA_VERSION.to_string(),
         displays,
@@ -3693,13 +3795,12 @@ async fn observe_displays(
             .frame_bus
             .displays()
             .await
-            .map_err(ApiError::internal)?,
+            .map_err(ApiError::computer_backend)?,
     ))
 }
 
 async fn observe_cursor(State(state): State<DaemonState>) -> Json<cua_core::CursorState> {
-    drop(state);
-    Json(cua_platform_macos::cursor_state())
+    Json(state.computer.cursor_state().await)
 }
 
 #[derive(Debug, Deserialize)]
@@ -4449,6 +4550,7 @@ async fn runtime_identity_claims(
         designated_requirement: code_identity.designated_requirement,
         code_signature_summary: code_identity.code_signature_summary,
         binary_sha256: current_exe_sha256().ok(),
+        computer_backend: state.computer.descriptor(),
         permissions,
         active_profile: control.active_profile,
         safety_state: control.safety_state,
@@ -5323,7 +5425,7 @@ async fn dispatch_input_action(state: &DaemonState, action: InputAction) -> cua_
             5_000,
         );
     }
-    let action_json = serde_json::to_value(&action).unwrap_or_else(|_| serde_json::json!(null));
+    let action_json = serde_json::to_value(&action).unwrap_or(serde_json::Value::Null);
     let capture_trace_snapshots = captures_trace_snapshots(&action);
     let before = if capture_trace_snapshots {
         trace_snapshot(state, &turn_id, "before").await
@@ -5364,7 +5466,7 @@ async fn dispatch_input_action(state: &DaemonState, action: InputAction) -> cua_
             state,
             turn_id,
             action_json,
-            serde_json::to_value(&result).unwrap_or_else(|_| serde_json::json!(null)),
+            serde_json::to_value(&result).unwrap_or(serde_json::Value::Null),
             before,
             after,
         )
@@ -5423,7 +5525,7 @@ async fn dispatch_input_action(state: &DaemonState, action: InputAction) -> cua_
         state,
         turn_id,
         action_json,
-        serde_json::to_value(&result).unwrap_or_else(|_| serde_json::json!(null)),
+        serde_json::to_value(&result).unwrap_or(serde_json::Value::Null),
         before,
         after,
     )
@@ -5443,6 +5545,7 @@ async fn dispatch_input_action(state: &DaemonState, action: InputAction) -> cua_
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn dispatch_sequence_action(
     state: &DaemonState,
     actions: Vec<InputAction>,
@@ -5546,7 +5649,7 @@ async fn dispatch_sequence_action(
         state,
         turn_id,
         action_json,
-        serde_json::to_value(&aggregate).unwrap_or_else(|_| serde_json::json!(null)),
+        serde_json::to_value(&aggregate).unwrap_or(serde_json::Value::Null),
         before,
         after,
     )
@@ -5612,7 +5715,7 @@ async fn refused_traced_input(
         state,
         turn_id,
         action_json,
-        serde_json::to_value(&result).unwrap_or_else(|_| serde_json::json!(null)),
+        serde_json::to_value(&result).unwrap_or(serde_json::Value::Null),
         before,
         after,
     )
@@ -5696,7 +5799,7 @@ async fn dispatch_control_action(
         state,
         turn_id,
         action_json,
-        serde_json::to_value(&result).unwrap_or_else(|_| serde_json::json!(null)),
+        serde_json::to_value(&result).unwrap_or(serde_json::Value::Null),
         None,
         None,
     )
@@ -5745,7 +5848,7 @@ async fn clipboard_read_state(
     let started = Instant::now();
     let action = "clipboard_read";
     let turn_id = Uuid::new_v4().to_string();
-    let action_json = serde_json::to_value(&request).unwrap_or_else(|_| serde_json::json!(null));
+    let action_json = serde_json::to_value(&request).unwrap_or(serde_json::Value::Null);
     let before = trace_snapshot(state, &turn_id, "before").await;
     if request.schema_version != SCHEMA_VERSION {
         state.metrics.increment(CounterKind::ClipboardRefusals);
@@ -5816,7 +5919,7 @@ async fn clipboard_write_state(
     let started = Instant::now();
     let action = "clipboard_write";
     let turn_id = Uuid::new_v4().to_string();
-    let action_json = serde_json::to_value(&request).unwrap_or_else(|_| serde_json::json!(null));
+    let action_json = serde_json::to_value(&request).unwrap_or(serde_json::Value::Null);
     let before = trace_snapshot(state, &turn_id, "before").await;
     if request.schema_version != SCHEMA_VERSION {
         state.metrics.increment(CounterKind::ClipboardRefusals);
@@ -5897,7 +6000,7 @@ async fn append_clipboard_turn(
         state,
         turn_id,
         action_json,
-        serde_json::to_value(result).unwrap_or_else(|_| serde_json::json!(null)),
+        serde_json::to_value(result).unwrap_or(serde_json::Value::Null),
         before,
         after,
     )
@@ -6368,6 +6471,14 @@ impl ApiError {
         )
     }
 
+    fn computer_backend(error: anyhow::Error) -> Self {
+        let message = error.to_string();
+        if is_backend_unavailable_message(&message) {
+            return Self::busy(message);
+        }
+        Self::internal(error)
+    }
+
     fn bad_request(field: impl Into<String>, message: impl Into<String>) -> Self {
         let mut details = BTreeMap::new();
         details.insert("field".to_string(), field.into());
@@ -6407,6 +6518,20 @@ impl ApiError {
     }
 }
 
+fn is_backend_unavailable_message(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    [
+        "unavailable",
+        "not connected",
+        "not implemented",
+        "only implemented",
+        "remote cua endpoint is required",
+        "remote computer backend is misconfigured",
+    ]
+    .iter()
+    .any(|needle| normalized.contains(needle))
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let mut headers = HeaderMap::new();
@@ -6421,6 +6546,108 @@ impl IntoResponse for ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug)]
+    struct AcceptingInputBackend;
+
+    #[async_trait::async_trait]
+    impl InputBackend for AcceptingInputBackend {
+        async fn execute(&self, request: InputRequest) -> InputResult {
+            input_result_with_id(
+                request.idempotency_key,
+                Effect::Confirmed,
+                InputRoute::SystemApi,
+                DeliveryMode::Background,
+                EvidenceKind::ValueReadback,
+                "accepted by test computer backend",
+            )
+        }
+
+        fn name(&self) -> &'static str {
+            "test-accepting"
+        }
+    }
+
+    struct TestComputerBackend {
+        input: Arc<AcceptingInputBackend>,
+        descriptor: cua_core::ComputerBackendDescriptor,
+        cursor: cua_core::CursorState,
+        windows: Vec<WindowInfo>,
+        permissions: PermissionReport,
+    }
+
+    impl Default for TestComputerBackend {
+        fn default() -> Self {
+            Self {
+                input: Arc::new(AcceptingInputBackend),
+                descriptor: cua_core::ComputerBackendDescriptor {
+                    kind: cua_core::ComputerBackendKind::Synthetic,
+                    provider: "test".to_string(),
+                    runtime: "cua".to_string(),
+                    instance_id: Some("test-instance".to_string()),
+                    pool_id: Some("test-pool".to_string()),
+                    region: Some("test-region".to_string()),
+                    os: "test-os".to_string(),
+                    capabilities: CapabilityManifest::default(),
+                },
+                cursor: cua_core::CursorState {
+                    x: 12.0,
+                    y: 34.0,
+                    visible: true,
+                    included_in_frame: false,
+                },
+                windows: Vec::new(),
+                permissions: PermissionReport {
+                    screen_recording: PermissionState::NotApplicable,
+                    accessibility_input: PermissionState::NotApplicable,
+                    input_monitoring: PermissionState::NotApplicable,
+                    automation: PermissionState::NotApplicable,
+                    clipboard: PermissionState::NotApplicable,
+                    portal: PermissionState::NotApplicable,
+                },
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ComputerBackend for TestComputerBackend {
+        fn descriptor(&self) -> cua_core::ComputerBackendDescriptor {
+            self.descriptor.clone()
+        }
+
+        fn capture_backend(&self) -> Arc<dyn cua_capture::CaptureBackend> {
+            Arc::new(cua_capture::SyntheticCaptureBackend::default())
+        }
+
+        fn input_backend(&self) -> Arc<dyn InputBackend> {
+            self.input.clone()
+        }
+
+        async fn permission_report(&self) -> PermissionReport {
+            self.permissions.clone()
+        }
+
+        async fn request_accessibility_input_access(&self) -> PermissionState {
+            self.permissions.accessibility_input.clone()
+        }
+
+        async fn cursor_state(&self) -> cua_core::CursorState {
+            self.cursor.clone()
+        }
+
+        async fn window_list(&self) -> anyhow::Result<Vec<WindowInfo>> {
+            Ok(self.windows.clone())
+        }
+    }
+
+    fn accepting_test_state() -> DaemonState {
+        DaemonState::with_computer_backend(
+            "test",
+            "token",
+            UiMode::Headful,
+            Arc::new(TestComputerBackend::default()),
+        )
+    }
 
     fn test_compact_scene(mode: UiMode) -> cua_core::IslandScene {
         cua_core::IslandScene {
@@ -6693,6 +6920,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn health_reports_selected_computer_backend() {
+        let state = accepting_test_state();
+
+        let health = state.health().await;
+
+        assert_eq!(health.computer_backend.provider, "test");
+        assert_eq!(health.inventory.computer_backend.provider, "test");
+        assert_eq!(
+            health.computer_backend.kind,
+            cua_core::ComputerBackendKind::Synthetic
+        );
+    }
+
+    #[tokio::test]
+    async fn desktop_state_uses_selected_computer_backend_observation() {
+        let mut backend = TestComputerBackend::default();
+        backend.cursor.x = 111.0;
+        backend.cursor.y = 222.0;
+        backend.windows = vec![WindowInfo {
+            id: "remote-window".to_string(),
+            app_name: Some("Remote App".to_string()),
+            title: Some("Remote Window".to_string()),
+            layer: 0,
+            x: 10,
+            y: 20,
+            width: 300,
+            height: 200,
+            focused: true,
+        }];
+        let state =
+            DaemonState::with_computer_backend("test", "token", UiMode::Headful, Arc::new(backend));
+
+        let desktop = desktop_state(&state).await.unwrap();
+
+        assert_eq!(desktop.cursor.x, 111.0);
+        assert_eq!(desktop.cursor.y, 222.0);
+        assert_eq!(desktop.windows[0].id, "remote-window");
+    }
+
+    #[tokio::test]
     async fn model_lane_refuses_when_queue_is_full() {
         let (sender, _receiver) = mpsc::channel(1);
         let (reply, _wait) = oneshot::channel();
@@ -6876,13 +7143,10 @@ mod tests {
             handle_unix_request(&state, unix_request("status", serde_json::json!({}))).await,
         );
         assert_eq!(status["active_profile"], "unix-methods");
-        assert_eq!(
-            status["inventory"]["config"]["profile_root"]
-                .as_str()
-                .unwrap()
-                .contains("unix-methods"),
-            true
-        );
+        assert!(status["inventory"]["config"]["profile_root"]
+            .as_str()
+            .unwrap()
+            .contains("unix-methods"));
         assert_eq!(
             status["inventory"]["config"]["profile_token_present"],
             false
@@ -7649,6 +7913,15 @@ mod tests {
         assert_eq!(body.details["status"], "503");
     }
 
+    #[test]
+    fn backend_unavailable_errors_map_to_service_unavailable() {
+        let ApiError(body, status) =
+            ApiError::computer_backend(anyhow::anyhow!("native capture unavailable"));
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body.code, "busy");
+        assert_eq!(body.message, "native capture unavailable");
+    }
+
     fn unix_request(method: &str, params: serde_json::Value) -> UnixRequest {
         unix_request_with_optional_session(method, params, None)
     }
@@ -8173,7 +8446,7 @@ mod tests {
 
     #[tokio::test]
     async fn sequence_dispatch_emits_leaf_protocol_steps() {
-        let state = DaemonState::synthetic("test", "token");
+        let state = accepting_test_state();
 
         let result = dispatch_input_action(
             &state,
@@ -8203,9 +8476,7 @@ mod tests {
             .filter_map(|event| event["data"]["label"].as_str())
             .collect::<Vec<_>>();
         assert!(
-            labels
-                .iter()
-                .any(|label| *label == "Preparing sequence 2 actions"),
+            labels.contains(&"Preparing sequence 2 actions"),
             "{labels:?}"
         );
         assert!(
@@ -8221,9 +8492,7 @@ mod tests {
             "{labels:?}"
         );
         assert!(
-            labels
-                .iter()
-                .any(|label| *label == "Confirmed sequence 2 actions"),
+            labels.contains(&"Confirmed sequence 2 actions"),
             "{labels:?}"
         );
     }

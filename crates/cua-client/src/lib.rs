@@ -377,6 +377,7 @@ impl CuaClient {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn ui_step(
         &self,
         label: impl Into<String>,
@@ -897,6 +898,7 @@ impl CuaSession {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn ui_step(
         &mut self,
         label: impl Into<String>,

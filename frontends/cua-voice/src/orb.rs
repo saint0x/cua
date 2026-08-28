@@ -215,6 +215,7 @@ fn build_band(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn push_dot(
     out: &mut Vec<DottedOrbDot>,
     size: f32,

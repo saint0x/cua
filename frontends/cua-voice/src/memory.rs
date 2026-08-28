@@ -135,7 +135,7 @@ impl CtxMemory {
                 request,
             ])
             .await?;
-        Ok(format_ctx_frame(&output)?)
+        format_ctx_frame(&output)
     }
 
     pub async fn remember_chat_turn(

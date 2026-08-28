@@ -4,6 +4,8 @@ The canonical programmable surface is the cua runebook plus the local daemon pro
 
 Reads are available immediately after connecting. Mutations should acquire an owner session first and pass that session to write helpers. The bearer token authenticates access to the local daemon; it is not an owner lease. Profile policy still decides whether capabilities such as clipboard are granted.
 
+Status and session inventory responses include `computer_backend`, which identifies the selected computer substrate. A default install reports the local macOS backend. Remote CUA and Oracle OCI-backed computers preserve the same SDK-facing protocol instead of adding a parallel runtime.
+
 ## Rust
 
 `crates/cua-client` is the shared Rust client for the profile-local Unix socket.
@@ -59,7 +61,7 @@ print(cua.config_status())
 print(cua.inbox_publish("what do you see on my screen?"))
 ```
 
-The TypeScript and Python packages shell to `cua run`, typed CLI commands, and Unix RPC. They expose one-shot context/screenshot helpers, frame-relative dispatch, owner sessions, local attestation signing, and inbox/webhook helpers. Rust exposes persistent visual sessions directly. Cloud-enrollment helpers are not shipped yet.
+The TypeScript and Python packages shell to `cua run`, typed CLI commands, and Unix RPC. They expose one-shot context/screenshot helpers, frame-relative dispatch, owner sessions, local attestation signing, backend status discovery, and inbox/webhook helpers. Rust exposes persistent visual sessions directly. Cloud-enrollment helpers are not shipped yet, but the CLI exposes `cua cloud oci doctor`, `cua cloud oci availability-domains`, `cua cloud oci launch`, `cua cloud oci status`, and `cua cloud oci terminate` for OCI-backed fleet operations.
 
 ## Examples And Proofs
 

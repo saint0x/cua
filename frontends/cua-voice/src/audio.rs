@@ -86,21 +86,22 @@ fn record_default_input_with_policy(
         .with_context(|| format!("read default input config {device_name}"))?;
     let sample_rate = config.sample_rate();
     let channels = config.channels();
-    let sample_format = format!("{:?}", config.sample_format());
+    let input_sample_format = config.sample_format();
+    let sample_format = format!("{input_sample_format:?}");
     let samples = Arc::new(Mutex::new(Vec::<i16>::new()));
     let captured = samples.clone();
     let err_device = device_name.clone();
     let err_fn = move |err| eprintln!("cua voice input stream error on {err_device}: {err}");
-    let stream_config: cpal::StreamConfig = config.clone().into();
-    let stream = match config.sample_format() {
+    let stream_config: cpal::StreamConfig = config.into();
+    let stream = match input_sample_format {
         cpal::SampleFormat::I16 => device.build_input_stream(
-            stream_config.clone(),
+            stream_config,
             move |data: &[i16], _| push_interleaved(data, channels, &captured),
             err_fn,
             None,
         ),
         cpal::SampleFormat::U16 => device.build_input_stream(
-            stream_config.clone(),
+            stream_config,
             move |data: &[u16], _| push_interleaved(data, channels, &captured),
             err_fn,
             None,

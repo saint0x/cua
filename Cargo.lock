@@ -1530,6 +1530,7 @@ dependencies = [
  "clap",
  "cua-capture",
  "cua-client",
+ "cua-computer",
  "cua-core",
  "cua-daemon",
  "cua-input",
@@ -1574,6 +1575,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "cua-computer"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64",
+ "cua-capture",
+ "cua-core",
+ "cua-input",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "cua-core"
 version = "0.1.0"
 dependencies = [
@@ -1595,11 +1613,13 @@ name = "cua-daemon"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "base64",
  "bytes",
  "chrono",
  "cua-capture",
+ "cua-computer",
  "cua-core",
  "cua-input",
  "cua-model",
@@ -1652,6 +1672,7 @@ dependencies = [
  "async-trait",
  "block2",
  "cua-capture",
+ "cua-computer",
  "cua-core",
  "cua-input",
  "image",

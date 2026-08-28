@@ -168,7 +168,7 @@ impl CapturedFrame {
                 expected_len
             );
             let mut rgba = Vec::with_capacity(self.bytes.len());
-            for pixel in self.bytes.chunks_exact(4) {
+            for pixel in self.bytes.as_slice().as_chunks::<4>().0 {
                 rgba.extend_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
             }
             return ImageBuffer::from_raw(self.envelope.width, self.envelope.height, rgba)

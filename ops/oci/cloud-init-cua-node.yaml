@@ -1,0 +1,36 @@
+#cloud-config
+package_update: true
+package_upgrade: false
+packages:
+  - ca-certificates
+  - curl
+  - git
+  - jq
+  - build-essential
+  - pkg-config
+  - libssl-dev
+  - xvfb
+  - x11vnc
+  - fluxbox
+write_files:
+  - path: /etc/cua-node.json
+    permissions: "0644"
+    content: |
+      {
+        "schema_version": "cua.node.v1",
+        "provider": "oracle-oci",
+        "role": "bootstrap",
+        "control_plane": "not_ready",
+        "reason": "Linux capture/input backend is not shipped in this repository yet"
+      }
+  - path: /usr/local/bin/cua-node-status
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      cat /etc/cua-node.json
+runcmd:
+  - [bash, -lc, "mkdir -p /opt/cua /var/log/cua"]
+  - [bash, -lc, "curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal || true"]
+  - [bash, -lc, "PATH=/root/.cargo/bin:$PATH rustup component add clippy || true"]
+  - [bash, -lc, "echo cua-node bootstrap complete > /var/log/cua/bootstrap.log"]

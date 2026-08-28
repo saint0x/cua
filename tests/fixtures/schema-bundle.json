@@ -219,6 +219,63 @@
           ],
           "type": "object"
         },
+        "ComputerBackendDescriptor": {
+          "properties": {
+            "capabilities": {
+              "$ref": "#/definitions/CapabilityManifest"
+            },
+            "instance_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "$ref": "#/definitions/ComputerBackendKind"
+            },
+            "os": {
+              "type": "string"
+            },
+            "pool_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "provider": {
+              "type": "string"
+            },
+            "region": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "runtime": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "capabilities",
+            "kind",
+            "os",
+            "provider",
+            "runtime"
+          ],
+          "type": "object"
+        },
+        "ComputerBackendKind": {
+          "enum": [
+            "local",
+            "oracle_oci",
+            "cloud_managed",
+            "quilt_vm",
+            "remote_cua",
+            "synthetic",
+            "unavailable"
+          ],
+          "type": "string"
+        },
         "MachineAttestation": {
           "properties": {
             "challenge": {
@@ -399,6 +456,9 @@
                 "null"
               ]
             },
+            "computer_backend": {
+              "$ref": "#/definitions/ComputerBackendDescriptor"
+            },
             "daemon_pid": {
               "format": "uint32",
               "minimum": 0.0,
@@ -443,6 +503,7 @@
           },
           "required": [
             "active_profile",
+            "computer_backend",
             "daemon_pid",
             "http_addr",
             "permissions",
@@ -697,6 +758,123 @@
       ],
       "title": "ClipboardWriteRequest",
       "type": "object"
+    },
+    "ComputerBackendDescriptor": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "definitions": {
+        "CapabilityManifest": {
+          "properties": {
+            "actions": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "apps": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "clipboard": {
+              "type": "boolean"
+            },
+            "displays": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "max_fps": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "model_egress": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "actions",
+            "apps",
+            "clipboard",
+            "displays",
+            "max_fps",
+            "model_egress"
+          ],
+          "type": "object"
+        },
+        "ComputerBackendKind": {
+          "enum": [
+            "local",
+            "oracle_oci",
+            "cloud_managed",
+            "quilt_vm",
+            "remote_cua",
+            "synthetic",
+            "unavailable"
+          ],
+          "type": "string"
+        }
+      },
+      "properties": {
+        "capabilities": {
+          "$ref": "#/definitions/CapabilityManifest"
+        },
+        "instance_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kind": {
+          "$ref": "#/definitions/ComputerBackendKind"
+        },
+        "os": {
+          "type": "string"
+        },
+        "pool_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider": {
+          "type": "string"
+        },
+        "region": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runtime": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "capabilities",
+        "kind",
+        "os",
+        "provider",
+        "runtime"
+      ],
+      "title": "ComputerBackendDescriptor",
+      "type": "object"
+    },
+    "ComputerBackendKind": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "enum": [
+        "local",
+        "oracle_oci",
+        "cloud_managed",
+        "quilt_vm",
+        "remote_cua",
+        "synthetic",
+        "unavailable"
+      ],
+      "title": "ComputerBackendKind",
+      "type": "string"
     },
     "ConfigInventory": {
       "$schema": "http://json-schema.org/draft-07/schema#",
@@ -2510,6 +2688,48 @@
     "HealthReport": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "definitions": {
+        "CapabilityManifest": {
+          "properties": {
+            "actions": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "apps": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "clipboard": {
+              "type": "boolean"
+            },
+            "displays": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "max_fps": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "model_egress": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "actions",
+            "apps",
+            "clipboard",
+            "displays",
+            "max_fps",
+            "model_egress"
+          ],
+          "type": "object"
+        },
         "CapabilityState": {
           "enum": [
             "ready",
@@ -2517,6 +2737,63 @@
             "refused",
             "unsupported",
             "unknown"
+          ],
+          "type": "string"
+        },
+        "ComputerBackendDescriptor": {
+          "properties": {
+            "capabilities": {
+              "$ref": "#/definitions/CapabilityManifest"
+            },
+            "instance_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "$ref": "#/definitions/ComputerBackendKind"
+            },
+            "os": {
+              "type": "string"
+            },
+            "pool_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "provider": {
+              "type": "string"
+            },
+            "region": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "runtime": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "capabilities",
+            "kind",
+            "os",
+            "provider",
+            "runtime"
+          ],
+          "type": "object"
+        },
+        "ComputerBackendKind": {
+          "enum": [
+            "local",
+            "oracle_oci",
+            "cloud_managed",
+            "quilt_vm",
+            "remote_cua",
+            "synthetic",
+            "unavailable"
           ],
           "type": "string"
         },
@@ -2843,6 +3120,9 @@
         },
         "RuntimeInventory": {
           "properties": {
+            "computer_backend": {
+              "$ref": "#/definitions/ComputerBackendDescriptor"
+            },
             "config": {
               "$ref": "#/definitions/ConfigInventory"
             },
@@ -2887,6 +3167,7 @@
             }
           },
           "required": [
+            "computer_backend",
             "config",
             "connected_clients",
             "daemon_pid",
@@ -2966,6 +3247,9 @@
           "minimum": 0.0,
           "type": "integer"
         },
+        "computer_backend": {
+          "$ref": "#/definitions/ComputerBackendDescriptor"
+        },
         "inventory": {
           "$ref": "#/definitions/RuntimeInventory"
         },
@@ -3016,6 +3300,7 @@
       "required": [
         "active_profile",
         "active_streams",
+        "computer_backend",
         "inventory",
         "model_sessions",
         "permissions",
@@ -5698,6 +5983,63 @@
           ],
           "type": "object"
         },
+        "ComputerBackendDescriptor": {
+          "properties": {
+            "capabilities": {
+              "$ref": "#/definitions/CapabilityManifest"
+            },
+            "instance_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "$ref": "#/definitions/ComputerBackendKind"
+            },
+            "os": {
+              "type": "string"
+            },
+            "pool_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "provider": {
+              "type": "string"
+            },
+            "region": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "runtime": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "capabilities",
+            "kind",
+            "os",
+            "provider",
+            "runtime"
+          ],
+          "type": "object"
+        },
+        "ComputerBackendKind": {
+          "enum": [
+            "local",
+            "oracle_oci",
+            "cloud_managed",
+            "quilt_vm",
+            "remote_cua",
+            "synthetic",
+            "unavailable"
+          ],
+          "type": "string"
+        },
         "MachineIdentity": {
           "properties": {
             "created_wall_ms": {
@@ -5842,6 +6184,9 @@
                 "null"
               ]
             },
+            "computer_backend": {
+              "$ref": "#/definitions/ComputerBackendDescriptor"
+            },
             "daemon_pid": {
               "format": "uint32",
               "minimum": 0.0,
@@ -5886,6 +6231,7 @@
           },
           "required": [
             "active_profile",
+            "computer_backend",
             "daemon_pid",
             "http_addr",
             "permissions",
@@ -6460,6 +6806,63 @@
           ],
           "type": "object"
         },
+        "ComputerBackendDescriptor": {
+          "properties": {
+            "capabilities": {
+              "$ref": "#/definitions/CapabilityManifest"
+            },
+            "instance_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "$ref": "#/definitions/ComputerBackendKind"
+            },
+            "os": {
+              "type": "string"
+            },
+            "pool_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "provider": {
+              "type": "string"
+            },
+            "region": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "runtime": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "capabilities",
+            "kind",
+            "os",
+            "provider",
+            "runtime"
+          ],
+          "type": "object"
+        },
+        "ComputerBackendKind": {
+          "enum": [
+            "local",
+            "oracle_oci",
+            "cloud_managed",
+            "quilt_vm",
+            "remote_cua",
+            "synthetic",
+            "unavailable"
+          ],
+          "type": "string"
+        },
         "PermissionReport": {
           "properties": {
             "accessibility_input": {
@@ -6579,6 +6982,9 @@
             "null"
           ]
         },
+        "computer_backend": {
+          "$ref": "#/definitions/ComputerBackendDescriptor"
+        },
         "daemon_pid": {
           "format": "uint32",
           "minimum": 0.0,
@@ -6623,6 +7029,7 @@
       },
       "required": [
         "active_profile",
+        "computer_backend",
         "daemon_pid",
         "http_addr",
         "permissions",
@@ -6639,6 +7046,105 @@
     "RuntimeInventory": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "definitions": {
+        "CapabilityManifest": {
+          "properties": {
+            "actions": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "apps": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "clipboard": {
+              "type": "boolean"
+            },
+            "displays": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "max_fps": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "model_egress": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "actions",
+            "apps",
+            "clipboard",
+            "displays",
+            "max_fps",
+            "model_egress"
+          ],
+          "type": "object"
+        },
+        "ComputerBackendDescriptor": {
+          "properties": {
+            "capabilities": {
+              "$ref": "#/definitions/CapabilityManifest"
+            },
+            "instance_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "$ref": "#/definitions/ComputerBackendKind"
+            },
+            "os": {
+              "type": "string"
+            },
+            "pool_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "provider": {
+              "type": "string"
+            },
+            "region": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "runtime": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "capabilities",
+            "kind",
+            "os",
+            "provider",
+            "runtime"
+          ],
+          "type": "object"
+        },
+        "ComputerBackendKind": {
+          "enum": [
+            "local",
+            "oracle_oci",
+            "cloud_managed",
+            "quilt_vm",
+            "remote_cua",
+            "synthetic",
+            "unavailable"
+          ],
+          "type": "string"
+        },
         "ConfigInventory": {
           "properties": {
             "artifact_root": {
@@ -6800,6 +7306,9 @@
         }
       },
       "properties": {
+        "computer_backend": {
+          "$ref": "#/definitions/ComputerBackendDescriptor"
+        },
         "config": {
           "$ref": "#/definitions/ConfigInventory"
         },
@@ -6844,6 +7353,7 @@
         }
       },
       "required": [
+        "computer_backend",
         "config",
         "connected_clients",
         "daemon_pid",

@@ -532,6 +532,7 @@ fn publish_audio_diagnostic(tx: &Sender<VoiceUiEvent>, audio: &RecordedAudio) {
     .ok();
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn plan_and_dispatch(
     config: VoiceConfig,
     transcript: String,
@@ -951,6 +952,7 @@ fn context_prefetch_timeout() -> Duration {
     Duration::from_millis(ms)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn dispatch_plan(
     local: CuaClient,
     mut session: Option<CuaSession>,
@@ -1129,10 +1131,10 @@ fn turn_effect(turn: &CompletedAssistantTurn) -> Option<String> {
 }
 
 fn action_needs_fresh_verification(action: &serde_json::Value) -> bool {
-    match action.get("kind").and_then(|kind| kind.as_str()) {
-        Some("sequence" | "key_type" | "key_paste" | "shell_exec" | "aegis" | "ctx") => true,
-        _ => false,
-    }
+    matches!(
+        action.get("kind").and_then(|kind| kind.as_str()),
+        Some("sequence" | "key_type" | "key_paste" | "shell_exec" | "aegis" | "ctx")
+    )
 }
 
 fn action_is_text_entry(action: &serde_json::Value) -> bool {
@@ -2357,12 +2359,12 @@ mod tests {
 
     #[test]
     fn voice_step_flush_does_not_hold_turn_completion() {
-        assert!(VOICE_STEP_FLUSH_TIMEOUT_MS <= 150);
+        const { assert!(VOICE_STEP_FLUSH_TIMEOUT_MS <= 150) };
     }
 
     #[test]
     fn voice_step_request_timeout_stays_latency_oriented() {
-        assert!(VOICE_STEP_TIMEOUT_MS <= 150);
+        const { assert!(VOICE_STEP_TIMEOUT_MS <= 150) };
     }
 
     #[test]

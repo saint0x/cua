@@ -1607,6 +1607,7 @@ fn actor_fill_color(kind: &IslandActorKind, accent: Hsla) -> Hsla {
     hsla(accent.h, accent.s, lightness, 0.92)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn paint_activity_ring(
     window: &mut Window,
     bounds: Bounds<Pixels>,
@@ -2528,24 +2529,17 @@ fn start_agent_step_poll(profile: String, debug_trace: bool, tx: Sender<VoiceUiE
                             }
                         }
                     }
-                    loop {
-                        match session.events_wait(last_sequence, 1_000).await {
-                            Ok(events) => {
-                                for event in events {
-                                    if debug_trace {
-                                        eprintln!("cua HUD event poll received {event}");
-                                    }
-                                    if let Some(event) =
-                                        agent_ui_event_from_daemon_event_advancing_cursor(
-                                            &event,
-                                            &mut last_sequence,
-                                        )
-                                    {
-                                        tx.send(event).ok();
-                                    }
-                                }
+                    while let Ok(events) = session.events_wait(last_sequence, 1_000).await {
+                        for event in events {
+                            if debug_trace {
+                                eprintln!("cua HUD event poll received {event}");
                             }
-                            Err(_) => break,
+                            if let Some(event) = agent_ui_event_from_daemon_event_advancing_cursor(
+                                &event,
+                                &mut last_sequence,
+                            ) {
+                                tx.send(event).ok();
+                            }
                         }
                     }
                     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -3516,8 +3510,8 @@ mod tests {
     #[test]
     fn compact_hud_controls_share_center_axis() {
         assert_eq!(COMPACT_ROW_ITEM_HEIGHT_PX % 2.0, 0.0);
-        assert!(COMPACT_ROW_ITEM_HEIGHT_PX < COMPACT_HEIGHT);
-        assert!(UI_LINE_HEIGHT_PX <= COMPACT_ROW_ITEM_HEIGHT_PX);
+        const { assert!(COMPACT_ROW_ITEM_HEIGHT_PX < COMPACT_HEIGHT) };
+        const { assert!(UI_LINE_HEIGHT_PX <= COMPACT_ROW_ITEM_HEIGHT_PX) };
         assert_eq!(compact_content_axis_y(), COMPACT_HEIGHT / 2.0);
         assert_eq!(compact_row_frame_axis_y(), COMPACT_HEIGHT / 2.0);
         assert_eq!(
@@ -3542,7 +3536,7 @@ mod tests {
             header_title_width_px("Voice control")
                 >= estimated_header_text_width_px("Voice control")
         );
-        assert!(HEADER_TITLE_DIVIDER_GAP_PX < HEADER_GAP_PX);
+        const { assert!(HEADER_TITLE_DIVIDER_GAP_PX < HEADER_GAP_PX) };
     }
 
     #[test]

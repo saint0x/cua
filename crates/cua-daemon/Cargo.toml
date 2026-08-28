@@ -7,15 +7,16 @@ version.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+async-trait.workspace = true
 axum.workspace = true
 base64.workspace = true
 bytes.workspace = true
 chrono.workspace = true
 cua-capture = { path = "../cua-capture" }
+cua-computer = { path = "../cua-computer" }
 cua-core = { path = "../cua-core" }
 cua-input = { path = "../cua-input" }
 cua-model = { path = "../cua-model" }
-cua-platform-macos = { path = "../cua-platform-macos" }
 cua-trace = { path = "../cua-trace" }
 futures.workspace = true
 hmac.workspace = true
@@ -29,3 +30,6 @@ tokio-stream.workspace = true
 tower-http.workspace = true
 tracing.workspace = true
 uuid.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+cua-platform-macos = { path = "../cua-platform-macos" }

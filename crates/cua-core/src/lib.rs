@@ -418,6 +418,45 @@ impl Default for CapabilityManifest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ComputerBackendKind {
+    Local,
+    OracleOci,
+    CloudManaged,
+    QuiltVm,
+    RemoteCua,
+    Synthetic,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ComputerBackendDescriptor {
+    pub kind: ComputerBackendKind,
+    pub provider: String,
+    pub runtime: String,
+    pub instance_id: Option<String>,
+    pub pool_id: Option<String>,
+    pub region: Option<String>,
+    pub os: String,
+    pub capabilities: CapabilityManifest,
+}
+
+impl ComputerBackendDescriptor {
+    pub fn synthetic() -> Self {
+        Self {
+            kind: ComputerBackendKind::Synthetic,
+            provider: "synthetic".to_string(),
+            runtime: "cua".to_string(),
+            instance_id: None,
+            pool_id: None,
+            region: None,
+            os: "synthetic".to_string(),
+            capabilities: CapabilityManifest::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct ProfilePolicy {
     pub schema_version: String,
     pub name: String,
@@ -461,6 +500,7 @@ pub struct RuntimeInventory {
     pub daemon_pid: u32,
     pub http_addr: String,
     pub profile_socket: String,
+    pub computer_backend: ComputerBackendDescriptor,
     pub config: ConfigInventory,
     pub hud_pid: Option<u32>,
     pub connected_clients: u32,
@@ -561,6 +601,7 @@ pub struct RuntimeIdentityClaims {
     pub designated_requirement: Option<String>,
     pub code_signature_summary: Option<String>,
     pub binary_sha256: Option<String>,
+    pub computer_backend: ComputerBackendDescriptor,
     pub permissions: PermissionReport,
     pub active_profile: ProfilePolicy,
     pub safety_state: SafetyState,
@@ -726,13 +767,7 @@ fn load_or_create_machine_identity_at(
     previous_keys_dir: &Path,
 ) -> anyhow::Result<MachineIdentityStatus> {
     let key = read_or_create_machine_key(metadata_path, key_path)?;
-    Ok(machine_identity_status(
-        audience,
-        &key,
-        metadata_path,
-        key_path,
-        previous_keys_dir,
-    )?)
+    machine_identity_status(audience, &key, metadata_path, key_path, previous_keys_dir)
 }
 
 fn rotate_machine_identity_at(
@@ -919,18 +954,13 @@ pub enum InboundDeliveryMethod {
     Sdk,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum InboundReplyMode {
+    #[default]
     Ui,
     Poll,
     Webhook,
-}
-
-impl Default for InboundReplyMode {
-    fn default() -> Self {
-        Self::Ui
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -2219,6 +2249,7 @@ pub struct HealthReport {
     pub active_profile: String,
     pub active_streams: u32,
     pub model_sessions: u32,
+    pub computer_backend: ComputerBackendDescriptor,
     pub inventory: RuntimeInventory,
     pub last_error: Option<String>,
 }
@@ -2272,6 +2303,14 @@ pub fn schema_bundle() -> SchemaBundle {
     schemas.insert(
         "HealthReport".to_string(),
         serde_json::json!(schema_for!(HealthReport)),
+    );
+    schemas.insert(
+        "ComputerBackendKind".to_string(),
+        serde_json::json!(schema_for!(ComputerBackendKind)),
+    );
+    schemas.insert(
+        "ComputerBackendDescriptor".to_string(),
+        serde_json::json!(schema_for!(ComputerBackendDescriptor)),
     );
     schemas.insert(
         "RuntimeControlState".to_string(),
@@ -2837,10 +2876,10 @@ mod tests {
         let inventory = ConfigInventory::for_profile("default").unwrap();
 
         assert_eq!(inventory.cua_home, temp_root.display().to_string());
-        assert_eq!(inventory.config_env_present, true);
-        assert_eq!(inventory.legacy_config_env_present, false);
+        assert!(inventory.config_env_present);
+        assert!(!inventory.legacy_config_env_present);
         assert_eq!(inventory.migration_state, ConfigMigrationState::Current);
-        assert_eq!(inventory.profile_token_present, true);
+        assert!(inventory.profile_token_present);
         let encoded = serde_json::to_string(&inventory).unwrap();
         assert!(!encoded.contains("env-secret"));
         assert!(!encoded.contains("bearer-secret"));
@@ -2922,6 +2961,7 @@ mod tests {
             designated_requirement: None,
             code_signature_summary: None,
             binary_sha256: Some("sha256".to_string()),
+            computer_backend: ComputerBackendDescriptor::synthetic(),
             permissions: PermissionReport::conservative_unknown(),
             active_profile: profile,
             safety_state: SafetyState::Running,
@@ -3017,6 +3057,7 @@ mod tests {
             designated_requirement: None,
             code_signature_summary: None,
             binary_sha256: None,
+            computer_backend: ComputerBackendDescriptor::synthetic(),
             permissions: PermissionReport::conservative_unknown(),
             active_profile: ProfilePolicy {
                 schema_version: SCHEMA_VERSION.to_string(),
@@ -3078,6 +3119,7 @@ mod tests {
             designated_requirement: None,
             code_signature_summary: None,
             binary_sha256: None,
+            computer_backend: ComputerBackendDescriptor::synthetic(),
             permissions: PermissionReport::conservative_unknown(),
             active_profile: ProfilePolicy {
                 schema_version: SCHEMA_VERSION.to_string(),

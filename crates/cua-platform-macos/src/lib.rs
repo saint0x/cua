@@ -7,10 +7,12 @@ use cua_capture::{
     encode_image, CaptureBackend, CaptureRequest, CaptureSource, CapturedFrame,
     CapturedFrameTimings, UnavailableCaptureBackend,
 };
+use cua_computer::ComputerBackend;
 use cua_core::{
-    cua_bin_path, now_wall_ms, CursorState, DeliveryMode, DisplayInfo, Effect, Evidence,
-    EvidenceKind, FrameEnvelope, InputAction, InputRequest, InputResult, InputRoute, MouseButton,
-    PermissionReport, PermissionState, Rect, WindowInfo, SCHEMA_VERSION,
+    cua_bin_path, now_wall_ms, CapabilityManifest, ComputerBackendDescriptor, ComputerBackendKind,
+    CursorState, DeliveryMode, DisplayInfo, Effect, Evidence, EvidenceKind, FrameEnvelope,
+    InputAction, InputRequest, InputResult, InputRoute, MouseButton, PermissionReport,
+    PermissionState, Rect, WindowInfo, SCHEMA_VERSION,
 };
 use cua_input::InputBackend;
 use image::{ImageBuffer, Rgba};
@@ -53,8 +55,82 @@ pub fn input_backend() -> Arc<dyn InputBackend> {
     Arc::new(MacosInputBackend)
 }
 
+pub fn computer_backend() -> Arc<dyn ComputerBackend> {
+    Arc::new(MacosComputerBackend)
+}
+
 pub fn displays() -> anyhow::Result<Vec<DisplayInfo>> {
     native_displays()
+}
+
+#[derive(Debug, Default)]
+pub struct MacosComputerBackend;
+
+#[async_trait]
+impl ComputerBackend for MacosComputerBackend {
+    fn descriptor(&self) -> ComputerBackendDescriptor {
+        ComputerBackendDescriptor {
+            kind: ComputerBackendKind::Local,
+            provider: BACKEND_NAME.to_string(),
+            runtime: "cua".to_string(),
+            instance_id: None,
+            pool_id: None,
+            region: None,
+            os: "macos".to_string(),
+            capabilities: macos_capabilities(),
+        }
+    }
+
+    fn capture_backend(&self) -> Arc<dyn CaptureBackend> {
+        capture_backend_or_unavailable()
+    }
+
+    fn input_backend(&self) -> Arc<dyn InputBackend> {
+        input_backend()
+    }
+
+    async fn permission_report(&self) -> PermissionReport {
+        permission_report()
+    }
+
+    async fn request_accessibility_input_access(&self) -> PermissionState {
+        request_accessibility_input_access()
+    }
+
+    async fn cursor_state(&self) -> CursorState {
+        cursor_state()
+    }
+
+    async fn window_list(&self) -> anyhow::Result<Vec<WindowInfo>> {
+        window_list()
+    }
+}
+
+fn macos_capabilities() -> CapabilityManifest {
+    CapabilityManifest {
+        actions: vec![
+            "observe".to_string(),
+            "mouse_move".to_string(),
+            "mouse_click".to_string(),
+            "mouse_drag".to_string(),
+            "key_press".to_string(),
+            "key_type".to_string(),
+            "key_paste".to_string(),
+            "sequence".to_string(),
+            "open_app".to_string(),
+            "shell_exec".to_string(),
+            "aegis".to_string(),
+            "ctx".to_string(),
+            "pause".to_string(),
+            "resume".to_string(),
+            "kill_switch".to_string(),
+        ],
+        displays: vec!["primary".to_string()],
+        apps: Vec::new(),
+        clipboard: true,
+        model_egress: false,
+        max_fps: 30,
+    }
 }
 
 #[derive(Debug)]
@@ -1852,6 +1928,24 @@ mod tests {
     fn input_backend_selection_is_available() {
         let backend = input_backend();
         assert_eq!(backend.name(), "macos-cgevent");
+    }
+
+    #[test]
+    fn computer_backend_descriptor_reports_local_macos_capabilities() {
+        let descriptor = MacosComputerBackend.descriptor();
+
+        assert_eq!(descriptor.kind, ComputerBackendKind::Local);
+        assert_eq!(descriptor.provider, BACKEND_NAME);
+        assert_eq!(descriptor.os, "macos");
+        assert!(descriptor
+            .capabilities
+            .actions
+            .contains(&"mouse_click".to_string()));
+        assert!(descriptor
+            .capabilities
+            .actions
+            .contains(&"shell_exec".to_string()));
+        assert!(descriptor.capabilities.clipboard);
     }
 
     #[test]

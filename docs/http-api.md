@@ -2,6 +2,8 @@
 
 cua exposes the CLI and local HTTP API for operator access. Latency-sensitive voice control and SDK mutation paths use the profile-local Unix socket at `~/.cua/profiles/<profile>/daemon.sock`.
 
+The daemon is backed by a general computer backend. The default installed backend is the local macOS computer, selected through the backend-neutral runtime boundary and attested with the local machine identity. Remote CUA daemons, Oracle OCI-hosted computers, and later Quilt VM fleets plug in as alternate computer backends that implement the same capture, observe, input, permission, clipboard, session, safety, trace, and attestation contract.
+
 Default bind: `127.0.0.1:8765`.
 
 Security:
@@ -69,6 +71,7 @@ Initial endpoints:
 - `POST /control/pause`
 - `POST /control/resume`
 - `POST /control/kill-switch`
+- `POST /input/dispatch`: backend-neutral `InputAction` dispatch endpoint used by remote computer providers
 - `POST /input/mouse`
 - `POST /input/keyboard`
 - `POST /input/clipboard`
@@ -79,9 +82,11 @@ Initial endpoints:
 
 Webhook source secrets are optional for local development, but when a source has a secret configured, `POST /webhooks/<source>` requires `x-cua-webhook-signature: sha256=<hmac>` over the raw request body. The request body is an `InboundMessageRequest`; `idempotency_key` deduplicates repeat delivery.
 
-Cloud enrollment routes are not shipped yet.
+Cloud enrollment routes are not shipped yet. The shipped backend contract is local-first and modular: `GET /status` and `GET /session/status` report `computer_backend`, including `kind`, `provider`, `runtime`, optional cloud/fleet identifiers, operating system, and backend capability manifest.
 
-`GET /status` reports `active_streams`; stream clients increment the count on connect and decrement after disconnect cleanup. Its `inventory.config` object reports canonical `~/.cua` paths and migration state without exposing bearer token contents.
+Backend selection is explicit. With no environment override, `cua serve` uses the local macOS backend. Set `CUA_COMPUTER_BACKEND=remote_cua` with `CUA_REMOTE_CUA_URL` and `CUA_REMOTE_CUA_TOKEN` to proxy a remote CUA daemon over HTTP. Set `CUA_COMPUTER_BACKEND=oracle_oci` with the same remote endpoint variables when that remote daemon is running on an OCI instance; optional `CUA_REMOTE_CUA_INSTANCE_ID`, `CUA_REMOTE_CUA_POOL_ID`, `CUA_REMOTE_CUA_REGION`, and `CUA_REMOTE_CUA_OS` values are reported in backend identity. Missing remote endpoint credentials produce an unavailable backend with no advertised capture/input capabilities, and unavailable capture/observe paths return HTTP 503 instead of pretending cloud control is ready.
+
+`GET /status` reports `active_streams`; stream clients increment the count on connect and decrement after disconnect cleanup. Its top-level `computer_backend` and `inventory.computer_backend` identify the selected computer substrate. Its `inventory.config` object reports canonical `~/.cua` paths and migration state without exposing bearer token contents.
 
 `GET /config/status` returns that same config inventory directly for SDKs, runebooks, and scripts that need to discover the profile socket, profile root, chat database, ctx workspace, scratchpad root, trace roots, and config migration state.
 
