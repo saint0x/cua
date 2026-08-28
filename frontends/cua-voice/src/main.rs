@@ -12,8 +12,9 @@ use cua_voice::agent_events::{
 use cua_voice::client::CuaClient;
 use cua_voice::daemon::{profile_daemon_is_alive, spawn_profile_daemon, wait_until_ready};
 use cua_voice::hud::{
-    island_scene_from_snapshot, HudDisplay, HudMetrics, COMPACT_HEIGHT, EXPANDED_HEIGHT,
-    TOP_MARGIN, WINDOW_HEIGHT, WINDOW_WIDTH,
+    island_scene_from_snapshot, HudDisplay, HudMetrics, COMPACT_FILLET, COMPACT_HEIGHT,
+    COMPACT_WIDTH, EXPANDED_FILLET, EXPANDED_HEIGHT, EXPANDED_WIDTH, TOP_MARGIN, WINDOW_HEIGHT,
+    WINDOW_WIDTH,
 };
 use cua_voice::orb::paint_orb;
 use cua_voice::stt::{DEFAULT_STT_BACKEND, DEFAULT_STT_MODEL};
@@ -53,7 +54,8 @@ const MINIMIZED_RADIUS: f32 = 14.0;
 const MINIMIZED_RIGHT_OFFSET: f32 = 220.0;
 const HEADER_PAD_X_PX: f32 = 16.0;
 const HEADER_GAP_PX: f32 = 12.0;
-const HEADER_ORB_PX: f32 = 30.0;
+const HEADER_LEAD_WIDTH_PX: f32 = 36.0;
+const HEADER_ORB_PX: f32 = 34.0;
 const HEADER_RING_PX: f32 = 22.0;
 const TASK_RING_PX: f32 = 34.0;
 const BODY_LABEL_WIDTH_PX: f32 = 68.0;
@@ -63,8 +65,8 @@ const UI_META_PX: f32 = 11.0;
 const UI_LINE_HEIGHT_PX: f32 = 15.0;
 const COMPACT_ROW_ITEM_HEIGHT_PX: f32 = 18.0;
 const COMPACT_CONTENT_Y_OFFSET_PX: f32 = 0.0;
-const STOPLIGHT_HITBOX_HEIGHT_PX: f32 = 9.0;
-const STOPLIGHT_TOP_PX: f32 = compact_content_axis_y() - (STOPLIGHT_HITBOX_HEIGHT_PX / 2.0);
+const STOPLIGHT_SIZE_PX: f32 = 8.0;
+const STOPLIGHT_TOP_PX: f32 = compact_content_axis_y() - (STOPLIGHT_SIZE_PX / 2.0);
 
 #[derive(Debug, Parser)]
 #[command(name = "cua-voice", version, about = "Rust voice HUD for cua")]
@@ -371,7 +373,7 @@ impl VoiceHud {
         let reply_visible = response_flash_visible(metrics);
 
         div()
-            .w(px(island_width(metrics)))
+            .w(px(island_window_width(metrics)))
             .h(px(island_height(metrics)))
             .overflow_hidden()
             .group("cua-island")
@@ -425,7 +427,6 @@ impl VoiceHud {
                     cx.stop_propagation();
                 }),
             )
-            .px_3()
             .flex()
             .flex_col()
             .child(shell_background_layer(
@@ -433,10 +434,12 @@ impl VoiceHud {
                 &scene.background,
                 self.started.elapsed().as_secs_f32(),
             ))
-            .child(self.stoplights(cx))
+            .child(self.stoplights(metrics, cx))
             .child(self.actor_layer(scene, metrics))
             .child(
                 div()
+                    .ml(px(island_fillet(metrics)))
+                    .w(px(island_shell_width(metrics)))
                     .h(px(COMPACT_HEIGHT))
                     .relative()
                     .top(px(COMPACT_CONTENT_Y_OFFSET_PX))
@@ -444,7 +447,19 @@ impl VoiceHud {
                     .items_center()
                     .gap(px(HEADER_GAP_PX))
                     .px(px(HEADER_PAD_X_PX))
-                    .child(self.orb())
+                    .child(
+                        div()
+                            .w(px(HEADER_LEAD_WIDTH_PX))
+                            .h(px(HEADER_ORB_PX))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .child(
+                                div()
+                                    .opacity(if self.chrome_visible { 0.0 } else { 1.0 })
+                                    .child(self.orb()),
+                            ),
+                    )
                     .child(
                         div()
                             .w(px(190.0))
@@ -453,7 +468,7 @@ impl VoiceHud {
                             .items_center()
                             .truncate()
                             .text_color(rgb(0xffffff))
-                            .text_size(px(13.5))
+                            .text_size(px(UI_TEXT_PX))
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .line_height(px(UI_LINE_HEIGHT_PX))
                             .child(title),
@@ -480,14 +495,14 @@ impl VoiceHud {
             })
     }
 
-    fn stoplights(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn stoplights(&self, metrics: HudMetrics, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .absolute()
-            .left(px(8.0))
+            .left(px(island_fillet(metrics) + HEADER_PAD_X_PX))
             .top(px(STOPLIGHT_TOP_PX))
             .flex()
             .items_center()
-            .gap_0p5()
+            .gap(px(4.0))
             .opacity(if self.chrome_visible { 0.92 } else { 0.0 })
             .hover(|style| style.opacity(1.0))
             .child(stoplight(0xff5f57).on_mouse_down(
@@ -643,6 +658,8 @@ impl VoiceHud {
         div()
             .opacity(metrics.expansion_opacity)
             .h(px((EXPANDED_HEIGHT - COMPACT_HEIGHT).max(0.0)))
+            .ml(px(island_fillet(metrics)))
+            .w(px(island_shell_width(metrics)))
             .px(px(BODY_PAD_X_PX))
             .pt(px(4.0))
             .pb(px(14.0))
@@ -683,8 +700,8 @@ impl VoiceHud {
                                                     .min_w_0()
                                                     .truncate()
                                                     .text_color(content_text_color(false))
-                                                    .text_size(px(13.5))
-                                                    .line_height(px(19.0))
+                                                    .text_size(px(UI_TEXT_PX))
+                                                    .line_height(px(UI_LINE_HEIGHT_PX))
                                                     .child(
                                                         scene_row(scene, "details_left", "action")
                                                             .map(|row| row.value)
@@ -1112,26 +1129,49 @@ fn shell_background_layer(
     elapsed_secs: f32,
 ) -> impl IntoElement {
     let radius = island_radius(metrics);
+    let fillet = island_fillet(metrics);
+    let shell_width = island_shell_width(metrics);
     let paint = background_paint(background, elapsed_secs);
     let scrim = background_contrast_scrim_alpha(background);
     canvas(
-        move |_, _, _| (radius, paint, scrim),
-        move |bounds, (radius, paint, scrim), window, _| {
-            window.paint_quad(fill(bounds, paint).corner_radii(Corners {
+        move |_, _, _| (radius, fillet, shell_width, paint, scrim),
+        move |bounds, (radius, fillet, shell_width, paint, scrim), window, _| {
+            let shell_bounds = Bounds {
+                origin: point(bounds.origin.x + px(fillet), bounds.origin.y),
+                size: size(px(shell_width), bounds.size.height),
+            };
+            paint_concave_fillet(window, bounds, fillet, shell_width, paint, false);
+            paint_concave_fillet(window, bounds, fillet, shell_width, paint, true);
+            window.paint_quad(fill(shell_bounds, paint).corner_radii(Corners {
                 top_left: px(0.0),
                 top_right: px(0.0),
                 bottom_right: px(radius),
                 bottom_left: px(radius),
             }));
             if scrim > 0.0 {
-                window.paint_quad(
-                    fill(bounds, hsla(0.0, 0.0, 0.0, scrim)).corner_radii(Corners {
-                        top_left: px(0.0),
-                        top_right: px(0.0),
-                        bottom_right: px(radius),
-                        bottom_left: px(radius),
-                    }),
+                let scrim_color = hsla(0.0, 0.0, 0.0, scrim);
+                paint_concave_fillet(
+                    window,
+                    bounds,
+                    fillet,
+                    shell_width,
+                    scrim_color.into(),
+                    false,
                 );
+                paint_concave_fillet(
+                    window,
+                    bounds,
+                    fillet,
+                    shell_width,
+                    scrim_color.into(),
+                    true,
+                );
+                window.paint_quad(fill(shell_bounds, scrim_color).corner_radii(Corners {
+                    top_left: px(0.0),
+                    top_right: px(0.0),
+                    bottom_right: px(radius),
+                    bottom_left: px(radius),
+                }));
             }
         },
     )
@@ -1141,12 +1181,65 @@ fn shell_background_layer(
     .size_full()
 }
 
+fn paint_concave_fillet(
+    window: &mut Window,
+    bounds: Bounds<Pixels>,
+    fillet: f32,
+    shell_width: f32,
+    background: Background,
+    right: bool,
+) {
+    let steps = 18;
+    let x0 = bounds.origin.x
+        + if right {
+            px(fillet + shell_width)
+        } else {
+            px(0.0)
+        };
+    let y0 = bounds.origin.y;
+    let mut builder = PathBuilder::fill();
+
+    if right {
+        builder.move_to(point(x0, y0));
+        builder.line_to(point(x0 + px(fillet), y0));
+        for step in 0..=steps {
+            let progress = step as f32 / steps as f32;
+            let theta = (-90.0 - (progress * 90.0)).to_radians();
+            let center_x = x0 + px(fillet);
+            let center_y = y0 + px(fillet);
+            builder.line_to(point(
+                center_x + px(theta.cos() * fillet),
+                center_y + px(theta.sin() * fillet),
+            ));
+        }
+    } else {
+        builder.move_to(point(x0, y0));
+        builder.line_to(point(x0 + px(fillet), y0));
+        builder.line_to(point(x0 + px(fillet), y0 + px(fillet)));
+        for step in 0..=steps {
+            let progress = step as f32 / steps as f32;
+            let theta = (0.0 - (progress * 90.0)).to_radians();
+            let center_x = x0;
+            let center_y = y0 + px(fillet);
+            builder.line_to(point(
+                center_x + px(theta.cos() * fillet),
+                center_y + px(theta.sin() * fillet),
+            ));
+        }
+    }
+
+    builder.close();
+    if let Ok(path) = builder.build() {
+        window.paint_path(path, background);
+    }
+}
+
 fn field_label(label: impl Into<String>) -> impl IntoElement {
     div()
         .w(px(BODY_LABEL_WIDTH_PX))
         .flex_none()
         .text_size(px(10.0))
-        .line_height(px(19.0))
+        .line_height(px(UI_LINE_HEIGHT_PX))
         .font_weight(gpui::FontWeight::SEMIBOLD)
         .text_color(hsla(0.0, 0.0, 1.0, 0.36))
         .child(label.into().to_uppercase())
@@ -1166,8 +1259,8 @@ fn field_row(label: impl Into<String>, value: impl Into<String>, lines: usize) -
                 .max_h(px(if lines > 1 { 38.0 } else { 19.0 }))
                 .overflow_hidden()
                 .text_color(content_text_color(false))
-                .text_size(px(13.5))
-                .line_height(px(19.0))
+                .text_size(px(UI_TEXT_PX))
+                .line_height(px(UI_LINE_HEIGHT_PX))
                 .child(value.into()),
         )
 }
@@ -1204,8 +1297,8 @@ fn compact_tool_row(row: &SceneToolRow) -> impl IntoElement {
                 .min_w_0()
                 .truncate()
                 .text_color(content_text_color(false))
-                .text_size(px(13.5))
-                .line_height(px(19.0))
+                .text_size(px(UI_TEXT_PX))
+                .line_height(px(UI_LINE_HEIGHT_PX))
                 .child(row.label.clone()),
         )
         .child(
@@ -1213,7 +1306,7 @@ fn compact_tool_row(row: &SceneToolRow) -> impl IntoElement {
                 .flex_none()
                 .text_color(rgb(0x8e8e93))
                 .text_size(px(UI_META_PX))
-                .line_height(px(19.0))
+                .line_height(px(UI_LINE_HEIGHT_PX))
                 .child(format!("{} - {} - {}", row.tool, row.app, row.age)),
         )
 }
@@ -1235,8 +1328,8 @@ fn footer_cell(label: impl Into<String>, value: impl Into<String>) -> impl IntoE
         .child(
             div()
                 .truncate()
-                .text_size(px(12.5))
-                .line_height(px(15.0))
+                .text_size(px(UI_TEXT_PX))
+                .line_height(px(UI_LINE_HEIGHT_PX))
                 .text_color(hsla(0.0, 0.0, 1.0, 0.90))
                 .child(value.into()),
         )
@@ -1378,23 +1471,12 @@ fn paint_ring_arc(
 
 fn stoplight(color: u32) -> Div {
     div()
-        .w(px(12.0))
-        .h(px(STOPLIGHT_HITBOX_HEIGHT_PX))
+        .w(px(STOPLIGHT_SIZE_PX))
+        .h(px(STOPLIGHT_SIZE_PX))
         .rounded_full()
+        .bg(rgb(color))
         .opacity(0.9)
         .hover(|style| style.opacity(1.0))
-        .flex()
-        .items_center()
-        .justify_center()
-        .child(
-            div()
-                .w(px(5.0))
-                .h(px(5.0))
-                .rounded_full()
-                .bg(rgb(color))
-                .border_1()
-                .border_color(hsla(0.0, 0.0, 0.0, 0.35)),
-        )
 }
 
 fn content_text_color(high_contrast: bool) -> Rgba {
@@ -1409,8 +1491,16 @@ fn rule_color(alpha: f32) -> Hsla {
     hsla(0.0, 0.0, 1.0, alpha)
 }
 
-fn island_width(metrics: HudMetrics) -> f32 {
+fn island_shell_width(metrics: HudMetrics) -> f32 {
     metrics.width
+}
+
+fn island_width(metrics: HudMetrics) -> f32 {
+    island_shell_width(metrics) + (island_fillet(metrics) * 2.0)
+}
+
+fn island_window_width(metrics: HudMetrics) -> f32 {
+    island_width(metrics)
 }
 
 fn island_height(metrics: HudMetrics) -> f32 {
@@ -1419,6 +1509,12 @@ fn island_height(metrics: HudMetrics) -> f32 {
 
 fn island_radius(metrics: HudMetrics) -> f32 {
     metrics.radius
+}
+
+fn island_fillet(metrics: HudMetrics) -> f32 {
+    let width_progress =
+        ((metrics.width - COMPACT_WIDTH) / (EXPANDED_WIDTH - COMPACT_WIDTH)).clamp(0.0, 1.0);
+    cua_voice::hud::lerp(COMPACT_FILLET, EXPANDED_FILLET, width_progress)
 }
 
 fn minimized_content_visible(progress: f32) -> bool {
@@ -2380,7 +2476,11 @@ fn animated_island_bounds(
     let display_left = display_bounds.origin.x.to_f64() as f32;
     let display_right =
         display_bounds.origin.x.to_f64() as f32 + display_bounds.size.width.to_f64() as f32;
-    let width = cua_voice::hud::lerp(metrics.width, MINIMIZED_WIDTH, minimized_progress);
+    let width = cua_voice::hud::lerp(
+        island_window_width(metrics),
+        MINIMIZED_WIDTH,
+        minimized_progress,
+    );
     let height = cua_voice::hud::lerp(metrics.height, MINIMIZED_HEIGHT, minimized_progress);
     let current_x = current.origin.x.to_f64() as f32;
     let current_width = current.size.width.to_f64() as f32;
@@ -2935,9 +3035,25 @@ mod tests {
     }
 
     #[test]
+    fn island_window_reserves_concave_fillet_pixels_without_resizing_shell() {
+        let compact = HudMetrics::with_expansion(0.0, 0.0);
+        let expanded = HudMetrics::with_expansion(0.0, 1.0);
+
+        assert_eq!(island_shell_width(compact), COMPACT_WIDTH);
+        assert_eq!(island_fillet(compact), COMPACT_FILLET);
+        assert_eq!(island_width(compact), COMPACT_WIDTH + COMPACT_FILLET * 2.0);
+        assert_eq!(island_shell_width(expanded), EXPANDED_WIDTH);
+        assert_eq!(island_fillet(expanded), EXPANDED_FILLET);
+        assert_eq!(
+            island_width(expanded),
+            EXPANDED_WIDTH + EXPANDED_FILLET * 2.0
+        );
+    }
+
+    #[test]
     fn hover_chrome_centers_on_compact_bar_axis() {
         assert_eq!(
-            STOPLIGHT_TOP_PX + (STOPLIGHT_HITBOX_HEIGHT_PX / 2.0),
+            STOPLIGHT_TOP_PX + (STOPLIGHT_SIZE_PX / 2.0),
             compact_content_axis_y()
         );
     }
@@ -2997,7 +3113,7 @@ mod tests {
 
         let snapped = snap_island_bounds(dropped, display);
 
-        assert_eq!(snapped.origin.x, px(876.0));
+        assert_eq!(snapped.origin.x, px(832.0));
         assert_eq!(snapped.origin.y, px(TOP_MARGIN));
         assert_eq!(snapped.size, dropped.size);
     }
@@ -3013,12 +3129,12 @@ mod tests {
             size: size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT)),
         };
         let right_drop = Bounds {
-            origin: point(px(840.0), px(80.0)),
+            origin: point(px(800.0), px(80.0)),
             size: size(px(WINDOW_WIDTH), px(WINDOW_HEIGHT)),
         };
 
         assert_eq!(snap_island_bounds(left_drop, display).origin.x, px(0.0));
-        assert_eq!(snap_island_bounds(right_drop, display).origin.x, px(876.0));
+        assert_eq!(snap_island_bounds(right_drop, display).origin.x, px(832.0));
     }
 
     #[test]
@@ -3285,16 +3401,16 @@ mod tests {
             size: size(px(1512.0), px(982.0)),
         };
         let compact = Bounds {
-            origin: point(px(348.5), px(0.0)),
-            size: size(px(COMPACT_WIDTH), px(COMPACT_HEIGHT)),
+            origin: point(px(416.0), px(0.0)),
+            size: size(px(WINDOW_WIDTH), px(COMPACT_HEIGHT)),
         };
         let expanded_metrics = HudMetrics::with_expansion(0.0, 1.0);
 
         let expanded = animated_island_bounds(compact, expanded_metrics, 0.0, display);
 
         assert_eq!(expanded.origin.y, px(TOP_MARGIN));
-        assert_eq!(expanded.size, size(px(828.0), px(258.0)));
-        assert_eq!(expanded.origin.x, px(252.5));
+        assert_eq!(expanded.size, size(px(880.0), px(258.0)));
+        assert_eq!(expanded.origin.x, px(316.0));
     }
 
     #[test]
@@ -3693,7 +3809,8 @@ mod tests {
         let middle = actor_style(&actor, metrics, 0.25);
         let end = actor_style(&actor, metrics, 0.5);
 
-        assert_eq!(island_width(metrics), COMPACT_WIDTH);
+        assert_eq!(island_shell_width(metrics), COMPACT_WIDTH);
+        assert_eq!(island_width(metrics), WINDOW_WIDTH);
         assert_eq!(start.x, 20.0);
         assert!(middle.x > start.x);
         assert!(end.x > middle.x);
