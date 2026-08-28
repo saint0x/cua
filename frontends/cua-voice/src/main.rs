@@ -42,8 +42,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-const HEADER_TITLE_MIN_WIDTH_PX: f32 = 64.0;
-const HEADER_TITLE_MAX_WIDTH_PX: f32 = 92.0;
+const HEADER_TITLE_MIN_WIDTH_PX: f32 = 0.0;
+const HEADER_TITLE_MAX_WIDTH_PX: f32 = 112.0;
 const HEADER_CENTER_MIN_WIDTH_PX: f32 = 260.0;
 const MARQUEE_START_DELAY_SECS: f32 = 1.6;
 const MARQUEE_END_HOLD_SECS: f32 = 0.9;
@@ -61,8 +61,8 @@ const HEADER_GAP_PX: f32 = 8.0;
 const HEADER_TITLE_DIVIDER_GAP_PX: f32 = 2.0;
 const HEADER_LEAD_WIDTH_PX: f32 = 28.0;
 const HEADER_ORB_PX: f32 = 18.0;
-const HEADER_RING_PX: f32 = 22.0;
-const TASK_RING_PX: f32 = 34.0;
+const HEADER_RING_PX: f32 = 16.0;
+const TASK_RING_PX: f32 = 22.0;
 const BODY_LABEL_WIDTH_PX: f32 = 68.0;
 const BODY_PAD_X_PX: f32 = 20.0;
 const UI_TEXT_PX: f32 = 12.0;
@@ -1303,12 +1303,7 @@ fn paint_ambient_pattern(
 
     paint_concave_fillet(window, bounds, fillet, shell_width, background, false);
     paint_concave_fillet(window, bounds, fillet, shell_width, background, true);
-    window.paint_quad(fill(shell_bounds, background).corner_radii(Corners {
-        top_left: px(0.0),
-        top_right: px(0.0),
-        bottom_right: px(radius),
-        bottom_left: px(radius),
-    }));
+    window.paint_quad(fill(shell_bounds, background).corner_radii(Corners::all(px(radius))));
 }
 
 fn ambient_color(pattern: &IslandAmbientPattern, elapsed_secs: f32) -> Option<Hsla> {
@@ -1347,12 +1342,7 @@ fn shell_background_layer(
             };
             paint_concave_fillet(window, bounds, fillet, shell_width, paint, false);
             paint_concave_fillet(window, bounds, fillet, shell_width, paint, true);
-            window.paint_quad(fill(shell_bounds, paint).corner_radii(Corners {
-                top_left: px(0.0),
-                top_right: px(0.0),
-                bottom_right: px(radius),
-                bottom_left: px(radius),
-            }));
+            window.paint_quad(fill(shell_bounds, paint).corner_radii(Corners::all(px(radius))));
             if scrim > 0.0 {
                 let scrim_color = hsla(0.0, 0.0, 0.0, scrim);
                 paint_concave_fillet(
@@ -1371,12 +1361,9 @@ fn shell_background_layer(
                     scrim_color.into(),
                     true,
                 );
-                window.paint_quad(fill(shell_bounds, scrim_color).corner_radii(Corners {
-                    top_left: px(0.0),
-                    top_right: px(0.0),
-                    bottom_right: px(radius),
-                    bottom_left: px(radius),
-                }));
+                window.paint_quad(
+                    fill(shell_bounds, scrim_color).corner_radii(Corners::all(px(radius))),
+                );
             }
         },
     )
@@ -1391,12 +1378,8 @@ fn minimized_background_layer() -> impl IntoElement {
         move |_, _, _| (),
         move |bounds, _, window, _| {
             window.paint_quad(
-                fill(bounds, default_background_color()).corner_radii(Corners {
-                    top_left: px(0.0),
-                    top_right: px(0.0),
-                    bottom_right: px(MINIMIZED_RADIUS),
-                    bottom_left: px(MINIMIZED_RADIUS),
-                }),
+                fill(bounds, default_background_color())
+                    .corner_radii(Corners::all(px(MINIMIZED_RADIUS))),
             );
         },
     )
@@ -1414,6 +1397,9 @@ fn paint_concave_fillet(
     background: Background,
     right: bool,
 ) {
+    if fillet <= 0.0 {
+        return;
+    }
     let steps = 18;
     let x0 = bounds.origin.x
         + if right {
@@ -3505,19 +3491,18 @@ mod tests {
     }
 
     #[test]
-    fn island_window_reserves_concave_fillet_pixels_without_resizing_shell() {
+    fn island_window_uses_real_shell_without_side_fillet_gutters() {
         let compact = HudMetrics::with_expansion(0.0, 0.0);
         let expanded = HudMetrics::with_expansion(0.0, 1.0);
 
         assert_eq!(island_shell_width(compact), COMPACT_WIDTH);
-        assert_eq!(island_fillet(compact), COMPACT_FILLET);
-        assert_eq!(island_width(compact), COMPACT_WIDTH + COMPACT_FILLET * 2.0);
+        assert_eq!(island_fillet(compact), 0.0);
+        assert_eq!(COMPACT_FILLET, 0.0);
+        assert_eq!(island_width(compact), COMPACT_WIDTH);
         assert_eq!(island_shell_width(expanded), EXPANDED_WIDTH);
-        assert_eq!(island_fillet(expanded), EXPANDED_FILLET);
-        assert_eq!(
-            island_width(expanded),
-            EXPANDED_WIDTH + EXPANDED_FILLET * 2.0
-        );
+        assert_eq!(island_fillet(expanded), 0.0);
+        assert_eq!(EXPANDED_FILLET, 0.0);
+        assert_eq!(island_width(expanded), EXPANDED_WIDTH);
     }
 
     #[test]
@@ -3542,10 +3527,12 @@ mod tests {
         assert_eq!(UI_TEXT_PX, 12.0);
         assert_eq!(UI_META_PX, UI_TEXT_PX);
         assert_eq!(HEADER_ORB_PX, 18.0);
+        assert_eq!(HEADER_RING_PX, 16.0);
+        assert_eq!(TASK_RING_PX, 22.0);
         assert_eq!(HEADER_GAP_PX, 8.0);
         assert_eq!(HEADER_TITLE_DIVIDER_GAP_PX, 2.0);
-        assert_eq!(HEADER_TITLE_MIN_WIDTH_PX, 64.0);
-        assert_eq!(HEADER_TITLE_MAX_WIDTH_PX, 92.0);
+        assert_eq!(HEADER_TITLE_MIN_WIDTH_PX, 0.0);
+        assert_eq!(HEADER_TITLE_MAX_WIDTH_PX, 112.0);
         assert_eq!(HEADER_CENTER_MIN_WIDTH_PX, 260.0);
         assert_eq!(HEADER_LEAD_WIDTH_PX, 28.0);
         let stoplight_cluster_width = (STOPLIGHT_SIZE_PX * 3.0) + 8.0;
@@ -3559,7 +3546,7 @@ mod tests {
     }
 
     #[test]
-    fn compact_header_title_rail_tracks_label_length() {
+    fn compact_header_title_rail_tracks_each_mode_label_tightly() {
         let automation = header_layout_widths(
             HudMetrics::with_expansion(0.0, 0.0),
             "Automation",
@@ -3575,6 +3562,8 @@ mod tests {
 
         assert!(automation.title < voice.title);
         assert!(automation.center > voice.center);
+        assert!(voice.title >= estimated_header_text_width_px("Voice control"));
+        assert!(automation.title >= estimated_header_text_width_px("Automation"));
         assert!(automation.center >= HEADER_CENTER_MIN_WIDTH_PX);
         assert!(voice.center >= HEADER_CENTER_MIN_WIDTH_PX);
     }
@@ -3651,7 +3640,7 @@ mod tests {
 
         let snapped = snap_island_bounds(dropped, display);
 
-        assert_eq!(snapped.origin.x, px(832.0));
+        assert_eq!(snapped.origin.x, px(876.0));
         assert_eq!(snapped.origin.y, px(TOP_MARGIN));
         assert_eq!(snapped.size, dropped.size);
     }
@@ -3680,7 +3669,7 @@ mod tests {
         };
 
         assert_eq!(snap_island_bounds(left_drop, display).origin.x, px(0.0));
-        assert_eq!(snap_island_bounds(right_drop, display).origin.x, px(832.0));
+        assert_eq!(snap_island_bounds(right_drop, display).origin.x, px(876.0));
     }
 
     #[test]
@@ -4001,8 +3990,8 @@ mod tests {
         let expanded = animated_island_bounds(compact, expanded_metrics, 0.0, display);
 
         assert_eq!(expanded.origin.y, px(TOP_MARGIN));
-        assert_eq!(expanded.size, size(px(880.0), px(258.0)));
-        assert_eq!(expanded.origin.x, px(316.0));
+        assert_eq!(expanded.size, size(px(EXPANDED_WIDTH), px(EXPANDED_HEIGHT)));
+        assert_eq!(expanded.origin.x, px(320.0));
     }
 
     #[test]
