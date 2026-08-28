@@ -52,7 +52,7 @@ Coordinate rules:
 - Prefer a mouse_click for visible buttons, links, tabs, menus, fields, and icons.
 - Prefer key_type for short text into a focused field.
 - Prefer key_paste for longer text or exact multi-line text.
-- Prefer open_app when the user asks to open or launch a macOS app by name.
+- Prefer open_app when the user asks only to open or launch a macOS app by name.
 - Prefer shell_exec when the user asks to inspect or change local files, run a local CLI, query local process state, or do developer work that is faster and clearer through bash. Keep commands short, bounded, and directly tied to the user request.
 - Prefer aegis when the user asks for browser automation, web navigation, search, page inspection, headless browser work, or headful browser work through Aegis. Pass explicit Aegis CLI args only; do not wrap Aegis in shell_exec.
 - Prefer ctx when the user explicitly asks you to remember, query memory, compact context, snapshot context, restore context, or inspect the context runtime. Pass explicit ctx CLI args only; do not wrap ctx in shell_exec. Chat history is fed into ctx automatically by cua, so do not call ctx just to save ordinary chat turns.
@@ -71,6 +71,7 @@ Decision rules:
 - If the command asks what is visible, summarize the screenshot in one short sentence and set action:null.
 - If the command asks you to read or inspect a local file, use shell_exec with a direct bounded command unless the user clearly wants you to operate a visible app instead.
 - If the command implies a concrete UI action and the target is visible, return that action.
+- Opening a browser or app is setup only for research, browsing, search, reading, comparison, or other long-range work. Continue with aegis, shell_exec, visible UI actions, or another useful action until the real goal is satisfied and verified.
 - For long-range tasks, return the best next action or sequence for the current state, then use later RLM attempts to verify and continue. Only finish with action:null when the user's goal is actually satisfied, impossible without permission, unsafe, or ambiguous.
 - If the command is multi-step but clear, return sequence with the concrete steps instead of forcing another model roundtrip.
 - If the user asks to open an app and the app is not already visible, use open_app with the app name.
@@ -668,9 +669,11 @@ pub fn extract_planner_hints(transcript: &str) -> PlannerHints {
         .filter(|word| !word.is_empty())
         .collect::<Vec<_>>();
     let mut detected_actions = Vec::new();
-    if words
-        .iter()
-        .any(|word| matches!(word.as_str(), "open" | "launch"))
+    let asks_for_long_range_work = transcript_requests_long_range_work_words(&words);
+    if !asks_for_long_range_work
+        && words
+            .iter()
+            .any(|word| matches!(word.as_str(), "open" | "launch"))
     {
         for app_name in detected_app_names(&words) {
             detected_actions.push(InputAction::OpenApp {
@@ -696,10 +699,39 @@ pub fn extract_planner_hints(transcript: &str) -> PlannerHints {
                 .to_string(),
         );
     }
+    if asks_for_long_range_work {
+        notes.push(
+            "Opening an app or browser is only setup for this request; continue with browser, shell, UI, reading, search, or verification actions until the actual long-range goal is complete."
+                .to_string(),
+        );
+    }
     PlannerHints {
         detected_actions,
         notes,
     }
+}
+
+fn transcript_requests_long_range_work_words(words: &[String]) -> bool {
+    words.iter().any(|word| {
+        matches!(
+            word.as_str(),
+            "research"
+                | "search"
+                | "browse"
+                | "browsing"
+                | "web"
+                | "google"
+                | "lookup"
+                | "look"
+                | "find"
+                | "read"
+                | "investigate"
+                | "compare"
+                | "summarize"
+                | "while"
+                | "watching"
+        )
+    })
 }
 
 fn fast_open_app_name(words: &[String]) -> Option<&'static str> {
@@ -1129,6 +1161,15 @@ mod tests {
         ));
         let hints = extract_planner_hints("Open Calculator");
         assert_eq!(hints.detected_actions.len(), 1);
+    }
+
+    #[test]
+    fn research_requests_do_not_emit_open_only_hints() {
+        let hints =
+            extract_planner_hints("Open Safari browser and do some research while I am watching");
+
+        assert!(hints.detected_actions.is_empty());
+        assert!(hints.notes.iter().any(|note| note.contains("only setup")));
     }
 
     #[test]

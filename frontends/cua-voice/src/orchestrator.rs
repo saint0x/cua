@@ -699,6 +699,18 @@ async fn plan_and_dispatch(
                 }
             };
             repair_new_note_text_entry_plan(&transcript, &mut plan.action);
+            let dedupe_report = dedupe_redundant_sequence_actions(&mut plan.action);
+            if dedupe_report.removed > 0 {
+                trace
+                    .append(
+                        "planning_action_normalized",
+                        json!({
+                            "attempt_index": attempt_index,
+                            "removed_redundant_actions": dedupe_report.removed,
+                        }),
+                    )
+                    .await;
+            }
             trace
                 .append(
                     "planning_result",
@@ -751,7 +763,15 @@ async fn plan_and_dispatch(
                 &config.profile,
             )
             .await?;
-            let effect = turn_effect(&turn);
+            let mut effect = turn_effect(&turn);
+            let open_only_incomplete =
+                attempt_index < max_attempts && open_only_incomplete_for_goal(&transcript, &turn);
+            let evidence = if open_only_incomplete {
+                effect = Some("partial".to_string());
+                Some(open_only_incomplete_evidence(turn.evidence.clone()))
+            } else {
+                turn.evidence.clone()
+            };
             let should_continue =
                 should_replan_after_turn(&turn, effect.as_deref(), attempt_index, max_attempts);
             trace
@@ -761,6 +781,7 @@ async fn plan_and_dispatch(
                         "attempt_index": attempt_index,
                         "effect": effect,
                         "should_replan": should_continue,
+                        "open_only_incomplete": open_only_incomplete,
                         "has_action": turn.action.is_some(),
                     }),
                 )
@@ -780,7 +801,7 @@ async fn plan_and_dispatch(
                 response: turn.response.clone(),
                 action: turn.action.clone(),
                 effect,
-                evidence: turn.evidence.clone(),
+                evidence,
             });
             tx.send(VoiceUiEvent::Planning {
                 tool: "Reobserving".to_string(),
@@ -1079,6 +1100,84 @@ fn normalize_voice_token(token: &str) -> String {
         .to_ascii_lowercase()
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct ActionDedupeReport {
+    removed: usize,
+}
+
+fn dedupe_redundant_sequence_actions(
+    action: &mut Option<cua_core::InputAction>,
+) -> ActionDedupeReport {
+    let mut report = ActionDedupeReport::default();
+    if let Some(action) = action {
+        dedupe_redundant_actions(action, &mut report);
+    }
+    report
+}
+
+fn dedupe_redundant_actions(action: &mut cua_core::InputAction, report: &mut ActionDedupeReport) {
+    let cua_core::InputAction::Sequence { actions, .. } = action else {
+        return;
+    };
+
+    for action in actions.iter_mut() {
+        dedupe_redundant_actions(action, report);
+    }
+
+    let mut seen_open_apps = Vec::<String>::new();
+    let mut seen_text_entries = Vec::<(ActionTextKind, String)>::new();
+    actions.retain(|action| {
+        let keep = match action {
+            cua_core::InputAction::OpenApp { app_name } => {
+                let key = app_name.trim().to_ascii_lowercase();
+                if seen_open_apps.iter().any(|seen| seen == &key) {
+                    false
+                } else {
+                    seen_open_apps.push(key);
+                    true
+                }
+            }
+            cua_core::InputAction::KeyType { text } => {
+                retain_first_text_entry(&mut seen_text_entries, ActionTextKind::Type, text)
+            }
+            cua_core::InputAction::KeyPaste { text } => {
+                retain_first_text_entry(&mut seen_text_entries, ActionTextKind::Paste, text)
+            }
+            cua_core::InputAction::ClipboardWrite { text } => {
+                retain_first_text_entry(&mut seen_text_entries, ActionTextKind::Clipboard, text)
+            }
+            _ => true,
+        };
+        if !keep {
+            report.removed += 1;
+        }
+        keep
+    });
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ActionTextKind {
+    Type,
+    Paste,
+    Clipboard,
+}
+
+fn retain_first_text_entry(
+    seen_text_entries: &mut Vec<(ActionTextKind, String)>,
+    kind: ActionTextKind,
+    text: &str,
+) -> bool {
+    let key = text.trim().to_string();
+    if seen_text_entries
+        .iter()
+        .any(|(seen_kind, seen_text)| *seen_kind == kind && seen_text == &key)
+    {
+        return false;
+    }
+    seen_text_entries.push((kind, key));
+    true
+}
+
 fn repair_new_note_text_entry_plan(transcript: &str, action: &mut Option<cua_core::InputAction>) {
     if !transcript_requests_new_note(transcript) {
         return;
@@ -1157,6 +1256,72 @@ fn action_contains_cmd_n(action: &cua_core::InputAction) -> bool {
             actions.iter().any(action_contains_cmd_n)
         }
         _ => false,
+    }
+}
+
+fn open_only_incomplete_for_goal(transcript: &str, turn: &CompletedAssistantTurn) -> bool {
+    transcript_requests_long_range_work(transcript)
+        && turn.action.as_ref().is_some_and(action_is_open_only_setup)
+}
+
+fn transcript_requests_long_range_work(transcript: &str) -> bool {
+    transcript
+        .split_whitespace()
+        .map(normalize_voice_token)
+        .any(|word| {
+            matches!(
+                word.as_str(),
+                "research"
+                    | "search"
+                    | "browse"
+                    | "browsing"
+                    | "web"
+                    | "google"
+                    | "lookup"
+                    | "look"
+                    | "find"
+                    | "read"
+                    | "investigate"
+                    | "compare"
+                    | "summarize"
+                    | "while"
+                    | "watching"
+            )
+        })
+}
+
+fn action_is_open_only_setup(action: &serde_json::Value) -> bool {
+    match action.get("kind").and_then(|kind| kind.as_str()) {
+        Some("open_app") => true,
+        Some("sequence") => action
+            .get("actions")
+            .and_then(|actions| actions.as_array())
+            .is_some_and(|actions| {
+                !actions.is_empty() && actions.iter().all(action_is_open_only_setup)
+            }),
+        _ => false,
+    }
+}
+
+fn open_only_incomplete_evidence(evidence: Option<serde_json::Value>) -> serde_json::Value {
+    let mut evidence = evidence.unwrap_or_else(|| json!({}));
+    if let Some(object) = evidence.as_object_mut() {
+        object.insert("effect".to_string(), json!("partial"));
+        object.insert(
+            "reason".to_string(),
+            json!("open_app_only_did_not_satisfy_long_range_goal"),
+        );
+        object.insert(
+            "repair_hint".to_string(),
+            json!("Continue with browser, shell, visible UI, reading, search, or verification actions."),
+        );
+        evidence
+    } else {
+        json!({
+            "effect": "partial",
+            "reason": "open_app_only_did_not_satisfy_long_range_goal",
+            "dispatch_evidence": evidence,
+        })
     }
 }
 
@@ -2166,6 +2331,55 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_side_effects_are_removed_inside_sequences() {
+        let mut action = Some(cua_core::InputAction::Sequence {
+            actions: vec![
+                cua_core::InputAction::OpenApp {
+                    app_name: "Notes".to_string(),
+                },
+                cua_core::InputAction::OpenApp {
+                    app_name: "Notes".to_string(),
+                },
+                cua_core::InputAction::KeyPress {
+                    combo: "cmd+n".to_string(),
+                },
+                cua_core::InputAction::KeyPress {
+                    combo: "cmd+n".to_string(),
+                },
+                cua_core::InputAction::KeyPaste {
+                    text: "Once upon a time".to_string(),
+                },
+                cua_core::InputAction::KeyPaste {
+                    text: "Once upon a time".to_string(),
+                },
+            ],
+            inter_action_delay_ms: 120,
+        });
+
+        let report = dedupe_redundant_sequence_actions(&mut action);
+
+        assert_eq!(report.removed, 2);
+        let Some(cua_core::InputAction::Sequence { actions, .. }) = action else {
+            panic!("expected sequence");
+        };
+        assert_eq!(actions.len(), 4);
+        assert_eq!(
+            actions
+                .iter()
+                .filter(|action| matches!(action, cua_core::InputAction::KeyPress { .. }))
+                .count(),
+            2
+        );
+        assert_eq!(
+            actions
+                .iter()
+                .filter(|action| matches!(action, cua_core::InputAction::KeyPaste { .. }))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn text_entry_requests_reject_open_only_plans() {
         assert!(transcript_requests_text_entry(
             "Open Notes and write me a note that says hello"
@@ -2189,6 +2403,22 @@ mod tests {
                 inter_action_delay_ms: 120,
             }
         ));
+    }
+
+    #[test]
+    fn long_range_requests_replan_after_open_only_setup() {
+        let turn = CompletedAssistantTurn {
+            response: "Opening Safari.".to_string(),
+            action: Some(json!({"kind": "open_app", "app_name": "Safari"})),
+            evidence: Some(json!({"effect": "confirmed"})),
+        };
+
+        assert!(open_only_incomplete_for_goal(
+            "Open Safari and do some research while I watch",
+            &turn
+        ));
+        assert!(should_replan_after_turn(&turn, Some("partial"), 1, 3));
+        assert!(!open_only_incomplete_for_goal("Open Safari", &turn));
     }
 
     #[test]
