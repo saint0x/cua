@@ -17,9 +17,9 @@ pub const EXPANDED_FILLET: f32 = 0.0;
 pub const WINDOW_WIDTH: f32 = COMPACT_WIDTH + (COMPACT_FILLET * 2.0);
 pub const WINDOW_HEIGHT: f32 = COMPACT_HEIGHT;
 pub const TOP_MARGIN: f32 = 0.0;
-const SHELL_EASE_X1: f32 = 0.32;
-const SHELL_EASE_Y1: f32 = 0.72;
-const SHELL_EASE_X2: f32 = 0.0;
+const SHELL_EASE_X1: f32 = 0.77;
+const SHELL_EASE_Y1: f32 = 0.0;
+const SHELL_EASE_X2: f32 = 0.23;
 const SHELL_EASE_Y2: f32 = 1.0;
 
 #[derive(Debug, Copy, Clone, PartialEq)]
@@ -773,9 +773,10 @@ mod tests {
     fn shell_ease_matches_reference_curve_shape() {
         assert_eq!(shell_ease(0.0), 0.0);
         assert_eq!(shell_ease(1.0), 1.0);
-        assert!(shell_ease(0.25) > 0.75);
-        assert!(shell_ease(0.5) > 0.9);
-        assert!(shell_ease(0.75) > shell_ease(0.5));
+        assert!(shell_ease(0.25) < 0.15);
+        assert!((shell_ease(0.5) - 0.5).abs() < 0.01);
+        assert!(shell_ease(0.75) > 0.85);
+        assert!((shell_ease(0.25) + shell_ease(0.75) - 1.0).abs() < 0.02);
     }
 
     #[test]

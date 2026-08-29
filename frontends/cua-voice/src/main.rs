@@ -73,11 +73,38 @@ const COMPACT_CONTENT_Y_OFFSET_PX: f32 = 0.0;
 const STOPLIGHT_SIZE_PX: f32 = 8.0;
 const STOPLIGHT_GAP_PX: f32 = 4.0;
 const STOPLIGHT_TOP_PX: f32 = compact_content_axis_y() - (STOPLIGHT_SIZE_PX / 2.0);
-const SHELL_MOTION_SECS: f32 = 0.320;
-const CONTENT_MOTION_SECS: f32 = 0.210;
-const REDUCED_SHELL_MOTION_SECS: f32 = 0.110;
-const REDUCED_CONTENT_MOTION_SECS: f32 = 0.110;
+const HUD_FRAME_DELTA_MAX_SECS: f32 = 0.05;
+const HUD_SHELL_MOTION: HudMotionSpec = HudMotionSpec {
+    standard_secs: 0.280,
+    reduced_secs: 0.100,
+};
+const HUD_CONTENT_MOTION: HudMotionSpec = HudMotionSpec {
+    standard_secs: 0.180,
+    reduced_secs: 0.100,
+};
 const ACTIVE_RING_SWEEP_DEG: f32 = 132.0;
+
+#[derive(Debug, Copy, Clone, PartialEq)]
+struct HudMotionSpec {
+    standard_secs: f32,
+    reduced_secs: f32,
+}
+
+impl HudMotionSpec {
+    const fn duration_secs(self, reduced_motion: bool) -> f32 {
+        if reduced_motion {
+            self.reduced_secs
+        } else {
+            self.standard_secs
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum HudMotionTrack {
+    Shell,
+    Content,
+}
 
 #[derive(Debug, Parser)]
 #[command(name = "cua-voice", version, about = "Rust voice HUD for cua")]
@@ -367,7 +394,7 @@ impl VoiceHud {
 
     fn tick_animation(&mut self, compact_width_target_px: f32) {
         let now = Instant::now();
-        let dt = now.duration_since(self.last_frame).as_secs_f32().min(0.05);
+        let dt = clamped_frame_delta_secs(now.duration_since(self.last_frame).as_secs_f32());
         self.last_frame = now;
         let target = if self.snapshot.is_expanded() {
             1.0
@@ -378,7 +405,8 @@ impl VoiceHud {
             self.response_progress,
             target,
             dt,
-            content_motion_secs(self.reduced_motion),
+            HudMotionTrack::Content,
+            self.reduced_motion,
         );
         let expansion_target = if self.expanded && !self.minimized {
             1.0
@@ -389,20 +417,23 @@ impl VoiceHud {
             self.expansion_progress,
             expansion_target,
             dt,
-            shell_motion_secs(self.reduced_motion),
+            HudMotionTrack::Shell,
+            self.reduced_motion,
         );
         let minimized_target = if self.minimized { 1.0 } else { 0.0 };
         self.minimized_progress = advance_motion_progress(
             self.minimized_progress,
             minimized_target,
             dt,
-            shell_motion_secs(self.reduced_motion),
+            HudMotionTrack::Shell,
+            self.reduced_motion,
         );
         self.compact_width_px = advance_scalar_motion(
             self.compact_width_px,
             compact_width_target_px,
             dt,
-            shell_motion_secs(self.reduced_motion),
+            HudMotionTrack::Shell,
+            self.reduced_motion,
         );
     }
 
@@ -639,6 +670,7 @@ impl VoiceHud {
         self.expanded = !self.expanded;
         self.minimized = false;
         self.drag = None;
+        self.last_frame = Instant::now();
         if self.expanded {
             window.activate_window();
         }
@@ -663,6 +695,7 @@ impl VoiceHud {
         self.expanded = expanded;
         self.minimized = false;
         self.drag = None;
+        self.last_frame = Instant::now();
         if expanded {
             window.activate_window();
         }
@@ -699,6 +732,7 @@ impl VoiceHud {
                 this.minimized = false;
                 this.expanded = false;
                 this.drag = None;
+                this.last_frame = Instant::now();
                 cx.notify();
                 if let Some(display) = window.display(cx) {
                     let bounds = animated_island_bounds(
@@ -1865,20 +1899,19 @@ fn response_flash_visible(metrics: HudMetrics) -> bool {
     metrics.response_opacity >= 0.35
 }
 
-fn shell_motion_secs(reduced_motion: bool) -> f32 {
-    if reduced_motion {
-        REDUCED_SHELL_MOTION_SECS
-    } else {
-        SHELL_MOTION_SECS
+fn hud_motion_spec(track: HudMotionTrack) -> HudMotionSpec {
+    match track {
+        HudMotionTrack::Shell => HUD_SHELL_MOTION,
+        HudMotionTrack::Content => HUD_CONTENT_MOTION,
     }
 }
 
-fn content_motion_secs(reduced_motion: bool) -> f32 {
-    if reduced_motion {
-        REDUCED_CONTENT_MOTION_SECS
-    } else {
-        CONTENT_MOTION_SECS
-    }
+fn hud_motion_secs(track: HudMotionTrack, reduced_motion: bool) -> f32 {
+    hud_motion_spec(track).duration_secs(reduced_motion)
+}
+
+fn clamped_frame_delta_secs(dt_secs: f32) -> f32 {
+    dt_secs.min(HUD_FRAME_DELTA_MAX_SECS)
 }
 
 fn motion_elapsed_secs(elapsed_secs: f32, reduced_motion: bool) -> f32 {
@@ -1901,12 +1934,19 @@ fn expanded_body_offset_y(metrics: HudMetrics) -> f32 {
     -6.0 * (1.0 - metrics.expansion_opacity.clamp(0.0, 1.0))
 }
 
-fn advance_motion_progress(current: f32, target: f32, dt_secs: f32, duration_secs: f32) -> f32 {
+fn advance_motion_progress(
+    current: f32,
+    target: f32,
+    dt_secs: f32,
+    track: HudMotionTrack,
+    reduced_motion: bool,
+) -> f32 {
     let current = current.clamp(0.0, 1.0);
     let target = target.clamp(0.0, 1.0);
     if current == target {
         return target;
     }
+    let duration_secs = hud_motion_secs(track, reduced_motion);
     let step = (dt_secs / duration_secs.max(0.001)).clamp(0.0, 1.0);
     if target > current {
         (current + step).min(target)
@@ -1915,10 +1955,17 @@ fn advance_motion_progress(current: f32, target: f32, dt_secs: f32, duration_sec
     }
 }
 
-fn advance_scalar_motion(current: f32, target: f32, dt_secs: f32, duration_secs: f32) -> f32 {
+fn advance_scalar_motion(
+    current: f32,
+    target: f32,
+    dt_secs: f32,
+    track: HudMotionTrack,
+    reduced_motion: bool,
+) -> f32 {
     if current == target {
         return target;
     }
+    let duration_secs = hud_motion_secs(track, reduced_motion);
     let full_travel_px = (EXPANDED_WIDTH - COMPACT_WIDTH).max(1.0);
     let step = full_travel_px * (dt_secs / duration_secs.max(0.001)).clamp(0.0, 1.0);
     if target > current {
@@ -3538,26 +3585,53 @@ mod tests {
     }
 
     #[test]
-    fn hud_motion_uses_reference_durations() {
-        assert_eq!(SHELL_MOTION_SECS, 0.320);
-        assert_eq!(CONTENT_MOTION_SECS, 0.210);
-        assert_eq!(shell_motion_secs(false), SHELL_MOTION_SECS);
-        assert_eq!(content_motion_secs(false), CONTENT_MOTION_SECS);
-        assert_eq!(shell_motion_secs(true), 0.110);
-        assert_eq!(content_motion_secs(true), 0.110);
+    fn hud_motion_uses_canonical_ux_specs() {
+        assert_eq!(
+            hud_motion_spec(HudMotionTrack::Shell),
+            HudMotionSpec {
+                standard_secs: 0.280,
+                reduced_secs: 0.100,
+            }
+        );
+        assert_eq!(
+            hud_motion_spec(HudMotionTrack::Content),
+            HudMotionSpec {
+                standard_secs: 0.180,
+                reduced_secs: 0.100,
+            }
+        );
+        assert_eq!(hud_motion_secs(HudMotionTrack::Shell, false), 0.280);
+        assert_eq!(hud_motion_secs(HudMotionTrack::Content, false), 0.180);
+        assert_eq!(hud_motion_secs(HudMotionTrack::Shell, true), 0.100);
+        assert_eq!(hud_motion_secs(HudMotionTrack::Content, true), 0.100);
+        assert_eq!(clamped_frame_delta_secs(0.500), HUD_FRAME_DELTA_MAX_SECS);
 
         assert_eq!(
-            advance_motion_progress(0.0, 1.0, SHELL_MOTION_SECS, SHELL_MOTION_SECS),
+            advance_motion_progress(0.0, 1.0, 0.280, HudMotionTrack::Shell, false),
             1.0
         );
         assert_eq!(
-            advance_motion_progress(1.0, 0.0, CONTENT_MOTION_SECS, CONTENT_MOTION_SECS),
+            advance_motion_progress(1.0, 0.0, 0.180, HudMotionTrack::Content, false),
             0.0
         );
         assert_eq!(
-            advance_motion_progress(0.0, 1.0, SHELL_MOTION_SECS / 2.0, SHELL_MOTION_SECS),
+            advance_motion_progress(0.0, 1.0, 0.140, HudMotionTrack::Shell, false),
             0.5
         );
+    }
+
+    #[test]
+    fn hud_shell_expand_and_collapse_are_symmetric() {
+        let frame_dt = 1.0 / 60.0;
+        let opening = advance_motion_progress(0.0, 1.0, frame_dt, HudMotionTrack::Shell, false);
+        let closing = advance_motion_progress(1.0, 0.0, frame_dt, HudMotionTrack::Shell, false);
+
+        assert!((opening - (1.0 - closing)).abs() < f32::EPSILON);
+
+        let opened = HudMetrics::with_expansion(0.0, opening);
+        let closed = HudMetrics::with_expansion(0.0, closing);
+        assert!(((opened.width - COMPACT_WIDTH) - (EXPANDED_WIDTH - closed.width)).abs() < 0.1);
+        assert!(((opened.height - COMPACT_HEIGHT) - (EXPANDED_HEIGHT - closed.height)).abs() < 0.1);
     }
 
     #[test]
@@ -3752,14 +3826,16 @@ mod tests {
         let advanced = advance_scalar_motion(
             mid_width,
             target_width,
-            SHELL_MOTION_SECS / 4.0,
-            SHELL_MOTION_SECS,
+            hud_motion_secs(HudMotionTrack::Shell, false) / 4.0,
+            HudMotionTrack::Shell,
+            false,
         );
         let retreating = advance_scalar_motion(
             advanced,
             COMPACT_WIDTH,
-            SHELL_MOTION_SECS / 4.0,
-            SHELL_MOTION_SECS,
+            hud_motion_secs(HudMotionTrack::Shell, false) / 4.0,
+            HudMotionTrack::Shell,
+            false,
         );
 
         assert!(advanced > mid_width);
