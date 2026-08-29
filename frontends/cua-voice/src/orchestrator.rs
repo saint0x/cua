@@ -2800,9 +2800,9 @@ fn prior_attempts_have_blocker_evidence(prior_attempts: &[PlanAttemptContext]) -
     prior_attempts.iter().any(|attempt| {
         attempt.effect.as_deref() == Some("refused")
             || attempt
-            .evidence
-            .as_ref()
-            .is_some_and(evidence_reports_blocker)
+                .evidence
+                .as_ref()
+                .is_some_and(evidence_reports_blocker)
     })
 }
 
@@ -5478,6 +5478,35 @@ mod tests {
         ));
         assert!(should_replan_after_turn(
             "Open Safari and search for official Gemini docs, then read the title",
+            &turn,
+            Some("confirmed"),
+            1,
+            AgentLoopBudget::Unbounded
+        ));
+    }
+
+    #[test]
+    fn agent_loop_visible_safari_search_sequence_continues_without_aegis() {
+        let turn = CompletedAssistantTurn {
+            response: "Searching in Safari.".to_string(),
+            action: Some(json!({
+                "kind": "sequence",
+                "actions": [
+                    {"kind": "open_app", "app_name": "Safari"},
+                    {"kind": "key_press", "combo": "cmd+l"},
+                    {"kind": "key_paste", "text": "official SQLite foreign key documentation"},
+                    {"kind": "key_press", "combo": "enter"}
+                ],
+                "inter_action_delay_ms": 120
+            })),
+            evidence: Some(json!({"effect": "confirmed"})),
+        };
+
+        let action = turn.action.as_ref().unwrap();
+        assert!(action_is_browser_research_setup(action));
+        assert!(!json_action_uses_aegis(action));
+        assert!(should_replan_after_turn(
+            "Open Safari and search for the official SQLite foreign key documentation, then read the source and report the verified title.",
             &turn,
             Some("confirmed"),
             1,
