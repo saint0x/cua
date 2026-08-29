@@ -2050,6 +2050,8 @@ fn final_response_reports_prior_failure(response: &str) -> bool {
             "no such file or directory",
             "permission denied",
             "not found",
+            "timed out",
+            "timeout",
             "unavailable",
         ]
         .iter()
@@ -3538,6 +3540,34 @@ mod tests {
             response:
                 "The file does not exist. Error: cat: /tmp/missing: No such file or directory"
                     .to_string(),
+            action: None,
+            evidence: None,
+        };
+
+        assert!(final_response_reports_prior_failure(&completed.response));
+        assert_eq!(inferred_final_effect(&completed, &prior_attempts), "failed");
+    }
+
+    #[test]
+    fn final_timeout_readback_after_refused_action_infers_failed_effect() {
+        let prior_attempts = vec![PlanAttemptContext {
+            attempt_index: 1,
+            response: "Running the shell command with a 500ms timeout.".to_string(),
+            action: Some(json!({
+                "kind": "shell_exec",
+                "command": "sh -lc 'sleep 2; printf slow-failure >&2; exit 9'",
+                "timeout_ms": 500
+            })),
+            effect: Some("refused".to_string()),
+            evidence: Some(json!({
+                "effect": "refused",
+                "reason": "dispatch_error",
+                "error": "shell command timed out after 500ms"
+            })),
+        }];
+        let completed = CompletedAssistantTurn {
+            response: "The command timed out as expected: shell command timed out after 500ms."
+                .to_string(),
             action: None,
             evidence: None,
         };
