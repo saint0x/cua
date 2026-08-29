@@ -342,8 +342,8 @@ impl MetalRenderer {
         }
     }
 
-    pub fn update_transparency(&self, _transparent: bool) {
-        // todo(mac)?
+    pub fn update_transparency(&self, transparent: bool) {
+        self.layer.set_opaque(!transparent);
     }
 
     pub fn destroy(&self) {

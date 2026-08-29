@@ -597,6 +597,9 @@ impl MacWindow {
                 let () = msg_send![class!(NSWindow), setAllowsAutomaticWindowTabbing: NO];
             }
 
+            let borderless_titlebarless_popup =
+                titlebar.is_none() && matches!(&kind, WindowKind::PopUp);
+
             let mut style_mask;
             if let Some(titlebar) = titlebar.as_ref() {
                 style_mask =
@@ -613,6 +616,8 @@ impl MacWindow {
                 if titlebar.appears_transparent {
                     style_mask |= NSWindowStyleMask::NSFullSizeContentViewWindowMask;
                 }
+            } else if borderless_titlebarless_popup {
+                style_mask = NSWindowStyleMask::empty();
             } else {
                 style_mask = NSWindowStyleMask::NSTitledWindowMask
                     | NSWindowStyleMask::NSFullSizeContentViewWindowMask;
@@ -748,7 +753,6 @@ impl MacWindow {
             }
 
             native_window.setMovable_(is_movable as BOOL);
-
             if let Some(window_min_size) = window_min_size {
                 native_window.setContentMinSize_(NSSize {
                     width: window_min_size.width.to_f64(),
@@ -756,7 +760,11 @@ impl MacWindow {
                 });
             }
 
-            if titlebar.is_none_or(|titlebar| titlebar.appears_transparent) {
+            if titlebar
+                .as_ref()
+                .is_some_and(|titlebar| titlebar.appears_transparent)
+                || (titlebar.is_none() && !borderless_titlebarless_popup)
+            {
                 native_window.setTitlebarAppearsTransparent_(YES);
                 native_window.setTitleVisibility_(NSWindowTitleVisibility::NSWindowTitleHidden);
             }

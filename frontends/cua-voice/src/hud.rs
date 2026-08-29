@@ -8,7 +8,7 @@ use std::time::Duration;
 
 pub const COMPACT_WIDTH: f32 = 636.0;
 pub const COMPACT_HEIGHT: f32 = 42.0;
-pub const COMPACT_RADIUS: f32 = 21.0;
+pub const COMPACT_RADIUS: f32 = 0.0;
 pub const COMPACT_FILLET: f32 = 0.0;
 pub const EXPANDED_WIDTH: f32 = 828.0;
 pub const EXPANDED_HEIGHT: f32 = 258.0;
@@ -750,6 +750,7 @@ mod tests {
         assert_eq!(compact.height, COMPACT_HEIGHT);
         assert_eq!(reply.width, COMPACT_WIDTH);
         assert_eq!(reply.height, COMPACT_HEIGHT);
+        assert_eq!(COMPACT_RADIUS, 0.0);
         assert_eq!(reply.radius, COMPACT_RADIUS);
         assert_eq!(compact.bar_opacity, reply.bar_opacity);
         assert_eq!(compact.response_opacity, 0.0);

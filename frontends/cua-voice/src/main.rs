@@ -1419,10 +1419,8 @@ fn shell_background_layer(
     canvas(
         move |_, _, _| (radius, fillet, shell_width, paint, scrim),
         move |bounds, (radius, fillet, shell_width, paint, scrim), window, _| {
-            let shell_bounds = Bounds {
-                origin: point(bounds.origin.x + px(fillet), bounds.origin.y),
-                size: size(px(shell_width), bounds.size.height),
-            };
+            let shell_bounds = shell_background_bounds(bounds, fillet, shell_width);
+            window.paint_quad(fill(shell_bounds, paint));
             paint_concave_fillet(window, bounds, fillet, shell_width, paint, false);
             paint_concave_fillet(window, bounds, fillet, shell_width, paint, true);
             window.paint_quad(fill(shell_bounds, paint).corner_radii(Corners::all(px(radius))));
@@ -1444,6 +1442,7 @@ fn shell_background_layer(
                     scrim_color.into(),
                     true,
                 );
+                window.paint_quad(fill(shell_bounds, scrim_color));
                 window.paint_quad(
                     fill(shell_bounds, scrim_color).corner_radii(Corners::all(px(radius))),
                 );
@@ -1454,6 +1453,17 @@ fn shell_background_layer(
     .left_0()
     .top_0()
     .size_full()
+}
+
+fn shell_background_bounds(
+    bounds: Bounds<Pixels>,
+    fillet: f32,
+    shell_width: f32,
+) -> Bounds<Pixels> {
+    Bounds {
+        origin: point(bounds.origin.x + px(fillet), bounds.origin.y),
+        size: size(px(shell_width), bounds.size.height),
+    }
 }
 
 fn minimized_background_layer() -> impl IntoElement {
@@ -2975,7 +2985,7 @@ fn hud_window_options(bounds: Bounds<Pixels>) -> WindowOptions {
         is_resizable: false,
         is_minimizable: false,
         mouse_passthrough: false,
-        window_background: WindowBackgroundAppearance::Transparent,
+        window_background: WindowBackgroundAppearance::Opaque,
         ..Default::default()
     }
 }
@@ -3675,6 +3685,35 @@ mod tests {
     }
 
     #[test]
+    fn shell_background_bounds_fill_compact_and_expanded_corners() {
+        let compact_metrics = HudMetrics::with_expansion(0.0, 0.0);
+        let compact_window = Bounds {
+            origin: point(px(12.0), px(34.0)),
+            size: size(px(COMPACT_WIDTH), px(COMPACT_HEIGHT)),
+        };
+        let compact_shell = shell_background_bounds(
+            compact_window,
+            island_fillet(compact_metrics),
+            island_shell_width(compact_metrics),
+        );
+
+        assert_eq!(compact_shell, compact_window);
+
+        let expanded_metrics = HudMetrics::with_expansion(0.0, 1.0);
+        let expanded_window = Bounds {
+            origin: point(px(12.0), px(34.0)),
+            size: size(px(EXPANDED_WIDTH), px(EXPANDED_HEIGHT)),
+        };
+        let expanded_shell = shell_background_bounds(
+            expanded_window,
+            island_fillet(expanded_metrics),
+            island_shell_width(expanded_metrics),
+        );
+
+        assert_eq!(expanded_shell, expanded_window);
+    }
+
+    #[test]
     fn island_window_uses_real_shell_without_side_fillet_gutters() {
         let compact = HudMetrics::with_expansion(0.0, 0.0);
         let expanded = HudMetrics::with_expansion(0.0, 1.0);
@@ -4331,6 +4370,10 @@ mod tests {
         assert!(!options.focus);
         assert_eq!(options.kind, WindowKind::PopUp);
         assert!(!options.mouse_passthrough);
+        assert_eq!(
+            options.window_background,
+            WindowBackgroundAppearance::Opaque
+        );
     }
 
     #[test]

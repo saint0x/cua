@@ -69,7 +69,7 @@ observe_path, selected_path = sys.argv[1:3]
 observe = json.load(open(observe_path, encoding="utf-8"))
 windows = [
     window for window in observe.get("windows", [])
-    if (window.get("app_name") or "").lower() == "cua"
+    if (window.get("app_name") or "").lower() in {"cua", "cua-voice"}
     and int(window.get("layer") or 0) >= 20
     and int(window.get("width") or 0) >= 300
     and int(window.get("height") or 0) >= 30
