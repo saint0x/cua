@@ -1154,6 +1154,41 @@ async fn plan_and_dispatch(
                 attempt_index += 1;
                 continue;
             }
+            if action_null_stops_long_range_without_evidence(
+                &transcript,
+                &plan.response,
+                &planned_action_json,
+                &attempts,
+            ) {
+                trace
+                    .append(
+                        "planning_rejected",
+                        json!({
+                            "attempt_index": attempt_index,
+                            "reason": "action_null_long_range_without_evidence",
+                            "response": plan.response.clone(),
+                        }),
+                    )
+                    .await;
+                attempts.push(PlanAttemptContext {
+                    attempt_index,
+                    response: plan.response,
+                    action: None,
+                    effect: Some("suspected_noop".to_string()),
+                    evidence: Some(json!({
+                        "effect": "suspected_noop",
+                        "reason": "action_null_long_range_without_evidence",
+                        "repair_hint": "Long-range work needs a concrete next action or a final answer backed by prior evidence. Use an available tool action, or ask for clarification only when the goal is genuinely ambiguous or blocked.",
+                    })),
+                });
+                if !loop_budget.can_continue_after(attempt_index) {
+                    anyhow::bail!(
+                        "planning model stopped long-range work without evidence or a real blocker"
+                    );
+                }
+                attempt_index += 1;
+                continue;
+            }
             if plan.action.as_ref().is_some_and(|action| {
                 failure_boundary_plan_collapses_recovery(&transcript, action, &attempts)
             }) {
@@ -2624,6 +2659,40 @@ fn action_null_finishes_after_prior_attempts(
         && !prior_attempts.is_empty()
         && (prior_attempts_support_verified_final(response, prior_attempts)
             || prior_attempts_support_failure_final(response, prior_attempts))
+}
+
+fn action_null_stops_long_range_without_evidence(
+    transcript: &str,
+    response: &str,
+    action: &Option<serde_json::Value>,
+    prior_attempts: &[PlanAttemptContext],
+) -> bool {
+    action.is_none()
+        && transcript_requests_long_range_work(transcript)
+        && !action_null_finishes_after_prior_attempts(response, action, prior_attempts)
+        && !planner_response_claims_pending_work(response)
+        && !response_requests_clarification_or_reports_blocker(response)
+}
+
+fn response_requests_clarification_or_reports_blocker(response: &str) -> bool {
+    let lower = response.to_ascii_lowercase();
+    [
+        "?",
+        "clarify",
+        "which ",
+        "what ",
+        "permission",
+        "allow",
+        "authorize",
+        "sign in",
+        "login",
+        "log in",
+        "blocked",
+        "unsafe",
+        "ambiguous",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
 }
 
 fn failure_boundary_plan_collapses_recovery(
@@ -5088,6 +5157,68 @@ mod tests {
         assert!(!action_null_plan_claims_pending_work(
             "The displayed result is 579.",
             &None
+        ));
+    }
+
+    #[test]
+    fn long_range_action_null_stop_without_evidence_is_rejected() {
+        assert!(action_null_stops_long_range_without_evidence(
+            "Open Safari, research Gemini docs, read the page title, and report it.",
+            "The page title is Gemini models.",
+            &None,
+            &[]
+        ));
+        assert!(action_null_stops_long_range_without_evidence(
+            "Search the web and summarize what you verify.",
+            "I could not complete the search.",
+            &None,
+            &[PlanAttemptContext {
+                attempt_index: 1,
+                response: "Opening Safari.".to_string(),
+                action: Some(json!({"kind": "open_app", "app_name": "Safari"})),
+                effect: Some("confirmed".to_string()),
+                evidence: Some(json!({"effect": "confirmed"})),
+            }]
+        ));
+    }
+
+    #[test]
+    fn long_range_action_null_allows_evidence_backed_final_or_real_blocker() {
+        let readback_attempts = vec![PlanAttemptContext {
+            attempt_index: 1,
+            response: "Reading the page title.".to_string(),
+            action: Some(json!({
+                "kind": "aegis",
+                "args": ["--mode", "headless", "page", "text", "--scope", "main"],
+                "timeout_ms": 15000
+            })),
+            effect: Some("confirmed".to_string()),
+            evidence: Some(json!({
+                "effect": "confirmed",
+                "evidence": [{
+                    "kind": "value_readback",
+                    "message": "aegis exited 0; stdout=Gemini models; stderr="
+                }]
+            })),
+        }];
+
+        assert!(!action_null_stops_long_range_without_evidence(
+            "Use Aegis headless, read the page title, and report the verified title.",
+            "The verified title is Gemini models.",
+            &None,
+            &readback_attempts
+        ));
+        assert!(!action_null_stops_long_range_without_evidence(
+            "Open Safari and research the internal admin page.",
+            "I need you to sign in before I can continue.",
+            &None,
+            &[]
+        ));
+        assert!(!action_null_stops_long_range_without_evidence(
+            "Search the web for the item.",
+            "Which item should I search for?",
+            &None,
+            &[]
         ));
     }
 
