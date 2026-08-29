@@ -253,7 +253,7 @@ pub fn agent_input_from_daemon_event(
         "input_completed" => Some((
             sequence,
             VoiceUiEvent::AutomationActivity {
-                label: "confirmed remote action".to_string(),
+                label: "remote action completed".to_string(),
                 source: Some("Computer control".to_string()),
                 tool: Some("Unix socket".to_string()),
             },
@@ -653,7 +653,7 @@ mod tests {
             panic!("expected automation activity");
         };
         assert_eq!(sequence, 46);
-        assert_eq!(label, "confirmed remote action");
+        assert_eq!(label, "remote action completed");
         assert_eq!(source.as_deref(), Some("Computer control"));
         assert_eq!(tool.as_deref(), Some("Unix socket"));
         assert!(agent_input_from_daemon_event(&event, 46).is_none());

@@ -881,11 +881,11 @@ async fn plan_and_dispatch(
                     evidence: Some(json!({
                         "effect": "suspected_noop",
                         "reason": "repeated_confirmed_long_range_action",
-                        "repair_hint": "The same action already produced confirmed partial progress. Use the fresh observation to choose the next different action or final verified answer.",
+                        "repair_hint": "The same action already completed partial progress. Use the fresh observation to choose the next different action or final verified answer.",
                     })),
                 });
                 if !loop_budget.can_continue_after(attempt_index) {
-                    anyhow::bail!("planning model repeated a confirmed long-range action");
+                    anyhow::bail!("planning model repeated an already completed long-range action");
                 }
                 attempt_index += 1;
                 continue;
@@ -1969,6 +1969,15 @@ fn inferred_final_effect(
     {
         return "confirmed";
     }
+    if prior_attempts.iter().any(|attempt| {
+        matches!(
+            attempt.effect.as_deref(),
+            Some("failed" | "refused" | "suspected_noop" | "unverifiable")
+        )
+    }) && final_response_reports_prior_failure(&completed.response)
+    {
+        return "failed";
+    }
     "stopped"
 }
 
@@ -1983,6 +1992,23 @@ fn final_response_claims_verified_result(response: &str) -> bool {
             "shows",
             "title",
             "reads",
+        ]
+        .iter()
+        .any(|marker| lower.contains(marker))
+}
+
+fn final_response_reports_prior_failure(response: &str) -> bool {
+    let lower = response.to_ascii_lowercase();
+    !planner_response_claims_pending_work(response)
+        && [
+            "error:",
+            "failed",
+            "refused",
+            "does not exist",
+            "no such file or directory",
+            "permission denied",
+            "not found",
+            "unavailable",
         ]
         .iter()
         .any(|marker| lower.contains(marker))
@@ -3447,6 +3473,35 @@ mod tests {
         assert!(!final_response_claims_verified_result(
             "Opening Calculator via Spotlight and typing 123"
         ));
+    }
+
+    #[test]
+    fn final_error_readback_after_refused_action_infers_failed_effect() {
+        let prior_attempts = vec![PlanAttemptContext {
+            attempt_index: 1,
+            response: "Reading the file via shell.".to_string(),
+            action: Some(json!({
+                "kind": "shell_exec",
+                "command": "cat /tmp/missing",
+                "timeout_ms": 5000
+            })),
+            effect: Some("refused".to_string()),
+            evidence: Some(json!({
+                "effect": "refused",
+                "reason": "dispatch_error",
+                "error": "cat: /tmp/missing: No such file or directory"
+            })),
+        }];
+        let completed = CompletedAssistantTurn {
+            response:
+                "The file does not exist. Error: cat: /tmp/missing: No such file or directory"
+                    .to_string(),
+            action: None,
+            evidence: None,
+        };
+
+        assert!(final_response_reports_prior_failure(&completed.response));
+        assert_eq!(inferred_final_effect(&completed, &prior_attempts), "failed");
     }
 
     #[test]

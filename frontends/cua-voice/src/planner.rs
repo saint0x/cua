@@ -77,6 +77,7 @@ Decision rules:
 - If the command implies a concrete UI action and the target is visible, return that action.
 - Opening a browser or app is setup only for research, browsing, search, reading, comparison, or other long-range work. Continue with aegis, shell_exec, visible UI actions, or another useful action until the real goal is satisfied and verified.
 - For long-range tasks, return the best next action or sequence for the current state, then use later RLM attempts to verify and continue. Only finish with action:null when the user's goal is actually satisfied, impossible without permission, unsafe, or ambiguous.
+- Keep user-visible response text semantic and natural. Do not echo internal effect labels such as "confirmed", "sent", "partial", "suspected_noop", or "unverifiable"; use those only as prior-attempt evidence.
 - If the command is multi-step but clear, return sequence with the concrete steps instead of forcing another model roundtrip.
 - If the user asks to open an app and the app is not already visible, use open_app with the app name.
 - Before reporting that a visible/computer-use task is done, take or use a fresh screenshot/reobserve pass after dispatch when the runtime provides it. Do not claim that text was written, a file changed, or an app state was reached solely because an input event was posted; rely on fresh observation/evidence when available, and repair if verification contradicts the intended result.
@@ -1053,6 +1054,7 @@ mod tests {
         assert!(PLANNER_SYSTEM_PROMPT
             .contains("Returning only open_app for a text-writing command is invalid"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("take or use a fresh screenshot/reobserve pass"));
+        assert!(PLANNER_SYSTEM_PROMPT.contains("Do not echo internal effect labels"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("Do not invent a separate skill runtime"));
     }
 

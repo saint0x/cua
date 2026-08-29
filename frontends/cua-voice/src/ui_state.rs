@@ -594,14 +594,14 @@ mod tests {
     fn raw_automation_activity_sets_live_label_and_replaces_stale_programmed_steps() {
         let mut state = HudSnapshot::default();
         state.apply(VoiceUiEvent::AutomationActivity {
-            label: "confirmed remote action".to_string(),
+            label: "remote action completed".to_string(),
             source: Some("Computer control".to_string()),
             tool: Some("Unix socket".to_string()),
         });
 
         assert_eq!(state.input_label, "Automation");
         assert_eq!(state.phase, HudPhase::Dispatching);
-        assert_eq!(state.step.label, "confirmed remote action");
+        assert_eq!(state.step.label, "remote action completed");
 
         state.apply(VoiceUiEvent::AgentStep {
             label: "custom visible step".to_string(),
