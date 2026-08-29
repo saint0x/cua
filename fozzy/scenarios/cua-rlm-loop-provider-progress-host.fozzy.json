@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "name": "cua-rlm-loop-provider-progress-host",
+  "steps": [
+    {
+      "type": "proc_spawn",
+      "cmd": "bash",
+      "args": [
+        "-lc",
+        "rm -rf artifacts/cua/fozzy-provider-progress-proof /tmp/cua-fozzy-provider-progress-home && CUA_VOICE_PROVIDER_PROGRESS_OUT_DIR=artifacts/cua/fozzy-provider-progress-proof CUA_VOICE_PROVIDER_PROGRESS_HOME=/tmp/cua-fozzy-provider-progress-home CUA_VOICE_PROVIDER_PROGRESS_PROFILE=fozzy-provider-progress scripts/host-voice-provider-progress-proof.sh"
+      ],
+      "expect_exit": 0,
+      "expect_stdout": "artifacts/cua/fozzy-provider-progress-proof\n"
+    }
+  ]
+}

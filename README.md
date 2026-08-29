@@ -106,7 +106,6 @@ cargo build -p cua
 scripts/host-gui-smoke.sh
 scripts/host-voice-smoke.sh
 scripts/host-voice-missing-planner-key-proof.sh
-scripts/host-voice-provider-progress-proof.sh
 fozzy doctor --deep --scenario fozzy/scenarios/cua-smoke.json --runs 5 --seed 4242 --json
 fozzy test --det --strict-verify fozzy/scenarios/cua-smoke.json --json
 fozzy doctor --deep --scenario fozzy/scenarios/cua-rlm-loop.fozzy.json --runs 5 --seed 4242 --json
@@ -115,6 +114,16 @@ fozzy run fozzy/scenarios/cua-rlm-loop-missing-planner-key-host.fozzy.json --hos
 fozzy trace verify artifacts/cua/fozzy/cua-rlm-loop-missing-planner-key-host.fozzy --strict --json
 fozzy replay artifacts/cua/fozzy/cua-rlm-loop-missing-planner-key-host.fozzy --json
 fozzy ci artifacts/cua/fozzy/cua-rlm-loop-missing-planner-key-host.fozzy --strict --json
+```
+
+With `OPENROUTER_API_KEY` configured, also verify that provider failures preserve completed action progress:
+
+```sh
+scripts/host-voice-provider-progress-proof.sh
+fozzy run fozzy/scenarios/cua-rlm-loop-provider-progress-host.fozzy.json --host-backends --record artifacts/cua/fozzy/cua-rlm-loop-provider-progress-host.fozzy --json
+fozzy trace verify artifacts/cua/fozzy/cua-rlm-loop-provider-progress-host.fozzy --strict --json
+fozzy replay artifacts/cua/fozzy/cua-rlm-loop-provider-progress-host.fozzy --json
+fozzy ci artifacts/cua/fozzy/cua-rlm-loop-provider-progress-host.fozzy --strict --json
 ```
 
 Use `cua perf bench screenshot|stream|input|model-prep --json` for local daemon latency checks. Budgets can be tuned with `CUA_BUDGET_*`, `CUA_STREAM_SOAK_SECONDS`, and `CUA_STREAM_RSS_BUDGET_KB`.
