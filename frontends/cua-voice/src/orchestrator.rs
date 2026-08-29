@@ -2675,24 +2675,26 @@ fn action_null_stops_long_range_without_evidence(
 }
 
 fn response_requests_clarification_or_reports_blocker(response: &str) -> bool {
-    let lower = response.to_ascii_lowercase();
-    [
-        "?",
-        "clarify",
-        "which ",
-        "what ",
-        "permission",
-        "allow",
-        "authorize",
-        "sign in",
-        "login",
-        "log in",
-        "blocked",
-        "unsafe",
-        "ambiguous",
-    ]
-    .iter()
-    .any(|marker| lower.contains(marker))
+    let lower = response.trim().to_ascii_lowercase();
+    lower.contains('?')
+        || [
+            "clarify",
+            "permission",
+            "authorization",
+            "authorize me",
+            "sign in",
+            "login",
+            "log in",
+            "need access",
+            "needs access",
+            "requires access",
+            "blocked",
+            "not allowed",
+            "unsafe",
+            "ambiguous",
+        ]
+        .iter()
+        .any(|marker| lower.contains(marker))
 }
 
 fn failure_boundary_plan_collapses_recovery(
@@ -5209,6 +5211,18 @@ mod tests {
         assert!(!action_null_stops_long_range_without_evidence(
             "Search the web for the item.",
             "Which item should I search for?",
+            &None,
+            &[]
+        ));
+        assert!(action_null_stops_long_range_without_evidence(
+            "Search the web and summarize what you verify.",
+            "I found what you asked for.",
+            &None,
+            &[]
+        ));
+        assert!(action_null_stops_long_range_without_evidence(
+            "Search the web and report what the source allows.",
+            "The page allows API access.",
             &None,
             &[]
         ));
