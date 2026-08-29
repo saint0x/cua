@@ -63,6 +63,7 @@ use tower_http::trace::TraceLayer;
 use uuid::Uuid;
 
 type HmacSha256 = Hmac<Sha256>;
+const INBOX_REPLY_MAX_CHARS: usize = 8_192;
 
 #[derive(Clone)]
 pub struct DaemonState {
@@ -2458,7 +2459,9 @@ async fn handle_unix_request(state: &DaemonState, request: UnixRequest) -> serde
                 Ok(request) => {
                     let result = state.inbox.set_done(
                         &request.message_id,
-                        request.reply.map(|reply| compact_action_text(&reply, 480)),
+                        request
+                            .reply
+                            .map(|reply| bound_preserved_text(&reply, INBOX_REPLY_MAX_CHARS)),
                     );
                     if let Ok(status) = result.as_ref() {
                         publish_inbox_status_event(state, status);
@@ -3975,7 +3978,9 @@ async fn inbox_mark_done(
 ) -> Result<Json<InboundStatus>, ApiError> {
     let status = state.inbox.set_done(
         &message_id,
-        request.reply.map(|reply| compact_action_text(&reply, 480)),
+        request
+            .reply
+            .map(|reply| bound_preserved_text(&reply, INBOX_REPLY_MAX_CHARS)),
     )?;
     publish_inbox_status_event(&state, &status);
     Ok(Json(status))
@@ -4926,6 +4931,19 @@ fn compact_action_text(value: &str, limit: usize) -> String {
         return compact;
     }
     let mut truncated = compact.chars().take(limit).collect::<String>();
+    truncated.push_str("...");
+    truncated
+}
+
+fn bound_preserved_text(value: &str, limit: usize) -> String {
+    let trimmed = value.trim();
+    if trimmed.chars().count() <= limit {
+        return trimmed.to_string();
+    }
+    let mut truncated = trimmed
+        .chars()
+        .take(limit.saturating_sub(3))
+        .collect::<String>();
     truncated.push_str("...");
     truncated
 }
@@ -7503,6 +7521,44 @@ mod tests {
         assert_eq!(running["state"], "running");
         assert_eq!(done["state"], "done");
         assert_eq!(status["reply"], "complete");
+    }
+
+    #[tokio::test]
+    async fn inbox_done_preserves_multiline_reply_text() {
+        let state = DaemonState::synthetic("inbox-status-multiline", "token");
+        let published = unix_result(
+            handle_unix_request(
+                &state,
+                unix_request(
+                    "inbox.publish",
+                    serde_json::json!({
+                        "schema_version": SCHEMA_VERSION,
+                        "idempotency_key": "status-message-multiline",
+                        "source": "test",
+                        "text": "read output"
+                    }),
+                ),
+            )
+            .await,
+        );
+        let message_id = published["message_id"].as_str().unwrap();
+
+        let done = unix_result(
+            handle_unix_request(
+                &state,
+                unix_request(
+                    "inbox.done",
+                    serde_json::json!({
+                        "message_id": message_id,
+                        "reply": "ALPHA\nBETA\nGAMMA"
+                    }),
+                ),
+            )
+            .await,
+        );
+
+        assert_eq!(done["state"], "done");
+        assert_eq!(done["reply"], "ALPHA\nBETA\nGAMMA");
     }
 
     #[test]

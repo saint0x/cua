@@ -626,12 +626,11 @@ fn command_output_message(
 
 fn compact_command_output(bytes: &[u8]) -> String {
     let text = String::from_utf8_lossy(bytes);
-    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let limit = 1_200;
-    if compact.chars().count() <= limit {
-        return compact;
+    if text.chars().count() <= limit {
+        return text.into_owned();
     }
-    let mut truncated = compact.chars().take(limit).collect::<String>();
+    let mut truncated = text.chars().take(limit).collect::<String>();
     truncated.push_str("...");
     truncated
 }
@@ -2241,6 +2240,28 @@ mod tests {
         assert_eq!(result.route, InputRoute::SystemApi);
         assert_eq!(result.delivery_mode, DeliveryMode::Background);
         assert!(result.evidence[0].message.contains("cua-shell-ok"));
+    }
+
+    #[tokio::test]
+    async fn shell_exec_preserves_multiline_stdout_readback() {
+        let backend = MacosInputBackend;
+        let result = backend
+            .execute(InputRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                idempotency_key: uuid::Uuid::new_v4(),
+                deadline_mono_ns: None,
+                action: InputAction::ShellExec {
+                    command: "printf 'ALPHA\\nBETA\\nGAMMA\\n'".to_string(),
+                    timeout_ms: 2_000,
+                },
+            })
+            .await;
+
+        assert_eq!(result.effect, Effect::Confirmed);
+        assert_eq!(
+            result.evidence[0].message,
+            "shell exited 0; stdout=ALPHA\nBETA\nGAMMA\n; stderr="
+        );
     }
 
     #[tokio::test]

@@ -4919,6 +4919,32 @@ mod tests {
     }
 
     #[test]
+    fn shell_readback_reply_preserves_multiline_stdout() {
+        let mut turn = CompletedAssistantTurn {
+            response: "Creating and reading output.txt.".to_string(),
+            action: Some(json!({
+                "kind": "shell_exec",
+                "command": "cat /tmp/example/output.txt",
+                "timeout_ms": 5000
+            })),
+            evidence: Some(json!({
+                "effect": "confirmed",
+                "evidence": [{
+                    "kind": "value_readback",
+                    "message": "shell exited 0; stdout=ALPHA\nBETA\nGAMMA\n; stderr="
+                }]
+            })),
+        };
+
+        apply_verified_readback_reply(
+            "Use local shell only, read output.txt back to stdout, and report the exact stdout.",
+            &mut turn,
+        );
+
+        assert_eq!(turn.response, "ALPHA\nBETA\nGAMMA");
+    }
+
+    #[test]
     fn sourced_final_answer_after_aegis_evidence_infers_confirmed_effect() {
         let prior_attempts = vec![PlanAttemptContext {
             attempt_index: 1,
