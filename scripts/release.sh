@@ -148,7 +148,7 @@ fozzy_host_trace_gate() {
   require_file "$scenario"
   log "Fozzy host-backed $name"
   run fozzy validate "$scenario" --json
-  run fozzy run "$scenario" --host-backends --record "$trace" --json
+  run fozzy run "$scenario" --det --host-backends --record "$trace" --json
   run fozzy trace verify "$trace" --strict --json
   run fozzy replay "$trace" --json
   run fozzy ci "$trace" --strict --json
