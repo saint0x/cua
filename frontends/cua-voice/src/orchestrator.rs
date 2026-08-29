@@ -3014,14 +3014,37 @@ fn aegis_attempt_contains_zero_match(
     action: &serde_json::Value,
     evidence: &serde_json::Value,
 ) -> bool {
-    let actions = flattened_actions(action);
-    let messages = evidence_messages(evidence);
-    actions.iter().enumerate().any(|(index, action)| {
-        json_action_uses_aegis(action)
-            && messages
-                .get(index)
-                .is_some_and(|message| message_stdout_json_has_zero_match(message))
-    })
+    flattened_actions(action)
+        .iter()
+        .any(|action| json_action_uses_aegis_page_find(action))
+        && evidence_messages(evidence)
+            .iter()
+            .any(|message| message_stdout_json_has_zero_match(message))
+}
+
+fn json_action_uses_aegis_page_find(action: &serde_json::Value) -> bool {
+    match action.get("kind").and_then(|kind| kind.as_str()) {
+        Some("aegis") => action
+            .get("args")
+            .and_then(|args| args.as_array())
+            .is_some_and(|args| aegis_args_are_page_find(args.as_slice())),
+        Some("sequence") => action
+            .get("actions")
+            .and_then(|actions| actions.as_array())
+            .is_some_and(|actions| actions.iter().any(json_action_uses_aegis_page_find)),
+        _ => false,
+    }
+}
+
+fn aegis_args_are_page_find(args: &[serde_json::Value]) -> bool {
+    let words = args
+        .iter()
+        .filter_map(|arg| arg.as_str())
+        .collect::<Vec<_>>();
+    let Some(page_index) = words.iter().position(|word| *word == "page") else {
+        return false;
+    };
+    words.get(page_index + 1) == Some(&"find")
 }
 
 fn evidence_messages(evidence: &serde_json::Value) -> Vec<&str> {
@@ -6098,9 +6121,49 @@ mod tests {
                 ]
             })),
         }];
+        let page_text_zero_count_attempts = vec![PlanAttemptContext {
+            attempt_index: 1,
+            response: "Inspecting page text with Aegis.".to_string(),
+            action: Some(json!({
+                "kind": "aegis",
+                "args": ["--mode", "headless", "page", "text", "--scope", "main"],
+                "timeout_ms": 15000
+            })),
+            effect: Some("partial".to_string()),
+            evidence: Some(json!({
+                "effect": "partial",
+                "evidence": [
+                    {"kind": "value_readback", "message": "aegis exited 0; stdout={\"title\":\"Example Domain\",\"match_count\":0}; stderr="}
+                ]
+            })),
+        }];
+        let mixed_page_find_attempts = vec![PlanAttemptContext {
+            attempt_index: 1,
+            response: "Opening and finding text with Aegis.".to_string(),
+            action: Some(json!({
+                "kind": "sequence",
+                "actions": [
+                    {"kind": "open_app", "app_name": "Safari"},
+                    {"kind": "aegis", "args": ["--mode", "headless", "page", "find", "cua impossible phrase"], "timeout_ms": 15000}
+                ]
+            })),
+            effect: Some("partial".to_string()),
+            evidence: Some(json!({
+                "effect": "partial",
+                "evidence": [
+                    {"kind": "value_readback", "message": "aegis exited 0; stdout={\"title\":\"Example Domain\",\"match_count\":0,\"matches\":[]}; stderr="}
+                ]
+            })),
+        }];
 
         assert!(prior_attempts_include_aegis_zero_match(
             &zero_match_attempts
+        ));
+        assert!(!prior_attempts_include_aegis_zero_match(
+            &page_text_zero_count_attempts
+        ));
+        assert!(prior_attempts_include_aegis_zero_match(
+            &mixed_page_find_attempts
         ));
         assert!(prior_attempts_support_explicit_aegis_final(
             "The phrase was not found on the verified page title Example Domain.",
@@ -6117,6 +6180,10 @@ mod tests {
         assert!(!prior_attempts_support_explicit_aegis_final(
             "The documentation explains how not found errors are represented.",
             &zero_match_attempts
+        ));
+        assert!(!prior_attempts_support_explicit_aegis_final(
+            "The phrase was not found on the verified page title Example Domain.",
+            &page_text_zero_count_attempts
         ));
     }
 
