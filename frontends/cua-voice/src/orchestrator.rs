@@ -1,7 +1,9 @@
 use crate::audio::{record_default_input_until, record_default_input_until_stop, RecordedAudio};
 use crate::client::{CuaClient, CuaSession};
 use crate::daemon::{spawn_profile_daemon, wait_until_ready};
-use crate::memory::{load_agent_context_with_chat, load_chat_context, ChatStore, CtxMemory};
+use crate::memory::{
+    load_agent_context_with_chat, load_chat_context, AgentContext, ChatStore, CtxMemory,
+};
 use crate::planner::{
     browser_research_bootstrap_plan, extract_planner_hints, parse_fast_command, PlanAttemptContext,
     PlannedTurn, Planner, PlannerRequest,
@@ -474,7 +476,9 @@ fn planning_error_is_empty_content(error: &anyhow::Error) -> bool {
 
 fn planning_error_is_invalid_action_json(error: &anyhow::Error) -> bool {
     let message = format!("{error:#}");
-    message.contains("model output was not valid action JSON") || message.contains("parse action")
+    message.contains("model output was not valid action JSON")
+        || message.contains("parse action")
+        || message.contains("parse plan JSON")
 }
 
 fn normalized_transcript(transcript: &str) -> String {
@@ -597,11 +601,30 @@ async fn plan_and_dispatch(
         let wait_started = Instant::now();
         let agent_context_task =
             spawn_agent_context(config.profile.clone(), transcript.clone(), chat_task);
-        let (mut context, agent_context) = tokio::join!(
+        let (mut context, agent_context_result) = tokio::join!(
             resolve_context_for_planning(local.clone(), context_task),
             resolve_agent_context(agent_context_task)
         );
-        let agent_context = agent_context?;
+        let (agent_context, agent_context_errors) = match agent_context_result {
+            Ok(agent_context) => (agent_context, Vec::new()),
+            Err(error) => {
+                let chat = resolve_chat_context(config.profile.clone(), None)
+                    .await
+                    .unwrap_or_else(|chat_error| {
+                        format!("Recent chat: unavailable. error={chat_error:#}")
+                    });
+                let message = format!("{error:#}");
+                (
+                    AgentContext {
+                        chat,
+                        ctx: format!("Context: unavailable.\nctx_error: {message}"),
+                        scratchpads: "Scratchpads: unavailable because ctx context load failed."
+                            .to_string(),
+                    },
+                    vec![message],
+                )
+            }
+        };
         trace
             .append(
                 "context_result",
@@ -626,6 +649,7 @@ async fn plan_and_dispatch(
                     "chat_chars": agent_context.chat.chars().count(),
                     "ctx_chars": agent_context.ctx.chars().count(),
                     "scratchpad_chars": agent_context.scratchpads.chars().count(),
+                    "errors": &agent_context_errors,
                 }),
             )
             .await;
@@ -637,13 +661,17 @@ async fn plan_and_dispatch(
             .append("agent_loop_start", json!({"budget": loop_budget}))
             .await;
         let planner = Planner::new(&config.planner_model);
-        let combined_agent_context = format!(
-            "{}\n{}\n{}",
-            agent_context.chat, agent_context.ctx, agent_context.scratchpads
-        );
+        let mut latest_chat_context = agent_context.chat.clone();
         let mut attempts = Vec::new();
         let mut attempt_index = 1;
         let completed = loop {
+            let planner_agent_context = combined_agent_context(
+                &latest_chat_context,
+                &agent_context.ctx,
+                &agent_context.scratchpads,
+                &context.errors,
+                &agent_context_errors,
+            );
             let attempt_started = Instant::now();
             tx.send(VoiceUiEvent::Planning {
                 tool: if attempt_index == 1 {
@@ -674,7 +702,7 @@ async fn plan_and_dispatch(
                     &api_key,
                     PlannerRequest {
                         transcript: &transcript,
-                        agent_context: Some(&combined_agent_context),
+                        agent_context: Some(&planner_agent_context),
                         hints: Some(&planner_hints),
                         frame: context.frame.as_ref(),
                         desktop: context.desktop.as_ref(),
@@ -706,9 +734,9 @@ async fn plan_and_dispatch(
                             .await;
                         break turn;
                     }
-                    if planning_error_is_empty_content(&error)
-                        || planning_error_is_invalid_action_json(&error)
-                    {
+                    let recoverable_planning_error = planning_error_is_empty_content(&error)
+                        || planning_error_is_invalid_action_json(&error);
+                    if recoverable_planning_error {
                         if let Some(plan) = browser_research_bootstrap_plan(&transcript) {
                             trace
                                 .append(
@@ -721,8 +749,33 @@ async fn plan_and_dispatch(
                                 )
                                 .await;
                             plan
+                        } else if loop_budget.can_continue_after(attempt_index) {
+                            let error_message = format!("{error:#}");
+                            attempts.push(PlanAttemptContext {
+                                attempt_index,
+                                response: "Planner output could not be used.".to_string(),
+                                action: None,
+                                effect: Some("failed".to_string()),
+                                evidence: Some(json!({
+                                    "effect": "failed",
+                                    "reason": "planning_error",
+                                    "error": error_message,
+                                })),
+                            });
+                            attempt_index += 1;
+                            continue;
                         } else {
-                            return Err(error);
+                            break CompletedAssistantTurn {
+                                response:
+                                    "Planner output could not be used before the loop budget ended."
+                                        .to_string(),
+                                action: None,
+                                evidence: Some(json!({
+                                    "effect": "partial",
+                                    "reason": "planning_error",
+                                    "error": format!("{error:#}"),
+                                })),
+                            };
                         }
                     } else {
                         return Err(error);
@@ -808,7 +861,8 @@ async fn plan_and_dispatch(
                 continue;
             }
             let source_frame = context.frame.as_ref().map(|frame| frame.envelope.clone());
-            let turn = dispatch_plan(
+            let planned_action_json = plan.action.as_ref().map(serde_json::to_value).transpose()?;
+            let turn = match dispatch_plan(
                 local.clone(),
                 context.session,
                 plan,
@@ -818,7 +872,64 @@ async fn plan_and_dispatch(
                 &trace,
                 &config.profile,
             )
-            .await?;
+            .await
+            {
+                Ok(turn) => turn,
+                Err(error) => {
+                    let evidence = Some(json!({
+                        "effect": "failed",
+                        "reason": "dispatch_error",
+                        "error": format!("{error:#}"),
+                    }));
+                    trace
+                        .append(
+                            "agent_attempt_outcome",
+                            json!({
+                                "attempt_index": attempt_index,
+                                "effect": "failed",
+                                "should_replan": loop_budget.can_continue_after(attempt_index),
+                                "dispatch_error": format!("{error:#}"),
+                                "has_action": planned_action_json.is_some(),
+                            }),
+                        )
+                        .await;
+                    attempts.push(PlanAttemptContext {
+                        attempt_index,
+                        response: "Dispatch failed before the action completed.".to_string(),
+                        action: planned_action_json,
+                        effect: Some("failed".to_string()),
+                        evidence,
+                    });
+                    if !loop_budget.can_continue_after(attempt_index) {
+                        break CompletedAssistantTurn {
+                            response: "I hit a dispatch error before completing the full task."
+                                .to_string(),
+                            action: None,
+                            evidence: Some(json!({
+                                "effect": "partial",
+                                "reason": "dispatch_error",
+                                "attempt_count": attempt_index,
+                            })),
+                        };
+                    }
+                    tx.send(VoiceUiEvent::Planning {
+                        tool: "Reobserving".to_string(),
+                    })
+                    .ok();
+                    step_publisher.publish(voice_step_label(
+                        "observe",
+                        &format!("after dispatch error {attempt_index}"),
+                    ));
+                    context = prefetch_context_for_planning(local.clone(), None).await;
+                    latest_chat_context = resolve_chat_context(config.profile.clone(), None)
+                        .await
+                        .unwrap_or_else(|chat_error| {
+                            format!("Recent chat: unavailable. error={chat_error:#}")
+                        });
+                    attempt_index += 1;
+                    continue;
+                }
+            };
             let mut effect = turn_effect(&turn);
             let open_only_incomplete = loop_budget.can_continue_after(attempt_index)
                 && open_only_incomplete_for_goal(&transcript, &turn);
@@ -892,6 +1003,11 @@ async fn plan_and_dispatch(
                 .await;
             let observe_started = Instant::now();
             context = prefetch_context_for_planning(local.clone(), None).await;
+            latest_chat_context = resolve_chat_context(config.profile.clone(), None)
+                .await
+                .unwrap_or_else(|chat_error| {
+                    format!("Recent chat: unavailable. error={chat_error:#}")
+                });
             send_metric(&tx, "reobserve_ms", observe_started.elapsed());
             trace
                 .append(
@@ -1003,6 +1119,24 @@ fn context_prefetch_timeout() -> Duration {
         .unwrap_or(DEFAULT_CONTEXT_PREFETCH_TIMEOUT_MS)
         .clamp(250, 30_000);
     Duration::from_millis(ms)
+}
+
+fn combined_agent_context(
+    chat: &str,
+    ctx: &str,
+    scratchpads: &str,
+    desktop_errors: &[String],
+    agent_context_errors: &[String],
+) -> String {
+    let mut sections = vec![chat.to_string(), ctx.to_string(), scratchpads.to_string()];
+    if !desktop_errors.is_empty() || !agent_context_errors.is_empty() {
+        sections.push(format!(
+            "Runtime context errors visible to the agent:\ndesktop={}\nagent_context={}",
+            serde_json::to_string(desktop_errors).unwrap_or_else(|_| "[]".to_string()),
+            serde_json::to_string(agent_context_errors).unwrap_or_else(|_| "[]".to_string())
+        ));
+    }
+    sections.join("\n")
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1682,11 +1816,7 @@ fn attach_loop_evidence(
     let final_effect = final_evidence
         .as_ref()
         .and_then(|evidence| evidence["effect"].as_str())
-        .unwrap_or(if completed.action.is_some() {
-            "unverifiable"
-        } else {
-            "stopped"
-        })
+        .unwrap_or_else(|| inferred_final_effect(&completed, prior_attempts))
         .to_string();
     let mut attempts = prior_attempts.to_vec();
     if !final_attempt_already_recorded {
@@ -1705,6 +1835,28 @@ fn attach_loop_evidence(
         "attempts": attempts,
     }));
     completed
+}
+
+fn inferred_final_effect(
+    completed: &CompletedAssistantTurn,
+    prior_attempts: &[PlanAttemptContext],
+) -> &'static str {
+    if completed.action.is_some() {
+        return "unverifiable";
+    }
+    if prior_attempts
+        .iter()
+        .any(|attempt| attempt.effect.as_deref() == Some("confirmed"))
+        && final_response_claims_verified_result(&completed.response)
+    {
+        return "confirmed";
+    }
+    "stopped"
+}
+
+fn final_response_claims_verified_result(response: &str) -> bool {
+    let lower = response.to_ascii_lowercase();
+    lower.contains("verified") || lower.contains("confirmed")
 }
 
 fn loop_attempt_count(
@@ -1753,7 +1905,7 @@ fn should_replan_after_effect(
     }
     matches!(
         effect,
-        Some("partial" | "unverifiable" | "suspected_noop" | "refused")
+        Some("partial" | "unverifiable" | "suspected_noop" | "refused" | "failed")
     )
 }
 
@@ -2400,8 +2552,10 @@ mod tests {
         let error = anyhow::anyhow!(
             "model output was not valid action JSON: parse action: invalid type: null"
         );
+        let parse_plan = anyhow::anyhow!("parse plan JSON: expected value");
 
         assert!(planning_error_is_invalid_action_json(&error));
+        assert!(planning_error_is_invalid_action_json(&parse_plan));
     }
 
     #[test]
@@ -2674,7 +2828,13 @@ mod tests {
 
     #[test]
     fn agent_loop_replans_only_for_recoverable_effects_inside_budget() {
-        for effect in ["partial", "unverifiable", "suspected_noop", "refused"] {
+        for effect in [
+            "partial",
+            "unverifiable",
+            "suspected_noop",
+            "refused",
+            "failed",
+        ] {
             assert!(should_replan_after_effect(
                 Some(effect),
                 1,
@@ -2703,6 +2863,24 @@ mod tests {
             30,
             AgentLoopBudget::Unbounded
         ));
+    }
+
+    #[test]
+    fn planner_context_includes_chat_ctx_scratchpads_and_runtime_errors() {
+        let context = combined_agent_context(
+            "Recent chat:\nuser: previous request",
+            "Context:\nselected_memory: prefer Aegis",
+            "Scratchpads:\nactive-goal",
+            &["context snapshot failed: timeout".to_string()],
+            &["ctx exited 2: missing index".to_string()],
+        );
+
+        assert!(context.contains("Recent chat:"));
+        assert!(context.contains("selected_memory"));
+        assert!(context.contains("Scratchpads:"));
+        assert!(context.contains("Runtime context errors visible to the agent"));
+        assert!(context.contains("context snapshot failed"));
+        assert!(context.contains("ctx exited 2"));
     }
 
     #[test]
@@ -3324,5 +3502,31 @@ mod tests {
         assert_eq!(evidence["attempt_count"], 2);
         assert_eq!(evidence["attempts"][0]["effect"], "unverifiable");
         assert_eq!(evidence["attempts"][1]["effect"], "stopped");
+    }
+
+    #[test]
+    fn agent_loop_marks_verified_answer_after_actions_as_confirmed() {
+        let completed = CompletedAssistantTurn {
+            response: "The verified page title is Gemini models.".to_string(),
+            action: None,
+            evidence: None,
+        };
+        let prior_attempts = vec![PlanAttemptContext {
+            attempt_index: 1,
+            response: "Opening the result.".to_string(),
+            action: Some(json!({
+                "kind": "mouse_click",
+                "x": 320,
+                "y": 428,
+                "button": "left",
+                "count": 1
+            })),
+            effect: Some("confirmed".to_string()),
+            evidence: Some(json!({"effect": "confirmed"})),
+        }];
+
+        let completed = attach_loop_evidence(completed, &prior_attempts);
+
+        assert_eq!(turn_effect(&completed), Some("confirmed".to_string()));
     }
 }
