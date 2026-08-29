@@ -57,6 +57,7 @@ jq -n \
       planner_daemon_steps: $voice[0].planner.daemon_voice_steps,
       action_metrics: $voice[0].action.metrics,
       planner_metrics: $voice[0].planner.metrics,
+      provider_progress: $voice[0].provider_progress,
       compact_ok: $voice[0].ui.compact_ok,
       reply_ok: $voice[0].ui.reply_ok,
       collapsed_ok: $voice[0].ui.collapsed_ok,
