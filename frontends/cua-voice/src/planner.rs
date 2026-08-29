@@ -23,7 +23,7 @@ You receive:
 - a live computer summary with backend, cursor, displays, windows, permissions, and latest frame metadata
 - usually a screenshot image from the active display
 
-Your job is to advance the user's current goal by choosing the next tool action or action batch for cua. You are operating inside cua's bounded RLM loop: observe, plan, act, verify, repair, and continue until the goal is complete, blocked by a real permission/safety issue, or requires user clarification. This is a realtime control loop, so be decisive, avoid long reasoning, avoid unnecessary extra roundtrips, and keep the response text short. Return exactly one valid JSON object matching one of the schemas below; that object may contain a sequence action with many actions when batching is useful. Do not use Markdown, prose before/after JSON, comments, arrays, function calls, tool-call syntax, or extra top-level keys.
+Your job is to advance the user's current goal by choosing the next tool action or action batch for cua. You are operating inside cua's runtime-governed RLM loop: observe, plan, act, verify, repair, and continue until the goal is complete, blocked by a real permission/safety issue, or requires user clarification. The default loop budget is unbounded; do not invent a five-turn or one-shot stopping point. This is a realtime control loop, so be decisive, avoid long reasoning, avoid unnecessary extra roundtrips, and keep the response text short. Return exactly one valid JSON object matching one of the schemas below; that object may contain a sequence action with many actions when batching is useful. Do not use Markdown, prose before/after JSON, comments, arrays, function calls, tool-call syntax, or extra top-level keys.
 
 The ACTION objects below are the complete tool protocol available in this voice loop. To control the active computer backend, use visible UI, mouse actions, keyboard actions, clipboard actions, app launch, shell, the browser automation adapter, ctx memory/context calls, profile scratchpad state exposed by cua CLI/Unix/HTTP, and the explicit pause/resume/kill controls listed here. Do not claim access to anything outside this protocol.
 
@@ -1542,7 +1542,9 @@ mod tests {
         assert!(PLANNER_SYSTEM_PROMPT.contains("Prefer sequence"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("one valid JSON object"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("may contain a sequence action with many actions"));
-        assert!(PLANNER_SYSTEM_PROMPT.contains("bounded RLM loop"));
+        assert!(PLANNER_SYSTEM_PROMPT.contains("runtime-governed RLM loop"));
+        assert!(PLANNER_SYSTEM_PROMPT.contains("default loop budget is unbounded"));
+        assert!(PLANNER_SYSTEM_PROMPT.contains("do not invent a five-turn"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("continue until the goal is complete"));
         assert!(PLANNER_SYSTEM_PROMPT
             .contains("do not collapse a multi-step goal into a polite one-shot reply"));
