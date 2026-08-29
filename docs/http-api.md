@@ -2,7 +2,7 @@
 
 cua exposes the CLI and local HTTP API for operator access. Latency-sensitive voice control and SDK mutation paths use the profile-local Unix socket at `~/.cua/profiles/<profile>/daemon.sock`.
 
-The daemon is backed by a general computer backend. The default installed backend is the local macOS computer, selected through the backend-neutral runtime boundary and attested with the local machine identity. Remote CUA daemons, Oracle OCI-hosted computers, and later Quilt VM fleets plug in as alternate computer backends that implement the same capture, observe, input, permission, clipboard, session, safety, trace, and attestation contract.
+The daemon is backed by a general computer backend. The default installed backend is the local macOS computer, selected through the backend-neutral runtime boundary and attested with the local machine identity. Remote CUA daemons, Oracle VM-hosted computers, and later Quilt VM fleets plug in as alternate computer backends that implement the same capture, observe, input, permission, clipboard, session, safety, trace, and attestation contract.
 
 Default bind: `127.0.0.1:8765`.
 
@@ -82,9 +82,9 @@ Initial endpoints:
 
 Webhook source secrets are optional for local development, but when a source has a secret configured, `POST /webhooks/<source>` requires `x-cua-webhook-signature: sha256=<hmac>` over the raw request body. The request body is an `InboundMessageRequest`; `idempotency_key` deduplicates repeat delivery.
 
-Cloud enrollment routes are not shipped yet. The shipped backend contract is local-first and modular: `GET /status` and `GET /session/status` report `computer_backend`, including `kind`, `provider`, `runtime`, optional cloud/fleet identifiers, operating system, and backend capability manifest.
+Oracle VM node control is shipped through the normal backend contract rather than a parallel cloud API: `GET /status` and `GET /session/status` report `computer_backend`, including `kind`, `provider`, `runtime`, optional cloud/fleet identifiers, operating system, and backend capability manifest. Durable fleet enrollment routes for pool membership, provider rotation, and revocation are separate control-plane work.
 
-Backend selection is explicit. With no environment override, `cua serve` uses the local macOS backend. Set `CUA_COMPUTER_BACKEND=remote_cua` with `CUA_REMOTE_CUA_URL` and `CUA_REMOTE_CUA_TOKEN` to proxy a remote CUA daemon over HTTP. Set `CUA_COMPUTER_BACKEND=oracle_oci` with the same remote endpoint variables when that remote daemon is running on an OCI instance; optional `CUA_REMOTE_CUA_INSTANCE_ID`, `CUA_REMOTE_CUA_POOL_ID`, `CUA_REMOTE_CUA_REGION`, and `CUA_REMOTE_CUA_OS` values are reported in backend identity. Missing remote endpoint credentials produce an unavailable backend with no advertised capture/input capabilities, and unavailable capture/observe paths return HTTP 503 instead of pretending cloud control is ready.
+Backend selection is explicit. With no environment override, `cua serve` uses the local macOS backend. Set `CUA_COMPUTER_BACKEND=remote_cua` with `CUA_REMOTE_CUA_URL` and `CUA_REMOTE_CUA_TOKEN` to proxy a remote CUA daemon over HTTP. Set `CUA_COMPUTER_BACKEND=oracle-vm` on an Oracle VM node to use the bundled `qgui+cua` Linux backend. Set `CUA_COMPUTER_BACKEND=quilt-vm` on a Quilt VM node to use the same internal qgui implementation with Quilt provider identity. Optional `CUA_REMOTE_CUA_INSTANCE_ID`, `CUA_REMOTE_CUA_POOL_ID`, `CUA_REMOTE_CUA_REGION`, and `CUA_REMOTE_CUA_OS` values are reported in backend identity. Missing backend requirements produce an unavailable backend with no advertised capture/input capabilities, and unavailable capture/observe paths return HTTP 503 instead of pretending cloud control is ready.
 
 `GET /status` reports `active_streams`; stream clients increment the count on connect and decrement after disconnect cleanup. Its top-level `computer_backend` and `inventory.computer_backend` identify the selected computer substrate. Its `inventory.config` object reports canonical `~/.cua` paths and migration state without exposing bearer token contents.
 
@@ -111,6 +111,6 @@ Profile and safety:
 
 Clipboard:
 
-- `POST /clipboard/write` accepts `ClipboardWriteRequest` and writes to the daemon-owned clipboard store only when the active profile grants `capabilities.clipboard` and the caller supplies an owner lease.
-- `POST /clipboard/read` accepts `ClipboardReadRequest` and returns clipboard text only when the active profile grants clipboard and `allow_sensitive` is true.
+- `POST /clipboard/write` accepts `ClipboardWriteRequest` and writes through the selected computer backend only when the active profile grants `capabilities.clipboard` and the caller supplies an owner lease.
+- `POST /clipboard/read` accepts `ClipboardReadRequest` and reads through the selected computer backend only when the active profile grants clipboard and `allow_sensitive` is true.
 - Clipboard calls are refused while paused, killed, inactive, or ungranted, with refusal evidence in `ClipboardResult.result`.

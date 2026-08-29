@@ -33,3 +33,6 @@ uuid.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 cua-platform-macos = { path = "../cua-platform-macos" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+cua-platform-qgui = { path = "../cua-platform-qgui" }

@@ -512,7 +512,7 @@ impl OciCliProvider {
 #[async_trait]
 impl ComputerProvider for OciCliProvider {
     fn provider_name(&self) -> &'static str {
-        "oracle-oci"
+        "oracle-vm"
     }
 
     async fn allocate(
@@ -550,7 +550,7 @@ impl ComputerProvider for OciCliProvider {
             display_name,
             "--freeform-tags".to_string(),
             serde_json::json!({
-                "cua_provider": "oracle-oci",
+                "cua_provider": "oracle-vm",
                 "cua_pool_id": request.pool_id,
             })
             .to_string(),
@@ -590,8 +590,8 @@ impl ComputerProvider for OciCliProvider {
             .or_else(|| metadata.get("region").cloned())
             .or_else(|| std::env::var("OCI_REGION").ok());
         let descriptor = ComputerBackendDescriptor {
-            kind: ComputerBackendKind::OracleOci,
-            provider: "oracle-oci".to_string(),
+            kind: ComputerBackendKind::OracleVm,
+            provider: "oracle-vm".to_string(),
             runtime: "cua".to_string(),
             instance_id: Some(instance_id.clone()),
             pool_id: request.pool_id,
@@ -605,11 +605,11 @@ impl ComputerProvider for OciCliProvider {
         let remote = match (metadata.get("cua_endpoint"), metadata.get("cua_token")) {
             (Some(endpoint), Some(token)) => {
                 Some(Arc::new(RemoteCuaComputerBackend::new(RemoteCuaConfig {
-                    kind: ComputerBackendKind::OracleOci,
+                    kind: ComputerBackendKind::OracleVm,
                     endpoint: endpoint.clone(),
                     bearer_token: token.clone(),
                     owner_session_id: metadata.get("cua_owner_session_id").cloned(),
-                    provider: "oracle-oci".to_string(),
+                    provider: "oracle-vm".to_string(),
                     instance_id: Some(instance_id.clone()),
                     pool_id: descriptor.pool_id.clone(),
                     region: descriptor.region.clone(),
@@ -652,8 +652,8 @@ impl ComputerProvider for OciCliProvider {
         Ok(ComputerInstanceStatus {
             state,
             descriptor: ComputerBackendDescriptor {
-                kind: ComputerBackendKind::OracleOci,
-                provider: "oracle-oci".to_string(),
+                kind: ComputerBackendKind::OracleVm,
+                provider: "oracle-vm".to_string(),
                 runtime: "cua".to_string(),
                 instance_id: Some(lease_id.to_string()),
                 pool_id: None,
@@ -919,7 +919,7 @@ mod tests {
             endpoint: "https://cua.example.test/".to_string(),
             bearer_token: "token".to_string(),
             owner_session_id: Some("owner".to_string()),
-            provider: "oracle-oci".to_string(),
+            provider: "oracle-vm".to_string(),
             instance_id: Some("ocid1.instance.example".to_string()),
             pool_id: Some("pool-a".to_string()),
             region: Some("us-ashburn-1".to_string()),
@@ -929,7 +929,7 @@ mod tests {
 
         let descriptor = backend.descriptor();
         assert_eq!(descriptor.kind, ComputerBackendKind::RemoteCua);
-        assert_eq!(descriptor.provider, "oracle-oci");
+        assert_eq!(descriptor.provider, "oracle-vm");
         assert_eq!(
             descriptor.instance_id.as_deref(),
             Some("ocid1.instance.example")

@@ -267,7 +267,7 @@
         "ComputerBackendKind": {
           "enum": [
             "local",
-            "oracle_oci",
+            "oracle-vm",
             "cloud_managed",
             "quilt_vm",
             "remote_cua",
@@ -807,7 +807,7 @@
         "ComputerBackendKind": {
           "enum": [
             "local",
-            "oracle_oci",
+            "oracle-vm",
             "cloud_managed",
             "quilt_vm",
             "remote_cua",
@@ -866,7 +866,7 @@
       "$schema": "http://json-schema.org/draft-07/schema#",
       "enum": [
         "local",
-        "oracle_oci",
+        "oracle-vm",
         "cloud_managed",
         "quilt_vm",
         "remote_cua",
@@ -2788,7 +2788,7 @@
         "ComputerBackendKind": {
           "enum": [
             "local",
-            "oracle_oci",
+            "oracle-vm",
             "cloud_managed",
             "quilt_vm",
             "remote_cua",
@@ -6031,7 +6031,7 @@
         "ComputerBackendKind": {
           "enum": [
             "local",
-            "oracle_oci",
+            "oracle-vm",
             "cloud_managed",
             "quilt_vm",
             "remote_cua",
@@ -6854,7 +6854,7 @@
         "ComputerBackendKind": {
           "enum": [
             "local",
-            "oracle_oci",
+            "oracle-vm",
             "cloud_managed",
             "quilt_vm",
             "remote_cua",
@@ -7136,7 +7136,7 @@
         "ComputerBackendKind": {
           "enum": [
             "local",
-            "oracle_oci",
+            "oracle-vm",
             "cloud_managed",
             "quilt_vm",
             "remote_cua",

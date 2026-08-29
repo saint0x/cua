@@ -1,6 +1,6 @@
 # Cloud Computer Input Backend Plan
 
-This document describes the next build step for making cloud computer use real. The current CUA backend layer is modular: local macOS is the default installed backend, remote CUA can proxy another daemon, and OCI can launch/status/terminate VM capacity. The missing production piece is a Linux GUI input/capture backend that can run inside OCI now and Quilt VM later.
+This document describes the next build step for making cloud computer use real. The current CUA backend layer is modular: local macOS is the default installed backend, remote CUA can proxy another daemon, and Oracle Cloud Infrastructure can launch/status/terminate VM capacity. The production cloud computer backend is Oracle VM now, with qgui bundled inside the Oracle VM node image as its GUI session manager. Quilt VM later reuses the same node image pattern with a different provider identity.
 
 `qgui` is allowed to be vendored locally and used end to end.
 
@@ -24,14 +24,14 @@ cua serve
   -> local machine attestation
 ```
 
-Cloud install:
+Oracle VM node install:
 
 ```text
-OCI or Quilt VM
+Oracle VM node image
   -> qgui up
   -> cua serve --hud-mode headless
-  -> CUA_COMPUTER_BACKEND=qgui
-  -> Linux qgui backend implements capture, observe, input, clipboard, and app launch
+  -> CUA_COMPUTER_BACKEND=oracle-vm
+  -> Oracle VM backend uses the bundled qgui session internally for capture, observe, input, clipboard, and app launch
 ```
 
 Remote control plane:
@@ -46,12 +46,12 @@ operator / agent
 Provider transition:
 
 ```text
-Oracle OCI now
+Oracle VM now
   -> cheap/free-credit capacity
   -> prove value and reliability
 
 Quilt VM later
-  -> same qgui + cua node image
+  -> same internal qgui + cua node image
   -> provider swap only
   -> no agent/runtime protocol rewrite
 ```
@@ -93,9 +93,9 @@ Patch these either upstream or in the vendored copy:
    - env JSON
    - `qgui run` receiving `DISPLAY`, dbus, and runtime dir
 
-## New CUA Crate
+## Oracle VM Node qgui Implementation Crate
 
-Add a Linux backend crate:
+Add an internal Oracle VM node GUI implementation crate:
 
 ```text
 crates/cua-platform-qgui/
@@ -105,18 +105,18 @@ Responsibilities:
 
 - Load the qgui session contract.
 - Verify qgui health.
-- Implement `ComputerBackend`.
+- Implement the `ComputerBackend` surface used by `ComputerBackendKind::OracleVm`.
 - Provide capture backend.
 - Provide input backend.
 - Provide qgui app/shell launch.
-- Report honest capabilities only when qgui and X input/capture are healthy.
+- Report honest capabilities only when bundled qgui and bundled X input/capture tooling are healthy.
 
 Descriptor:
 
 ```rust
 ComputerBackendDescriptor {
-    kind: ComputerBackendKind::CloudManaged, // or add Qgui if we want it explicit
-    provider: "qgui",
+    kind: ComputerBackendKind::OracleVm,
+    provider: "oracle-vm",
     runtime: "qgui+cua",
     os: "linux",
     capabilities: ...
@@ -125,27 +125,24 @@ ComputerBackendDescriptor {
 
 Provider-specific overlays should still identify the capacity provider:
 
-- OCI node: `kind = OracleOci`, `provider = "oracle-oci"`, `runtime = "qgui+cua"`
+- Oracle VM node: `kind = OracleVm`, `provider = "oracle-vm"`, `runtime = "qgui+cua"`
 - Quilt node: `kind = QuiltVm`, `provider = "quilt-vm"`, `runtime = "qgui+cua"`
-- Generic container: `kind = CloudManaged`, `provider = "qgui"`, `runtime = "qgui+cua"`
 
 ## Backend Selection
 
 Extend daemon backend selection:
 
 ```text
-CUA_COMPUTER_BACKEND=qgui
-CUA_COMPUTER_BACKEND=linux
-CUA_COMPUTER_BACKEND=oracle_oci
-CUA_COMPUTER_BACKEND=quilt_vm
+CUA_COMPUTER_BACKEND=oracle-vm
+CUA_COMPUTER_BACKEND=quilt-vm
 ```
 
 Expected behavior:
 
-- `qgui`/`linux`: require healthy local qgui.
-- `oracle_oci`: if `CUA_REMOTE_CUA_URL` is set, use `RemoteCuaComputerBackend`; otherwise, use local qgui backend when running on the VM.
-- `quilt_vm`: same behavior, different provider identity.
-- If qgui is missing or unhealthy, return `UnavailableComputerBackend` with zero capabilities and 503 on capture/observe.
+- `oracle-vm`: run only on the Oracle VM node image and require healthy bundled qgui.
+- `quilt-vm`: same internal qgui node implementation, different provider identity.
+- qgui is not a public backend selector. It is the internal GUI runtime for cloud node backends.
+- If bundled qgui or bundled X tooling is missing or unhealthy, return degraded/missing permissions and 503 on capture/observe. Never fabricate frames or input success.
 
 ## Capture Backend
 
@@ -155,7 +152,7 @@ Preferred order:
 
 1. Direct X11 capture through `x11rb`, `xcb`, or equivalent Rust bindings.
 2. `grim`/Wayland path only if qgui moves away from X11.
-3. CLI fallback using a known tool such as `xwd`/ImageMagick only as a transitional path.
+3. No distro CLI fallback in production. Any helper must be vendored/built as a workspace artifact.
 
 Requirements:
 
@@ -167,7 +164,7 @@ Requirements:
 - Time out cleanly.
 - Report unavailable as 503 through daemon API.
 
-Potential packages:
+Runtime/system packages:
 
 ```text
 x11-utils
@@ -184,7 +181,7 @@ Implement real Linux input against qgui’s X display.
 Preferred order:
 
 1. XTest via `libXtst`/Rust binding for mouse and keyboard events.
-2. `xdotool` fallback for first live proof only.
+2. No `xdotool` fallback in production. Input comes from the bundled Rust tool.
 
 Required actions:
 
@@ -218,11 +215,11 @@ Input evidence must distinguish:
 
 ## Clipboard
 
-Implement qgui/Linux clipboard only after X input/capture are real.
+Implement qgui/Linux clipboard with the bundled Rust tool.
 
 Options:
 
-- X11 clipboard through `xclip`/`xsel` transitional path.
+- X11 clipboard through a vendored Rust implementation.
 - Rust X11 clipboard integration for production.
 
 Do not advertise clipboard until read/write is tested under qgui.
@@ -232,8 +229,9 @@ Do not advertise clipboard until read/write is tested under qgui.
 Update `ops/oci/cloud-init-cua-node.yaml` or add a real image/rootfs recipe that installs:
 
 ```text
-qgui
 cua
+qgui
+cua-qgui-tool
 kasmvncserver
 kasmvncpasswd
 xfce4-session
@@ -267,7 +265,7 @@ Restart=always
 `cua-daemon.service`:
 
 ```text
-Environment=CUA_COMPUTER_BACKEND=qgui
+Environment=CUA_COMPUTER_BACKEND=oracle-vm
 ExecStart=/usr/local/bin/cua --profile cloud-node serve --addr 127.0.0.1:8765 --hud-mode headless
 Restart=always
 ```
@@ -316,7 +314,7 @@ Provider modules:
 - `QuiltVmProvider`: future self-hosted provider.
 - optional `AwsProvider`/`GenericProvider` later.
 
-The agent should receive only a `ComputerBackend` once allocated. It should not know whether the machine came from OCI, AWS, or Quilt VM.
+The agent should receive only a `ComputerBackend` once allocated. It should not know whether the machine came from Oracle Cloud Infrastructure, AWS, or Quilt VM.
 
 ## API Contract
 
@@ -347,7 +345,7 @@ Cloud nodes still need machine identity and backend claims.
 
 Add claims:
 
-- provider: `oracle-oci` or `quilt-vm`
+- provider: `oracle-vm` or `quilt-vm`
 - runtime: `qgui+cua`
 - qgui session hash
 - qgui binary hash
@@ -393,8 +391,8 @@ Daemon protocol:
 
 Provider:
 
-- OCI launch produces a node that reaches qgui and CUA health.
-- OCI terminate tears down the node.
+- Oracle VM launch produces a node that reaches qgui and CUA health.
+- Oracle VM terminate tears down the node.
 - Quilt VM provider can satisfy the same `ComputerProvider` contract.
 
 Fozzy:
@@ -424,7 +422,7 @@ curl /input/dispatch key_type into a test app
 
 This work is complete only when:
 
-- A fresh OCI node boots qgui and CUA automatically.
+- A fresh Oracle VM node boots qgui and CUA automatically.
 - The node reports `runtime=qgui+cua`.
 - `GET /status` advertises real capture/input capabilities.
 - Screenshot returns a real nonblank desktop frame.
@@ -432,4 +430,4 @@ This work is complete only when:
 - Mouse and keyboard input mutate a visible test app.
 - Remote CUA proxy can control the qgui node through `/input/dispatch`.
 - All unavailable states report zero false capabilities.
-- The same image can be launched by OCI now and Quilt VM later with provider-only config changes.
+- The same image can be launched by Oracle VM now and Quilt VM later with provider-only config changes.

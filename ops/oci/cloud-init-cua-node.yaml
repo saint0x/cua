@@ -9,28 +9,141 @@ packages:
   - build-essential
   - pkg-config
   - libssl-dev
-  - xvfb
-  - x11vnc
-  - fluxbox
+  - dbus-x11
+  - xfce4-session
+  - xfce4-terminal
+  - xauth
+  - x11-utils
+  - x11-xserver-utils
+  - libx11-6
+  - libxtst6
+  - libxcb1
+  - libxext6
+  - fonts-dejavu
+  - epiphany-browser
 write_files:
   - path: /etc/cua-node.json
     permissions: "0644"
     content: |
       {
         "schema_version": "cua.node.v1",
-        "provider": "oracle-oci",
-        "role": "bootstrap",
-        "control_plane": "not_ready",
-        "reason": "Linux capture/input backend is not shipped in this repository yet"
+        "provider": "oracle-vm",
+        "role": "cloud-computer-node",
+        "backend": "oracle-vm",
+        "runtime": "qgui+cua",
+        "control_plane": "bootstrapping"
       }
-  - path: /usr/local/bin/cua-node-status
+  - path: /usr/local/sbin/cua-install-node
     permissions: "0755"
     content: |
       #!/usr/bin/env bash
       set -euo pipefail
+      ulimit -n 65535
+
+      export DEBIAN_FRONTEND=noninteractive
+      export PATH=/root/.cargo/bin:/usr/local/bin:/usr/bin:/bin:$PATH
+
+      mkdir -p /opt/cua /var/log/cua /run/qgui
+
+      kasm_url="https://github.com/kasmtech/KasmVNC/releases/download/v1.5.0/kasmvncserver_noble_1.5.0_arm64.deb"
+      kasm_sha="c9199cf4753208bfb69fd016a9780242bebfc43370cc38c97d61e90a3c783e04"
+      kasm_deb="/opt/cua/kasmvncserver_noble_1.5.0_arm64.deb"
+
+      arch="$(dpkg --print-architecture)"
+      if [[ "$arch" != "arm64" ]]; then
+        echo "unsupported Oracle VM node architecture: $arch; expected arm64" >&2
+        exit 1
+      fi
+
+      if [[ ! -f "$kasm_deb" ]]; then
+        curl -fsSL "$kasm_url" -o "$kasm_deb"
+      fi
+      echo "${kasm_sha}  ${kasm_deb}" | sha256sum -c -
+      apt-get update
+      apt-get install -y "$kasm_deb"
+
+      if ! command -v cargo >/dev/null 2>&1; then
+        curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal
+      fi
+      rustup component add clippy
+
+      if [[ ! -d /opt/cua/source/.git ]]; then
+        rm -rf /opt/cua/source
+        git clone https://github.com/saint0x/cua.git /opt/cua/source
+      fi
+
+      cd /opt/cua/source
+      git fetch --all --tags
+      git checkout main
+      git pull --ff-only
+
+      cargo build --release -p qgui -p cua -p cua-platform-qgui
+      install -m 0755 target/release/qgui /usr/local/bin/qgui
+      install -m 0755 target/release/cua /usr/local/bin/cua
+      install -m 0755 target/release/cua-qgui-tool /usr/local/bin/cua-qgui-tool
+
+      qgui doctor
+      jq '.control_plane = "installed"' /etc/cua-node.json > /etc/cua-node.json.tmp
+      mv /etc/cua-node.json.tmp /etc/cua-node.json
+  - path: /usr/local/bin/cua-node-status
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -uo pipefail
       cat /etc/cua-node.json
+      systemctl --no-pager --full status qgui.service cua-daemon.service || true
+      qgui status --json || true
+      curl -fsS http://127.0.0.1:8765/status || true
+  - path: /etc/systemd/system/qgui.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=CUA qgui desktop session
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=simple
+      ExecStart=/usr/local/bin/qgui up --bind 127.0.0.1 --port 6080 --res 1440x900
+      Restart=always
+      RestartSec=2
+      KillSignal=SIGTERM
+      LimitNOFILE=65535
+
+      [Install]
+      WantedBy=multi-user.target
+  - path: /etc/systemd/system/cua-daemon.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=CUA Oracle VM cloud computer daemon
+      After=qgui.service
+      Requires=qgui.service
+
+      [Service]
+      Type=simple
+      Environment=CUA_COMPUTER_BACKEND=oracle-vm
+      Environment=HOME=/root
+      Environment=USER=root
+      Environment=LOGNAME=root
+      Environment=QGUI_BIN=/usr/local/bin/qgui
+      Environment=CUA_QGUI_CAPTURE_BIN=/usr/local/bin/cua-qgui-tool
+      Environment=CUA_QGUI_INPUT_BIN=/usr/local/bin/cua-qgui-tool
+      Environment=CUA_QGUI_WINDOW_BIN=/usr/local/bin/cua-qgui-tool
+      Environment=CUA_QGUI_CLIPBOARD_BIN=/usr/local/bin/cua-qgui-tool
+      ExecStartPre=/usr/local/bin/qgui status --json
+      ExecStart=/usr/local/bin/cua serve --addr 127.0.0.1:8765 --hud-mode headless
+      Restart=always
+      RestartSec=2
+      LimitNOFILE=65535
+
+      [Install]
+      WantedBy=multi-user.target
 runcmd:
   - [bash, -lc, "mkdir -p /opt/cua /var/log/cua"]
-  - [bash, -lc, "curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal || true"]
-  - [bash, -lc, "PATH=/root/.cargo/bin:$PATH rustup component add clippy || true"]
+  - [bash, -lc, "/usr/local/sbin/cua-install-node > /var/log/cua/install.log 2>&1"]
+  - [bash, -lc, "systemctl daemon-reload"]
+  - [bash, -lc, "systemctl enable --now qgui.service"]
+  - [bash, -lc, "systemctl enable --now cua-daemon.service"]
+  - [bash, -lc, "jq '.control_plane = \"ready\"' /etc/cua-node.json > /etc/cua-node.json.tmp && mv /etc/cua-node.json.tmp /etc/cua-node.json"]
   - [bash, -lc, "echo cua-node bootstrap complete > /var/log/cua/bootstrap.log"]

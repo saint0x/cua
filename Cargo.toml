@@ -10,8 +10,10 @@ members = [
   "crates/cua-input",
   "crates/cua-model",
   "crates/cua-platform-macos",
+  "crates/cua-platform-qgui",
   "crates/cua-trace",
   "frontends/cua-voice",
+  "vendor/qgui",
 ]
 
 [workspace.package]

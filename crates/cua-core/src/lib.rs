@@ -421,7 +421,8 @@ impl Default for CapabilityManifest {
 #[serde(rename_all = "snake_case")]
 pub enum ComputerBackendKind {
     Local,
-    OracleOci,
+    #[serde(rename = "oracle-vm")]
+    OracleVm,
     CloudManaged,
     QuiltVm,
     RemoteCua,

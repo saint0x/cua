@@ -250,13 +250,26 @@ fn default_computer_backend() -> Arc<dyn ComputerBackend> {
             cua_core::ComputerBackendKind::RemoteCua,
             std::env::var("CUA_REMOTE_CUA_PROVIDER").unwrap_or_else(|_| "remote-cua".to_string()),
         ),
-        "oci" | "oracle_oci" | "oracle-oci" => {
-            configured_remote_cua_backend(cua_core::ComputerBackendKind::OracleOci, "oracle-oci")
-        }
+        "oracle-vm" => configured_cloud_node_computer_backend(
+            cua_core::ComputerBackendKind::OracleVm,
+            "oracle-vm",
+        ),
+        "quilt" | "quilt_vm" | "quilt-vm" => configured_cloud_node_computer_backend(
+            cua_core::ComputerBackendKind::QuiltVm,
+            "quilt-vm",
+        ),
         other => Arc::new(UnavailableComputerBackend::new(format!(
-            "unknown CUA_COMPUTER_BACKEND '{other}'"
+            "unknown CUA_COMPUTER_BACKEND '{other}'; valid values are local, remote-cua, oracle-vm, and quilt-vm"
         ))),
     }
+}
+
+#[cfg(not(test))]
+fn configured_cloud_node_computer_backend(
+    kind: cua_core::ComputerBackendKind,
+    provider: &'static str,
+) -> Arc<dyn ComputerBackend> {
+    configured_qgui_computer_backend(kind, provider)
 }
 
 #[cfg(not(test))]
@@ -266,10 +279,32 @@ fn configured_local_computer_backend() -> Arc<dyn ComputerBackend> {
 }
 
 #[cfg(not(test))]
+#[cfg(target_os = "linux")]
+fn configured_qgui_computer_backend(
+    kind: cua_core::ComputerBackendKind,
+    provider: impl Into<String>,
+) -> Arc<dyn ComputerBackend> {
+    Arc::new(cua_platform_qgui::QguiComputerBackend::new(
+        cua_platform_qgui::QguiBackendConfig::from_env(kind, provider),
+    ))
+}
+
+#[cfg(not(test))]
+#[cfg(not(target_os = "linux"))]
+fn configured_qgui_computer_backend(
+    _kind: cua_core::ComputerBackendKind,
+    _provider: impl Into<String>,
+) -> Arc<dyn ComputerBackend> {
+    Arc::new(UnavailableComputerBackend::new(
+        "qgui computer backend is only implemented for Linux VM hosts",
+    ))
+}
+
+#[cfg(not(test))]
 #[cfg(not(target_os = "macos"))]
 fn configured_local_computer_backend() -> Arc<dyn ComputerBackend> {
     Arc::new(UnavailableComputerBackend::new(
-        "local computer backend is only implemented for macOS; set CUA_COMPUTER_BACKEND=remote or CUA_COMPUTER_BACKEND=oci with a remote CUA endpoint on this host",
+        "local computer backend is only implemented for macOS; set CUA_COMPUTER_BACKEND=remote-cua, CUA_COMPUTER_BACKEND=oracle-vm, or CUA_COMPUTER_BACKEND=quilt-vm as appropriate for this host",
     ))
 }
 
@@ -5883,20 +5918,37 @@ async fn clipboard_read_state(
         publish_clipboard_event(state, &result);
         return result;
     }
-    let text = state.clipboard.read().await.clone();
+    let result = state
+        .computer
+        .input_backend()
+        .execute(InputRequest {
+            schema_version: SCHEMA_VERSION.to_string(),
+            idempotency_key: Uuid::new_v4(),
+            deadline_mono_ns: None,
+            action: InputAction::ClipboardRead {
+                allow_sensitive: true,
+            },
+        })
+        .await;
+    if result.effect == Effect::Refused {
+        state.metrics.increment(CounterKind::ClipboardRefusals);
+    }
     state
         .metrics
         .observe(MetricKind::ClipboardRead, started.elapsed());
+    let text = (result.effect == Effect::Confirmed)
+        .then(|| {
+            result
+                .evidence
+                .first()
+                .map(|evidence| evidence.message.clone())
+                .unwrap_or_default()
+        })
+        .filter(|text| !text.is_empty());
     let result = ClipboardResult {
         schema_version: SCHEMA_VERSION.to_string(),
         action: action.to_string(),
-        result: input_result(
-            Effect::Confirmed,
-            InputRoute::SystemApi,
-            DeliveryMode::NotApplicable,
-            EvidenceKind::ValueReadback,
-            "clipboard value returned from daemon-owned clipboard store",
-        ),
+        result,
         text,
     };
     let after = trace_snapshot(state, &turn_id, "after").await;
@@ -5943,20 +5995,26 @@ async fn clipboard_write_state(
         publish_clipboard_event(state, &result);
         return result;
     }
-    *state.clipboard.write().await = Some(request.text);
+    let result = state
+        .computer
+        .input_backend()
+        .execute(InputRequest {
+            schema_version: SCHEMA_VERSION.to_string(),
+            idempotency_key: Uuid::new_v4(),
+            deadline_mono_ns: None,
+            action: InputAction::ClipboardWrite { text: request.text },
+        })
+        .await;
+    if result.effect == Effect::Refused {
+        state.metrics.increment(CounterKind::ClipboardRefusals);
+    }
     state
         .metrics
         .observe(MetricKind::ClipboardWrite, started.elapsed());
     let result = ClipboardResult {
         schema_version: SCHEMA_VERSION.to_string(),
         action: action.to_string(),
-        result: input_result(
-            Effect::Confirmed,
-            InputRoute::SystemApi,
-            DeliveryMode::NotApplicable,
-            EvidenceKind::ValueReadback,
-            "clipboard value written to daemon-owned clipboard store",
-        ),
+        result,
         text: None,
     };
     let after = trace_snapshot(state, &turn_id, "after").await;
@@ -6860,7 +6918,10 @@ mod tests {
 
         assert_eq!(write_result.result.effect, Effect::Confirmed);
         assert_eq!(read_result.result.effect, Effect::Confirmed);
-        assert_eq!(read_result.text.as_deref(), Some("hello from test"));
+        assert_eq!(
+            read_result.text.as_deref(),
+            Some("accepted by test computer backend")
+        );
     }
 
     #[tokio::test]
@@ -8693,7 +8754,7 @@ mod tests {
     }
 
     async fn clipboard_enabled_state() -> DaemonState {
-        let state = DaemonState::synthetic("test", "token");
+        let state = accepting_test_state();
         let _ = profile_create_state(
             &state,
             ProfileCreateRequest {
