@@ -246,13 +246,13 @@ curl -fsS -H "authorization: Bearer $TOKEN" "http://$ADDR/observe/desktop" > "$H
 http_json_call "/context/snapshot" \
   '{"max_width":640,"encoding":"png","force_fresh":true,"include_bytes":false}' \
   "$HTTP_CONTEXT" \
-  5 \
-  0.5
+  12 \
+  0.75
 http_json_call "/capture/screenshot" \
   '{"max_width":640,"encoding":"png","force_fresh":true,"include_bytes":false}' \
   "$HTTP_SCREENSHOT" \
-  5 \
-  0.5
+  12 \
+  0.75
 curl -fsS \
   -H "authorization: Bearer $TOKEN" \
   -H "x-cua-session-id: $HTTP_OWNER_ID" \

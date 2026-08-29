@@ -15,13 +15,13 @@ VOICE_DIR="$OUT_DIR/voice"
 CONTROL_DIR="$OUT_DIR/control"
 PACKAGE_DIR="$OUT_DIR/package"
 
-VOICE_RESULT="$(
-  CUA_VOICE_PROOF_SUITE_OUT_DIR="$VOICE_DIR" \
-  scripts/host-voice-proof-suite.sh | tail -n 1
-)"
 CONTROL_RESULT="$(
   CUA_CONTROL_SURFACE_PROOF_OUT_DIR="$CONTROL_DIR" \
   scripts/host-control-surface-proof.sh | tail -n 1
+)"
+VOICE_RESULT="$(
+  CUA_VOICE_PROOF_SUITE_OUT_DIR="$VOICE_DIR" \
+  scripts/host-voice-proof-suite.sh | tail -n 1
 )"
 PACKAGE_RESULT="$(
   CUA_PACKAGE_PROOF_OUT_DIR="$PACKAGE_DIR" \
@@ -50,13 +50,10 @@ jq -n \
     voice: {
       dir: $voice_dir,
       action_elapsed_ms: $voice[0].action.elapsed_ms,
-      planner_elapsed_ms: $voice[0].planner.elapsed_ms,
       action_events: $voice[0].action.events,
-      planner_events: $voice[0].planner.events,
       action_daemon_steps: $voice[0].action.daemon_voice_steps,
-      planner_daemon_steps: $voice[0].planner.daemon_voice_steps,
       action_metrics: $voice[0].action.metrics,
-      planner_metrics: $voice[0].planner.metrics,
+      planner: $voice[0].planner,
       missing_key: $voice[0].missing_key,
       provider_progress: $voice[0].provider_progress,
       compact_ok: $voice[0].ui.compact_ok,
