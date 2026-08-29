@@ -37,6 +37,7 @@ const VOICE_STEP_LABEL_MAX: usize = 96;
 const VOICE_STEP_TIMEOUT_MS: u64 = 120;
 const VOICE_STEP_FLUSH_TIMEOUT_MS: u64 = 120;
 const DEFAULT_CONTEXT_PREFETCH_TIMEOUT_MS: u64 = 2_500;
+const MAX_CONSECUTIVE_PLANNER_INFRASTRUCTURE_ERRORS: usize = 3;
 const MIN_RECORDING_DURATION: Duration = Duration::from_millis(650);
 pub const DEFAULT_PLANNER_MODEL: &str = "google/gemini-3.7-flash";
 
@@ -482,6 +483,18 @@ fn planning_error_is_invalid_action_json(error: &anyhow::Error) -> bool {
         || message.contains("parse plan JSON")
 }
 
+fn planning_error_is_retryable_infrastructure(error: &anyhow::Error) -> bool {
+    let message = format!("{error:#}").to_ascii_lowercase();
+    message.contains("operation timed out")
+        || message.contains("request or response body error")
+        || message.contains("error decoding response body")
+        || message.contains("decode planning response")
+        || message.contains("status 429")
+        || message.contains("rate limit")
+        || message.contains("server error")
+        || message.contains("temporarily unavailable")
+}
+
 fn normalized_transcript(transcript: &str) -> String {
     transcript
         .trim()
@@ -743,10 +756,18 @@ async fn plan_and_dispatch(
                                 }),
                             )
                             .await;
-                        let recoverable_planning_error = planning_error_is_empty_content(&error)
-                            || planning_error_is_invalid_action_json(&error);
+                        let empty_or_invalid_planner_output =
+                            planning_error_is_empty_content(&error)
+                                || planning_error_is_invalid_action_json(&error);
+                        let retryable_planner_infrastructure =
+                            planning_error_is_retryable_infrastructure(&error);
+                        let recoverable_planning_error =
+                            empty_or_invalid_planner_output || retryable_planner_infrastructure;
                         if recoverable_planning_error {
-                            if let Some(plan) = browser_research_bootstrap_plan(&transcript) {
+                            if let Some(plan) = empty_or_invalid_planner_output
+                                .then(|| browser_research_bootstrap_plan(&transcript))
+                                .flatten()
+                            {
                                 trace
                                     .append(
                                         "planning_error_recovered",
@@ -759,7 +780,14 @@ async fn plan_and_dispatch(
                                     .await;
                                 plan
                             } else if loop_budget.can_continue_after(attempt_index) {
+                                let consecutive_planner_infrastructure_errors =
+                                    consecutive_planning_infrastructure_errors(&attempts);
                                 let error_message = format!("{error:#}");
+                                let reason = if retryable_planner_infrastructure {
+                                    "planning_infrastructure_error"
+                                } else {
+                                    "planning_error"
+                                };
                                 attempts.push(PlanAttemptContext {
                                     attempt_index,
                                     response: "Planner output could not be used.".to_string(),
@@ -767,10 +795,26 @@ async fn plan_and_dispatch(
                                     effect: Some("failed".to_string()),
                                     evidence: Some(json!({
                                         "effect": "failed",
-                                        "reason": "planning_error",
+                                        "reason": reason,
                                         "error": error_message,
                                     })),
                                 });
+                                if retryable_planner_infrastructure
+                                    && consecutive_planner_infrastructure_errors + 1
+                                        >= MAX_CONSECUTIVE_PLANNER_INFRASTRUCTURE_ERRORS
+                                {
+                                    break CompletedAssistantTurn {
+                                        response: "Planner service stayed unavailable while trying to continue the task."
+                                            .to_string(),
+                                        action: None,
+                                        evidence: Some(json!({
+                                            "effect": "failed",
+                                            "reason": "planning_infrastructure_error",
+                                            "attempt_count": consecutive_planner_infrastructure_errors + 1,
+                                            "error": error_message,
+                                        })),
+                                    };
+                                }
                                 attempt_index += 1;
                                 continue;
                             } else {
@@ -2051,6 +2095,19 @@ fn attach_loop_evidence(
     completed
 }
 
+fn consecutive_planning_infrastructure_errors(attempts: &[PlanAttemptContext]) -> usize {
+    attempts
+        .iter()
+        .rev()
+        .take_while(|attempt| {
+            attempt
+                .evidence
+                .as_ref()
+                .is_some_and(|evidence| evidence["reason"] == "planning_infrastructure_error")
+        })
+        .count()
+}
+
 fn inferred_final_effect(
     completed: &CompletedAssistantTurn,
     prior_attempts: &[PlanAttemptContext],
@@ -2818,6 +2875,68 @@ mod tests {
 
         assert!(planning_error_is_invalid_action_json(&error));
         assert!(planning_error_is_invalid_action_json(&parse_plan));
+    }
+
+    #[test]
+    fn planner_provider_timeouts_are_retryable_loop_infrastructure_errors() {
+        let timeout = anyhow::anyhow!(
+            "decode planning response: error decoding response body: request or response body error: operation timed out"
+        );
+        let rate_limit = anyhow::anyhow!("planner request failed with status 429");
+        let schema = anyhow::anyhow!("unsupported action kind");
+
+        assert!(planning_error_is_retryable_infrastructure(&timeout));
+        assert!(planning_error_is_retryable_infrastructure(&rate_limit));
+        assert!(!planning_error_is_retryable_infrastructure(&schema));
+    }
+
+    #[test]
+    fn consecutive_planning_infrastructure_errors_count_only_tail() {
+        let attempts = vec![
+            PlanAttemptContext {
+                attempt_index: 1,
+                response: "Navigation worked.".to_string(),
+                action: Some(json!({
+                    "kind": "aegis",
+                    "args": ["--mode", "headless", "navigate", "https://example.com"]
+                })),
+                effect: Some("confirmed".to_string()),
+                evidence: Some(json!({"effect": "confirmed"})),
+            },
+            PlanAttemptContext {
+                attempt_index: 2,
+                response: "Planner output could not be used.".to_string(),
+                action: None,
+                effect: Some("failed".to_string()),
+                evidence: Some(json!({
+                    "effect": "failed",
+                    "reason": "planning_infrastructure_error",
+                })),
+            },
+            PlanAttemptContext {
+                attempt_index: 3,
+                response: "Planner output could not be used.".to_string(),
+                action: None,
+                effect: Some("failed".to_string()),
+                evidence: Some(json!({
+                    "effect": "failed",
+                    "reason": "planning_infrastructure_error",
+                })),
+            },
+        ];
+
+        assert_eq!(consecutive_planning_infrastructure_errors(&attempts), 2);
+
+        let mut interrupted = attempts;
+        interrupted.push(PlanAttemptContext {
+            attempt_index: 4,
+            response: "Action refused.".to_string(),
+            action: Some(json!({"kind": "shell_exec", "command": "false"})),
+            effect: Some("refused".to_string()),
+            evidence: Some(json!({"effect": "refused"})),
+        });
+
+        assert_eq!(consecutive_planning_infrastructure_errors(&interrupted), 0);
     }
 
     #[test]
