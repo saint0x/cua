@@ -504,6 +504,10 @@ fn planning_error_is_retryable_infrastructure(error: &anyhow::Error) -> bool {
         || message.contains("request or response body error")
         || message.contains("error decoding response body")
         || message.contains("decode planning response")
+        || message.contains("connection error")
+        || message.contains("sendrequest")
+        || message.contains("badrecordmac")
+        || message.contains("tls")
         || message.contains("status 429")
         || message.contains("rate limit")
         || message.contains("server error")
@@ -2258,7 +2262,7 @@ fn action_repeats_confirmed_attempt(
     action: &serde_json::Value,
 ) -> bool {
     if action_is_observation_only(action) {
-        return false;
+        return observation_repeats_without_intervening_change(attempts, action);
     }
     attempts.iter().any(|attempt| {
         attempt.effect.as_deref() == Some("confirmed")
@@ -2267,6 +2271,29 @@ fn action_repeats_confirmed_attempt(
                 .as_ref()
                 .is_some_and(|prior| actions_have_same_intent(prior, action))
     })
+}
+
+fn observation_repeats_without_intervening_change(
+    attempts: &[PlanAttemptContext],
+    action: &serde_json::Value,
+) -> bool {
+    for attempt in attempts.iter().rev() {
+        let Some(prior) = attempt.action.as_ref() else {
+            continue;
+        };
+        if !action_is_observation_only(prior) {
+            return false;
+        }
+        if actions_have_same_intent(prior, action)
+            && matches!(
+                attempt.effect.as_deref(),
+                Some("confirmed" | "suspected_noop")
+            )
+        {
+            return true;
+        }
+    }
+    false
 }
 
 fn action_is_observation_only(action: &serde_json::Value) -> bool {
@@ -3193,10 +3220,14 @@ mod tests {
             "decode planning response: error decoding response body: request or response body error: operation timed out"
         );
         let rate_limit = anyhow::anyhow!("planner request failed with status 429");
+        let tls_transport = anyhow::anyhow!(
+            "send planning request: error sending request for url (https://openrouter.ai/api/v1/chat/completions): client error (SendRequest): connection error: received fatal alert: BadRecordMac"
+        );
         let schema = anyhow::anyhow!("unsupported action kind");
 
         assert!(planning_error_is_retryable_infrastructure(&timeout));
         assert!(planning_error_is_retryable_infrastructure(&rate_limit));
+        assert!(planning_error_is_retryable_infrastructure(&tls_transport));
         assert!(!planning_error_is_retryable_infrastructure(&schema));
     }
 
@@ -4564,7 +4595,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_loop_allows_repeated_observation_after_state_changes() {
+    fn agent_loop_rejects_repeated_observation_without_state_change() {
         let action = json!({
             "kind": "aegis",
             "args": ["--mode", "headless", "page", "links"],
@@ -4577,6 +4608,38 @@ mod tests {
             effect: Some("confirmed".to_string()),
             evidence: Some(json!({"effect": "confirmed"})),
         }];
+
+        assert!(action_is_observation_only(&action));
+        assert!(action_repeats_confirmed_attempt(&attempts, &action));
+    }
+
+    #[test]
+    fn agent_loop_allows_repeated_observation_after_state_changes() {
+        let action = json!({
+            "kind": "aegis",
+            "args": ["--mode", "headless", "page", "links"],
+            "timeout_ms": 15000
+        });
+        let attempts = vec![
+            PlanAttemptContext {
+                attempt_index: 1,
+                response: "Checking search result links.".to_string(),
+                action: Some(action.clone()),
+                effect: Some("confirmed".to_string()),
+                evidence: Some(json!({"effect": "confirmed"})),
+            },
+            PlanAttemptContext {
+                attempt_index: 2,
+                response: "Opening a result.".to_string(),
+                action: Some(json!({
+                    "kind": "aegis",
+                    "args": ["--mode", "headless", "page", "open-link", "Example Domain"],
+                    "timeout_ms": 15000
+                })),
+                effect: Some("confirmed".to_string()),
+                evidence: Some(json!({"effect": "confirmed"})),
+            },
+        ];
 
         assert!(action_is_observation_only(&action));
         assert!(!action_repeats_confirmed_attempt(&attempts, &action));
