@@ -9,6 +9,7 @@ RUN_ID="$(date +%Y%m%d-%H%M%S)"
 ARTIFACT_DIR="${CUA_RELEASE_ARTIFACT_DIR:-$ROOT/artifacts/cua/release/$RUN_ID}"
 SEED="${CUA_RELEASE_SEED:-4242}"
 SCENARIO="${CUA_RELEASE_SCENARIO:-fozzy/scenarios/cua-smoke.json}"
+RLM_SCENARIO="${CUA_RELEASE_RLM_SCENARIO:-fozzy/scenarios/cua-rlm-loop.fozzy.json}"
 RUNEBOOK_SCENARIO="${CUA_RELEASE_RUNEBOOK_SCENARIO:-fozzy/scenarios/cua-runebook.json}"
 SDK_SCENARIO="${CUA_RELEASE_SDK_SCENARIO:-fozzy/scenarios/cua-sdk-action.json}"
 SCRATCHPAD_SCENARIO="${CUA_RELEASE_SCRATCHPAD_SCENARIO:-fozzy/scenarios/cua-scratchpad.json}"
@@ -173,6 +174,7 @@ fi
 log "Release config"
 printf 'artifact_dir=%s\n' "$ARTIFACT_DIR"
 printf 'smoke_scenario=%s\n' "$SCENARIO"
+printf 'rlm_scenario=%s\n' "$RLM_SCENARIO"
 printf 'runebook_scenario=%s\n' "$RUNEBOOK_SCENARIO"
 printf 'sdk_scenario=%s\n' "$SDK_SCENARIO"
 printf 'scratchpad_scenario=%s\n' "$SCRATCHPAD_SCENARIO"
@@ -198,6 +200,7 @@ fi
 
 if [[ "$SKIP_FOZZY" -eq 0 ]]; then
   fozzy_trace_gate "$SCENARIO" "cua-smoke"
+  fozzy_trace_gate "$RLM_SCENARIO" "cua-rlm-loop"
   fozzy_trace_gate "$RUNEBOOK_SCENARIO" "cua-runebook"
   fozzy_trace_gate "$SDK_SCENARIO" "cua-sdk-action"
   fozzy_trace_gate "$SCRATCHPAD_SCENARIO" "cua-scratchpad"

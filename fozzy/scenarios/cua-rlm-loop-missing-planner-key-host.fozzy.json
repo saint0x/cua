@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "name": "cua-rlm-loop-missing-planner-key-host",
+  "steps": [
+    {
+      "type": "proc_spawn",
+      "cmd": "bash",
+      "args": [
+        "-lc",
+        "rm -rf artifacts/cua/fozzy-missing-key-proof /tmp/cua-fozzy-missing-key-home && CUA_VOICE_MISSING_KEY_OUT_DIR=artifacts/cua/fozzy-missing-key-proof CUA_VOICE_MISSING_KEY_HOME=/tmp/cua-fozzy-missing-key-home CUA_VOICE_MISSING_KEY_PROFILE=fozzy-missing-key scripts/host-voice-missing-planner-key-proof.sh"
+      ],
+      "expect_exit": 0,
+      "expect_stdout": "artifacts/cua/fozzy-missing-key-proof\n"
+    }
+  ]
+}

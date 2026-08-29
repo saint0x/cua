@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "name": "cua-rlm-loop",
+  "steps": [
+    {
+      "type": "proc_when",
+      "cmd": "cargo",
+      "args": ["test", "-p", "cua-voice", "agent_loop_", "--", "--test-threads=1"],
+      "exit_code": 0,
+      "times": 1
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "cargo",
+      "args": ["test", "-p", "cua-voice", "agent_loop_", "--", "--test-threads=1"],
+      "expect_exit": 0
+    },
+    {
+      "type": "proc_when",
+      "cmd": "bash",
+      "args": [
+        "-n",
+        "scripts/host-voice-missing-planner-key-proof.sh",
+        "scripts/host-voice-provider-progress-proof.sh",
+        "scripts/host-voice-proof-suite.sh"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": "",
+      "times": 1
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "bash",
+      "args": [
+        "-n",
+        "scripts/host-voice-missing-planner-key-proof.sh",
+        "scripts/host-voice-provider-progress-proof.sh",
+        "scripts/host-voice-proof-suite.sh"
+      ],
+      "expect_exit": 0
+    }
+  ]
+}
