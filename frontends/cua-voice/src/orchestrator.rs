@@ -2625,14 +2625,31 @@ const PENDING_WORK_STARTS: &[&str] = &[
     "executing",
 ];
 
+const FUTURE_PENDING_WORK_STARTS: &[&str] = &[
+    "open",
+    "search",
+    "browse",
+    "research",
+    "navigate",
+    "look up",
+    "check",
+    "read",
+    "inspect",
+    "create",
+    "write",
+    "transform",
+    "verify",
+    "run",
+    "execute",
+];
+
 fn planner_response_claims_pending_work(response: &str) -> bool {
     let lower = response.trim().to_ascii_lowercase();
     if response_reports_terminal_failure(&lower) {
         return false;
     }
-    if ["i'll ", "i will ", "let me "]
-        .iter()
-        .any(|marker| lower.starts_with(marker))
+    if ["let me "].iter().any(|marker| lower.starts_with(marker))
+        || response_starts_with_future_tense_pending_work(&lower)
         || response_starts_with_first_person_pending_work(&lower)
     {
         return true;
@@ -2648,8 +2665,22 @@ fn response_starts_with_first_person_pending_work(lower_response: &str) -> bool 
     })
 }
 
+fn response_starts_with_future_tense_pending_work(lower_response: &str) -> bool {
+    ["i'll ", "i will "].iter().any(|prefix| {
+        lower_response
+            .strip_prefix(prefix)
+            .is_some_and(response_starts_with_future_pending_work_verb)
+    })
+}
+
 fn response_starts_with_pending_work_verb(text: &str) -> bool {
     PENDING_WORK_STARTS
+        .iter()
+        .any(|marker| text_starts_with_phrase(text, marker))
+}
+
+fn response_starts_with_future_pending_work_verb(text: &str) -> bool {
+    FUTURE_PENDING_WORK_STARTS
         .iter()
         .any(|marker| text_starts_with_phrase(text, marker))
 }
@@ -5351,6 +5382,22 @@ mod tests {
         ));
         assert!(action_null_plan_claims_pending_work(
             "I am searching the documentation.",
+            &None
+        ));
+        assert!(action_null_plan_claims_pending_work(
+            "I will search the documentation.",
+            &None
+        ));
+        assert!(action_null_plan_claims_pending_work(
+            "I'll open Calculator.",
+            &None
+        ));
+        assert!(!action_null_plan_claims_pending_work(
+            "I will not continue because access is denied.",
+            &None
+        ));
+        assert!(!action_null_plan_claims_pending_work(
+            "I'll stop here: the verified result is 579.",
             &None
         ));
         assert!(!action_null_plan_claims_pending_work(
