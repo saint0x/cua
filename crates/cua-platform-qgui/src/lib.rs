@@ -467,7 +467,10 @@ impl QguiInputBackend {
                 }
                 run_checked_with_timeout(command.arg("ctx").args(args), timeout_ms).await
             }
-            InputAction::ClipboardRead { allow_sensitive: _ } => {
+            InputAction::ClipboardRead { allow_sensitive } => {
+                if !allow_sensitive {
+                    bail!("clipboard read requires allow_sensitive=true");
+                }
                 run_checked(
                     gui_command(&self.config, &session, &self.config.clipboard_binary)
                         .arg("clipboard-read"),

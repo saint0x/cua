@@ -5473,42 +5473,6 @@ async fn dispatch_input_action(state: &DaemonState, action: InputAction) -> cua_
     ) {
         return dispatch_control_action(state, action, turn_id, action_json, started).await;
     }
-    if matches!(
-        action,
-        InputAction::ClipboardRead { .. } | InputAction::ClipboardWrite { .. }
-    ) {
-        publish_protocol_step(
-            state,
-            3,
-            3,
-            format!("Refused {action_label}"),
-            "Unix socket",
-            3_500,
-        );
-        state.metrics.increment(CounterKind::InputRefusals);
-        state
-            .metrics
-            .observe(MetricKind::InputDispatch, started.elapsed());
-        let result = refused_input_result(
-            "clipboard actions must use /clipboard/read or /clipboard/write for explicit grants",
-        );
-        let after = if capture_trace_snapshots {
-            trace_snapshot(state, &turn_id, "after").await
-        } else {
-            None
-        };
-        append_action_turn(
-            state,
-            turn_id,
-            action_json,
-            serde_json::to_value(&result).unwrap_or(serde_json::Value::Null),
-            before,
-            after,
-        )
-        .await;
-        publish_input_event(state, "input_refused", &result);
-        return result;
-    }
     if let InputAction::Sequence {
         actions,
         inter_action_delay_ms,
@@ -6862,7 +6826,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refused_input_clipboard_action_does_not_mutate_clipboard() {
+    async fn disabled_profile_refuses_input_clipboard_action() {
         let state = DaemonState::synthetic("test", "token");
         *state.clipboard.write().await = Some("original".to_string());
         let result = dispatch_input_action(
@@ -6875,6 +6839,26 @@ mod tests {
 
         assert_eq!(result.effect, Effect::Refused);
         assert_eq!(state.clipboard.read().await.as_deref(), Some("original"));
+    }
+
+    #[tokio::test]
+    async fn enabled_profile_dispatches_input_clipboard_action() {
+        let state = clipboard_enabled_state().await;
+        let result = dispatch_input_action(
+            &state,
+            InputAction::ClipboardWrite {
+                text: "action lane write".to_string(),
+            },
+        )
+        .await;
+
+        assert_eq!(result.effect, Effect::Confirmed);
+        assert_eq!(result.route, InputRoute::SystemApi);
+        assert_eq!(result.delivery_mode, DeliveryMode::Background);
+        assert_eq!(
+            result.evidence[0].message,
+            "accepted by test computer backend"
+        );
     }
 
     #[tokio::test]

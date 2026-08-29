@@ -129,6 +129,8 @@ fn macos_capabilities() -> CapabilityManifest {
             "shell_exec".to_string(),
             "aegis".to_string(),
             "ctx".to_string(),
+            "clipboard_read".to_string(),
+            "clipboard_write".to_string(),
             "pause".to_string(),
             "resume".to_string(),
             "kill_switch".to_string(),
@@ -308,8 +310,11 @@ async fn execute_macos_input_leaf(action: InputAction) -> Result<MacosActionOutc
             MacosActionOutcome::system("safety action accepted by local coordinator"),
         ),
         InputAction::Sequence { .. } => Err("nested sequences are not supported".to_string()),
-        InputAction::ClipboardRead { .. } | InputAction::ClipboardWrite { .. } => {
-            Err("clipboard actions must use explicit clipboard/profile endpoints".to_string())
+        InputAction::ClipboardRead { allow_sensitive } => read_clipboard(allow_sensitive)
+            .await
+            .map(MacosActionOutcome::system),
+        InputAction::ClipboardWrite { text } => {
+            write_clipboard(text).await.map(MacosActionOutcome::system)
         }
     }
 }
@@ -1326,6 +1331,53 @@ fn post_text(_text: &str) -> Result<String, String> {
 #[cfg(target_os = "macos")]
 async fn paste_text(text: String) -> Result<String, String> {
     ensure_accessibility_trusted()?;
+    write_clipboard_text(&text).await?;
+    post_key_combo("cmd+v")?;
+    Ok("text pasted through macOS pasteboard and CGEvent cmd+v".to_string())
+}
+
+#[cfg(target_os = "macos")]
+async fn read_clipboard(allow_sensitive: bool) -> Result<String, String> {
+    if !allow_sensitive {
+        return Err("clipboard read requires allow_sensitive=true".to_string());
+    }
+    let output = tokio::time::timeout(
+        Duration::from_millis(2_000),
+        tokio::process::Command::new("/usr/bin/pbpaste").output(),
+    )
+    .await
+    .map_err(|_| "pbpaste timed out after 2000ms".to_string())?
+    .map_err(|error| format!("pbpaste failed to launch: {error}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            format!("pbpaste failed: {}", output.status)
+        } else {
+            format!("pbpaste failed: {}: {stderr}", output.status)
+        });
+    }
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    Ok(text)
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn read_clipboard(_allow_sensitive: bool) -> Result<String, String> {
+    Err("macOS clipboard read is only available on macOS".to_string())
+}
+
+#[cfg(target_os = "macos")]
+async fn write_clipboard(text: String) -> Result<String, String> {
+    write_clipboard_text(&text).await?;
+    Ok("macOS pasteboard updated".to_string())
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn write_clipboard(_text: String) -> Result<String, String> {
+    Err("macOS clipboard write is only available on macOS".to_string())
+}
+
+#[cfg(target_os = "macos")]
+async fn write_clipboard_text(text: &str) -> Result<(), String> {
     let mut child = tokio::process::Command::new("/usr/bin/pbcopy")
         .stdin(std::process::Stdio::piped())
         .kill_on_drop(true)
@@ -1346,8 +1398,7 @@ async fn paste_text(text: String) -> Result<String, String> {
     if !status.success() {
         return Err(format!("pbcopy failed: {status}"));
     }
-    post_key_combo("cmd+v")?;
-    Ok("text pasted through macOS pasteboard and CGEvent cmd+v".to_string())
+    Ok(())
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -2020,6 +2071,64 @@ mod tests {
         assert_eq!(result.route, InputRoute::SystemApi);
         assert_eq!(result.delivery_mode, DeliveryMode::Background);
         assert!(result.evidence[0].message.contains("cua-shell-ok"));
+    }
+
+    #[tokio::test]
+    async fn clipboard_read_requires_sensitive_grant() {
+        let backend = MacosInputBackend;
+        let result = backend
+            .execute(InputRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                idempotency_key: uuid::Uuid::new_v4(),
+                deadline_mono_ns: None,
+                action: InputAction::ClipboardRead {
+                    allow_sensitive: false,
+                },
+            })
+            .await;
+
+        assert_eq!(result.effect, Effect::Refused);
+        assert_eq!(result.route, InputRoute::Unavailable);
+        assert!(result.evidence[0].message.contains("allow_sensitive=true"));
+    }
+
+    #[tokio::test]
+    async fn clipboard_write_and_read_round_trip_through_action_backend() {
+        let backend = MacosInputBackend;
+        let previous = read_clipboard(true).await.ok();
+        let marker = format!("cua-clipboard-action-ok-{}", uuid::Uuid::new_v4());
+
+        let write = backend
+            .execute(InputRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                idempotency_key: uuid::Uuid::new_v4(),
+                deadline_mono_ns: None,
+                action: InputAction::ClipboardWrite {
+                    text: marker.clone(),
+                },
+            })
+            .await;
+        assert_eq!(write.effect, Effect::Confirmed);
+        assert_eq!(write.route, InputRoute::SystemApi);
+        assert_eq!(write.delivery_mode, DeliveryMode::Background);
+
+        let read = backend
+            .execute(InputRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                idempotency_key: uuid::Uuid::new_v4(),
+                deadline_mono_ns: None,
+                action: InputAction::ClipboardRead {
+                    allow_sensitive: true,
+                },
+            })
+            .await;
+        assert_eq!(read.effect, Effect::Confirmed);
+        assert_eq!(read.route, InputRoute::SystemApi);
+        assert_eq!(read.evidence[0].message, marker);
+
+        if let Some(previous) = previous {
+            let _ = write_clipboard(previous).await;
+        }
     }
 
     #[tokio::test]

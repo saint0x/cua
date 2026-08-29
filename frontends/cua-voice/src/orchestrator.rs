@@ -895,6 +895,11 @@ async fn plan_and_dispatch(
                     .action
                     .as_ref()
                     .is_some_and(action_satisfies_text_entry_request)
+                && !action_null_finishes_after_prior_attempts(
+                    &plan.response,
+                    &planned_action_json,
+                    &attempts,
+                )
             {
                 trace
                     .append(
@@ -1829,6 +1834,17 @@ fn long_range_null_plan_is_incomplete(
     transcript_requests_long_range_work(transcript)
         && action.is_none()
         && planner_response_claims_pending_work(response)
+}
+
+fn action_null_finishes_after_prior_attempts(
+    response: &str,
+    action: &Option<serde_json::Value>,
+    prior_attempts: &[PlanAttemptContext],
+) -> bool {
+    action.is_none()
+        && !prior_attempts.is_empty()
+        && (final_response_claims_verified_result(response)
+            || final_response_reports_prior_failure(response))
 }
 
 fn action_repeats_confirmed_attempt(
@@ -3502,6 +3518,40 @@ mod tests {
 
         assert!(final_response_reports_prior_failure(&completed.response));
         assert_eq!(inferred_final_effect(&completed, &prior_attempts), "failed");
+    }
+
+    #[test]
+    fn verified_action_null_reply_can_finish_text_request_after_prior_evidence() {
+        let prior_attempts = vec![PlanAttemptContext {
+            attempt_index: 1,
+            response: "Writing and reading clipboard contents.".to_string(),
+            action: Some(json!({
+                "kind": "shell_exec",
+                "command": "printf 'clipboard loop proof 612' | pbcopy && pbpaste",
+                "timeout_ms": 5000
+            })),
+            effect: Some("confirmed".to_string()),
+            evidence: Some(json!({
+                "effect": "confirmed",
+                "stdout": "clipboard loop proof 612"
+            })),
+        }];
+
+        assert!(action_null_finishes_after_prior_attempts(
+            "The verified clipboard contents are: clipboard loop proof 612",
+            &None,
+            &prior_attempts
+        ));
+        assert!(!action_null_finishes_after_prior_attempts(
+            "Writing proof text to clipboard.",
+            &None,
+            &prior_attempts
+        ));
+        assert!(!action_null_finishes_after_prior_attempts(
+            "The verified clipboard contents are: clipboard loop proof 612",
+            &None,
+            &[]
+        ));
     }
 
     #[test]
