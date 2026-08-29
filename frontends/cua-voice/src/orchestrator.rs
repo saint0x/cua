@@ -2676,9 +2676,15 @@ fn action_null_stops_long_range_without_evidence(
 
 fn response_requests_clarification_or_reports_blocker(response: &str) -> bool {
     let lower = response.trim().to_ascii_lowercase();
-    lower.contains('?')
+    response_asks_direct_user_question(&lower)
         || [
-            "clarify",
+            "please clarify",
+            "can you clarify",
+            "could you clarify",
+            "clarify which",
+            "clarify what",
+            "need clarification",
+            "needs clarification",
             "need permission",
             "needs permission",
             "requires permission",
@@ -2709,14 +2715,46 @@ fn response_requests_clarification_or_reports_blocker(response: &str) -> bool {
             "need access",
             "needs access",
             "requires access",
-            "blocked by",
-            "blocked because",
-            "not allowed",
-            "unsafe",
-            "ambiguous",
+            "blocked by login",
+            "blocked by permission",
+            "blocked by authorization",
+            "blocked because i",
+            "blocked because the task",
+            "i am not allowed",
+            "not allowed to",
+            "unsafe to continue",
+            "not safe to continue",
+            "request is ambiguous",
+            "goal is ambiguous",
+            "task is ambiguous",
+            "ambiguous; please",
+            "ambiguous, please",
         ]
         .iter()
         .any(|marker| lower.contains(marker))
+}
+
+fn response_asks_direct_user_question(lower_response: &str) -> bool {
+    if !lower_response.contains('?') {
+        return false;
+    }
+    [
+        "what ",
+        "which ",
+        "who ",
+        "where ",
+        "when ",
+        "how ",
+        "why ",
+        "can you ",
+        "could you ",
+        "would you ",
+        "should i ",
+        "do you ",
+        "please ",
+    ]
+    .iter()
+    .any(|prefix| lower_response.starts_with(prefix))
 }
 
 fn failure_boundary_plan_collapses_recovery(
@@ -5248,6 +5286,12 @@ mod tests {
             &None,
             &[]
         ));
+        assert!(!action_null_stops_long_range_without_evidence(
+            "Search the web for the item.",
+            "The request is ambiguous; please clarify which item to search for.",
+            &None,
+            &[]
+        ));
         assert!(action_null_stops_long_range_without_evidence(
             "Search the web and summarize what you verify.",
             "I found what you asked for.",
@@ -5269,6 +5313,18 @@ mod tests {
         assert!(action_null_stops_long_range_without_evidence(
             "Search the web and summarize the docs.",
             "The authorization guide mentions that blocked popups can affect login flows.",
+            &None,
+            &[]
+        ));
+        assert!(action_null_stops_long_range_without_evidence(
+            "Search the web and summarize the docs.",
+            "The FAQ asks: what is OAuth?",
+            &None,
+            &[]
+        ));
+        assert!(action_null_stops_long_range_without_evidence(
+            "Search the web and summarize the docs.",
+            "The Rust guide discusses unsafe code and why some APIs are not allowed in safe contexts.",
             &None,
             &[]
         ));
