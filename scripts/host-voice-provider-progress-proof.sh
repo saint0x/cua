@@ -92,6 +92,7 @@ jq -s -e '
   (idx("transcript") < idx("dispatching")) and
   (idx("dispatching") < idx("reply")) and
   (map(select(.event == "reply")) | all((.text // "") | test("\\b[Cc]onfirmed\\b") | not)) and
+  (map(select(.event == "reply")) | all((.text // "") | test("127\\.0\\.0\\.1|cua-[A-Za-z0-9_-]+") | not)) and
   (
     (map(select(.event == "reply" and ((.text // "") | contains("Planner provider stopped the task")))) | length == 0)
     or
@@ -109,6 +110,7 @@ jq -s -e '
   any(.event == "agent_reobserve_result") and
   any(.event == "memory_persisted") and
   (map(select(.event == "reply")) | all((.data.text // "") | test("\\b[Cc]onfirmed\\b") | not)) and
+  (map(select(.event == "reply")) | all((.data.text // "") | test("127\\.0\\.0\\.1|cua-[A-Za-z0-9_-]+") | not)) and
   (
     (map(select(.event == "reply" and ((.data.text // "") | contains("Planner provider stopped the task")))) | length == 0)
     or
