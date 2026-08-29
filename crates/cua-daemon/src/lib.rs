@@ -6647,8 +6647,39 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct DeliveryAwareInputBackend;
+
+    #[async_trait::async_trait]
+    impl InputBackend for DeliveryAwareInputBackend {
+        async fn execute(&self, request: InputRequest) -> InputResult {
+            match request.action {
+                InputAction::ShellExec { .. } => input_result_with_id(
+                    request.idempotency_key,
+                    Effect::Confirmed,
+                    InputRoute::SystemApi,
+                    DeliveryMode::Background,
+                    EvidenceKind::ValueReadback,
+                    "shell exited 0; stdout=verified; stderr=",
+                ),
+                _ => input_result_with_id(
+                    request.idempotency_key,
+                    Effect::Unverifiable,
+                    InputRoute::GlobalInput,
+                    DeliveryMode::Desktop,
+                    EvidenceKind::ModelObservation,
+                    "desktop event was delivered but not observed",
+                ),
+            }
+        }
+
+        fn name(&self) -> &'static str {
+            "test-delivery-aware"
+        }
+    }
+
     struct TestComputerBackend {
-        input: Arc<AcceptingInputBackend>,
+        input: Arc<dyn InputBackend>,
         descriptor: cua_core::ComputerBackendDescriptor,
         cursor: cua_core::CursorState,
         windows: Vec<WindowInfo>,
@@ -6720,12 +6751,15 @@ mod tests {
     }
 
     fn accepting_test_state() -> DaemonState {
-        DaemonState::with_computer_backend(
-            "test",
-            "token",
-            UiMode::Headful,
-            Arc::new(TestComputerBackend::default()),
-        )
+        test_state_with_input(Arc::new(AcceptingInputBackend))
+    }
+
+    fn test_state_with_input(input: Arc<dyn InputBackend>) -> DaemonState {
+        let backend = TestComputerBackend {
+            input,
+            ..Default::default()
+        };
+        DaemonState::with_computer_backend("test", "token", UiMode::Headful, Arc::new(backend))
     }
 
     fn test_compact_scene(mode: UiMode) -> cua_core::IslandScene {
@@ -8636,6 +8670,42 @@ mod tests {
             labels.contains(&"Completed sequence 2 actions"),
             "{labels:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn sequence_dispatch_preserves_unverified_desktop_delivery() {
+        let state = test_state_with_input(Arc::new(DeliveryAwareInputBackend));
+
+        let result = dispatch_input_action(
+            &state,
+            InputAction::Sequence {
+                actions: vec![
+                    InputAction::MouseClick {
+                        x: 12,
+                        y: 34,
+                        button: cua_core::MouseButton::Left,
+                        count: 1,
+                    },
+                    InputAction::ShellExec {
+                        command: "printf verified".to_string(),
+                        timeout_ms: 1_000,
+                    },
+                ],
+                inter_action_delay_ms: 0,
+            },
+        )
+        .await;
+
+        assert_eq!(result.effect, Effect::Unverifiable);
+        assert_eq!(result.route, InputRoute::SystemApi);
+        assert_eq!(result.delivery_mode, DeliveryMode::Unknown);
+        assert_eq!(result.evidence.len(), 2);
+        assert_eq!(result.evidence[0].kind, EvidenceKind::ModelObservation);
+        assert_eq!(result.evidence[1].kind, EvidenceKind::ValueReadback);
+        assert!(result.evidence[0]
+            .message
+            .contains("delivered but not observed"));
+        assert!(result.evidence[1].message.contains("stdout=verified"));
     }
 
     #[test]
