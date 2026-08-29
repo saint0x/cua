@@ -538,7 +538,7 @@ fn last_progress_summary(attempts: &[PlanAttemptContext]) -> Option<String> {
         let action = attempt.action.as_ref()?;
         let label = progress_action_label(action)?;
         Some(format!(
-            "{} attempt{}; last progress was {}",
+            "{} completed attempt{}; last progress was {}",
             attempts.len(),
             if attempts.len() == 1 { "" } else { "s" },
             label
@@ -3815,7 +3815,7 @@ mod tests {
         }];
         assert_eq!(
             planning_provider_account_failure_message_with_attempts(&payment_required, &attempts),
-            "Planner provider stopped the task after 1 attempt; last progress was using Aegis `search the official SQLite foreign key documentation`: insufficient provider credits."
+            "Planner provider stopped the task after 1 completed attempt; last progress was using Aegis `search the official SQLite foreign key documentation`: insufficient provider credits."
         );
     }
 
