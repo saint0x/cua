@@ -1183,6 +1183,8 @@ async fn plan_and_dispatch(
                 && open_only_incomplete_for_goal(&transcript, &turn);
             let shell_readback_missing = loop_budget.can_continue_after(attempt_index)
                 && shell_readback_missing_for_goal(&transcript, &turn);
+            let shell_expected_stdout_missing = loop_budget.can_continue_after(attempt_index)
+                && shell_expected_stdout_missing_for_goal(&transcript, &turn);
             let aegis_readback_missing = loop_budget.can_continue_after(attempt_index)
                 && aegis_readback_missing_for_goal(&transcript, &turn);
             let evidence = if open_only_incomplete {
@@ -1191,6 +1193,12 @@ async fn plan_and_dispatch(
             } else if shell_readback_missing {
                 effect = Some("partial".to_string());
                 Some(shell_readback_missing_evidence(turn.evidence.clone()))
+            } else if shell_expected_stdout_missing {
+                effect = Some("partial".to_string());
+                Some(shell_expected_stdout_missing_evidence(
+                    &transcript,
+                    turn.evidence.clone(),
+                ))
             } else if aegis_readback_missing {
                 effect = Some("partial".to_string());
                 Some(aegis_readback_missing_evidence(turn.evidence.clone()))
@@ -1220,6 +1228,7 @@ async fn plan_and_dispatch(
                         "should_replan": should_continue,
                         "open_only_incomplete": open_only_incomplete,
                         "shell_readback_missing": shell_readback_missing,
+                        "shell_expected_stdout_missing": shell_expected_stdout_missing,
                         "aegis_readback_missing": aegis_readback_missing,
                         "long_range_continuation": long_range_continuation,
                         "has_action": turn.action.is_some(),
@@ -2105,6 +2114,18 @@ fn shell_readback_missing_for_goal(transcript: &str, turn: &CompletedAssistantTu
             .is_some_and(dispatch_evidence_has_nonempty_shell_stdout)
 }
 
+fn shell_expected_stdout_missing_for_goal(transcript: &str, turn: &CompletedAssistantTurn) -> bool {
+    let Some(expected) = expected_final_shell_stdout_value(transcript) else {
+        return false;
+    };
+    turn.action
+        .as_ref()
+        .is_some_and(json_action_uses_shell_exec)
+        && turn_effect(turn).as_deref() == Some("confirmed")
+        && dispatch_evidence_last_nonempty_stdout(turn.evidence.as_ref())
+            .is_some_and(|stdout| stdout.trim() != expected)
+}
+
 fn aegis_readback_missing_for_goal(transcript: &str, turn: &CompletedAssistantTurn) -> bool {
     transcript_requests_long_range_work(transcript)
         && turn
@@ -2141,6 +2162,37 @@ fn words_request_shell_readback(words: &[String]) -> bool {
         )
     });
     shell_or_file && verification
+}
+
+fn expected_final_shell_stdout_value(transcript: &str) -> Option<String> {
+    let lower = transcript.to_ascii_lowercase();
+    if !(lower.contains("final stdout") || lower.contains("exact final stdout")) {
+        return None;
+    }
+    let final_section_start = lower
+        .rfind("then repair")
+        .or_else(|| lower.rfind("finally"))
+        .or_else(|| lower.rfind("final stdout"))?;
+    let transcript_final_section = &transcript[final_section_start..];
+    extract_exact_value_after_marker(transcript_final_section, " exactly ")
+        .or_else(|| extract_exact_value_after_marker(transcript_final_section, " exact "))
+}
+
+fn extract_exact_value_after_marker(text: &str, marker: &str) -> Option<String> {
+    let lower = text.to_ascii_lowercase();
+    let start = lower.find(marker)? + marker.len();
+    let rest = text[start..].trim_start();
+    if rest.is_empty() {
+        return None;
+    }
+    let lower_rest = rest.to_ascii_lowercase();
+    let end = [" to ", " into ", " in ", " and ", ",", "."]
+        .iter()
+        .filter_map(|delimiter| lower_rest.find(delimiter))
+        .min()
+        .unwrap_or(rest.len());
+    let value = rest[..end].trim();
+    (!value.is_empty()).then(|| value.to_string())
 }
 
 fn json_action_uses_shell_exec(action: &serde_json::Value) -> bool {
@@ -2271,6 +2323,38 @@ fn shell_readback_missing_evidence(evidence: Option<serde_json::Value>) -> serde
         json!({
             "effect": "partial",
             "reason": "shell_readback_missing_for_verified_output_goal",
+            "dispatch_evidence": evidence,
+        })
+    }
+}
+
+fn shell_expected_stdout_missing_evidence(
+    transcript: &str,
+    evidence: Option<serde_json::Value>,
+) -> serde_json::Value {
+    let expected = expected_final_shell_stdout_value(transcript);
+    let observed = dispatch_evidence_last_nonempty_stdout(evidence.as_ref())
+        .map(|stdout| stdout.trim().to_string());
+    let mut evidence = evidence.unwrap_or_else(|| json!({}));
+    if let Some(object) = evidence.as_object_mut() {
+        object.insert("effect".to_string(), json!("partial"));
+        object.insert(
+            "reason".to_string(),
+            json!("shell_expected_final_stdout_not_observed"),
+        );
+        object.insert("expected_final_stdout".to_string(), json!(expected));
+        object.insert("observed_stdout".to_string(), json!(observed));
+        object.insert(
+            "repair_hint".to_string(),
+            json!("The shell action did not produce the requested exact final stdout. Continue by producing the expected final value, reading it back to stdout, and then report that exact stdout."),
+        );
+        evidence
+    } else {
+        json!({
+            "effect": "partial",
+            "reason": "shell_expected_final_stdout_not_observed",
+            "expected_final_stdout": expected,
+            "observed_stdout": observed,
             "dispatch_evidence": evidence,
         })
     }
@@ -4237,6 +4321,70 @@ mod tests {
         assert!(!shell_readback_missing_for_goal(transcript, &turn));
         apply_verified_readback_reply(transcript, &mut turn);
         assert_eq!(turn.response, "fastpath evidence 314159");
+        assert!(!should_replan_after_turn(
+            transcript,
+            &turn,
+            Some("confirmed"),
+            1,
+            AgentLoopBudget::Unbounded
+        ));
+    }
+
+    #[test]
+    fn shell_expected_final_stdout_replans_when_wrong_value_was_read() {
+        let transcript = "Use local shell only. First deliberately write WRONG-VALUE to result.txt and read it back to observe that it does not match the desired value. Then repair it by writing exactly FINAL-VALUE-441 to result.txt, read result.txt back to stdout, and report the exact final stdout.";
+        let turn = CompletedAssistantTurn {
+            response: "Writing initial wrong value and reading it back.".to_string(),
+            action: Some(json!({
+                "kind": "shell_exec",
+                "command": "printf WRONG-VALUE > /tmp/result.txt && cat /tmp/result.txt",
+                "timeout_ms": 5000
+            })),
+            evidence: Some(json!({
+                "effect": "confirmed",
+                "evidence": [
+                    {"kind": "value_readback", "message": "shell exited 0; stdout=WRONG-VALUE; stderr="}
+                ]
+            })),
+        };
+
+        assert_eq!(
+            expected_final_shell_stdout_value(transcript).as_deref(),
+            Some("FINAL-VALUE-441")
+        );
+        assert!(shell_expected_stdout_missing_for_goal(transcript, &turn));
+        assert!(should_replan_after_turn(
+            transcript,
+            &turn,
+            Some("partial"),
+            1,
+            AgentLoopBudget::Unbounded
+        ));
+        assert_eq!(
+            shell_expected_stdout_missing_evidence(transcript, turn.evidence)["reason"],
+            "shell_expected_final_stdout_not_observed"
+        );
+    }
+
+    #[test]
+    fn shell_expected_final_stdout_finishes_when_value_was_read() {
+        let transcript = "First write a mismatch and observe it. Then repair it by writing exactly FINAL-VALUE-441 to result.txt, read result.txt back to stdout, and report the exact final stdout.";
+        let turn = CompletedAssistantTurn {
+            response: "Repairing and reading result.txt.".to_string(),
+            action: Some(json!({
+                "kind": "shell_exec",
+                "command": "printf FINAL-VALUE-441 > /tmp/result.txt && cat /tmp/result.txt",
+                "timeout_ms": 5000
+            })),
+            evidence: Some(json!({
+                "effect": "confirmed",
+                "evidence": [
+                    {"kind": "value_readback", "message": "shell exited 0; stdout=FINAL-VALUE-441; stderr="}
+                ]
+            })),
+        };
+
+        assert!(!shell_expected_stdout_missing_for_goal(transcript, &turn));
         assert!(!should_replan_after_turn(
             transcript,
             &turn,
