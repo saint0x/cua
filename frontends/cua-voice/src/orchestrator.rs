@@ -2928,10 +2928,16 @@ fn prior_attempts_support_failure_final(response: &str, attempts: &[PlanAttemptC
 
 fn confirmed_attempt_has_task_evidence(attempt: &PlanAttemptContext) -> bool {
     attempt.effect.as_deref() == Some("confirmed")
-        && attempt
-            .evidence
-            .as_ref()
-            .is_some_and(evidence_has_task_readback)
+        && attempt.evidence.as_ref().is_some_and(|evidence| {
+            attempt
+                .action
+                .as_ref()
+                .filter(|action| json_action_uses_aegis(action))
+                .map_or_else(
+                    || evidence_has_task_readback(evidence),
+                    |action| aegis_evidence_has_task_readback(action, evidence),
+                )
+        })
 }
 
 fn evidence_has_task_readback(evidence: &serde_json::Value) -> bool {
@@ -2942,6 +2948,47 @@ fn evidence_has_task_readback(evidence: &serde_json::Value) -> bool {
                 .and_then(|value| value.as_str())
                 .is_some_and(|value| !value.trim().is_empty())
         })
+}
+
+fn aegis_evidence_has_task_readback(
+    action: &serde_json::Value,
+    evidence: &serde_json::Value,
+) -> bool {
+    let actions = flattened_actions(action);
+    let messages = evidence_messages(evidence);
+    actions.iter().enumerate().any(|(index, action)| {
+        json_action_uses_aegis_observation(action)
+            && messages
+                .get(index)
+                .is_some_and(|message| message_has_semantic_stdout(message))
+    })
+}
+
+fn message_has_semantic_stdout(message: &str) -> bool {
+    let Some(stdout) = message_stdout(message).map(str::trim) else {
+        return false;
+    };
+    if stdout.is_empty() {
+        return false;
+    }
+    serde_json::from_str::<serde_json::Value>(stdout)
+        .map_or(true, |value| json_value_has_semantic_content(&value))
+}
+
+fn json_value_has_semantic_content(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Null => false,
+        serde_json::Value::Bool(_) | serde_json::Value::Number(_) => true,
+        serde_json::Value::String(value) => !value.trim().is_empty(),
+        serde_json::Value::Array(items) => {
+            !items.is_empty() && items.iter().any(json_value_has_semantic_content)
+        }
+        serde_json::Value::Object(object) => {
+            !object.is_empty()
+                && !object.keys().all(|key| key == "event" || key == "events")
+                && object.values().any(json_value_has_semantic_content)
+        }
+    }
 }
 
 fn json_action_uses_aegis(action: &serde_json::Value) -> bool {
@@ -5897,6 +5944,41 @@ mod tests {
                 }]
             })),
         }];
+        let aegis_navigation_attempts = vec![PlanAttemptContext {
+            attempt_index: 1,
+            response: "Navigating with Aegis.".to_string(),
+            action: Some(json!({
+                "kind": "aegis",
+                "args": ["--mode", "headless", "navigate", "https://example.com"],
+                "timeout_ms": 15000
+            })),
+            effect: Some("confirmed".to_string()),
+            evidence: Some(json!({
+                "effect": "confirmed",
+                "evidence": [{
+                    "kind": "value_readback",
+                    "message": "aegis exited 0; stdout=[]; stderr="
+                }]
+            })),
+        }];
+        let aegis_event_attempts = vec![PlanAttemptContext {
+            attempt_index: 1,
+            response: "Navigating with Aegis.".to_string(),
+            action: Some(json!({
+                "kind": "sequence",
+                "actions": [
+                    {"kind": "aegis", "args": ["--mode", "headless", "navigate", "https://example.com"], "timeout_ms": 15000}
+                ]
+            })),
+            effect: Some("confirmed".to_string()),
+            evidence: Some(json!({
+                "effect": "confirmed",
+                "evidence": [{
+                    "kind": "value_readback",
+                    "message": "aegis exited 0; stdout=[{\"event\":{\"type\":\"navigation\"}}]; stderr="
+                }]
+            })),
+        }];
         let failed_aegis_attempts = vec![PlanAttemptContext {
             attempt_index: 1,
             response: "Inspecting page with Aegis.".to_string(),
@@ -5922,6 +6004,14 @@ mod tests {
         assert!(prior_attempts_support_explicit_aegis_final(
             "Verified page type: documentation",
             &aegis_readback_attempts
+        ));
+        assert!(!prior_attempts_support_explicit_aegis_final(
+            "Verified page title: Example Domain",
+            &aegis_navigation_attempts
+        ));
+        assert!(!prior_attempts_support_explicit_aegis_final(
+            "Verified page title: Example Domain",
+            &aegis_event_attempts
         ));
         assert!(!prior_attempts_support_explicit_aegis_final(
             "Verified page type: documentation",
