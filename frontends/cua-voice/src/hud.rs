@@ -253,11 +253,11 @@ fn compact_scene(snapshot: &HudSnapshot, display: &HudDisplay, reply_visible: bo
             items: vec![
                 IslandItem::Chip {
                     id: "transport".to_string(),
-                    text: transport,
+                    text: compact_label(&transport, 80),
                 },
                 IslandItem::Chip {
                     id: "target".to_string(),
-                    text: target,
+                    text: compact_label(&target, 80),
                 },
                 IslandItem::DotChase {
                     id: "activity".to_string(),
@@ -324,19 +324,25 @@ fn expanded_scene(
             items: vec![
                 IslandItem::Chip {
                     id: "transport".to_string(),
-                    text: if reply_visible {
-                        "cua".to_string()
-                    } else {
-                        display.tool.clone()
-                    },
+                    text: compact_label(
+                        &if reply_visible {
+                            "cua".to_string()
+                        } else {
+                            display.tool.clone()
+                        },
+                        80,
+                    ),
                 },
                 IslandItem::Chip {
                     id: "target".to_string(),
-                    text: if reply_visible {
-                        display.phase.to_string()
-                    } else {
-                        display.target.clone()
-                    },
+                    text: compact_label(
+                        &if reply_visible {
+                            display.phase.to_string()
+                        } else {
+                            display.target.clone()
+                        },
+                        80,
+                    ),
                 },
                 IslandItem::DotChase {
                     id: "activity".to_string(),
@@ -352,7 +358,7 @@ fn expanded_scene(
         id: "task".to_string(),
         index: "01".to_string(),
         label: "Task".to_string(),
-        value: display.prompt.clone(),
+        value: compact_label(&display.prompt, 240),
         active: true,
     }];
     if let Some((index, total)) = step_counter {
@@ -439,7 +445,7 @@ fn expanded_scene(
                 },
                 IslandItem::Label {
                     id: "transport".to_string(),
-                    text: format!("Transport {}", display.tool),
+                    text: compact_label(&format!("Transport {}", display.tool), 80),
                 },
             ],
         },
@@ -461,28 +467,24 @@ pub fn center_status_text(
     display: &HudDisplay,
     reply_visible: bool,
 ) -> String {
-    if reply_visible {
-        return display.result.clone();
-    }
-    if snapshot.phase == HudPhase::Idle {
-        return snapshot.step.label.clone();
-    }
-    if snapshot.phase == HudPhase::Listening {
-        return "Listening".to_string();
-    }
-    if snapshot.phase == HudPhase::RecordingStopped {
-        return "Recording Stopped".to_string();
-    }
-    if snapshot.phase == HudPhase::Transcribing {
-        return "Processing".to_string();
-    }
-    if snapshot.phase == HudPhase::Accepted {
-        return "Accepted".to_string();
-    }
-    if let Some((index, total)) = snapshot.step.counter() {
-        return format!("Step {index}/{total}   {}", snapshot.step.label);
-    }
-    snapshot.step.label.clone()
+    let text = if reply_visible {
+        display.result.clone()
+    } else if snapshot.phase == HudPhase::Idle {
+        snapshot.step.label.clone()
+    } else if snapshot.phase == HudPhase::Listening {
+        "Listening".to_string()
+    } else if snapshot.phase == HudPhase::RecordingStopped {
+        "Recording Stopped".to_string()
+    } else if snapshot.phase == HudPhase::Transcribing {
+        "Processing".to_string()
+    } else if snapshot.phase == HudPhase::Accepted {
+        "Accepted".to_string()
+    } else if let Some((index, total)) = snapshot.step.counter() {
+        format!("Step {index}/{total}   {}", snapshot.step.label)
+    } else {
+        snapshot.step.label.clone()
+    };
+    bound_scene_text(&text, 480)
 }
 
 pub fn dots_are_active(snapshot: &HudSnapshot) -> bool {
@@ -506,7 +508,7 @@ fn expanded_response_text(display: &HudDisplay) -> String {
     } else {
         display.result.as_str()
     };
-    compact_label(text, 460)
+    compact_label(text, 240)
 }
 
 fn elapsed_label(duration: Duration) -> String {
@@ -532,12 +534,22 @@ fn default_island_theme() -> IslandTheme {
 
 pub fn compact_label(value: &str, max_chars: usize) -> String {
     let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
-    let mut chars = normalized.chars();
-    let label = chars.by_ref().take(max_chars).collect::<String>();
-    if chars.next().is_some() {
-        format!("{label}...")
+    if normalized.chars().count() <= max_chars {
+        return normalized;
+    }
+    if max_chars <= 3 {
+        return ".".repeat(max_chars);
+    }
+    let keep = max_chars - 3;
+    let label = normalized.chars().take(keep).collect::<String>();
+    format!("{label}...")
+}
+
+fn bound_scene_text(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        value.to_string()
     } else {
-        label
+        compact_label(value, max_chars)
     }
 }
 
@@ -729,7 +741,10 @@ mod tests {
     fn compact_labels_are_bounded() {
         let label = compact_label("one two three four five six", 13);
 
-        assert_eq!(label, "one two three...");
+        assert_eq!(label, "one two th...");
+        assert!(label.chars().count() <= 13);
+        assert_eq!(compact_label("abcdef", 3), "...");
+        assert_eq!(compact_label("abcdef", 2), "..");
     }
 
     #[test]
@@ -894,5 +909,50 @@ mod tests {
             &scene.regions["footer"].items[0],
             cua_core::IslandItem::Label { text, .. } if text == "Elapsed 01:07"
         ));
+    }
+
+    #[test]
+    fn generated_scene_bounds_long_live_text_before_validation() {
+        let mut snapshot = HudSnapshot::default();
+        let long_text = "Inbound cua message ".repeat(80);
+        snapshot.apply(VoiceUiEvent::Transcript(long_text.clone()));
+        snapshot.apply(VoiceUiEvent::AgentStep {
+            label: long_text,
+            source: Some("voice".to_string()),
+            task: Some("Voice control".to_string()),
+            tool: Some("Unix socket".to_string()),
+            step_index: None,
+            step_total: None,
+            ttl_ms: None,
+        });
+        let display = HudDisplay::from_snapshot(&snapshot);
+
+        let compact = island_scene_from_snapshot(
+            &snapshot,
+            &display,
+            false,
+            false,
+            "google/gemini-3.7-flash",
+            Duration::from_secs(1),
+        )
+        .expect("compact scene should bound long status text");
+        let expanded = island_scene_from_snapshot(
+            &snapshot,
+            &display,
+            true,
+            false,
+            "google/gemini-3.7-flash",
+            Duration::from_secs(1),
+        )
+        .expect("expanded scene should bound long row text");
+
+        let cua_core::IslandItem::Marquee { text, .. } = &compact.regions["center"].items[0] else {
+            panic!("expected center marquee");
+        };
+        assert!(text.chars().count() <= 480);
+        let cua_core::IslandItem::Row { value, .. } = &expanded.regions["task"].items[0] else {
+            panic!("expected task row");
+        };
+        assert!(value.chars().count() <= 240);
     }
 }
