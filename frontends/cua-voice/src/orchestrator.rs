@@ -2716,10 +2716,11 @@ fn action_null_stops_long_range_without_evidence(
         && transcript_requests_long_range_work(transcript)
         && !action_null_finishes_after_prior_attempts(response, action, prior_attempts)
         && !planner_response_claims_pending_work(response)
-        && !response_requests_clarification_or_reports_blocker(response)
+        && !response_requests_clarification(response)
+        && !response_reports_evidence_backed_blocker(response, prior_attempts)
 }
 
-fn response_requests_clarification_or_reports_blocker(response: &str) -> bool {
+fn response_requests_clarification(response: &str) -> bool {
     let lower = response.trim().to_ascii_lowercase();
     response_asks_direct_user_question(&lower)
         || [
@@ -2730,45 +2731,6 @@ fn response_requests_clarification_or_reports_blocker(response: &str) -> bool {
             "clarify what",
             "need clarification",
             "needs clarification",
-            "need permission",
-            "needs permission",
-            "requires permission",
-            "permission is required",
-            "need authorization",
-            "needs authorization",
-            "requires authorization",
-            "authorization is required",
-            "please authorize",
-            "authorize me",
-            "please sign in",
-            "need you to sign in",
-            "need to sign in",
-            "needs you to sign in",
-            "needs to sign in",
-            "requires sign in",
-            "sign in required",
-            "please log in",
-            "need you to log in",
-            "need to log in",
-            "needs you to log in",
-            "needs to log in",
-            "requires login",
-            "login required",
-            "log in required",
-            "log in to continue",
-            "access denied",
-            "need access",
-            "needs access",
-            "requires access",
-            "blocked by login",
-            "blocked by permission",
-            "blocked by authorization",
-            "blocked because i",
-            "blocked because the task",
-            "i am not allowed",
-            "not allowed to",
-            "unsafe to continue",
-            "not safe to continue",
             "request is ambiguous",
             "goal is ambiguous",
             "task is ambiguous",
@@ -2777,6 +2739,79 @@ fn response_requests_clarification_or_reports_blocker(response: &str) -> bool {
         ]
         .iter()
         .any(|marker| lower.contains(marker))
+}
+
+fn response_reports_evidence_backed_blocker(
+    response: &str,
+    prior_attempts: &[PlanAttemptContext],
+) -> bool {
+    response_reports_blocker(response) && prior_attempts_have_blocker_evidence(prior_attempts)
+}
+
+fn response_reports_blocker(response: &str) -> bool {
+    let lower = response.trim().to_ascii_lowercase();
+    [
+        "need permission",
+        "needs permission",
+        "requires permission",
+        "permission is required",
+        "need authorization",
+        "needs authorization",
+        "requires authorization",
+        "authorization is required",
+        "please authorize",
+        "authorize me",
+        "please sign in",
+        "need you to sign in",
+        "need to sign in",
+        "needs you to sign in",
+        "needs to sign in",
+        "requires sign in",
+        "sign in required",
+        "please log in",
+        "need you to log in",
+        "need to log in",
+        "needs you to log in",
+        "needs to log in",
+        "requires login",
+        "login required",
+        "log in required",
+        "log in to continue",
+        "access denied",
+        "need access",
+        "needs access",
+        "requires access",
+        "blocked by login",
+        "blocked by permission",
+        "blocked by authorization",
+        "blocked because i",
+        "blocked because the task",
+        "i am not allowed",
+        "not allowed to",
+        "unsafe to continue",
+        "not safe to continue",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
+}
+
+fn prior_attempts_have_blocker_evidence(prior_attempts: &[PlanAttemptContext]) -> bool {
+    prior_attempts.iter().any(|attempt| {
+        matches!(
+            attempt.effect.as_deref(),
+            Some("failed" | "refused" | "unverifiable")
+        ) || attempt
+            .evidence
+            .as_ref()
+            .is_some_and(evidence_reports_blocker)
+    })
+}
+
+fn evidence_reports_blocker(evidence: &serde_json::Value) -> bool {
+    let Some(text) = serde_json::to_string(evidence).ok() else {
+        return false;
+    };
+    response_reports_blocker(&text) || response_reports_terminal_failure(&text.to_ascii_lowercase())
 }
 
 fn response_asks_direct_user_question(lower_response: &str) -> bool {
@@ -5616,23 +5651,41 @@ mod tests {
             &None,
             &readback_attempts
         ));
-        assert!(!action_null_stops_long_range_without_evidence(
+        assert!(action_null_stops_long_range_without_evidence(
             "Open Safari and research the internal admin page.",
             "I need you to sign in before I can continue.",
             &None,
             &[]
         ));
-        assert!(!action_null_stops_long_range_without_evidence(
+        assert!(action_null_stops_long_range_without_evidence(
             "Open Safari and research the internal admin page.",
             "Permission is required before I can continue.",
             &None,
             &[]
         ));
-        assert!(!action_null_stops_long_range_without_evidence(
+        assert!(action_null_stops_long_range_without_evidence(
             "Open Safari and research the internal admin page.",
             "Access denied.",
             &None,
             &[]
+        ));
+        assert!(!action_null_stops_long_range_without_evidence(
+            "Open Safari and research the internal admin page.",
+            "I need you to sign in before I can continue.",
+            &None,
+            &[PlanAttemptContext {
+                attempt_index: 1,
+                response: "Opening the admin page.".to_string(),
+                action: Some(json!({
+                    "kind": "aegis",
+                    "args": ["--mode", "headless", "navigate", "https://admin.example.com"]
+                })),
+                effect: Some("refused".to_string()),
+                evidence: Some(json!({
+                    "effect": "refused",
+                    "message": "login required"
+                })),
+            }]
         ));
         assert!(!action_null_stops_long_range_without_evidence(
             "Search the web for the item.",
