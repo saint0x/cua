@@ -514,6 +514,14 @@ fn planning_error_is_retryable_infrastructure(error: &anyhow::Error) -> bool {
         || message.contains("temporarily unavailable")
 }
 
+fn planning_error_is_provider_account_failure(error: &anyhow::Error) -> bool {
+    let message = format!("{error:#}").to_ascii_lowercase();
+    message.contains("402 payment required")
+        || message.contains("insufficient credits")
+        || message.contains("prompt tokens limit exceeded")
+        || message.contains("limit_source")
+}
+
 fn normalized_transcript(transcript: &str) -> String {
     transcript
         .trim()
@@ -784,6 +792,8 @@ async fn plan_and_dispatch(
                                 || planning_error_is_invalid_action_json(&error);
                         let retryable_planner_infrastructure =
                             planning_error_is_retryable_infrastructure(&error);
+                        let provider_account_failure =
+                            planning_error_is_provider_account_failure(&error);
                         let recoverable_planning_error =
                             empty_or_invalid_planner_output || retryable_planner_infrastructure;
                         if recoverable_planning_error {
@@ -856,6 +866,18 @@ async fn plan_and_dispatch(
                                     })),
                                 };
                             }
+                        } else if provider_account_failure {
+                            let error_message = format!("{error:#}");
+                            break CompletedAssistantTurn {
+                                response: "Planner provider rejected the request, so I could not continue the task.".to_string(),
+                                action: None,
+                                evidence: Some(json!({
+                                    "effect": "failed",
+                                    "reason": "planning_provider_account_failure",
+                                    "attempt_count": attempt_index,
+                                    "error": error_message,
+                                })),
+                            };
                         } else {
                             return Err(error);
                         }
@@ -3661,11 +3683,31 @@ mod tests {
             "send planning request: error sending request for url (https://openrouter.ai/api/v1/chat/completions): client error (SendRequest): connection error: received fatal alert: BadRecordMac"
         );
         let schema = anyhow::anyhow!("unsupported action kind");
+        let payment_required = anyhow::anyhow!(
+            "{}",
+            r#"planning failed with 402 Payment Required: {"error":{"message":"Insufficient credits"}}"#
+        );
 
         assert!(planning_error_is_retryable_infrastructure(&timeout));
         assert!(planning_error_is_retryable_infrastructure(&rate_limit));
         assert!(planning_error_is_retryable_infrastructure(&tls_transport));
         assert!(!planning_error_is_retryable_infrastructure(&schema));
+        assert!(!planning_error_is_retryable_infrastructure(
+            &payment_required
+        ));
+        assert!(planning_error_is_provider_account_failure(
+            &payment_required
+        ));
+    }
+
+    #[test]
+    fn planner_provider_context_limit_is_terminal_account_failure() {
+        let error = anyhow::anyhow!(
+            "planning failed with 402 Payment Required: Prompt tokens limit exceeded: 6092 > 5820. limit_source=openrouter_credits"
+        );
+
+        assert!(planning_error_is_provider_account_failure(&error));
+        assert!(!planning_error_is_retryable_infrastructure(&error));
     }
 
     #[test]
