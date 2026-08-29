@@ -3680,10 +3680,12 @@ mod tests {
         let expanded = HudMetrics::with_expansion(0.0, 1.0);
 
         assert_eq!(island_shell_width(compact), COMPACT_WIDTH);
+        assert_eq!(island_radius(compact), COMPACT_RADIUS);
         assert_eq!(island_fillet(compact), 0.0);
         assert_eq!(COMPACT_FILLET, 0.0);
         assert_eq!(island_width(compact), COMPACT_WIDTH);
         assert_eq!(island_shell_width(expanded), EXPANDED_WIDTH);
+        assert_eq!(island_radius(expanded), 0.0);
         assert_eq!(island_fillet(expanded), 0.0);
         assert_eq!(EXPANDED_FILLET, 0.0);
         assert_eq!(island_width(expanded), EXPANDED_WIDTH);
