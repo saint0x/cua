@@ -502,7 +502,7 @@ impl VoiceHud {
                             ..drag
                         });
                         if let Some(display) = window.display(cx) {
-                            bounds.origin.y = display.bounds().origin.y + px(TOP_MARGIN);
+                            bounds.origin.y = hud_top_y(display.bounds());
                         }
                         window.set_bounds(bounds);
                         cx.notify();
@@ -2952,9 +2952,8 @@ fn top_centered_bounds(cx: &App) -> Bounds<gpui::Pixels> {
     let display_bounds = display.bounds();
     let x = display_bounds.origin.x.to_f64() as f32
         + (display_bounds.size.width.to_f64() as f32 - WINDOW_WIDTH) / 2.0;
-    let y = display_bounds.origin.y.to_f64() as f32 + TOP_MARGIN;
     Bounds {
-        origin: point(px(x), px(y)),
+        origin: point(px(x), hud_top_y(display_bounds)),
         size: window_size,
     }
 }
@@ -3004,12 +3003,20 @@ fn animated_island_bounds(
     let minimized_x = (display_right - MINIMIZED_RIGHT_OFFSET - width).clamp(display_left, max_x);
     let x = cua_voice::hud::lerp(normal_x, minimized_x, minimized_progress);
     Bounds {
-        origin: point(
-            px(x),
-            px(display_bounds.origin.y.to_f64() as f32 + TOP_MARGIN),
-        ),
+        origin: point(px(x), hud_top_y(display_bounds)),
         size: size(px(width), px(height)),
     }
+}
+
+fn hud_top_y(display_bounds: Bounds<Pixels>) -> Pixels {
+    hud_top_y_with_menu_bar(
+        display_bounds,
+        cua_platform_macos::primary_menu_bar_height_px(),
+    )
+}
+
+fn hud_top_y_with_menu_bar(display_bounds: Bounds<Pixels>, menu_bar_height: f32) -> Pixels {
+    px(display_bounds.origin.y.to_f64() as f32 + menu_bar_height + TOP_MARGIN)
 }
 
 fn current_cursor_point() -> Point<Pixels> {
@@ -3020,7 +3027,6 @@ fn current_cursor_point() -> Point<Pixels> {
 fn snap_island_bounds(bounds: Bounds<Pixels>, display_bounds: Bounds<Pixels>) -> Bounds<Pixels> {
     let left = display_bounds.origin.x.to_f64() as f32;
     let right = display_bounds.origin.x.to_f64() as f32 + display_bounds.size.width.to_f64() as f32;
-    let top = display_bounds.origin.y.to_f64() as f32 + TOP_MARGIN;
     let width = bounds.size.width.to_f64() as f32;
     let raw_x = bounds.origin.x.to_f64() as f32;
     let max_x = (right - width).max(left);
@@ -3031,7 +3037,7 @@ fn snap_island_bounds(bounds: Bounds<Pixels>, display_bounds: Bounds<Pixels>) ->
         x = max_x;
     }
     Bounds {
-        origin: point(px(x), px(top)),
+        origin: point(px(x), hud_top_y(display_bounds)),
         size: bounds.size,
     }
 }
@@ -3405,6 +3411,8 @@ fn legacy_desktop_permission_prompt_marker_path_under(
 mod tests {
     use super::*;
     use cua_voice::hud::{COMPACT_RADIUS, COMPACT_WIDTH, EXPANDED_RADIUS};
+
+    const TEST_MENU_BAR_HEIGHT: f32 = 38.0;
 
     fn scene_center_text_for_test(snapshot: HudSnapshot) -> String {
         let display = HudDisplay::from_snapshot(&snapshot);
@@ -3928,8 +3936,21 @@ mod tests {
         let snapped = snap_island_bounds(dropped, display);
 
         assert_eq!(snapped.origin.x, px(876.0));
-        assert_eq!(snapped.origin.y, px(TOP_MARGIN));
+        assert_eq!(snapped.origin.y, hud_top_y(display));
         assert_eq!(snapped.size, dropped.size);
+    }
+
+    #[test]
+    fn hud_top_y_sits_below_the_menu_bar_safe_area() {
+        let display = Bounds {
+            origin: point(px(0.0), px(0.0)),
+            size: size(px(1512.0), px(982.0)),
+        };
+
+        assert_eq!(
+            hud_top_y_with_menu_bar(display, TEST_MENU_BAR_HEIGHT),
+            px(TEST_MENU_BAR_HEIGHT + TOP_MARGIN)
+        );
     }
 
     #[test]
@@ -4315,7 +4336,7 @@ mod tests {
 
         let expanded = animated_island_bounds(compact, expanded_metrics, 0.0, display);
 
-        assert_eq!(expanded.origin.y, px(TOP_MARGIN));
+        assert_eq!(expanded.origin.y, hud_top_y(display));
         assert_eq!(expanded.size, size(px(EXPANDED_WIDTH), px(EXPANDED_HEIGHT)));
         assert_eq!(expanded.origin.x, px(320.0));
     }
@@ -4350,7 +4371,7 @@ mod tests {
 
         let minimized = animated_island_bounds(compact, HudMetrics::interpolate(0.0), 1.0, display);
 
-        assert_eq!(minimized.origin.y, px(TOP_MARGIN));
+        assert_eq!(minimized.origin.y, hud_top_y(display));
         assert_eq!(
             minimized.size,
             size(px(MINIMIZED_WIDTH), px(MINIMIZED_HEIGHT))

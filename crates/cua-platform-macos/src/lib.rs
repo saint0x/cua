@@ -16,6 +16,10 @@ use cua_core::{
 };
 use cua_input::InputBackend;
 use image::{ImageBuffer, Rgba};
+#[cfg(target_os = "macos")]
+use objc2::MainThreadMarker;
+#[cfg(target_os = "macos")]
+use objc2_app_kit::NSScreen;
 use sha2::{Digest, Sha256};
 #[cfg(target_os = "macos")]
 use std::ffi::CStr;
@@ -61,6 +65,10 @@ pub fn computer_backend() -> Arc<dyn ComputerBackend> {
 
 pub fn displays() -> anyhow::Result<Vec<DisplayInfo>> {
     native_displays()
+}
+
+pub fn primary_menu_bar_height_px() -> f32 {
+    native_primary_menu_bar_height_px()
 }
 
 #[derive(Debug, Default)]
@@ -885,6 +893,26 @@ fn native_displays() -> anyhow::Result<Vec<DisplayInfo>> {
         scale_factor: 1.0,
         active: true,
     }])
+}
+
+#[cfg(target_os = "macos")]
+fn native_primary_menu_bar_height_px() -> f32 {
+    let Some(main_thread) = MainThreadMarker::new() else {
+        return 0.0;
+    };
+    let Some(screen) = NSScreen::mainScreen(main_thread) else {
+        return 0.0;
+    };
+    let frame = screen.frame();
+    let visible_frame = screen.visibleFrame();
+    let frame_top = frame.origin.y + frame.size.height;
+    let visible_top = visible_frame.origin.y + visible_frame.size.height;
+    (frame_top - visible_top).max(0.0) as f32
+}
+
+#[cfg(not(target_os = "macos"))]
+fn native_primary_menu_bar_height_px() -> f32 {
+    0.0
 }
 
 #[cfg(target_os = "macos")]
