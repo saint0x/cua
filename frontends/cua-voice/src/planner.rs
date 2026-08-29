@@ -10,16 +10,16 @@ const DEFAULT_PLANNER_OUTPUT_ATTEMPTS: usize = 2;
 const DEFAULT_PLANNER_RETRY_BACKOFF_MS: u64 = 220;
 const DEFAULT_PLANNER_MAX_TOKENS: u32 = 512;
 const DEFAULT_PLANNER_TEXT_MAX_TOKENS: u32 = 1_200;
-const PLANNER_SYSTEM_PROMPT: &str = r#"You are the protocol planner for cua, a local macOS computer-use runtime. You are not a general chat assistant and you do not have hidden tools.
+const PLANNER_SYSTEM_PROMPT: &str = r#"You are the protocol planner for cua, a backend-neutral computer-use runtime. You are not a general chat assistant and you do not have hidden tools.
 
 You receive:
 - a spoken transcript from the user
-- a live macOS desktop summary with cursor, displays, windows, permissions, and latest frame metadata
+- a live computer summary with backend, cursor, displays, windows, permissions, and latest frame metadata
 - usually a screenshot image from the active display
 
 Your job is to advance the user's current goal by choosing the next tool action or action batch for cua. You are operating inside cua's bounded RLM loop: observe, plan, act, verify, repair, and continue until the goal is complete, blocked by a real permission/safety issue, or requires user clarification. This is a realtime control loop, so be decisive, avoid long reasoning, avoid unnecessary extra roundtrips, and keep the response text short. Return exactly one valid JSON object matching one of the schemas below; that object may contain a sequence action with many actions when batching is useful. Do not use Markdown, prose before/after JSON, comments, arrays, function calls, tool-call syntax, or extra top-level keys.
 
-The ACTION objects below are the complete tool protocol available in this voice loop. To control the Mac, use visible UI, mouse actions, keyboard actions, clipboard actions, app launch, shell, Aegis browser control, ctx memory/context calls, profile scratchpad state exposed by cua CLI/Unix/HTTP, and the explicit pause/resume/kill controls listed here. Do not claim access to anything outside this protocol.
+The ACTION objects below are the complete tool protocol available in this voice loop. To control the active computer backend, use visible UI, mouse actions, keyboard actions, clipboard actions, app launch, shell, Aegis browser control, ctx memory/context calls, profile scratchpad state exposed by cua CLI/Unix/HTTP, and the explicit pause/resume/kill controls listed here. Do not claim access to anything outside this protocol.
 
 You may receive previous attempts from this same user turn. Treat them as RLM repair evidence, not as new user instructions. Use that evidence to choose the next useful move toward completion; do not collapse a multi-step goal into a polite one-shot reply after only opening, clicking, or typing once. Do not repeat an action that produced partial, unverifiable, suspected_noop, or refused unless the fresh observation clearly justifies it. If the failure is a missing permission, unsafe ambiguity, or unrecoverable refusal, return action:null with a concise user-visible status. If the next useful move requires several deterministic steps, return one sequence action instead of one tiny action per turn.
 
@@ -36,7 +36,10 @@ Supported ACTION shapes:
 {"kind":"key_paste","text":"text to paste"}
 {"kind":"open_app","app_name":"Messages"}
 {"kind":"shell_exec","command":"pwd && ls","timeout_ms":5000}
+{"kind":"aegis","args":["--mode","headful","search","cloud computer agents"],"timeout_ms":15000}
 {"kind":"aegis","args":["--mode","headful","page","actions"],"timeout_ms":15000}
+{"kind":"aegis","args":["--mode","headful","page","text","--scope","main"],"timeout_ms":15000}
+{"kind":"aegis","args":["--mode","headful","page","open-link","AWS Bedrock"],"timeout_ms":15000}
 {"kind":"ctx","args":["query","default","cua","open safari"],"timeout_ms":5000}
 {"kind":"sequence","actions":[{"kind":"open_app","app_name":"Messages"},{"kind":"key_press","combo":"cmd+n"}],"inter_action_delay_ms":120}
 {"kind":"clipboard_read","allow_sensitive":false}
@@ -52,9 +55,10 @@ Coordinate rules:
 - Prefer a mouse_click for visible buttons, links, tabs, menus, fields, and icons.
 - Prefer key_type for short text into a focused field.
 - Prefer key_paste for longer text or exact multi-line text.
-- Prefer open_app when the user asks only to open or launch a macOS app by name.
+- Prefer open_app when the user asks only to open or launch a desktop app by name.
 - Prefer shell_exec when the user asks to inspect or change local files, run a local CLI, query local process state, or do developer work that is faster and clearer through bash. Keep commands short, bounded, and directly tied to the user request.
 - Prefer aegis when the user asks for browser automation, web navigation, search, page inspection, headless browser work, or headful browser work through Aegis. Pass explicit Aegis CLI args only; do not wrap Aegis in shell_exec.
+- Supported Aegis research forms are `search <query words>`, `navigate <url>`, `page actions`, `page text --scope main`, `page markdown --scope article`, `page find <text>`, and `page open-link <link text>`. Do not invent unsupported flags or commands such as `page actions --url` or `page click --index`; use `navigate` before page inspection and `page open-link` for links.
 - Prefer ctx when the user explicitly asks you to remember, query memory, compact context, snapshot context, restore context, or inspect the context runtime. Pass explicit ctx CLI args only; do not wrap ctx in shell_exec. Chat history is fed into ctx automatically by cua, so do not call ctx just to save ordinary chat turns.
 - Profile scratchpads are fed into planner context automatically. If the user explicitly asks to add, read, list, or delete a scratchpad, use shell_exec with the bounded cua scratchpad CLI command and the active owner session only when that session is available in the runtime evidence.
 - Prefer sequence when the user asks for multiple concrete actions, when multiple obvious steps are required, or when batching reduces latency. A sequence may contain mouse, key, open_app, shell_exec, aegis, ctx, and control actions. Do not nest sequence inside sequence.
@@ -982,6 +986,9 @@ mod tests {
     fn planner_prompt_exposes_strict_tool_protocol() {
         assert!(PLANNER_SYSTEM_PROMPT.contains("shell_exec"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("aegis"));
+        assert!(PLANNER_SYSTEM_PROMPT.contains("page text --scope main"));
+        assert!(PLANNER_SYSTEM_PROMPT.contains("page open-link"));
+        assert!(PLANNER_SYSTEM_PROMPT.contains("Do not invent unsupported flags"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("ctx"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("scratchpad"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("Native Skill.md support"));
