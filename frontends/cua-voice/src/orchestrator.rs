@@ -2607,6 +2607,24 @@ fn action_can_advance_long_range_goal(action: &serde_json::Value) -> bool {
     )
 }
 
+const PENDING_WORK_STARTS: &[&str] = &[
+    "opening",
+    "searching",
+    "browsing",
+    "researching",
+    "navigating",
+    "looking up",
+    "checking",
+    "reading",
+    "inspecting",
+    "creating",
+    "writing",
+    "transforming",
+    "verifying",
+    "running",
+    "executing",
+];
+
 fn planner_response_claims_pending_work(response: &str) -> bool {
     let lower = response.trim().to_ascii_lowercase();
     if response_reports_terminal_failure(&lower) {
@@ -2619,25 +2637,7 @@ fn planner_response_claims_pending_work(response: &str) -> bool {
     {
         return true;
     }
-    [
-        "opening",
-        "searching",
-        "browsing",
-        "researching",
-        "navigating",
-        "looking up",
-        "checking",
-        "reading",
-        "inspecting",
-        "creating",
-        "writing",
-        "transforming",
-        "verifying",
-        "running",
-        "executing",
-    ]
-    .iter()
-    .any(|marker| lower.starts_with(marker))
+    response_starts_with_pending_work_verb(&lower)
 }
 
 fn response_starts_with_first_person_pending_work(lower_response: &str) -> bool {
@@ -2649,25 +2649,20 @@ fn response_starts_with_first_person_pending_work(lower_response: &str) -> bool 
 }
 
 fn response_starts_with_pending_work_verb(text: &str) -> bool {
-    [
-        "opening",
-        "searching",
-        "browsing",
-        "researching",
-        "navigating",
-        "looking up",
-        "checking",
-        "reading",
-        "inspecting",
-        "creating",
-        "writing",
-        "transforming",
-        "verifying",
-        "running",
-        "executing",
-    ]
-    .iter()
-    .any(|marker| text.starts_with(marker))
+    PENDING_WORK_STARTS
+        .iter()
+        .any(|marker| text_starts_with_phrase(text, marker))
+}
+
+fn text_starts_with_phrase(text: &str, phrase: &str) -> bool {
+    let Some(rest) = text.strip_prefix(phrase) else {
+        return false;
+    };
+    rest.is_empty()
+        || rest
+            .chars()
+            .next()
+            .is_some_and(|next| !next.is_ascii_alphanumeric() && next != '_')
 }
 
 fn planning_error_can_use_bootstrap_recovery(
@@ -5268,6 +5263,14 @@ mod tests {
         ));
         assert!(action_null_plan_claims_pending_work(
             "I am searching the documentation.",
+            &None
+        ));
+        assert!(!action_null_plan_claims_pending_work(
+            "Openingness is not a pending action.",
+            &None
+        ));
+        assert!(!action_null_plan_claims_pending_work(
+            "I'm readingly done with the verified result.",
             &None
         ));
     }
