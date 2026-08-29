@@ -533,6 +533,17 @@ fn planning_provider_account_failure_message_with_attempts(
     format!("Planner provider stopped the task after {progress}: {reason}.")
 }
 
+fn planning_credentials_missing_message_with_attempts(
+    required: &str,
+    planner_model: &str,
+    attempts: &[PlanAttemptContext],
+) -> String {
+    let Some(progress) = last_progress_summary(attempts) else {
+        return format!("{required} is required for planner model {planner_model}.");
+    };
+    format!("{required} is required for planner model {planner_model}; stopped after {progress}.")
+}
+
 fn last_progress_summary(attempts: &[PlanAttemptContext]) -> Option<String> {
     attempts.iter().rev().find_map(|attempt| {
         let action = attempt.action.as_ref()?;
@@ -722,49 +733,6 @@ async fn plan_and_dispatch(
         .await?
     } else {
         let planner = Planner::new(&config.planner_model);
-        let api_key = match planner.api_key_from_env() {
-            Some(api_key) => api_key,
-            None => {
-                if let Some(context_task) = context_task {
-                    context_task.abort();
-                    send_metric(&tx, "context_prefetch_aborted_ms", plan_started.elapsed());
-                    trace
-                        .append(
-                            "context_prefetch_aborted",
-                            json!({ "reason": "planning_credentials_missing" }),
-                        )
-                        .await;
-                }
-                let completed = CompletedAssistantTurn {
-                    response: format!(
-                        "{} is required for planner model {}.",
-                        planner.required_api_key_name(),
-                        config.planner_model
-                    ),
-                    action: None,
-                    evidence: Some(json!({
-                        "effect": "failed",
-                        "reason": "planning_credentials_missing",
-                        "required": planner.required_api_key_name(),
-                        "planner_model": config.planner_model,
-                    })),
-                };
-                trace
-                    .append(
-                        "agent_loop_stop",
-                        json!({
-                            "attempts": 0,
-                            "final_effect": "failed",
-                        }),
-                    )
-                    .await;
-                send_metric(&tx, "plan_ms", plan_started.elapsed());
-                emit_completed_reply(&completed, &step_publisher, &tx, &trace).await;
-                step_publisher.finish().await;
-                persist_turn_memory(&config, &transcript, &completed, &trace).await?;
-                return Ok(VoiceTurnCompletion::from_completed(&completed));
-            }
-        };
         tx.send(VoiceUiEvent::Planning {
             tool: "Desktop context".to_string(),
         })
@@ -886,6 +854,34 @@ async fn plan_and_dispatch(
                     .await;
                 plan
             } else {
+                let Some(api_key) = planner.api_key_from_env() else {
+                    trace
+                        .append(
+                            "planning_error",
+                            json!({
+                                "attempt_index": attempt_index,
+                                "reason": "planning_credentials_missing",
+                                "required": planner.required_api_key_name(),
+                                "planner_model": config.planner_model,
+                            }),
+                        )
+                        .await;
+                    break CompletedAssistantTurn {
+                        response: planning_credentials_missing_message_with_attempts(
+                            planner.required_api_key_name(),
+                            &config.planner_model,
+                            &attempts,
+                        ),
+                        action: None,
+                        evidence: Some(json!({
+                            "effect": "failed",
+                            "reason": "planning_credentials_missing",
+                            "required": planner.required_api_key_name(),
+                            "planner_model": config.planner_model,
+                            "attempt_count": attempt_index,
+                        })),
+                    };
+                };
                 match planner
                     .plan_request(
                         &api_key,
@@ -4097,6 +4093,14 @@ mod tests {
             planning_provider_account_failure_message_with_attempts(&payment_required, &[]),
             "Planner provider stopped the task: insufficient provider credits."
         );
+        assert_eq!(
+            planning_credentials_missing_message_with_attempts(
+                "GEMINI_API_KEY or GOOGLE_API_KEY",
+                "gemini-3-flash-preview",
+                &[]
+            ),
+            "GEMINI_API_KEY or GOOGLE_API_KEY is required for planner model gemini-3-flash-preview."
+        );
         let attempts = vec![PlanAttemptContext {
             attempt_index: 1,
             response: "Searching with Aegis.".to_string(),
@@ -4120,6 +4124,14 @@ mod tests {
         assert_eq!(
             planning_provider_account_failure_message_with_attempts(&payment_required, &attempts),
             "Planner provider stopped the task after 1 completed attempt; last progress was using Aegis `search the official SQLite foreign key documentation`: insufficient provider credits."
+        );
+        assert_eq!(
+            planning_credentials_missing_message_with_attempts(
+                "GEMINI_API_KEY or GOOGLE_API_KEY",
+                "gemini-3-flash-preview",
+                &attempts
+            ),
+            "GEMINI_API_KEY or GOOGLE_API_KEY is required for planner model gemini-3-flash-preview; stopped after 1 completed attempt; last progress was using Aegis `search the official SQLite foreign key documentation`."
         );
         let sequence_attempts = vec![PlanAttemptContext {
             attempt_index: 1,

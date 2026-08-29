@@ -104,7 +104,7 @@ fi
 jq -e '
   .ok == true and
   .within_budget == true and
-  .trace_stop.attempts == 0 and
+  .trace_stop.attempts > 0 and
   .trace_stop.final_effect == "failed" and
   .memory_persisted == true
 ' "$MISSING_KEY_DIR/proof.json" >/dev/null
@@ -153,7 +153,7 @@ jq -n \
       (($planner | length) == 0 or $planner[0].within_budget == true) and
       $missing_key[0].ok == true and
       $missing_key[0].within_budget == true and
-      $missing_key[0].trace_stop.attempts == 0 and
+      $missing_key[0].trace_stop.attempts > 0 and
       $missing_key[0].trace_stop.final_effect == "failed" and
       $missing_key[0].memory_persisted == true and
       (

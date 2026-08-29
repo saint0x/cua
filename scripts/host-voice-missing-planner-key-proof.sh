@@ -78,28 +78,38 @@ jq -s -e '
   def idx($name): map(.event) | index($name);
   any(.event == "armed") and
   any(.event == "transcript") and
-  any(.event == "metric" and .name == "context_prefetch_aborted_ms") and
+  any(.event == "planning" and .tool == "Desktop context") and
+  any(.event == "planning" and .tool == "Command parser") and
+  any(.event == "dispatching" and (.action | contains("Aegis"))) and
+  any(.event == "planning" and .tool == "Reobserving") and
+  any(.event == "planning" and (.tool | contains("Gemini repair 2/n"))) and
+  any(.event == "metric" and .name == "context_wait_ms") and
+  any(.event == "metric" and .name == "context_prefetch_ms") and
+  any(.event == "metric" and .name == "dispatch_ms") and
+  any(.event == "metric" and .name == "reobserve_ms") and
   any(.event == "metric" and .name == "plan_ms") and
-  any(.event == "reply" and ((.text // "") | contains("GEMINI_API_KEY or GOOGLE_API_KEY is required"))) and
+  any(.event == "reply" and ((.text // "") | contains("GEMINI_API_KEY or GOOGLE_API_KEY is required")) and ((.text // "") | contains("completed attempt")) and ((.text // "") | contains("last progress was"))) and
   any(.event == "metric" and .name == "turn_total_ms") and
-  (idx("transcript") < idx("reply")) and
-  (map(select(.event == "planning")) | length == 0) and
-  (map(select(.event == "dispatching")) | length == 0) and
+  (idx("transcript") < idx("dispatching")) and
+  (idx("dispatching") < idx("reply")) and
   (map(select(.event == "reply")) | all((.text // "") | test("\\b[Cc]onfirmed\\b") | not))
 ' "$EVENTS" >/dev/null
 
 jq -s -e '
   any(.event == "planning_start") and
   any(.event == "planner_hints") and
-  any(.event == "context_prefetch_aborted" and .data.reason == "planning_credentials_missing") and
-  any(.event == "agent_loop_stop" and .data.attempts == 0 and .data.final_effect == "failed") and
-  any(.event == "reply" and ((.data.text // "") | contains("GEMINI_API_KEY or GOOGLE_API_KEY is required"))) and
+  any(.event == "context_result") and
+  any(.event == "agent_context_result") and
+  any(.event == "agent_loop_start" and .data.budget.kind == "unbounded") and
+  any(.event == "planning_pre_model_bootstrap") and
+  any(.event == "dispatch_result" and .data.result.effect == "confirmed") and
+  any(.event == "agent_attempt_outcome" and .data.long_range_continuation == true) and
+  any(.event == "agent_reobserve_result") and
+  any(.event == "planning_error" and .data.reason == "planning_credentials_missing") and
+  any(.event == "agent_loop_stop" and .data.attempts > 0 and .data.final_effect == "failed") and
+  any(.event == "reply" and ((.data.text // "") | contains("GEMINI_API_KEY or GOOGLE_API_KEY is required")) and ((.data.text // "") | contains("completed attempt")) and ((.data.text // "") | contains("last progress was"))) and
   any(.event == "memory_persisted") and
   any(.event == "turn_complete") and
-  (map(select(.event == "context_result")) | length == 0) and
-  (map(select(.event == "agent_context_result")) | length == 0) and
-  (map(select(.event == "agent_attempt_start")) | length == 0) and
-  (map(select(.event == "dispatch_result")) | length == 0) and
   (map(select(.event == "reply")) | all((.data.text // "") | test("\\b[Cc]onfirmed\\b") | not))
 ' "$TRACE" >/dev/null
 
