@@ -1145,12 +1145,17 @@ async fn plan_and_dispatch(
                 && open_only_incomplete_for_goal(&transcript, &turn);
             let shell_readback_missing = loop_budget.can_continue_after(attempt_index)
                 && shell_readback_missing_for_goal(&transcript, &turn);
+            let aegis_readback_missing = loop_budget.can_continue_after(attempt_index)
+                && aegis_readback_missing_for_goal(&transcript, &turn);
             let evidence = if open_only_incomplete {
                 effect = Some("partial".to_string());
                 Some(open_only_incomplete_evidence(turn.evidence.clone()))
             } else if shell_readback_missing {
                 effect = Some("partial".to_string());
                 Some(shell_readback_missing_evidence(turn.evidence.clone()))
+            } else if aegis_readback_missing {
+                effect = Some("partial".to_string());
+                Some(aegis_readback_missing_evidence(turn.evidence.clone()))
             } else {
                 turn.evidence.clone()
             };
@@ -1177,6 +1182,7 @@ async fn plan_and_dispatch(
                         "should_replan": should_continue,
                         "open_only_incomplete": open_only_incomplete,
                         "shell_readback_missing": shell_readback_missing,
+                        "aegis_readback_missing": aegis_readback_missing,
                         "long_range_continuation": long_range_continuation,
                         "has_action": turn.action.is_some(),
                     }),
@@ -2053,6 +2059,20 @@ fn shell_readback_missing_for_goal(transcript: &str, turn: &CompletedAssistantTu
             .is_some_and(dispatch_evidence_has_nonempty_shell_stdout)
 }
 
+fn aegis_readback_missing_for_goal(transcript: &str, turn: &CompletedAssistantTurn) -> bool {
+    transcript_requests_long_range_work(transcript)
+        && turn
+            .action
+            .as_ref()
+            .is_some_and(json_action_uses_aegis_observation)
+        && turn_effect(turn).as_deref() == Some("confirmed")
+        && turn
+            .action
+            .as_ref()
+            .zip(turn.evidence.as_ref())
+            .is_some_and(|(action, evidence)| aegis_observation_readback_missing(action, evidence))
+}
+
 fn transcript_requests_shell_readback(transcript: &str) -> bool {
     let words = transcript
         .split_whitespace()
@@ -2084,7 +2104,22 @@ fn json_action_uses_shell_exec(action: &serde_json::Value) -> bool {
     }
 }
 
+fn json_action_uses_aegis_observation(action: &serde_json::Value) -> bool {
+    match action.get("kind").and_then(|kind| kind.as_str()) {
+        Some("aegis") => action_is_observation_only(action),
+        Some("sequence") => action
+            .get("actions")
+            .and_then(|actions| actions.as_array())
+            .is_some_and(|actions| actions.iter().any(json_action_uses_aegis_observation)),
+        _ => false,
+    }
+}
+
 fn dispatch_evidence_has_nonempty_shell_stdout(evidence: &serde_json::Value) -> bool {
+    dispatch_evidence_has_nonempty_stdout(evidence)
+}
+
+fn dispatch_evidence_has_nonempty_stdout(evidence: &serde_json::Value) -> bool {
     evidence
         .get("evidence")
         .and_then(|items| items.as_array())
@@ -2092,12 +2127,44 @@ fn dispatch_evidence_has_nonempty_shell_stdout(evidence: &serde_json::Value) -> 
             items.iter().any(|item| {
                 item.get("message")
                     .and_then(|message| message.as_str())
-                    .is_some_and(shell_message_has_nonempty_stdout)
+                    .is_some_and(message_has_nonempty_stdout)
             })
         })
 }
 
-fn shell_message_has_nonempty_stdout(message: &str) -> bool {
+fn aegis_observation_readback_missing(
+    action: &serde_json::Value,
+    evidence: &serde_json::Value,
+) -> bool {
+    let actions = flattened_actions(action);
+    let messages = evidence
+        .get("evidence")
+        .and_then(|items| items.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|item| item.get("message").and_then(|message| message.as_str()))
+        .collect::<Vec<_>>();
+
+    actions.iter().enumerate().any(|(index, action)| {
+        json_action_uses_aegis_observation(action)
+            && !messages
+                .get(index)
+                .is_some_and(|message| message_has_nonempty_stdout(message))
+    })
+}
+
+fn flattened_actions(action: &serde_json::Value) -> Vec<&serde_json::Value> {
+    if action.get("kind").and_then(|kind| kind.as_str()) == Some("sequence") {
+        return action
+            .get("actions")
+            .and_then(|actions| actions.as_array())
+            .map(|actions| actions.iter().flat_map(flattened_actions).collect())
+            .unwrap_or_default();
+    }
+    vec![action]
+}
+
+fn message_has_nonempty_stdout(message: &str) -> bool {
     let Some(after_stdout) = message.split_once("stdout=").map(|(_, after)| after) else {
         return false;
     };
@@ -2125,6 +2192,28 @@ fn shell_readback_missing_evidence(evidence: Option<serde_json::Value>) -> serde
         json!({
             "effect": "partial",
             "reason": "shell_readback_missing_for_verified_output_goal",
+            "dispatch_evidence": evidence,
+        })
+    }
+}
+
+fn aegis_readback_missing_evidence(evidence: Option<serde_json::Value>) -> serde_json::Value {
+    let mut evidence = evidence.unwrap_or_else(|| json!({}));
+    if let Some(object) = evidence.as_object_mut() {
+        object.insert("effect".to_string(), json!("partial"));
+        object.insert(
+            "reason".to_string(),
+            json!("aegis_observation_readback_missing_for_long_range_goal"),
+        );
+        object.insert(
+            "repair_hint".to_string(),
+            json!("The Aegis observation produced no readable stdout for a long-range browser task. Use a different Aegis page command, link/open refinement, or page text scope that returns usable evidence."),
+        );
+        evidence
+    } else {
+        json!({
+            "effect": "partial",
+            "reason": "aegis_observation_readback_missing_for_long_range_goal",
             "dispatch_evidence": evidence,
         })
     }
@@ -3854,6 +3943,97 @@ mod tests {
         assert_eq!(
             shell_readback_missing_evidence(empty_stdout_turn.evidence)["reason"],
             "shell_readback_missing_for_verified_output_goal"
+        );
+    }
+
+    #[test]
+    fn aegis_readback_requests_reject_empty_stdout_confirmations() {
+        let transcript = "Using Aegis headless only, search the web, inspect the official result, read the page, and report the verified behavior.";
+        let empty_stdout_turn = CompletedAssistantTurn {
+            response: "Reading page text.".to_string(),
+            action: Some(json!({
+                "kind": "aegis",
+                "args": ["--mode", "headless", "page", "text", "--scope", "main"],
+                "timeout_ms": 15000
+            })),
+            evidence: Some(json!({
+                "effect": "confirmed",
+                "evidence": [
+                    {"kind": "value_readback", "message": "aegis exited 0; stdout=; stderr="}
+                ]
+            })),
+        };
+        let stdout_turn = CompletedAssistantTurn {
+            response: "Reading page text.".to_string(),
+            action: Some(json!({
+                "kind": "aegis",
+                "args": ["--mode", "headless", "page", "text"],
+                "timeout_ms": 15000
+            })),
+            evidence: Some(json!({
+                "effect": "confirmed",
+                "evidence": [
+                    {"kind": "value_readback", "message": "aegis exited 0; stdout=SQLite Foreign Key Support; stderr="}
+                ]
+            })),
+        };
+        let navigation_turn = CompletedAssistantTurn {
+            response: "Opening the page.".to_string(),
+            action: Some(json!({
+                "kind": "aegis",
+                "args": ["--mode", "headless", "navigate", "https://www.sqlite.org/foreignkeys.html"],
+                "timeout_ms": 15000
+            })),
+            evidence: Some(json!({
+                "effect": "confirmed",
+                "evidence": [
+                    {"kind": "value_readback", "message": "aegis exited 0; stdout=[]; stderr="}
+                ]
+            })),
+        };
+        let navigate_then_empty_read_turn = CompletedAssistantTurn {
+            response: "Opening the page and reading main text.".to_string(),
+            action: Some(json!({
+                "kind": "sequence",
+                "actions": [
+                    {
+                        "kind": "aegis",
+                        "args": ["--mode", "headless", "navigate", "https://www.sqlite.org/foreignkeys.html"],
+                        "timeout_ms": 15000
+                    },
+                    {
+                        "kind": "aegis",
+                        "args": ["--mode", "headless", "page", "text", "--scope", "main"],
+                        "timeout_ms": 15000
+                    }
+                ],
+                "inter_action_delay_ms": 120
+            })),
+            evidence: Some(json!({
+                "effect": "confirmed",
+                "evidence": [
+                    {"kind": "value_readback", "message": "aegis exited 0; stdout=[{\"event\":{\"type\":\"navigation\"}}]; stderr="},
+                    {"kind": "value_readback", "message": "aegis exited 0; stdout=; stderr="}
+                ]
+            })),
+        };
+
+        assert!(aegis_readback_missing_for_goal(
+            transcript,
+            &empty_stdout_turn
+        ));
+        assert!(!aegis_readback_missing_for_goal(transcript, &stdout_turn));
+        assert!(!aegis_readback_missing_for_goal(
+            transcript,
+            &navigation_turn
+        ));
+        assert!(aegis_readback_missing_for_goal(
+            transcript,
+            &navigate_then_empty_read_turn
+        ));
+        assert_eq!(
+            aegis_readback_missing_evidence(empty_stdout_turn.evidence)["reason"],
+            "aegis_observation_readback_missing_for_long_range_goal"
         );
     }
 
