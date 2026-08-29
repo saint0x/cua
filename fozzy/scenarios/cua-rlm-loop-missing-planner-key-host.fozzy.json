@@ -3,6 +3,18 @@
   "name": "cua-rlm-loop-missing-planner-key-host",
   "steps": [
     {
+      "type": "proc_when",
+      "cmd": "bash",
+      "args": [
+        "-lc",
+        "CUA_VOICE_MISSING_KEY_OUT_DIR=artifacts/cua/fozzy-mk-proof CUA_VOICE_MISSING_KEY_HOME=/tmp/cmk CUA_VOICE_MISSING_KEY_PROFILE=fmk scripts/host-voice-missing-planner-key-proof.sh"
+      ],
+      "exit_code": 0,
+      "stdout": "artifacts/cua/fozzy-mk-proof\n",
+      "stderr": "",
+      "times": 1
+    },
+    {
       "type": "proc_spawn",
       "cmd": "bash",
       "args": [
