@@ -13,6 +13,9 @@ const DEFAULT_PLANNER_TEXT_MAX_TOKENS: u32 = 1_200;
 const MODEL_VISIBLE_PRIOR_ATTEMPTS_MAX: usize = 8;
 const MODEL_VISIBLE_EVIDENCE_ITEMS_MAX: usize = 4;
 const MODEL_VISIBLE_TEXT_MAX_CHARS: usize = 700;
+const GEMINI_OPENAI_CHAT_COMPLETIONS_URL: &str =
+    "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
+const OPENROUTER_CHAT_COMPLETIONS_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
 const PLANNER_SYSTEM_PROMPT: &str = r#"You are the protocol planner for cua, a backend-neutral computer-use runtime. You are not a general chat assistant and you do not have hidden tools.
 
 You receive:
@@ -133,14 +136,31 @@ pub struct PlannerRequest<'a> {
 pub struct Planner {
     client: reqwest::Client,
     model: String,
+    provider: PlannerProvider,
 }
 
 impl Planner {
     pub fn new(model: impl Into<String>) -> Self {
+        let model = model.into();
+        let provider = PlannerProvider::from_model(&model);
         Self {
             client: reqwest::Client::new(),
-            model: model.into(),
+            model,
+            provider,
         }
+    }
+
+    pub fn api_key_from_env(&self) -> Option<String> {
+        self.provider.api_key_from_env()
+    }
+
+    pub fn required_api_key_name(&self) -> &'static str {
+        self.provider.required_api_key_name()
+    }
+
+    pub fn planning_tool_label(&self, attempt_index: usize, formatted_attempt: String) -> String {
+        self.provider
+            .planning_tool_label(attempt_index, formatted_attempt)
     }
 
     pub async fn plan(
@@ -208,16 +228,18 @@ impl Planner {
                 "image_url": {"url": format!("data:{mime};base64,{bytes}")},
             }));
         }
-        let body = serde_json::json!({
-            "model": self.model,
+        let mut body = serde_json::json!({
+            "model": self.provider.request_model(&self.model),
             "messages": [
                 {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
                 {"role": "user", "content": content}
             ],
             "max_tokens": planner_max_tokens(transcript),
-            "temperature": 0,
             "response_format": {"type": "json_object"},
         });
+        if self.provider.should_pin_temperature(&self.model) {
+            body["temperature"] = serde_json::json!(0);
+        }
         let output_attempts = retry_attempts_from_env(
             "CUA_VOICE_PLANNER_OUTPUT_ATTEMPTS",
             DEFAULT_PLANNER_OUTPUT_ATTEMPTS,
@@ -283,12 +305,10 @@ impl Planner {
         for attempt in 1..=attempts {
             match self
                 .client
-                .post("https://openrouter.ai/api/v1/chat/completions")
-                .header(AUTHORIZATION, format!("Bearer {api_key}"))
-                .header(CONTENT_TYPE, "application/json")
-                .header(REFERER, "http://localhost/cua")
+                .post(self.provider.chat_completions_url())
+                .headers(self.provider.headers(api_key)?)
                 .json(body)
-                .timeout(openrouter_planner_timeout())
+                .timeout(planner_request_timeout())
                 .send()
                 .await
             {
@@ -311,6 +331,81 @@ impl Planner {
             "send planning request failed: {}",
             last_error.unwrap_or_else(|| "retry attempts exhausted".to_string())
         )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlannerProvider {
+    Gemini,
+    OpenRouter,
+}
+
+impl PlannerProvider {
+    fn from_model(model: &str) -> Self {
+        if model.starts_with("gemini-") {
+            Self::Gemini
+        } else {
+            Self::OpenRouter
+        }
+    }
+
+    fn request_model(self, model: &str) -> String {
+        match self {
+            Self::Gemini => model.to_string(),
+            Self::OpenRouter => model
+                .strip_prefix("openrouter/")
+                .unwrap_or(model)
+                .to_string(),
+        }
+    }
+
+    fn chat_completions_url(self) -> &'static str {
+        match self {
+            Self::Gemini => GEMINI_OPENAI_CHAT_COMPLETIONS_URL,
+            Self::OpenRouter => OPENROUTER_CHAT_COMPLETIONS_URL,
+        }
+    }
+
+    fn required_api_key_name(self) -> &'static str {
+        match self {
+            Self::Gemini => "GEMINI_API_KEY or GOOGLE_API_KEY",
+            Self::OpenRouter => "OPENROUTER_API_KEY",
+        }
+    }
+
+    fn api_key_from_env(self) -> Option<String> {
+        match self {
+            Self::Gemini => std::env::var("GEMINI_API_KEY")
+                .ok()
+                .or_else(|| std::env::var("GOOGLE_API_KEY").ok()),
+            Self::OpenRouter => std::env::var("OPENROUTER_API_KEY").ok(),
+        }
+    }
+
+    fn headers(self, api_key: &str) -> anyhow::Result<reqwest::header::HeaderMap> {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(CONTENT_TYPE, "application/json".parse()?);
+        headers.insert(AUTHORIZATION, format!("Bearer {api_key}").parse()?);
+        if self == Self::OpenRouter {
+            headers.insert(REFERER, "http://localhost/cua".parse()?);
+        }
+        Ok(headers)
+    }
+
+    fn should_pin_temperature(self, model: &str) -> bool {
+        self == Self::OpenRouter && !model.contains("gemini-3")
+    }
+
+    fn planning_tool_label(self, attempt_index: usize, formatted_attempt: String) -> String {
+        let provider = match self {
+            Self::Gemini => "Gemini",
+            Self::OpenRouter => "OpenRouter",
+        };
+        if attempt_index == 1 {
+            format!("{provider} Vision")
+        } else {
+            format!("{provider} repair {formatted_attempt}")
+        }
     }
 }
 
@@ -475,7 +570,7 @@ fn truncate_model_visible_text(text: &str, max_chars: usize) -> String {
     truncated
 }
 
-fn openrouter_planner_timeout() -> Duration {
+fn planner_request_timeout() -> Duration {
     timeout_from_env("CUA_VOICE_PLANNER_TIMEOUT_MS", DEFAULT_PLANNER_TIMEOUT_MS)
 }
 
@@ -1451,6 +1546,53 @@ mod tests {
         assert!(PLANNER_SYSTEM_PROMPT.contains("take or use a fresh screenshot/reobserve pass"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("Do not echo internal effect labels"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("Do not invent a separate skill runtime"));
+    }
+
+    #[test]
+    fn planner_provider_defaults_to_direct_gemini() {
+        let provider = PlannerProvider::from_model("gemini-3-flash-preview");
+
+        assert_eq!(provider, PlannerProvider::Gemini);
+        assert_eq!(
+            provider.request_model("gemini-3-flash-preview"),
+            "gemini-3-flash-preview"
+        );
+        assert_eq!(
+            provider.chat_completions_url(),
+            GEMINI_OPENAI_CHAT_COMPLETIONS_URL
+        );
+        assert_eq!(
+            provider.required_api_key_name(),
+            "GEMINI_API_KEY or GOOGLE_API_KEY"
+        );
+        assert!(!provider.should_pin_temperature("gemini-3-flash-preview"));
+    }
+
+    #[test]
+    fn planner_provider_supports_explicit_openrouter_models() {
+        let provider = PlannerProvider::from_model("openrouter/google/gemini-3.7-flash");
+
+        assert_eq!(provider, PlannerProvider::OpenRouter);
+        assert_eq!(
+            provider.request_model("openrouter/google/gemini-3.7-flash"),
+            "google/gemini-3.7-flash"
+        );
+        assert_eq!(
+            provider.chat_completions_url(),
+            OPENROUTER_CHAT_COMPLETIONS_URL
+        );
+        assert_eq!(provider.required_api_key_name(), "OPENROUTER_API_KEY");
+    }
+
+    #[test]
+    fn planner_provider_routes_provider_slugs_through_openrouter() {
+        let provider = PlannerProvider::from_model("openai/gpt-5.4-mini");
+
+        assert_eq!(provider, PlannerProvider::OpenRouter);
+        assert_eq!(
+            provider.request_model("openai/gpt-5.4-mini"),
+            "openai/gpt-5.4-mini"
+        );
     }
 
     #[test]

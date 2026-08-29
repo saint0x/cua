@@ -9,10 +9,11 @@ INSTALL_DIR="${CUA_APP_INSTALL_DIR:-$HOME/Applications}"
 INSTALL_APP="$INSTALL_DIR/$APP_NAME.app"
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 
-sync_openrouter_env() {
+sync_env_secret() {
+  local name="$1"
   local env_dir="${CUA_HOME:-$HOME/.cua}/config"
   local env_file="$env_dir/env"
-  local value="${OPENROUTER_API_KEY:-}"
+  local value="${!name:-}"
   [[ -n "$value" ]] || return 0
   mkdir -p "$env_dir"
   chmod 700 "$env_dir"
@@ -20,13 +21,19 @@ sync_openrouter_env() {
   chmod 600 "$env_file"
   local tmp
   tmp="$(mktemp "$env_dir/env.XXXXXX")"
-  grep -v '^[[:space:]]*\(export[[:space:]]\+\)\{0,1\}OPENROUTER_API_KEY=' "$env_file" > "$tmp" || true
+  grep -v "^[[:space:]]*\\(export[[:space:]]\\+\\)\\{0,1\\}${name}=" "$env_file" > "$tmp" || true
   local escaped="$value"
   escaped="${escaped//\\/\\\\}"
   escaped="${escaped//\"/\\\"}"
-  printf 'OPENROUTER_API_KEY="%s"\n' "$escaped" >> "$tmp"
+  printf '%s="%s"\n' "$name" "$escaped" >> "$tmp"
   chmod 600 "$tmp"
   mv "$tmp" "$env_file"
+}
+
+sync_planner_env() {
+  sync_env_secret OPENROUTER_API_KEY
+  sync_env_secret GEMINI_API_KEY
+  sync_env_secret GOOGLE_API_KEY
 }
 
 if [[ -z "${CUA_APP_SOURCE:-}" ]]; then
@@ -44,7 +51,7 @@ mkdir -p "$INSTALL_DIR"
 find "$INSTALL_DIR" -maxdepth 1 -type d -iname "$APP_NAME.app" ! -name "$APP_NAME.app" -exec rm -rf {} +
 rm -rf "$INSTALL_APP"
 ditto "$SOURCE_APP" "$INSTALL_APP"
-sync_openrouter_env
+sync_planner_env
 
 if [[ -x "$LSREGISTER" ]]; then
   while IFS= read -r registered_app; do

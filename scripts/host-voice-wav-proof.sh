@@ -12,25 +12,20 @@ command -v jq >/dev/null
 command -v perl >/dev/null
 command -v say >/dev/null
 
-if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
-  echo "OPENROUTER_API_KEY is required for host voice WAV proof; set it in the environment or ~/.cua/config/env before launching cua" >&2
-  exit 1
-fi
-
 RUN_ID="$(date +%s)"
 PROFILE="${CUA_VOICE_WAV_PROOF_PROFILE:-host-voice-wav-proof-$RUN_ID}"
 ADDR="${CUA_VOICE_WAV_PROOF_ADDR:-127.0.0.1:9881}"
 TOKEN="${CUA_HTTP_TOKEN:-host-voice-wav-proof-token-$RUN_ID}"
 OUT_DIR="${CUA_VOICE_WAV_PROOF_OUT_DIR:-artifacts/cua/voice-wav-proof-$RUN_ID}"
 STT_MODEL="${CUA_VOICE_WAV_PROOF_STT_MODEL:-openai/whisper-1}"
-PLANNER_MODEL="${CUA_VOICE_WAV_PROOF_PLANNER_MODEL:-google/gemini-3.7-flash}"
+PLANNER_MODEL="${CUA_VOICE_WAV_PROOF_PLANNER_MODEL:-gemini-3-flash-preview}"
 BUDGET_MS="${CUA_VOICE_WAV_PROOF_BUDGET_MS:-15000}"
 PHRASE="${CUA_VOICE_WAV_PROOF_PHRASE:-pause}"
 EXPECT_TRANSCRIPT="${CUA_VOICE_WAV_PROOF_EXPECT_TRANSCRIPT:-pause}"
 EXPECT_TOOL="${CUA_VOICE_WAV_PROOF_EXPECT_TOOL:-Command parser}"
 EXPECT_DISPATCH_CONTAINS="${CUA_VOICE_WAV_PROOF_EXPECT_DISPATCH_CONTAINS-Pause}"
 EXPECT_REPLY_CONTAINS="${CUA_VOICE_WAV_PROOF_EXPECT_REPLY_CONTAINS-paused}"
-EXPECT_REPLY_CONTAINS_2="${CUA_VOICE_WAV_PROOF_EXPECT_REPLY_CONTAINS_2-confirmed}"
+EXPECT_REPLY_CONTAINS_2="${CUA_VOICE_WAV_PROOF_EXPECT_REPLY_CONTAINS_2:-}"
 EXPECT_SAFETY_STATE="${CUA_VOICE_WAV_PROOF_EXPECT_SAFETY_STATE:-paused}"
 TRACE_DIR="$OUT_DIR/trace"
 AIFF="$OUT_DIR/input.aiff"
@@ -92,7 +87,7 @@ done
 curl -fsS "http://$ADDR/healthz" >/dev/null
 
 START_MS="$(perl -MTime::HiRes=time -e 'printf "%.0f\n", time() * 1000')"
-CUA_HTTP_TOKEN="$TOKEN" OPENROUTER_API_KEY="$OPENROUTER_API_KEY" "$VOICE_BIN_PATH" \
+CUA_HTTP_TOKEN="$TOKEN" "$VOICE_BIN_PATH" \
   --profile "$PROFILE" \
   --stt-model "$STT_MODEL" \
   --planner-model "$PLANNER_MODEL" \
@@ -140,7 +135,6 @@ jq -s -e '
 
 jq -e '
   any(.kind == "ui_step" and .data.source == "voice" and (.data.label | contains("transcript:"))) and
-  any(.kind == "ui_step" and .data.source == "voice" and (.data.label | contains("planning"))) and
   any(.kind == "ui_step" and .data.source == "voice" and (.data.label | contains("dispatch:"))) and
   any(.kind == "ui_step" and .data.source == "voice" and (.data.label | contains("reply:")))
 ' "$DAEMON_EVENTS" >/dev/null

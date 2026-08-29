@@ -62,7 +62,7 @@ cargo run -p cua -- stream --unix --frames 3 --json
 
 Run `cua serve --hud-mode headful` for the visible dynamic-island HUD or `cua serve --hud-mode headless` for the same resident voice/control event loop without a visible HUD. The HUD process also accepts `cua-voice --headful|--headless` directly. Agents can switch a running HUD with `cua ui mode headless|headful`.
 
-Voice capture and model calls can be tuned with `CUA_VOICE_RECORD_MIN_MS`, `CUA_VOICE_RECORD_SILENCE_MS`, `CUA_VOICE_RECORD_THRESHOLD`, `CUA_VOICE_STT_TIMEOUT_MS`, `CUA_VOICE_STT_RETRY_ATTEMPTS`, `CUA_VOICE_STT_RETRY_BACKOFF_MS`, `CUA_VOICE_PLANNER_TIMEOUT_MS`, `CUA_VOICE_PLANNER_RETRY_ATTEMPTS`, and `CUA_VOICE_PLANNER_RETRY_BACKOFF_MS`. Speech-to-text runs locally by default with Whisper `tiny.en`; pass `--stt-backend openrouter --stt-model openai/gpt-4o-mini-transcribe` to use remote transcription explicitly.
+Voice capture and model calls can be tuned with `CUA_VOICE_RECORD_MIN_MS`, `CUA_VOICE_RECORD_SILENCE_MS`, `CUA_VOICE_RECORD_THRESHOLD`, `CUA_VOICE_STT_TIMEOUT_MS`, `CUA_VOICE_STT_RETRY_ATTEMPTS`, `CUA_VOICE_STT_RETRY_BACKOFF_MS`, `CUA_VOICE_PLANNER_TIMEOUT_MS`, `CUA_VOICE_PLANNER_RETRY_ATTEMPTS`, and `CUA_VOICE_PLANNER_RETRY_BACKOFF_MS`. Speech-to-text runs locally by default with Whisper `tiny.en`; pass `--stt-backend openrouter --stt-model openai/gpt-4o-mini-transcribe` to use remote transcription explicitly. Voice planning uses direct Gemini by default with `gemini-3-flash-preview`; set `GEMINI_API_KEY` or `GOOGLE_API_KEY` in `~/.cua/config/env`. To route planner calls through OpenRouter instead, pass an OpenRouter-style model such as `--planner-model openrouter/google/gemini-3.7-flash` and set `OPENROUTER_API_KEY`.
 
 ## Package
 

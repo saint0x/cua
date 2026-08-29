@@ -603,6 +603,8 @@ pub fn short_tool(tool: &str) -> String {
         "Socket".to_string()
     } else if tool.contains("HTTP") {
         "HTTP".to_string()
+    } else if tool.contains("Gemini") {
+        "Gemini".to_string()
     } else if tool.contains("OpenRouter") {
         "Router".to_string()
     } else if tool.contains("Whisper") || tool.contains("STT") {
@@ -750,6 +752,7 @@ mod tests {
     #[test]
     fn tool_labels_stay_chip_sized() {
         assert_eq!(short_tool("Unix socket"), "Socket");
+        assert_eq!(short_tool("Gemini Vision"), "Gemini");
         assert_eq!(short_tool("OpenRouter Vision"), "Router");
         assert_eq!(short_tool("Whisper STT"), "STT");
         assert_eq!(short_tool("Microphone"), "Mic");

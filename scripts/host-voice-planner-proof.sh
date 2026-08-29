@@ -12,21 +12,17 @@ command -v jq >/dev/null
 command -v perl >/dev/null
 command -v say >/dev/null
 
-if [[ -z "${OPENROUTER_API_KEY:-}" ]]; then
-  echo "OPENROUTER_API_KEY is required for host voice planner proof; set it in the environment or ~/.cua/config/env before launching cua" >&2
-  exit 1
-fi
-
 RUN_ID="$(date +%s)"
 PROFILE="${CUA_VOICE_PLANNER_PROOF_PROFILE:-host-voice-planner-proof-$RUN_ID}"
 ADDR="${CUA_VOICE_PLANNER_PROOF_ADDR:-127.0.0.1:9882}"
 TOKEN="${CUA_HTTP_TOKEN:-host-voice-planner-proof-token-$RUN_ID}"
 OUT_DIR="${CUA_VOICE_PLANNER_PROOF_OUT_DIR:-artifacts/cua/voice-planner-proof-$RUN_ID}"
 STT_MODEL="${CUA_VOICE_PLANNER_PROOF_STT_MODEL:-openai/whisper-1}"
-PLANNER_MODEL="${CUA_VOICE_PLANNER_PROOF_MODEL:-google/gemini-3.7-flash}"
+PLANNER_MODEL="${CUA_VOICE_PLANNER_PROOF_MODEL:-gemini-3-flash-preview}"
 BUDGET_MS="${CUA_VOICE_PLANNER_PROOF_BUDGET_MS:-30000}"
 PHRASE="${CUA_VOICE_PLANNER_PROOF_PHRASE:-describe the current desktop briefly without taking action}"
 EXPECT_TRANSCRIPT="${CUA_VOICE_PLANNER_PROOF_EXPECT_TRANSCRIPT:-desktop}"
+EXPECT_PLANNER_TOOL="${CUA_VOICE_PLANNER_PROOF_EXPECT_TOOL:-Gemini Vision}"
 TRACE_DIR="$OUT_DIR/trace"
 AIFF="$OUT_DIR/input.aiff"
 WAV="$OUT_DIR/input.wav"
@@ -63,6 +59,35 @@ if [[ -z "$VOICE_BIN_PATH" || ! -x "$VOICE_BIN_PATH" ]]; then
 fi
 
 mkdir -p "$OUT_DIR"
+
+env_key_available() {
+  local name="$1"
+  [[ -n "${!name:-}" ]] && return 0
+  grep -Eq "^[[:space:]]*(export[[:space:]]+)?${name}=" "${CUA_HOME:-$HOME/.cua}/config/env" 2>/dev/null && return 0
+  return 1
+}
+
+planner_key_available() {
+  if [[ "$PLANNER_MODEL" == gemini-* ]]; then
+    env_key_available GEMINI_API_KEY || env_key_available GOOGLE_API_KEY
+  else
+    env_key_available OPENROUTER_API_KEY
+  fi
+}
+
+planner_key_name() {
+  if [[ "$PLANNER_MODEL" == gemini-* ]]; then
+    printf 'GEMINI_API_KEY or GOOGLE_API_KEY'
+  else
+    printf 'OPENROUTER_API_KEY'
+  fi
+}
+
+if ! planner_key_available; then
+  echo "$(planner_key_name) is required for host voice planner proof with planner model $PLANNER_MODEL; set it in the environment or ~/.cua/config/env before launching cua" >&2
+  exit 1
+fi
+
 say -o "$AIFF" "$PHRASE"
 afconvert -f WAVE -d LEI16@16000 "$AIFF" "$WAV"
 
@@ -87,7 +112,7 @@ done
 curl -fsS "http://$ADDR/healthz" >/dev/null
 
 START_MS="$(perl -MTime::HiRes=time -e 'printf "%.0f\n", time() * 1000')"
-CUA_HTTP_TOKEN="$TOKEN" OPENROUTER_API_KEY="$OPENROUTER_API_KEY" "$VOICE_BIN_PATH" \
+CUA_HTTP_TOKEN="$TOKEN" "$VOICE_BIN_PATH" \
   --profile "$PROFILE" \
   --stt-model "$STT_MODEL" \
   --planner-model "$PLANNER_MODEL" \
@@ -111,7 +136,7 @@ jq -s -e '
   def idx($name): map(.event) | index($name);
   any(.event == "transcribing") and
   any(.event == "transcript" and (.text | ascii_downcase | contains($expect_transcript))) and
-  any(.event == "planning" and .tool == "OpenRouter Vision") and
+  any(.event == "planning" and .tool == $expect_planner_tool) and
   (map(select(.event == "dispatching")) | length == 0) and
   any(.event == "reply" and ((.text // "") | length > 0)) and
   (idx("transcribing") < idx("transcript")) and
@@ -125,6 +150,7 @@ jq -s -e '
   any(.event == "metric" and .name == "turn_total_ms")
 ' \
   --arg expect_transcript "$(printf '%s' "$EXPECT_TRANSCRIPT" | tr '[:upper:]' '[:lower:]')" \
+  --arg expect_planner_tool "$EXPECT_PLANNER_TOOL" \
   "$EVENTS" >/dev/null
 
 jq -e '

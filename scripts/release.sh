@@ -14,7 +14,7 @@ SDK_SCENARIO="${CUA_RELEASE_SDK_SCENARIO:-fozzy/scenarios/cua-sdk-action.json}"
 SCRATCHPAD_SCENARIO="${CUA_RELEASE_SCRATCHPAD_SCENARIO:-fozzy/scenarios/cua-scratchpad.json}"
 STT_BACKEND="${CUA_RELEASE_STT_BACKEND:-local}"
 STT_MODEL="${CUA_RELEASE_STT_MODEL:-tiny.en}"
-PLANNER_MODEL="${CUA_RELEASE_PLANNER_MODEL:-google/gemini-3.7-flash}"
+PLANNER_MODEL="${CUA_RELEASE_PLANNER_MODEL:-gemini-3-flash-preview}"
 SKIP_TESTS=0
 SKIP_FOZZY=0
 SKIP_INSTALL=0
@@ -38,7 +38,7 @@ Options:
 Environment:
   CUA_RELEASE_STT_BACKEND   Speech-to-text backend for live smoke. Default: local.
   CUA_RELEASE_STT_MODEL     Speech-to-text model for live smoke. Default: tiny.en.
-  CUA_RELEASE_PLANNER_MODEL Planner model for live smoke. Default: google/gemini-3.7-flash.
+  CUA_RELEASE_PLANNER_MODEL Planner model for live smoke. Default: gemini-3-flash-preview.
 USAGE
 }
 
@@ -73,10 +73,27 @@ run() {
   "$@"
 }
 
-openrouter_key_available() {
-  [[ -n "${OPENROUTER_API_KEY:-}" ]] && return 0
-  grep -Eq '^[[:space:]]*(export[[:space:]]+)?OPENROUTER_API_KEY=' "${CUA_HOME:-$HOME/.cua}/config/env" 2>/dev/null && return 0
+env_key_available() {
+  local name="$1"
+  [[ -n "${!name:-}" ]] && return 0
+  grep -Eq "^[[:space:]]*(export[[:space:]]+)?${name}=" "${CUA_HOME:-$HOME/.cua}/config/env" 2>/dev/null && return 0
   return 1
+}
+
+planner_key_available() {
+  if [[ "$PLANNER_MODEL" == gemini-* ]]; then
+    env_key_available GEMINI_API_KEY || env_key_available GOOGLE_API_KEY
+  else
+    env_key_available OPENROUTER_API_KEY
+  fi
+}
+
+planner_key_name() {
+  if [[ "$PLANNER_MODEL" == gemini-* ]]; then
+    printf 'GEMINI_API_KEY or GOOGLE_API_KEY'
+  else
+    printf 'OPENROUTER_API_KEY'
+  fi
 }
 
 require_cmd() {
@@ -219,7 +236,7 @@ if [[ "$SKIP_INSTALL" -eq 0 ]]; then
   run "$INSTALL_APP/Contents/MacOS/cua-voice" --list-input-devices | tee "$ARTIFACT_DIR/input-devices.json"
 
   if [[ "$SKIP_LIVE" -eq 0 ]]; then
-    if openrouter_key_available; then
+    if planner_key_available; then
       log "Installed voice WAV smoke"
       WAV_PATH="$(generate_voice_fixture)"
       run "$INSTALL_APP/Contents/MacOS/cua-voice" \
@@ -230,7 +247,7 @@ if [[ "$SKIP_INSTALL" -eq 0 ]]; then
         --planner-model "$PLANNER_MODEL" \
         --once-wav "$WAV_PATH" | tee "$ARTIFACT_DIR/voice-wav-smoke.jsonl"
     else
-      printf 'OPENROUTER_API_KEY not found; skipping installed voice WAV smoke\n' >&2
+      printf '%s not found for planner model %s; skipping installed voice WAV smoke\n' "$(planner_key_name)" "$PLANNER_MODEL" >&2
     fi
   fi
 fi

@@ -39,7 +39,7 @@ const VOICE_STEP_FLUSH_TIMEOUT_MS: u64 = 120;
 const DEFAULT_CONTEXT_PREFETCH_TIMEOUT_MS: u64 = 2_500;
 const MAX_CONSECUTIVE_PLANNER_INFRASTRUCTURE_ERRORS: usize = 3;
 const MIN_RECORDING_DURATION: Duration = Duration::from_millis(650);
-pub const DEFAULT_PLANNER_MODEL: &str = "google/gemini-3.7-flash";
+pub const DEFAULT_PLANNER_MODEL: &str = "gemini-3-flash-preview";
 
 struct PrefetchedContext {
     session: Option<CuaSession>,
@@ -359,7 +359,6 @@ async fn transcribe_and_run_turn_after_local(
     plan_and_dispatch(
         config,
         transcript.text,
-        api_key,
         local,
         Some(context_task),
         Some(chat_task),
@@ -419,7 +418,6 @@ async fn run_transcript_turn(
     let completion = plan_and_dispatch(
         config,
         transcript,
-        None,
         local,
         Some(context_task),
         Some(chat_task),
@@ -601,7 +599,6 @@ fn publish_audio_diagnostic(tx: &Sender<VoiceUiEvent>, audio: &RecordedAudio) {
 async fn plan_and_dispatch(
     config: VoiceConfig,
     transcript: String,
-    api_key: Option<String>,
     local: CuaClient,
     context_task: Option<ContextTask>,
     chat_task: Option<ChatContextTask>,
@@ -709,14 +706,43 @@ async fn plan_and_dispatch(
                 }),
             )
             .await;
-        let api_key = api_key
-            .or_else(|| std::env::var("OPENROUTER_API_KEY").ok())
-            .context("OPENROUTER_API_KEY is required for non-fast voice commands")?;
         let loop_budget = agent_loop_budget();
         trace
             .append("agent_loop_start", json!({"budget": loop_budget}))
             .await;
         let planner = Planner::new(&config.planner_model);
+        let api_key = match planner.api_key_from_env() {
+            Some(api_key) => api_key,
+            None => {
+                let completed = CompletedAssistantTurn {
+                    response: format!(
+                        "{} is required for planner model {}.",
+                        planner.required_api_key_name(),
+                        config.planner_model
+                    ),
+                    action: None,
+                    evidence: Some(json!({
+                        "effect": "failed",
+                        "reason": "planning_credentials_missing",
+                        "required": planner.required_api_key_name(),
+                        "planner_model": config.planner_model,
+                    })),
+                };
+                trace
+                    .append(
+                        "agent_loop_stop",
+                        json!({
+                            "attempts": 0,
+                            "final_effect": "failed",
+                        }),
+                    )
+                    .await;
+                emit_completed_reply(&completed, &step_publisher, &tx, &trace).await;
+                step_publisher.finish().await;
+                persist_turn_memory(&config, &transcript, &completed, &trace).await?;
+                return Ok(VoiceTurnCompletion::from_completed(&completed));
+            }
+        };
         let explicit_aegis_request = transcript_explicitly_requests_aegis(&transcript);
         let mut latest_chat_context = agent_context.chat.clone();
         let mut attempts = Vec::new();
@@ -742,12 +768,10 @@ async fn plan_and_dispatch(
             tx.send(VoiceUiEvent::Planning {
                 tool: if pre_model_bootstrap_plan.is_some() {
                     "Command parser".to_string()
-                } else if attempt_index == 1 {
-                    "OpenRouter Vision".to_string()
                 } else {
-                    format!(
-                        "OpenRouter repair {}",
-                        loop_budget.format_attempt(attempt_index)
+                    planner.planning_tool_label(
+                        attempt_index,
+                        loop_budget.format_attempt(attempt_index),
                     )
                 },
             })
@@ -4047,7 +4071,7 @@ mod tests {
 
     #[test]
     fn default_planner_model_uses_latest_gemini_flash() {
-        assert_eq!(DEFAULT_PLANNER_MODEL, "google/gemini-3.7-flash");
+        assert_eq!(DEFAULT_PLANNER_MODEL, "gemini-3-flash-preview");
     }
 
     #[test]
