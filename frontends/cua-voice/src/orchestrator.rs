@@ -2679,16 +2679,38 @@ fn response_requests_clarification_or_reports_blocker(response: &str) -> bool {
     lower.contains('?')
         || [
             "clarify",
-            "permission",
-            "authorization",
+            "need permission",
+            "needs permission",
+            "requires permission",
+            "permission is required",
+            "need authorization",
+            "needs authorization",
+            "requires authorization",
+            "authorization is required",
+            "please authorize",
             "authorize me",
-            "sign in",
-            "login",
-            "log in",
+            "please sign in",
+            "need you to sign in",
+            "need to sign in",
+            "needs you to sign in",
+            "needs to sign in",
+            "requires sign in",
+            "sign in required",
+            "please log in",
+            "need you to log in",
+            "need to log in",
+            "needs you to log in",
+            "needs to log in",
+            "requires login",
+            "login required",
+            "log in required",
+            "log in to continue",
+            "access denied",
             "need access",
             "needs access",
             "requires access",
-            "blocked",
+            "blocked by",
+            "blocked because",
             "not allowed",
             "unsafe",
             "ambiguous",
@@ -5209,6 +5231,18 @@ mod tests {
             &[]
         ));
         assert!(!action_null_stops_long_range_without_evidence(
+            "Open Safari and research the internal admin page.",
+            "Permission is required before I can continue.",
+            &None,
+            &[]
+        ));
+        assert!(!action_null_stops_long_range_without_evidence(
+            "Open Safari and research the internal admin page.",
+            "Access denied.",
+            &None,
+            &[]
+        ));
+        assert!(!action_null_stops_long_range_without_evidence(
             "Search the web for the item.",
             "Which item should I search for?",
             &None,
@@ -5223,6 +5257,18 @@ mod tests {
         assert!(action_null_stops_long_range_without_evidence(
             "Search the web and report what the source allows.",
             "The page allows API access.",
+            &None,
+            &[]
+        ));
+        assert!(action_null_stops_long_range_without_evidence(
+            "Search the web and summarize the docs.",
+            "The permission docs describe OAuth login.",
+            &None,
+            &[]
+        ));
+        assert!(action_null_stops_long_range_without_evidence(
+            "Search the web and summarize the docs.",
+            "The authorization guide mentions that blocked popups can affect login flows.",
             &None,
             &[]
         ));
