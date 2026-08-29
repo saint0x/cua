@@ -105,6 +105,12 @@ jq -n \
     ok: (
       $action[0].within_budget == true and
       $planner[0].within_budget == true and
+      $missing_key[0].ok == true and
+      $missing_key[0].within_budget == true and
+      (
+        ($provider_progress | length) == 0 or
+        ($provider_progress[0].ok == true and $provider_progress[0].within_budget == true)
+      ) and
       $ui[0].ok == true
     ),
     ports: {
