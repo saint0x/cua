@@ -228,18 +228,7 @@ impl Planner {
                 "image_url": {"url": format!("data:{mime};base64,{bytes}")},
             }));
         }
-        let mut body = serde_json::json!({
-            "model": self.provider.request_model(&self.model),
-            "messages": [
-                {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
-                {"role": "user", "content": content}
-            ],
-            "max_tokens": planner_max_tokens(transcript),
-            "response_format": {"type": "json_object"},
-        });
-        if self.provider.should_pin_temperature(&self.model) {
-            body["temperature"] = serde_json::json!(0);
-        }
+        let body = self.request_body(transcript, content);
         let output_attempts = retry_attempts_from_env(
             "CUA_VOICE_PLANNER_OUTPUT_ATTEMPTS",
             DEFAULT_PLANNER_OUTPUT_ATTEMPTS,
@@ -331,6 +320,22 @@ impl Planner {
             "send planning request failed: {}",
             last_error.unwrap_or_else(|| "retry attempts exhausted".to_string())
         )
+    }
+
+    fn request_body(&self, transcript: &str, content: Vec<serde_json::Value>) -> serde_json::Value {
+        let mut body = serde_json::json!({
+            "model": self.provider.request_model(&self.model),
+            "messages": [
+                {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
+                {"role": "user", "content": content}
+            ],
+            "max_tokens": planner_max_tokens(transcript),
+            "response_format": {"type": "json_object"},
+        });
+        if self.provider.should_pin_temperature(&self.model) {
+            body["temperature"] = serde_json::json!(0);
+        }
+        body
     }
 }
 
@@ -1566,6 +1571,14 @@ mod tests {
             "GEMINI_API_KEY or GOOGLE_API_KEY"
         );
         assert!(!provider.should_pin_temperature("gemini-3-flash-preview"));
+        let headers = provider.headers("test-gemini-key").unwrap();
+        assert_eq!(
+            headers
+                .get(AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer test-gemini-key")
+        );
+        assert!(headers.get(REFERER).is_none());
     }
 
     #[test]
@@ -1582,6 +1595,17 @@ mod tests {
             OPENROUTER_CHAT_COMPLETIONS_URL
         );
         assert_eq!(provider.required_api_key_name(), "OPENROUTER_API_KEY");
+        let headers = provider.headers("test-router-key").unwrap();
+        assert_eq!(
+            headers
+                .get(AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer test-router-key")
+        );
+        assert_eq!(
+            headers.get(REFERER).and_then(|value| value.to_str().ok()),
+            Some("http://localhost/cua")
+        );
     }
 
     #[test]
@@ -1593,6 +1617,22 @@ mod tests {
             provider.request_model("openai/gpt-5.4-mini"),
             "openai/gpt-5.4-mini"
         );
+    }
+
+    #[test]
+    fn planner_request_body_uses_provider_model_and_temperature_contract() {
+        let content = vec![serde_json::json!({"type": "text", "text": "Transcript: test"})];
+        let gemini =
+            Planner::new("gemini-3-flash-preview").request_body("open calculator", content.clone());
+        let openrouter =
+            Planner::new("openrouter/openai/gpt-5.4-mini").request_body("open calculator", content);
+
+        assert_eq!(gemini["model"], "gemini-3-flash-preview");
+        assert!(gemini.get("temperature").is_none());
+        assert_eq!(gemini["response_format"]["type"], "json_object");
+        assert_eq!(openrouter["model"], "openai/gpt-5.4-mini");
+        assert_eq!(openrouter["temperature"], 0);
+        assert_eq!(openrouter["response_format"]["type"], "json_object");
     }
 
     #[test]
