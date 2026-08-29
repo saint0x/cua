@@ -105,6 +105,7 @@ cargo check
 cargo build -p cua
 scripts/host-gui-smoke.sh
 scripts/host-voice-smoke.sh
+scripts/host-voice-missing-planner-key-proof.sh
 scripts/host-voice-provider-progress-proof.sh
 fozzy doctor --deep --scenario fozzy/scenarios/cua-smoke.json --runs 5 --seed 4242 --json
 fozzy test --det --strict-verify fozzy/scenarios/cua-smoke.json --json

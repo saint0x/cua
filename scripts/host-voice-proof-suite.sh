@@ -16,6 +16,7 @@ mkdir -p "$OUT_DIR"
 
 ACTION_DIR="$OUT_DIR/action"
 PLANNER_DIR="$OUT_DIR/planner"
+MISSING_KEY_DIR="$OUT_DIR/missing-key"
 PROVIDER_PROGRESS_DIR="$OUT_DIR/provider-progress"
 UI_DIR="$OUT_DIR/ui"
 
@@ -40,6 +41,11 @@ PLANNER_RESULT="$(
   CUA_VOICE_PLANNER_PROOF_OUT_DIR="$PLANNER_DIR" \
   scripts/host-voice-planner-proof.sh | tail -n 1
 )"
+MISSING_KEY_RESULT="$(
+  CUA_VOICE_MISSING_KEY_PROFILE="voice-proof-suite-missing-key-$RUN_ID" \
+  CUA_VOICE_MISSING_KEY_OUT_DIR="$MISSING_KEY_DIR" \
+  scripts/host-voice-missing-planner-key-proof.sh | tail -n 1
+)"
 PROVIDER_PROGRESS_RESULT=""
 if env_key_available OPENROUTER_API_KEY; then
   PROVIDER_PROGRESS_RESULT="$(
@@ -58,6 +64,10 @@ if [[ "$ACTION_RESULT" != "$ACTION_DIR" || "$PLANNER_RESULT" != "$PLANNER_DIR" |
   echo "voice proof child output mismatch" >&2
   exit 1
 fi
+if [[ "$MISSING_KEY_RESULT" != "$MISSING_KEY_DIR" ]]; then
+  echo "voice missing-key proof child output mismatch" >&2
+  exit 1
+fi
 if [[ -n "$PROVIDER_PROGRESS_RESULT" && "$PROVIDER_PROGRESS_RESULT" != "$PROVIDER_PROGRESS_DIR" ]]; then
   echo "voice provider progress proof child output mismatch" >&2
   exit 1
@@ -65,6 +75,7 @@ fi
 
 jq -e '.within_budget == true' "$ACTION_DIR/proof.json" >/dev/null
 jq -e '.within_budget == true' "$PLANNER_DIR/proof.json" >/dev/null
+jq -e '.ok == true and .within_budget == true' "$MISSING_KEY_DIR/proof.json" >/dev/null
 if [[ -n "$PROVIDER_PROGRESS_RESULT" ]]; then
   jq -e '.ok == true and .within_budget == true' "$PROVIDER_PROGRESS_DIR/proof.json" >/dev/null
 fi
@@ -79,12 +90,14 @@ fi
 jq -n \
   --arg action_dir "$ACTION_DIR" \
   --arg planner_dir "$PLANNER_DIR" \
+  --arg missing_key_dir "$MISSING_KEY_DIR" \
   --arg provider_progress_dir "$PROVIDER_PROGRESS_DIR" \
   --arg ui_dir "$UI_DIR" \
   --arg action_addr "127.0.0.1:$PORT_BASE" \
   --arg planner_addr "127.0.0.1:$((PORT_BASE + 1))" \
   --slurpfile action "$ACTION_DIR/proof.json" \
   --slurpfile planner "$PLANNER_DIR/proof.json" \
+  --slurpfile missing_key "$MISSING_KEY_DIR/proof.json" \
   "${PROVIDER_PROGRESS_ARG[@]}" \
   --slurpfile ui "$UI_DIR/proof.json" \
   '{
@@ -118,6 +131,14 @@ jq -n \
       reply: $planner[0].reply,
       metrics: $planner[0].metrics,
       safety_state: $planner[0].safety_state
+    },
+    missing_key: {
+      dir: $missing_key_dir,
+      elapsed_ms: $missing_key[0].elapsed_ms,
+      events: $missing_key[0].events,
+      reply: $missing_key[0].reply,
+      trace_stop: $missing_key[0].trace_stop,
+      memory_persisted: $missing_key[0].memory_persisted
     },
     provider_progress: (
       if ($provider_progress | length) == 0 then
