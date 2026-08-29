@@ -1,0 +1,139 @@
+{
+  "version": 1,
+  "name": "cua-rlm-loop-depth",
+  "steps": [
+    {
+      "type": "proc_when",
+      "cmd": "fozzy",
+      "args": ["fuzz", "fozzy/scenarios/cua-rlm-loop.fozzy.json", "--json"],
+      "exit_code": 0,
+      "times": 1
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "fozzy",
+      "args": ["fuzz", "fozzy/scenarios/cua-rlm-loop.fozzy.json", "--json"],
+      "expect_exit": 0
+    },
+    {
+      "type": "proc_when",
+      "cmd": "fozzy",
+      "args": ["explore", "fozzy/scenarios/cua-rlm-loop.fozzy.json", "--json"],
+      "exit_code": 0,
+      "times": 1
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "fozzy",
+      "args": ["explore", "fozzy/scenarios/cua-rlm-loop.fozzy.json", "--json"],
+      "expect_exit": 0
+    },
+    {
+      "type": "proc_when",
+      "cmd": "rm",
+      "args": [
+        "-f",
+        "artifacts/cua/fozzy-depth-scenario/cua-rlm-loop.fozzy",
+        "artifacts/cua/fozzy-depth-scenario/cua-rlm-loop.min.fozzy"
+      ],
+      "exit_code": 0,
+      "times": 1
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "rm",
+      "args": [
+        "-f",
+        "artifacts/cua/fozzy-depth-scenario/cua-rlm-loop.fozzy",
+        "artifacts/cua/fozzy-depth-scenario/cua-rlm-loop.min.fozzy"
+      ],
+      "expect_exit": 0
+    },
+    {
+      "type": "proc_when",
+      "cmd": "mkdir",
+      "args": ["-p", "artifacts/cua/fozzy-depth-scenario"],
+      "exit_code": 0,
+      "times": 1
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "mkdir",
+      "args": ["-p", "artifacts/cua/fozzy-depth-scenario"],
+      "expect_exit": 0
+    },
+    {
+      "type": "proc_when",
+      "cmd": "fozzy",
+      "args": [
+        "run",
+        "fozzy/scenarios/cua-rlm-loop.fozzy.json",
+        "--det",
+        "--record",
+        "artifacts/cua/fozzy-depth-scenario/cua-rlm-loop.fozzy",
+        "--json"
+      ],
+      "exit_code": 0,
+      "times": 1
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "fozzy",
+      "args": [
+        "run",
+        "fozzy/scenarios/cua-rlm-loop.fozzy.json",
+        "--det",
+        "--record",
+        "artifacts/cua/fozzy-depth-scenario/cua-rlm-loop.fozzy",
+        "--json"
+      ],
+      "expect_exit": 0
+    },
+    {
+      "type": "proc_when",
+      "cmd": "fozzy",
+      "args": [
+        "shrink",
+        "artifacts/cua/fozzy-depth-scenario/cua-rlm-loop.fozzy",
+        "--json"
+      ],
+      "exit_code": 0,
+      "times": 1
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "fozzy",
+      "args": [
+        "shrink",
+        "artifacts/cua/fozzy-depth-scenario/cua-rlm-loop.fozzy",
+        "--json"
+      ],
+      "expect_exit": 0
+    },
+    {
+      "type": "proc_when",
+      "cmd": "fozzy",
+      "args": [
+        "trace",
+        "verify",
+        "artifacts/cua/fozzy-depth-scenario/cua-rlm-loop.min.fozzy",
+        "--strict",
+        "--json"
+      ],
+      "exit_code": 0,
+      "times": 1
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "fozzy",
+      "args": [
+        "trace",
+        "verify",
+        "artifacts/cua/fozzy-depth-scenario/cua-rlm-loop.min.fozzy",
+        "--strict",
+        "--json"
+      ],
+      "expect_exit": 0
+    }
+  ]
+}
