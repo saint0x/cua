@@ -160,6 +160,7 @@ jq -n \
     events: ($events | map(.event)),
     dispatches: ($events | map(select(.event == "dispatching") | .action)),
     reply: (($events | map(select(.event == "reply")) | last).text),
+    trace_stop: (($trace | map(select(.event == "agent_loop_stop")) | last).data),
     trace_outcomes: ($trace | map(select(.event == "agent_attempt_outcome") | .data)),
     memory_persisted: ($trace | any(.event == "memory_persisted"))
   }' > "$PROOF"

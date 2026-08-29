@@ -161,6 +161,7 @@ jq -n \
           events: $provider_progress[0].events,
           dispatches: $provider_progress[0].dispatches,
           reply: $provider_progress[0].reply,
+          trace_stop: $provider_progress[0].trace_stop,
           trace_outcomes: $provider_progress[0].trace_outcomes,
           memory_persisted: $provider_progress[0].memory_persisted
         }
