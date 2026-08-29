@@ -2447,21 +2447,10 @@ fn aegis_observation_readback_missing(
     action: &serde_json::Value,
     evidence: &serde_json::Value,
 ) -> bool {
-    let actions = flattened_actions(action);
-    let messages = evidence
-        .get("evidence")
-        .and_then(|items| items.as_array())
-        .into_iter()
-        .flatten()
-        .filter_map(|item| item.get("message").and_then(|message| message.as_str()))
-        .collect::<Vec<_>>();
-
-    actions.iter().enumerate().any(|(index, action)| {
-        json_action_uses_aegis_observation(action)
-            && !messages
-                .get(index)
-                .is_some_and(|message| message_has_nonempty_stdout(message))
-    })
+    flattened_actions(action)
+        .iter()
+        .any(|action| json_action_uses_aegis_observation(action))
+        && !evidence_has_semantic_stdout(evidence)
 }
 
 fn flattened_actions(action: &serde_json::Value) -> Vec<&serde_json::Value> {
@@ -2988,9 +2977,11 @@ fn aegis_evidence_has_task_readback(
     flattened_actions(action)
         .iter()
         .any(|action| json_action_uses_aegis_observation(action))
-        && evidence_messages(evidence)
-            .iter()
-            .any(|message| message_has_semantic_stdout(message))
+        && evidence_has_semantic_stdout(evidence)
+}
+
+fn evidence_has_semantic_stdout(evidence: &serde_json::Value) -> bool {
+    evidence_messages(evidence).any(message_has_semantic_stdout)
 }
 
 fn message_has_semantic_stdout(message: &str) -> bool {
@@ -3048,9 +3039,11 @@ fn aegis_attempt_contains_zero_match(
     flattened_actions(action)
         .iter()
         .any(|action| json_action_uses_aegis_page_find(action))
-        && evidence_messages(evidence)
-            .iter()
-            .any(|message| message_stdout_json_has_zero_match(message))
+        && evidence_has_zero_match_stdout(evidence)
+}
+
+fn evidence_has_zero_match_stdout(evidence: &serde_json::Value) -> bool {
+    evidence_messages(evidence).any(message_stdout_json_has_zero_match)
 }
 
 fn json_action_uses_aegis_page_find(action: &serde_json::Value) -> bool {
@@ -3078,14 +3071,13 @@ fn aegis_args_are_page_find(args: &[serde_json::Value]) -> bool {
     words.get(page_index + 1) == Some(&"find")
 }
 
-fn evidence_messages(evidence: &serde_json::Value) -> Vec<&str> {
+fn evidence_messages(evidence: &serde_json::Value) -> impl Iterator<Item = &str> {
     evidence
         .get("evidence")
         .and_then(|items| items.as_array())
         .into_iter()
         .flatten()
         .filter_map(|item| item.get("message").and_then(|message| message.as_str()))
-        .collect()
 }
 
 fn message_stdout_json_has_zero_match(message: &str) -> bool {
@@ -4938,6 +4930,31 @@ mod tests {
                 ]
             })),
         };
+        let navigate_then_single_readback_turn = CompletedAssistantTurn {
+            response: "Opening the page and reading main text.".to_string(),
+            action: Some(json!({
+                "kind": "sequence",
+                "actions": [
+                    {
+                        "kind": "aegis",
+                        "args": ["--mode", "headless", "navigate", "https://www.sqlite.org/foreignkeys.html"],
+                        "timeout_ms": 15000
+                    },
+                    {
+                        "kind": "aegis",
+                        "args": ["--mode", "headless", "page", "text", "--scope", "main"],
+                        "timeout_ms": 15000
+                    }
+                ],
+                "inter_action_delay_ms": 120
+            })),
+            evidence: Some(json!({
+                "effect": "confirmed",
+                "evidence": [
+                    {"kind": "value_readback", "message": "aegis exited 0; stdout=SQLite Foreign Key Support; stderr="}
+                ]
+            })),
+        };
 
         assert!(aegis_readback_missing_for_goal(
             transcript,
@@ -4951,6 +4968,10 @@ mod tests {
         assert!(aegis_readback_missing_for_goal(
             transcript,
             &navigate_then_empty_read_turn
+        ));
+        assert!(!aegis_readback_missing_for_goal(
+            transcript,
+            &navigate_then_single_readback_turn
         ));
         assert_eq!(
             aegis_readback_missing_evidence(empty_stdout_turn.evidence)["reason"],
@@ -5184,6 +5205,126 @@ mod tests {
             1,
             AgentLoopBudget::Unbounded
         ));
+    }
+
+    #[test]
+    fn agent_loop_qualitative_aegis_task_requires_semantic_readback_before_final() {
+        let transcript = "Use Aegis headless to navigate to the SQLite foreign key documentation, inspect the page text, and report the verified title.";
+        let mut attempts = Vec::new();
+        let budget = AgentLoopBudget::Unbounded;
+
+        let navigation = CompletedAssistantTurn {
+            response: "Navigating to the documentation.".to_string(),
+            action: Some(json!({
+                "kind": "aegis",
+                "args": ["--mode", "headless", "navigate", "https://www.sqlite.org/foreignkeys.html"],
+                "timeout_ms": 15000
+            })),
+            evidence: Some(json!({
+                "effect": "confirmed",
+                "evidence": [
+                    {"kind": "value_readback", "message": "aegis exited 0; stdout=[]; stderr="}
+                ]
+            })),
+        };
+        let navigation_effect = observed_turn_effect(&navigation, &attempts);
+        assert!(should_replan_after_turn(
+            transcript,
+            &navigation,
+            navigation_effect.as_deref(),
+            1,
+            budget
+        ));
+        attempts.push(PlanAttemptContext {
+            attempt_index: 1,
+            response: navigation.response.clone(),
+            action: navigation.action.clone(),
+            effect: navigation_effect,
+            evidence: navigation.evidence.clone(),
+        });
+
+        let empty_readback = CompletedAssistantTurn {
+            response: "Reading the page text.".to_string(),
+            action: Some(json!({
+                "kind": "aegis",
+                "args": ["--mode", "headless", "page", "text", "--scope", "main"],
+                "timeout_ms": 15000
+            })),
+            evidence: Some(json!({
+                "effect": "confirmed",
+                "evidence": [
+                    {"kind": "value_readback", "message": "aegis exited 0; stdout=; stderr="}
+                ]
+            })),
+        };
+        assert!(aegis_readback_missing_for_goal(transcript, &empty_readback));
+        let empty_readback_evidence = Some(aegis_readback_missing_evidence(
+            empty_readback.evidence.clone(),
+        ));
+        attempts.push(PlanAttemptContext {
+            attempt_index: 2,
+            response: empty_readback.response.clone(),
+            action: empty_readback.action.clone(),
+            effect: Some("partial".to_string()),
+            evidence: empty_readback_evidence,
+        });
+
+        let premature_final = "The verified title is SQLite Foreign Key Support.".to_string();
+        assert!(action_null_stops_long_range_without_evidence(
+            transcript,
+            &premature_final,
+            &None,
+            &attempts
+        ));
+
+        let semantic_readback = CompletedAssistantTurn {
+            response: "Reading the page title.".to_string(),
+            action: Some(json!({
+                "kind": "aegis",
+                "args": ["--mode", "headless", "page", "text", "--scope", "title"],
+                "timeout_ms": 15000
+            })),
+            evidence: Some(json!({
+                "effect": "confirmed",
+                "evidence": [
+                    {"kind": "value_readback", "message": "aegis exited 0; stdout=SQLite Foreign Key Support; stderr="}
+                ]
+            })),
+        };
+        assert!(!aegis_readback_missing_for_goal(
+            transcript,
+            &semantic_readback
+        ));
+        attempts.push(PlanAttemptContext {
+            attempt_index: 3,
+            response: semantic_readback.response.clone(),
+            action: semantic_readback.action.clone(),
+            effect: Some("confirmed".to_string()),
+            evidence: semantic_readback.evidence.clone(),
+        });
+
+        assert!(action_null_finishes_after_prior_attempts(
+            &premature_final,
+            &None,
+            &attempts
+        ));
+        assert!(!action_null_stops_long_range_without_evidence(
+            transcript,
+            &premature_final,
+            &None,
+            &attempts
+        ));
+        let completed = attach_loop_evidence(
+            CompletedAssistantTurn {
+                response: premature_final,
+                action: None,
+                evidence: None,
+            },
+            &attempts,
+        );
+
+        assert_eq!(turn_effect(&completed), Some("confirmed".to_string()));
+        assert_eq!(completed.evidence.as_ref().unwrap()["attempt_count"], 4);
     }
 
     #[test]
