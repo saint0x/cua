@@ -327,8 +327,8 @@ impl InputBackend for QguiInputBackend {
             Err(error) => input_result(
                 request.idempotency_key,
                 started,
-                Effect::Refused,
-                EvidenceKind::Refusal,
+                Effect::Failed,
+                EvidenceKind::Error,
                 error.to_string(),
             ),
         }

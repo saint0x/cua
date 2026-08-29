@@ -1158,10 +1158,10 @@ impl InputLane {
                     Duration::ZERO,
                     input_result_with_id(
                         idempotency_key,
-                        Effect::Refused,
+                        Effect::Failed,
                         InputRoute::Unavailable,
                         DeliveryMode::NotApplicable,
-                        EvidenceKind::Refusal,
+                        EvidenceKind::Error,
                         "input lane worker stopped",
                     ),
                 ),
@@ -1170,10 +1170,10 @@ impl InputLane {
                 job.enqueued_at.elapsed(),
                 input_result_with_id(
                     idempotency_key,
-                    Effect::Refused,
+                    Effect::Failed,
                     InputRoute::Unavailable,
                     DeliveryMode::NotApplicable,
-                    EvidenceKind::Refusal,
+                    EvidenceKind::Error,
                     "input lane queue is full",
                 ),
             ),
@@ -1181,10 +1181,10 @@ impl InputLane {
                 job.enqueued_at.elapsed(),
                 input_result_with_id(
                     idempotency_key,
-                    Effect::Refused,
+                    Effect::Failed,
                     InputRoute::Unavailable,
                     DeliveryMode::NotApplicable,
-                    EvidenceKind::Refusal,
+                    EvidenceKind::Error,
                     "input lane is closed",
                 ),
             ),
@@ -4930,6 +4930,17 @@ fn compact_action_text(value: &str, limit: usize) -> String {
     truncated
 }
 
+fn input_effect_status_prefix(effect: &Effect) -> &'static str {
+    match effect {
+        Effect::Confirmed => "Confirmed",
+        Effect::Failed => "Failed",
+        Effect::Partial => "Partial",
+        Effect::Unverifiable => "Unverifiable",
+        Effect::SuspectedNoop => "Suspected",
+        Effect::Refused => "Refused",
+    }
+}
+
 fn ui_island_state(
     state: &DaemonState,
     request: UiIslandRequest,
@@ -5529,11 +5540,7 @@ async fn dispatch_input_action(state: &DaemonState, action: InputAction) -> cua_
         after,
     )
     .await;
-    let final_prefix = if result.effect == Effect::Refused {
-        "Refused"
-    } else {
-        "Confirmed"
-    };
+    let final_prefix = input_effect_status_prefix(&result.effect);
     publish_protocol_status(
         state,
         format!("{final_prefix} {action_label}"),
@@ -5626,9 +5633,15 @@ async fn dispatch_sequence_action(
         state
             .metrics
             .observe(MetricKind::InputDispatch, dispatch_started.elapsed());
-        if result.effect == Effect::Refused {
-            state.metrics.increment(CounterKind::InputRefusals);
-            aggregate.effect = Effect::Refused;
+        match result.effect {
+            Effect::Refused => {
+                state.metrics.increment(CounterKind::InputRefusals);
+                aggregate.effect = Effect::Refused;
+            }
+            Effect::Failed if aggregate.effect != Effect::Refused => {
+                aggregate.effect = Effect::Failed;
+            }
+            _ => {}
         }
         aggregate.route = result.route;
         aggregate.delivery_mode = result.delivery_mode;
@@ -5656,11 +5669,7 @@ async fn dispatch_sequence_action(
     state
         .metrics
         .observe(MetricKind::InputDispatch, started.elapsed());
-    let final_prefix = if aggregate.effect == Effect::Refused {
-        "Refused"
-    } else {
-        "Confirmed"
-    };
+    let final_prefix = input_effect_status_prefix(&aggregate.effect);
     if let Some(step_total) = step_total {
         publish_protocol_step(
             state,
@@ -6909,7 +6918,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn input_lane_refuses_when_queue_is_full() {
+    async fn input_lane_fails_when_queue_is_full() {
         let (sender, _receiver) = mpsc::channel(1);
         let (reply, _wait) = oneshot::channel();
         sender
@@ -6926,7 +6935,8 @@ mod tests {
 
         let (_, result) = lane.execute(sample_mouse_request()).await;
 
-        assert_eq!(result.effect, Effect::Refused);
+        assert_eq!(result.effect, Effect::Failed);
+        assert_eq!(result.evidence[0].kind, EvidenceKind::Error);
         assert_eq!(result.evidence[0].message, "input lane queue is full");
     }
 

@@ -339,7 +339,7 @@ impl InputBackend for RemoteCuaInputBackend {
         let started = Instant::now();
         let owner_session_id = match self.backend.acquire_owner_session().await {
             Ok(owner_session_id) => owner_session_id,
-            Err(error) => return refused_remote_input(request, started, error.to_string()),
+            Err(error) => return failed_remote_input(request, started, error.to_string()),
         };
         match self
             .backend
@@ -351,7 +351,7 @@ impl InputBackend for RemoteCuaInputBackend {
             .await
         {
             Ok(result) => result,
-            Err(error) => refused_remote_input(request, started, error.to_string()),
+            Err(error) => failed_remote_input(request, started, error.to_string()),
         }
     }
 
@@ -360,17 +360,17 @@ impl InputBackend for RemoteCuaInputBackend {
     }
 }
 
-fn refused_remote_input(request: InputRequest, started: Instant, message: String) -> InputResult {
+fn failed_remote_input(request: InputRequest, started: Instant, message: String) -> InputResult {
     InputResult {
         schema_version: SCHEMA_VERSION.to_string(),
         idempotency_key: request.idempotency_key,
-        effect: Effect::Refused,
+        effect: Effect::Failed,
         route: InputRoute::Unavailable,
         delivery_mode: DeliveryMode::Unknown,
         started_mono_ns: 0,
         ended_mono_ns: started.elapsed().as_nanos(),
         evidence: vec![Evidence {
-            kind: EvidenceKind::Refusal,
+            kind: EvidenceKind::Error,
             message,
             frame_id: None,
         }],
@@ -832,13 +832,13 @@ impl InputBackend for UnavailableComputerInputBackend {
         InputResult {
             schema_version: SCHEMA_VERSION.to_string(),
             idempotency_key: request.idempotency_key,
-            effect: Effect::Refused,
+            effect: Effect::Failed,
             route: InputRoute::Unavailable,
             delivery_mode: DeliveryMode::NotApplicable,
             started_mono_ns: 0,
             ended_mono_ns: started.elapsed().as_nanos(),
             evidence: vec![Evidence {
-                kind: EvidenceKind::Refusal,
+                kind: EvidenceKind::Error,
                 message: self.reason.clone(),
                 frame_id: None,
             }],

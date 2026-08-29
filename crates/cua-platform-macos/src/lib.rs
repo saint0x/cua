@@ -185,6 +185,14 @@ struct MacosActionOutcome {
     evidence_kind: EvidenceKind,
 }
 
+struct MacosActionFailure {
+    message: String,
+    effect: Effect,
+    route: InputRoute,
+    delivery_mode: DeliveryMode,
+    evidence_kind: EvidenceKind,
+}
+
 impl MacosActionOutcome {
     fn desktop(message: impl Into<String>) -> Self {
         Self {
@@ -205,6 +213,38 @@ impl MacosActionOutcome {
     }
 }
 
+impl MacosActionFailure {
+    fn system(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            effect: Effect::Failed,
+            route: InputRoute::SystemApi,
+            delivery_mode: DeliveryMode::Background,
+            evidence_kind: EvidenceKind::Error,
+        }
+    }
+
+    fn unavailable(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            effect: Effect::Failed,
+            route: InputRoute::Unavailable,
+            delivery_mode: DeliveryMode::NotApplicable,
+            evidence_kind: EvidenceKind::Error,
+        }
+    }
+
+    fn refused(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            effect: Effect::Refused,
+            route: InputRoute::Unavailable,
+            delivery_mode: DeliveryMode::NotApplicable,
+            evidence_kind: EvidenceKind::Refusal,
+        }
+    }
+}
+
 #[async_trait]
 impl InputBackend for MacosInputBackend {
     async fn execute(&self, request: InputRequest) -> InputResult {
@@ -221,13 +261,13 @@ impl InputBackend for MacosInputBackend {
                 outcome.message,
                 started.elapsed().as_nanos(),
             ),
-            Err(message) => input_result(
+            Err(failure) => input_result(
                 idempotency_key,
-                Effect::Refused,
-                InputRoute::Unavailable,
-                DeliveryMode::NotApplicable,
-                EvidenceKind::Refusal,
-                message,
+                failure.effect,
+                failure.route,
+                failure.delivery_mode,
+                failure.evidence_kind,
+                failure.message,
                 started.elapsed().as_nanos(),
             ),
         }
@@ -238,14 +278,18 @@ impl InputBackend for MacosInputBackend {
     }
 }
 
-async fn execute_macos_input_action(action: InputAction) -> Result<MacosActionOutcome, String> {
+async fn execute_macos_input_action(
+    action: InputAction,
+) -> Result<MacosActionOutcome, MacosActionFailure> {
     match action {
         InputAction::Sequence {
             actions,
             inter_action_delay_ms,
         } => {
             if actions.is_empty() {
-                return Err("sequence must contain at least one action".to_string());
+                return Err(MacosActionFailure::refused(
+                    "sequence must contain at least one action",
+                ));
             }
             let delay = Duration::from_millis(inter_action_delay_ms.min(2_000));
             let last_index = actions.len().saturating_sub(1);
@@ -267,56 +311,77 @@ async fn execute_macos_input_action(action: InputAction) -> Result<MacosActionOu
     }
 }
 
-async fn execute_macos_input_leaf(action: InputAction) -> Result<MacosActionOutcome, String> {
+async fn execute_macos_input_leaf(
+    action: InputAction,
+) -> Result<MacosActionOutcome, MacosActionFailure> {
     match action {
-        InputAction::MouseMove { x, y, .. } => {
-            post_mouse_move(x, y).map(MacosActionOutcome::desktop)
-        }
+        InputAction::MouseMove { x, y, .. } => post_mouse_move(x, y)
+            .map(MacosActionOutcome::desktop)
+            .map_err(MacosActionFailure::unavailable),
         InputAction::MouseClick {
             x,
             y,
             button,
             count,
-        } => post_mouse_click(x, y, button, count).map(MacosActionOutcome::desktop),
+        } => post_mouse_click(x, y, button, count)
+            .map(MacosActionOutcome::desktop)
+            .map_err(MacosActionFailure::unavailable),
         InputAction::MouseDrag {
             from_x,
             from_y,
             to_x,
             to_y,
             ..
-        } => post_mouse_drag(from_x, from_y, to_x, to_y).map(MacosActionOutcome::desktop),
-        InputAction::KeyPress { combo } => post_key_combo(&combo).map(MacosActionOutcome::desktop),
-        InputAction::KeyType { text } => post_text(&text).map(MacosActionOutcome::desktop),
-        InputAction::KeyPaste { text } => paste_text(text).await.map(MacosActionOutcome::desktop),
-        InputAction::OpenApp { app_name } => {
-            open_app(&app_name).await.map(MacosActionOutcome::system)
-        }
+        } => post_mouse_drag(from_x, from_y, to_x, to_y)
+            .map(MacosActionOutcome::desktop)
+            .map_err(MacosActionFailure::unavailable),
+        InputAction::KeyPress { combo } => post_key_combo(&combo)
+            .map(MacosActionOutcome::desktop)
+            .map_err(MacosActionFailure::unavailable),
+        InputAction::KeyType { text } => post_text(&text)
+            .map(MacosActionOutcome::desktop)
+            .map_err(MacosActionFailure::unavailable),
+        InputAction::KeyPaste { text } => paste_text(text)
+            .await
+            .map(MacosActionOutcome::desktop)
+            .map_err(MacosActionFailure::unavailable),
+        InputAction::OpenApp { app_name } => open_app(&app_name)
+            .await
+            .map(MacosActionOutcome::system)
+            .map_err(MacosActionFailure::system),
         InputAction::ShellExec {
             command,
             timeout_ms,
         } => run_shell_command(command, timeout_ms)
             .await
-            .map(MacosActionOutcome::system),
+            .map(MacosActionOutcome::system)
+            .map_err(MacosActionFailure::system),
         InputAction::Aegis { args, timeout_ms } => run_aegis_command(args, timeout_ms)
             .await
-            .map(MacosActionOutcome::system),
+            .map(MacosActionOutcome::system)
+            .map_err(MacosActionFailure::system),
         InputAction::Ctx {
             args,
             timeout_ms,
             workspace_root,
         } => run_ctx_command(args, timeout_ms, workspace_root)
             .await
-            .map(MacosActionOutcome::system),
+            .map(MacosActionOutcome::system)
+            .map_err(MacosActionFailure::system),
         InputAction::Pause | InputAction::Resume | InputAction::KillSwitch => Ok(
             MacosActionOutcome::system("safety action accepted by local coordinator"),
         ),
-        InputAction::Sequence { .. } => Err("nested sequences are not supported".to_string()),
+        InputAction::Sequence { .. } => Err(MacosActionFailure::refused(
+            "nested sequences are not supported",
+        )),
         InputAction::ClipboardRead { allow_sensitive } => read_clipboard(allow_sensitive)
             .await
-            .map(MacosActionOutcome::system),
-        InputAction::ClipboardWrite { text } => {
-            write_clipboard(text).await.map(MacosActionOutcome::system)
-        }
+            .map(MacosActionOutcome::system)
+            .map_err(MacosActionFailure::refused),
+        InputAction::ClipboardWrite { text } => write_clipboard(text)
+            .await
+            .map(MacosActionOutcome::system)
+            .map_err(MacosActionFailure::refused),
     }
 }
 
@@ -2176,6 +2241,29 @@ mod tests {
         assert_eq!(result.route, InputRoute::SystemApi);
         assert_eq!(result.delivery_mode, DeliveryMode::Background);
         assert!(result.evidence[0].message.contains("cua-shell-ok"));
+    }
+
+    #[tokio::test]
+    async fn shell_exec_nonzero_exit_reports_failed_system_error() {
+        let backend = MacosInputBackend;
+        let result = backend
+            .execute(InputRequest {
+                schema_version: SCHEMA_VERSION.to_string(),
+                idempotency_key: uuid::Uuid::new_v4(),
+                deadline_mono_ns: None,
+                action: InputAction::ShellExec {
+                    command: "cat /tmp/cua-platform-macos-definitely-missing".to_string(),
+                    timeout_ms: 2_000,
+                },
+            })
+            .await;
+
+        assert_eq!(result.effect, Effect::Failed);
+        assert_eq!(result.route, InputRoute::SystemApi);
+        assert_eq!(result.delivery_mode, DeliveryMode::Background);
+        assert_eq!(result.evidence[0].kind, EvidenceKind::Error);
+        assert!(result.evidence[0].message.contains("shell exited 1"));
+        assert!(result.evidence[0].message.contains("No such file"));
     }
 
     #[tokio::test]

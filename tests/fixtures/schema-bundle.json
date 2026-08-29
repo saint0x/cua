@@ -614,6 +614,7 @@
         "Effect": {
           "enum": [
             "confirmed",
+            "failed",
             "partial",
             "unverifiable",
             "suspected_noop",
@@ -652,6 +653,7 @@
             "window_change",
             "fixture_oracle",
             "model_observation",
+            "error",
             "refusal"
           ],
           "type": "string"
@@ -4815,6 +4817,7 @@
         "Effect": {
           "enum": [
             "confirmed",
+            "failed",
             "partial",
             "unverifiable",
             "suspected_noop",
@@ -4853,6 +4856,7 @@
             "window_change",
             "fixture_oracle",
             "model_observation",
+            "error",
             "refusal"
           ],
           "type": "string"

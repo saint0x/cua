@@ -2009,6 +2009,7 @@ fn is_valid_hex_color(value: &str) -> bool {
 #[serde(rename_all = "snake_case")]
 pub enum Effect {
     Confirmed,
+    Failed,
     Partial,
     Unverifiable,
     SuspectedNoop,
@@ -2048,6 +2049,7 @@ pub enum EvidenceKind {
     WindowChange,
     FixtureOracle,
     ModelObservation,
+    Error,
     Refusal,
 }
 
