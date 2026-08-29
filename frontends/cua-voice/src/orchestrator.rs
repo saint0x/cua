@@ -1248,6 +1248,37 @@ async fn plan_and_dispatch(
                 attempt_index += 1;
                 continue;
             }
+            if planned_action_json.as_ref().is_some_and(|action| {
+                transcript_requests_text_entry(&transcript)
+                    && action_repeats_text_entry_attempt(&attempts, action)
+            }) {
+                trace
+                    .append(
+                        "planning_rejected",
+                        json!({
+                            "attempt_index": attempt_index,
+                            "reason": "repeated_text_entry_action",
+                            "action": planned_action_json.clone(),
+                        }),
+                    )
+                    .await;
+                attempts.push(PlanAttemptContext {
+                    attempt_index,
+                    response: plan.response,
+                    action: planned_action_json,
+                    effect: Some("suspected_noop".to_string()),
+                    evidence: Some(json!({
+                        "effect": "suspected_noop",
+                        "reason": "repeated_text_entry_action",
+                        "repair_hint": "The text-entry side effect already ran in this turn. Use the fresh observation to verify and final-answer, or choose a different non-duplicating action.",
+                    })),
+                });
+                if !loop_budget.can_continue_after(attempt_index) {
+                    anyhow::bail!("planning model repeated a text-entry action in the same turn");
+                }
+                attempt_index += 1;
+                continue;
+            }
             if transcript_requests_text_entry(&transcript)
                 && !plan
                     .action
@@ -1426,8 +1457,6 @@ async fn plan_and_dispatch(
                     loop_budget,
                 );
             }
-            let finish_after_reobserve =
-                should_finish_after_reobserve(should_verify, should_continue);
             attempts.push(PlanAttemptContext {
                 attempt_index,
                 response: turn.response.clone(),
@@ -1469,14 +1498,6 @@ async fn plan_and_dispatch(
                     }),
                 )
                 .await;
-            if finish_after_reobserve {
-                break mark_long_range_budget_exhausted_if_needed(
-                    &transcript,
-                    turn,
-                    attempt_index,
-                    loop_budget,
-                );
-            }
             attempt_index += 1;
         };
         send_metric(&tx, "plan_ms", plan_started.elapsed());
@@ -2550,10 +2571,6 @@ fn aegis_readback_missing_evidence(evidence: Option<serde_json::Value>) -> serde
     }
 }
 
-fn should_finish_after_reobserve(should_verify: bool, should_continue: bool) -> bool {
-    should_verify && !should_continue
-}
-
 fn should_continue_long_range_after_verified_action(
     transcript: &str,
     turn: &CompletedAssistantTurn,
@@ -2963,7 +2980,8 @@ fn prior_attempts_support_explicit_aegis_final(
 
 fn prior_attempts_support_verified_final(response: &str, attempts: &[PlanAttemptContext]) -> bool {
     final_response_claims_verified_result(response)
-        && attempts.iter().any(confirmed_attempt_has_task_evidence)
+        && (attempts.iter().any(confirmed_attempt_has_task_evidence)
+            || attempts.iter().any(visible_attempt_awaited_verification))
 }
 
 fn prior_attempts_support_failure_final(response: &str, attempts: &[PlanAttemptContext]) -> bool {
@@ -3147,6 +3165,28 @@ fn action_repeats_confirmed_attempt(
                 .as_ref()
                 .is_some_and(|prior| actions_have_same_intent(prior, action))
     })
+}
+
+fn action_repeats_text_entry_attempt(
+    attempts: &[PlanAttemptContext],
+    action: &serde_json::Value,
+) -> bool {
+    action_is_text_entry(action)
+        && attempts.iter().any(|attempt| {
+            attempt.action.as_ref().is_some_and(|prior| {
+                action_is_text_entry(prior) && actions_have_same_intent(prior, action)
+            })
+        })
+}
+
+fn visible_attempt_awaited_verification(attempt: &PlanAttemptContext) -> bool {
+    matches!(
+        attempt.effect.as_deref(),
+        Some("confirmed" | "unverifiable" | "partial")
+    ) && attempt
+        .action
+        .as_ref()
+        .is_some_and(action_requires_visible_reobserve_before_finish)
 }
 
 fn observation_repeats_without_intervening_change(
@@ -3459,13 +3499,6 @@ fn should_replan_after_turn(
     loop_budget: AgentLoopBudget,
 ) -> bool {
     if turn.action.is_none() && matches!(effect, Some("confirmed" | "failed")) {
-        return false;
-    }
-    if turn
-        .action
-        .as_ref()
-        .is_some_and(|action| action_is_user_text_fulfillment(transcript, action))
-    {
         return false;
     }
     should_replan_after_effect(effect, attempt_index, loop_budget)
@@ -4554,7 +4587,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_loop_never_replays_text_entry_side_effects() {
+    fn agent_loop_replans_after_text_entry_so_fresh_observation_can_be_verified() {
         let turn = CompletedAssistantTurn {
             response: "Writing the note.".to_string(),
             action: Some(json!({
@@ -4569,7 +4602,7 @@ mod tests {
         };
 
         for effect in ["partial", "unverifiable", "suspected_noop", "refused"] {
-            assert!(!should_replan_after_turn(
+            assert!(should_replan_after_turn(
                 "Write me a note",
                 &turn,
                 Some(effect),
@@ -4577,6 +4610,31 @@ mod tests {
                 AgentLoopBudget::Finite { max_attempts: 3 }
             ));
         }
+    }
+
+    #[test]
+    fn agent_loop_rejects_repeated_text_entry_after_reobserve() {
+        let action = json!({
+            "kind": "sequence",
+            "actions": [
+                {"kind": "open_app", "app_name": "Notes"},
+                {"kind": "key_press", "combo": "cmd+n"},
+                {"kind": "key_paste", "text": "Once upon a time"}
+            ]
+        });
+        let attempts = vec![PlanAttemptContext {
+            attempt_index: 1,
+            response: "Writing the note.".to_string(),
+            action: Some(action.clone()),
+            effect: Some("unverifiable".to_string()),
+            evidence: Some(json!({"effect": "unverifiable"})),
+        }];
+
+        assert!(action_repeats_text_entry_attempt(&attempts, &action));
+        assert!(!action_repeats_text_entry_attempt(
+            &attempts,
+            &json!({"kind": "key_paste", "text": "Different text"})
+        ));
     }
 
     #[test]
@@ -6796,10 +6854,20 @@ mod tests {
     }
 
     #[test]
-    fn visible_reobserve_finishes_when_no_more_repair_is_needed() {
-        assert!(should_finish_after_reobserve(true, false));
-        assert!(!should_finish_after_reobserve(true, true));
-        assert!(!should_finish_after_reobserve(false, false));
+    fn visible_reobserve_supports_verified_final_without_confirming_delivery() {
+        let attempts = vec![PlanAttemptContext {
+            attempt_index: 1,
+            response: "Writing the note.".to_string(),
+            action: Some(json!({"kind": "key_paste", "text": "hello"})),
+            effect: Some("unverifiable".to_string()),
+            evidence: Some(json!({"effect": "unverifiable"})),
+        }];
+
+        assert!(prior_attempts_support_verified_final(
+            "The visible note now reads hello.",
+            &attempts
+        ));
+        assert!(!prior_attempts_support_verified_final("Done.", &attempts));
     }
 
     #[test]
