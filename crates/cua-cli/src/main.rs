@@ -4577,8 +4577,16 @@ async fn inspect_trace(dir: PathBuf, json: bool, verify: bool) -> anyhow::Result
                         missing_artifacts.push(relative.clone());
                     }
                 }
-                if turn.before.is_none() || turn.after.is_none() {
+                if action_turn_has_frame_snapshot(&turn)
+                    && (turn.before.is_none() || turn.after.is_none())
+                {
                     missing_artifacts.push(format!("{}:missing_frame_metadata", turn.turn_id));
+                }
+                if action_turn_has_frame_snapshot(&turn)
+                    && (turn.before_image_path.is_none() || turn.after_image_path.is_none())
+                {
+                    missing_artifacts
+                        .push(format!("{}:missing_frame_artifact_reference", turn.turn_id));
                 }
                 if turn.evidence.is_null() {
                     missing_artifacts.push(format!("{}:missing_evidence", turn.turn_id));
@@ -4605,6 +4613,13 @@ async fn inspect_trace(dir: PathBuf, json: bool, verify: bool) -> anyhow::Result
         anyhow::bail!("trace verification failed");
     }
     Ok(())
+}
+
+fn action_turn_has_frame_snapshot(turn: &ActionTurnRecord) -> bool {
+    turn.before.is_some()
+        || turn.after.is_some()
+        || turn.before_image_path.is_some()
+        || turn.after_image_path.is_some()
 }
 
 #[cfg(test)]
@@ -5022,5 +5037,21 @@ items = [
         assert_eq!(replay["ok"], true);
         assert_eq!(shrink["ok"], true);
         assert!(dir.join("run.shrunk.jsonl").is_file());
+    }
+
+    #[tokio::test]
+    async fn daemon_trace_verify_accepts_low_latency_action_without_snapshots() {
+        let dir = std::env::temp_dir().join(format!("cua-daemon-trace-{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let path = dir.join("trajectory.jsonl");
+        tokio::fs::write(
+            &path,
+            r#"{"kind":"action_turn","schema_version":"cua.v1","turn_id":"turn-1","at_wall_ms":1,"action":{"kind":"mouse_move","x":1,"y":2,"duration_ms":0},"result":{"schema_version":"cua.v1","idempotency_key":"00000000-0000-0000-0000-000000000000","effect":"unverifiable","route":"accessibility","delivery_mode":"desktop","started_mono_ns":0,"ended_mono_ns":1,"evidence":[{"kind":"model_observation","message":"desktop event delivered","frame_id":null}]},"before":null,"after":null,"before_image_path":null,"after_image_path":null,"evidence":[{"kind":"model_observation","message":"desktop event delivered","frame_id":null}],"session":{"profile":"test"}}
+"#,
+        )
+        .await
+        .unwrap();
+
+        inspect_trace(dir, true, true).await.unwrap();
     }
 }

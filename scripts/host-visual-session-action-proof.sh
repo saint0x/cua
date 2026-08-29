@@ -317,8 +317,9 @@ try:
     proof["ok"] = (
         proof["started_type"] == "started"
         and proof["closed_type"] == "closed"
-        and proof["frame_action"]["effect"] == "confirmed"
+        and proof["frame_action"]["effect"] == "unverifiable"
         and proof["frame_action"]["route"] == "accessibility"
+        and proof["frame_action"]["delivery_mode"] == "desktop"
         and proof["cursor_after_action"]["x"] == expected_x
         and proof["cursor_after_action"]["y"] == expected_y
         and proof["post_action_frame_id"] >= proof["first_frame"]["frame_id"]
