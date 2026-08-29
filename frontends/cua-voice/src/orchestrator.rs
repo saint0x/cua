@@ -12,6 +12,7 @@ use anyhow::Context;
 use cua_core::{
     profile_ctx_dir, profile_voice_trace_path, DesktopState, FrameEnvelope, FramePayload,
 };
+use serde::Serialize;
 use serde_json::json;
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
@@ -628,11 +629,9 @@ async fn plan_and_dispatch(
         let api_key = api_key
             .or_else(|| std::env::var("OPENROUTER_API_KEY").ok())
             .context("OPENROUTER_API_KEY is required for non-fast voice commands")?;
+        let loop_budget = agent_loop_budget();
         trace
-            .append(
-                "agent_loop_start",
-                json!({"max_attempts": agent_loop_max_attempts()}),
-            )
+            .append("agent_loop_start", json!({"budget": loop_budget}))
             .await;
         let planner = Planner::new(&config.planner_model);
         let combined_agent_context = format!(
@@ -640,21 +639,23 @@ async fn plan_and_dispatch(
             agent_context.chat, agent_context.ctx, agent_context.scratchpads
         );
         let mut attempts = Vec::new();
-        let max_attempts = agent_loop_max_attempts();
-        let mut completed = None;
-        for attempt_index in 1..=max_attempts {
+        let mut attempt_index = 1;
+        let completed = loop {
             let attempt_started = Instant::now();
             tx.send(VoiceUiEvent::Planning {
                 tool: if attempt_index == 1 {
                     "OpenRouter Vision".to_string()
                 } else {
-                    format!("OpenRouter repair {attempt_index}/{max_attempts}")
+                    format!(
+                        "OpenRouter repair {}",
+                        loop_budget.format_attempt(attempt_index)
+                    )
                 },
             })
             .ok();
             step_publisher.publish(voice_step_label(
                 "planning",
-                &format!("attempt {attempt_index}/{max_attempts}"),
+                &format!("attempt {}", loop_budget.format_attempt(attempt_index)),
             ));
             trace
                 .append(
@@ -700,8 +701,7 @@ async fn plan_and_dispatch(
                                 }),
                             )
                             .await;
-                        completed = Some(turn);
-                        break;
+                        break turn;
                     }
                     if planning_error_is_empty_content(&error) {
                         if let Some(plan) = browser_research_bootstrap_plan(&transcript) {
@@ -769,11 +769,12 @@ async fn plan_and_dispatch(
                         "reason": "text_request_without_text_entry_action",
                     })),
                 });
-                if attempt_index >= max_attempts {
+                if !loop_budget.can_continue_after(attempt_index) {
                     anyhow::bail!(
                         "planning model did not include a text-entry action for a text-writing command"
                     );
                 }
+                attempt_index += 1;
                 continue;
             }
             let source_frame = context.frame.as_ref().map(|frame| frame.envelope.clone());
@@ -789,8 +790,8 @@ async fn plan_and_dispatch(
             )
             .await?;
             let mut effect = turn_effect(&turn);
-            let open_only_incomplete =
-                attempt_index < max_attempts && open_only_incomplete_for_goal(&transcript, &turn);
+            let open_only_incomplete = loop_budget.can_continue_after(attempt_index)
+                && open_only_incomplete_for_goal(&transcript, &turn);
             let evidence = if open_only_incomplete {
                 effect = Some("partial".to_string());
                 Some(open_only_incomplete_evidence(turn.evidence.clone()))
@@ -802,14 +803,14 @@ async fn plan_and_dispatch(
                 &turn,
                 effect.as_deref(),
                 attempt_index,
-                max_attempts,
+                loop_budget,
             );
             let should_continue = should_replan_after_turn(
                 &transcript,
                 &turn,
                 effect.as_deref(),
                 attempt_index,
-                max_attempts,
+                loop_budget,
             );
             trace
                 .append(
@@ -829,13 +830,12 @@ async fn plan_and_dispatch(
                 .as_ref()
                 .is_some_and(action_needs_fresh_verification);
             if !should_continue && !should_verify {
-                completed = Some(mark_long_range_budget_exhausted_if_needed(
+                break mark_long_range_budget_exhausted_if_needed(
                     &transcript,
                     turn,
                     attempt_index,
-                    max_attempts,
-                ));
-                break;
+                    loop_budget,
+                );
             }
             let finish_after_reobserve =
                 should_finish_after_reobserve(should_verify, should_continue);
@@ -876,17 +876,16 @@ async fn plan_and_dispatch(
                 )
                 .await;
             if finish_after_reobserve {
-                completed = Some(mark_long_range_budget_exhausted_if_needed(
+                break mark_long_range_budget_exhausted_if_needed(
                     &transcript,
                     turn,
                     attempt_index,
-                    max_attempts,
-                ));
-                break;
+                    loop_budget,
+                );
             }
-        }
+            attempt_index += 1;
+        };
         send_metric(&tx, "plan_ms", plan_started.elapsed());
-        let completed = completed.context("agent loop exhausted without a completed turn")?;
         let attempt_count = loop_attempt_count(&completed, &attempts);
         let completed = attach_loop_evidence(completed, &attempts);
         trace
@@ -1139,12 +1138,68 @@ fn ctx_workspace_root(profile: &str) -> String {
         .unwrap_or_else(|_| format!(".cua/profiles/{profile}/ctx"))
 }
 
-fn agent_loop_max_attempts() -> usize {
-    std::env::var("CUA_AGENT_LOOP_MAX_ATTEMPTS")
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum AgentLoopBudget {
+    Finite { max_attempts: usize },
+    Unbounded,
+}
+
+impl AgentLoopBudget {
+    fn can_continue_after(self, attempt_index: usize) -> bool {
+        match self {
+            Self::Finite { max_attempts } => attempt_index < max_attempts,
+            Self::Unbounded => true,
+        }
+    }
+
+    fn exhausted_at(self, attempt_index: usize) -> bool {
+        match self {
+            Self::Finite { max_attempts } => attempt_index >= max_attempts,
+            Self::Unbounded => false,
+        }
+    }
+
+    fn format_attempt(self, attempt_index: usize) -> String {
+        match self {
+            Self::Finite { max_attempts } => format!("{attempt_index}/{max_attempts}"),
+            Self::Unbounded => format!("{attempt_index}/n"),
+        }
+    }
+
+    fn max_attempts(self) -> Option<usize> {
+        match self {
+            Self::Finite { max_attempts } => Some(max_attempts),
+            Self::Unbounded => None,
+        }
+    }
+}
+
+fn agent_loop_budget() -> AgentLoopBudget {
+    let Some(value) = std::env::var("CUA_AGENT_LOOP_MAX_ATTEMPTS")
         .ok()
-        .and_then(|value| value.parse::<usize>().ok())
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+    else {
+        return default_agent_loop_budget();
+    };
+
+    if value == "n" {
+        return AgentLoopBudget::Unbounded;
+    }
+
+    value
+        .parse::<usize>()
+        .ok()
         .filter(|value| (1..=MAX_AGENT_LOOP_ATTEMPTS).contains(value))
-        .unwrap_or(DEFAULT_AGENT_LOOP_MAX_ATTEMPTS)
+        .map(|max_attempts| AgentLoopBudget::Finite { max_attempts })
+        .unwrap_or_else(default_agent_loop_budget)
+}
+
+fn default_agent_loop_budget() -> AgentLoopBudget {
+    AgentLoopBudget::Finite {
+        max_attempts: DEFAULT_AGENT_LOOP_MAX_ATTEMPTS,
+    }
 }
 
 fn turn_effect(turn: &CompletedAssistantTurn) -> Option<String> {
@@ -1173,15 +1228,33 @@ fn action_is_text_entry(action: &serde_json::Value) -> bool {
 }
 
 fn transcript_requests_text_entry(transcript: &str) -> bool {
-    transcript
+    let words = transcript
         .split_whitespace()
         .map(normalize_voice_token)
-        .any(|word| {
-            matches!(
-                word.as_str(),
-                "write" | "type" | "paste" | "leave" | "message" | "says" | "story" | "marker"
-            )
-        })
+        .collect::<Vec<_>>();
+    if words
+        .iter()
+        .any(|word| matches!(word.as_str(), "write" | "type" | "paste"))
+    {
+        return true;
+    }
+    let mentions_note = words.iter().any(|word| word == "note" || word == "notes");
+    let note_creation = words
+        .iter()
+        .any(|word| matches!(word.as_str(), "new" | "create" | "make" | "says"));
+    if mentions_note && note_creation {
+        return true;
+    }
+    let mentions_message = words
+        .iter()
+        .any(|word| word == "message" || word == "messages");
+    let message_writing = words
+        .iter()
+        .any(|word| matches!(word.as_str(), "send" | "leave" | "draft" | "says"));
+    if mentions_message && message_writing {
+        return true;
+    }
+    false
 }
 
 fn transcript_requests_new_note(transcript: &str) -> bool {
@@ -1435,9 +1508,9 @@ fn should_continue_long_range_after_verified_action(
     turn: &CompletedAssistantTurn,
     effect: Option<&str>,
     attempt_index: usize,
-    max_attempts: usize,
+    loop_budget: AgentLoopBudget,
 ) -> bool {
-    if attempt_index >= max_attempts || effect != Some("confirmed") {
+    if !loop_budget.can_continue_after(attempt_index) || effect != Some("confirmed") {
         return false;
     }
     if !transcript_requests_long_range_work(transcript) {
@@ -1453,9 +1526,9 @@ fn long_range_budget_exhausted_without_finish(
     transcript: &str,
     turn: &CompletedAssistantTurn,
     attempt_index: usize,
-    max_attempts: usize,
+    loop_budget: AgentLoopBudget,
 ) -> bool {
-    attempt_index >= max_attempts
+    loop_budget.exhausted_at(attempt_index)
         && transcript_requests_long_range_work(transcript)
         && turn
             .action
@@ -1467,11 +1540,14 @@ fn mark_long_range_budget_exhausted_if_needed(
     transcript: &str,
     mut turn: CompletedAssistantTurn,
     attempt_index: usize,
-    max_attempts: usize,
+    loop_budget: AgentLoopBudget,
 ) -> CompletedAssistantTurn {
-    if !long_range_budget_exhausted_without_finish(transcript, &turn, attempt_index, max_attempts) {
+    if !long_range_budget_exhausted_without_finish(transcript, &turn, attempt_index, loop_budget) {
         return turn;
     }
+    let max_attempts = loop_budget
+        .max_attempts()
+        .expect("budget exhaustion is only possible for finite loop budgets");
     turn.response = format!(
         "I made progress but hit the {max_attempts}-attempt loop budget before completing the full task."
     );
@@ -1580,9 +1656,9 @@ fn budget_exhausted_relabels_attempt(
 fn should_replan_after_effect(
     effect: Option<&str>,
     attempt_index: usize,
-    max_attempts: usize,
+    loop_budget: AgentLoopBudget,
 ) -> bool {
-    if attempt_index >= max_attempts {
+    if !loop_budget.can_continue_after(attempt_index) {
         return false;
     }
     matches!(
@@ -1596,18 +1672,18 @@ fn should_replan_after_turn(
     turn: &CompletedAssistantTurn,
     effect: Option<&str>,
     attempt_index: usize,
-    max_attempts: usize,
+    loop_budget: AgentLoopBudget,
 ) -> bool {
     if turn.action.as_ref().is_some_and(action_is_text_entry) {
         return false;
     }
-    should_replan_after_effect(effect, attempt_index, max_attempts)
+    should_replan_after_effect(effect, attempt_index, loop_budget)
         || should_continue_long_range_after_verified_action(
             transcript,
             turn,
             effect,
             attempt_index,
-            max_attempts,
+            loop_budget,
         )
 }
 
@@ -2462,16 +2538,34 @@ mod tests {
     #[test]
     fn agent_loop_attempt_budget_is_conservative_and_configurable() {
         std::env::remove_var("CUA_AGENT_LOOP_MAX_ATTEMPTS");
-        assert_eq!(agent_loop_max_attempts(), 5);
+        assert_eq!(
+            agent_loop_budget(),
+            AgentLoopBudget::Finite { max_attempts: 5 }
+        );
 
         std::env::set_var("CUA_AGENT_LOOP_MAX_ATTEMPTS", "12");
-        assert_eq!(agent_loop_max_attempts(), 12);
+        assert_eq!(
+            agent_loop_budget(),
+            AgentLoopBudget::Finite { max_attempts: 12 }
+        );
+
+        std::env::set_var("CUA_AGENT_LOOP_MAX_ATTEMPTS", "n");
+        assert_eq!(agent_loop_budget(), AgentLoopBudget::Unbounded);
+
+        std::env::set_var("CUA_AGENT_LOOP_MAX_ATTEMPTS", " N ");
+        assert_eq!(agent_loop_budget(), AgentLoopBudget::Unbounded);
 
         std::env::set_var("CUA_AGENT_LOOP_MAX_ATTEMPTS", "30");
-        assert_eq!(agent_loop_max_attempts(), 5);
+        assert_eq!(
+            agent_loop_budget(),
+            AgentLoopBudget::Finite { max_attempts: 5 }
+        );
 
         std::env::set_var("CUA_AGENT_LOOP_MAX_ATTEMPTS", "0");
-        assert_eq!(agent_loop_max_attempts(), 5);
+        assert_eq!(
+            agent_loop_budget(),
+            AgentLoopBudget::Finite { max_attempts: 5 }
+        );
         std::env::remove_var("CUA_AGENT_LOOP_MAX_ATTEMPTS");
     }
 
@@ -2483,13 +2577,34 @@ mod tests {
     #[test]
     fn agent_loop_replans_only_for_recoverable_effects_inside_budget() {
         for effect in ["partial", "unverifiable", "suspected_noop", "refused"] {
-            assert!(should_replan_after_effect(Some(effect), 1, 3));
+            assert!(should_replan_after_effect(
+                Some(effect),
+                1,
+                AgentLoopBudget::Finite { max_attempts: 3 }
+            ));
         }
         for effect in ["confirmed", "sent", "unknown"] {
-            assert!(!should_replan_after_effect(Some(effect), 1, 3));
+            assert!(!should_replan_after_effect(
+                Some(effect),
+                1,
+                AgentLoopBudget::Finite { max_attempts: 3 }
+            ));
         }
-        assert!(!should_replan_after_effect(None, 1, 3));
-        assert!(!should_replan_after_effect(Some("suspected_noop"), 3, 3));
+        assert!(!should_replan_after_effect(
+            None,
+            1,
+            AgentLoopBudget::Finite { max_attempts: 3 }
+        ));
+        assert!(!should_replan_after_effect(
+            Some("suspected_noop"),
+            3,
+            AgentLoopBudget::Finite { max_attempts: 3 }
+        ));
+        assert!(should_replan_after_effect(
+            Some("suspected_noop"),
+            30,
+            AgentLoopBudget::Unbounded
+        ));
     }
 
     #[test]
@@ -2513,7 +2628,7 @@ mod tests {
                 &turn,
                 Some(effect),
                 1,
-                3
+                AgentLoopBudget::Finite { max_attempts: 3 }
             ));
         }
     }
@@ -2531,7 +2646,7 @@ mod tests {
             &turn,
             Some("suspected_noop"),
             1,
-            3
+            AgentLoopBudget::Finite { max_attempts: 3 }
         ));
     }
 
@@ -2631,10 +2746,22 @@ mod tests {
         assert!(transcript_requests_text_entry(
             "Open Notes and write me a note that says hello"
         ));
+        assert!(transcript_requests_text_entry(
+            "Make a new note that says hello"
+        ));
+        assert!(transcript_requests_text_entry(
+            "Leave a message that says hello"
+        ));
         assert!(!transcript_requests_text_entry(
             "Research the web and verify the page content"
         ));
+        assert!(!transcript_requests_text_entry(
+            "Read the page and summarize what it says"
+        ));
+        assert!(!transcript_requests_text_entry("Read the story aloud"));
+        assert!(!transcript_requests_text_entry("Find the map marker"));
         assert!(!transcript_requests_text_entry("Open Notes"));
+        assert!(!transcript_requests_text_entry("Open Messages"));
         assert!(!action_satisfies_text_entry_request(
             &cua_core::InputAction::OpenApp {
                 app_name: "Notes".to_string(),
@@ -2672,7 +2799,7 @@ mod tests {
             &turn,
             Some("partial"),
             1,
-            3
+            AgentLoopBudget::Finite { max_attempts: 3 }
         ));
         assert!(!open_only_incomplete_for_goal("Open Safari", &turn));
     }
@@ -2693,28 +2820,35 @@ mod tests {
             &turn,
             Some("confirmed"),
             1,
-            5
+            AgentLoopBudget::Finite { max_attempts: 5 }
         ));
         assert!(should_replan_after_turn(
             "Research cloud computer agents and summarize the options",
             &turn,
             Some("confirmed"),
             1,
-            5
+            AgentLoopBudget::Finite { max_attempts: 5 }
         ));
         assert!(!should_continue_long_range_after_verified_action(
             "Open the browser",
             &turn,
             Some("confirmed"),
             1,
-            5
+            AgentLoopBudget::Finite { max_attempts: 5 }
         ));
         assert!(!should_continue_long_range_after_verified_action(
             "Research cloud computer agents",
             &turn,
             Some("confirmed"),
             5,
-            5
+            AgentLoopBudget::Finite { max_attempts: 5 }
+        ));
+        assert!(should_continue_long_range_after_verified_action(
+            "Research cloud computer agents",
+            &turn,
+            Some("confirmed"),
+            50,
+            AgentLoopBudget::Unbounded
         ));
     }
 
@@ -2737,14 +2871,14 @@ mod tests {
             &turn,
             Some("confirmed"),
             1,
-            5
+            AgentLoopBudget::Finite { max_attempts: 5 }
         ));
         assert!(!should_replan_after_turn(
             "Research cloud computer agents and write the summary in Notes",
             &turn,
             Some("confirmed"),
             1,
-            5
+            AgentLoopBudget::Finite { max_attempts: 5 }
         ));
     }
 
@@ -2766,7 +2900,7 @@ mod tests {
             "Research cloud computer agents and summarize what you verify",
             turn,
             5,
-            5,
+            AgentLoopBudget::Finite { max_attempts: 5 },
         );
 
         assert_eq!(turn_effect(&completed), Some("partial".to_string()));
@@ -2775,6 +2909,28 @@ mod tests {
             completed.evidence.as_ref().unwrap()["reason"],
             "long_range_goal_reached_agent_loop_budget"
         );
+    }
+
+    #[test]
+    fn agent_loop_unbounded_budget_never_marks_attempts_exhausted() {
+        let turn = CompletedAssistantTurn {
+            response: "Reading another source.".to_string(),
+            action: Some(json!({
+                "kind": "aegis",
+                "args": ["--mode", "headful", "page", "text", "--scope", "main"]
+            })),
+            evidence: Some(json!({"effect": "confirmed"})),
+        };
+
+        let completed = mark_long_range_budget_exhausted_if_needed(
+            "Research cloud computer agents and keep going until verified",
+            turn,
+            10_000,
+            AgentLoopBudget::Unbounded,
+        );
+
+        assert_eq!(turn_effect(&completed), Some("confirmed".to_string()));
+        assert_eq!(completed.response, "Reading another source.");
     }
 
     #[test]
@@ -2833,7 +2989,7 @@ mod tests {
             "Research cloud computer agents and write the summary in Notes",
             turn,
             5,
-            5,
+            AgentLoopBudget::Finite { max_attempts: 5 },
         );
 
         assert_eq!(turn_effect(&completed), Some("confirmed".to_string()));
