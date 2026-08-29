@@ -2755,6 +2755,7 @@ fn response_reports_blocker(response: &str) -> bool {
         "needs permission",
         "requires permission",
         "permission is required",
+        "permission denied",
         "need authorization",
         "needs authorization",
         "requires authorization",
@@ -2797,10 +2798,8 @@ fn response_reports_blocker(response: &str) -> bool {
 
 fn prior_attempts_have_blocker_evidence(prior_attempts: &[PlanAttemptContext]) -> bool {
     prior_attempts.iter().any(|attempt| {
-        matches!(
-            attempt.effect.as_deref(),
-            Some("failed" | "refused" | "unverifiable")
-        ) || attempt
+        attempt.effect.as_deref() == Some("refused")
+            || attempt
             .evidence
             .as_ref()
             .is_some_and(evidence_reports_blocker)
@@ -2811,7 +2810,7 @@ fn evidence_reports_blocker(evidence: &serde_json::Value) -> bool {
     let Some(text) = serde_json::to_string(evidence).ok() else {
         return false;
     };
-    response_reports_blocker(&text) || response_reports_terminal_failure(&text.to_ascii_lowercase())
+    response_reports_blocker(&text)
 }
 
 fn response_asks_direct_user_question(lower_response: &str) -> bool {
@@ -5684,6 +5683,60 @@ mod tests {
                 evidence: Some(json!({
                     "effect": "refused",
                     "message": "login required"
+                })),
+            }]
+        ));
+        assert!(action_null_stops_long_range_without_evidence(
+            "Open Safari and research the internal admin page.",
+            "I need you to sign in before I can continue.",
+            &None,
+            &[PlanAttemptContext {
+                attempt_index: 1,
+                response: "Clicking the admin link.".to_string(),
+                action: Some(json!({
+                    "kind": "mouse_click",
+                    "x": 10,
+                    "y": 20
+                })),
+                effect: Some("unverifiable".to_string()),
+                evidence: Some(json!({
+                    "effect": "unverifiable"
+                })),
+            }]
+        ));
+        assert!(action_null_stops_long_range_without_evidence(
+            "Open Safari and research the internal admin page.",
+            "I need you to sign in before I can continue.",
+            &None,
+            &[PlanAttemptContext {
+                attempt_index: 1,
+                response: "Reading a missing local file.".to_string(),
+                action: Some(json!({
+                    "kind": "shell_exec",
+                    "command": "cat /tmp/does-not-exist"
+                })),
+                effect: Some("failed".to_string()),
+                evidence: Some(json!({
+                    "effect": "failed",
+                    "error": "cat: /tmp/does-not-exist: No such file or directory"
+                })),
+            }]
+        ));
+        assert!(!action_null_stops_long_range_without_evidence(
+            "Open Safari and research the internal admin page.",
+            "Permission is required before I can continue.",
+            &None,
+            &[PlanAttemptContext {
+                attempt_index: 1,
+                response: "Reading the admin page.".to_string(),
+                action: Some(json!({
+                    "kind": "aegis",
+                    "args": ["--mode", "headless", "page", "text", "--scope", "main"]
+                })),
+                effect: Some("failed".to_string()),
+                evidence: Some(json!({
+                    "effect": "failed",
+                    "error": "permission denied"
                 })),
             }]
         ));
