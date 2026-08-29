@@ -4147,16 +4147,8 @@ mod tests {
         let local = CuaClient::new(format!("prefetch-join-test-{}", uuid::Uuid::new_v4()))
             .await
             .unwrap();
-        let task = tokio::spawn(async {
+        let task: tokio::task::JoinHandle<PrefetchedContext> = tokio::spawn(async {
             panic!("synthetic context prefetch failure");
-            #[allow(unreachable_code)]
-            PrefetchedContext {
-                session: None,
-                frame: None,
-                desktop: None,
-                errors: Vec::new(),
-                elapsed: Duration::ZERO,
-            }
         });
 
         let context = resolve_context_for_planning(local, Some(task)).await;
