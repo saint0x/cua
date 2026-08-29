@@ -2623,7 +2623,7 @@ fn action_null_finishes_after_prior_attempts(
     action.is_none()
         && !prior_attempts.is_empty()
         && (prior_attempts_support_verified_final(response, prior_attempts)
-            || final_response_reports_prior_failure(response))
+            || prior_attempts_support_failure_final(response, prior_attempts))
 }
 
 fn failure_boundary_plan_collapses_recovery(
@@ -2747,13 +2747,23 @@ fn prior_attempts_support_explicit_aegis_final(
                 && confirmed_attempt_has_task_evidence(attempt)
         });
     }
-    final_response_reports_prior_failure(response)
+    prior_attempts_support_failure_final(response, attempts)
         && prior_attempts_include_aegis_evidence(attempts)
 }
 
 fn prior_attempts_support_verified_final(response: &str, attempts: &[PlanAttemptContext]) -> bool {
     final_response_claims_verified_result(response)
         && attempts.iter().any(confirmed_attempt_has_task_evidence)
+}
+
+fn prior_attempts_support_failure_final(response: &str, attempts: &[PlanAttemptContext]) -> bool {
+    final_response_reports_prior_failure(response)
+        && attempts.iter().any(|attempt| {
+            matches!(
+                attempt.effect.as_deref(),
+                Some("failed" | "refused" | "suspected_noop" | "unverifiable")
+            )
+        })
 }
 
 fn confirmed_attempt_has_task_evidence(attempt: &PlanAttemptContext) -> bool {
@@ -3028,13 +3038,7 @@ fn inferred_final_effect(
     if prior_attempts_support_verified_final(&completed.response, prior_attempts) {
         return "confirmed";
     }
-    if prior_attempts.iter().any(|attempt| {
-        matches!(
-            attempt.effect.as_deref(),
-            Some("failed" | "refused" | "suspected_noop" | "unverifiable")
-        )
-    }) && final_response_reports_prior_failure(&completed.response)
-    {
+    if prior_attempts_support_failure_final(&completed.response, prior_attempts) {
         return "failed";
     }
     "stopped"
@@ -5462,6 +5466,54 @@ mod tests {
             "The verified clipboard contents are: clipboard loop proof 612",
             &None,
             &[]
+        ));
+    }
+
+    #[test]
+    fn failure_action_null_reply_requires_prior_failure_evidence() {
+        let bare_confirmed_attempts = vec![PlanAttemptContext {
+            attempt_index: 1,
+            response: "Opening the app.".to_string(),
+            action: Some(json!({"kind": "open_app", "app_name": "Safari"})),
+            effect: Some("confirmed".to_string()),
+            evidence: Some(json!({"effect": "confirmed"})),
+        }];
+        let failed_attempts = vec![PlanAttemptContext {
+            attempt_index: 1,
+            response: "Reading the missing file.".to_string(),
+            action: Some(json!({
+                "kind": "shell_exec",
+                "command": "cat /tmp/does-not-exist",
+                "timeout_ms": 5000
+            })),
+            effect: Some("failed".to_string()),
+            evidence: Some(json!({
+                "effect": "failed",
+                "reason": "dispatch_error",
+                "error": "cat: /tmp/does-not-exist: No such file or directory"
+            })),
+        }];
+
+        assert!(!action_null_finishes_after_prior_attempts(
+            "Safari failed because the page timed out.",
+            &None,
+            &bare_confirmed_attempts
+        ));
+        assert_eq!(
+            inferred_final_effect(
+                &CompletedAssistantTurn {
+                    response: "Safari failed because the page timed out.".to_string(),
+                    action: None,
+                    evidence: None,
+                },
+                &bare_confirmed_attempts
+            ),
+            "stopped"
+        );
+        assert!(action_null_finishes_after_prior_attempts(
+            "The file failed with no such file or directory.",
+            &None,
+            &failed_attempts
         ));
     }
 
