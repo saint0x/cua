@@ -8,8 +8,11 @@ const DEFAULT_PLANNER_TIMEOUT_MS: u64 = 12_000;
 const DEFAULT_PLANNER_ATTEMPTS: usize = 3;
 const DEFAULT_PLANNER_OUTPUT_ATTEMPTS: usize = 2;
 const DEFAULT_PLANNER_RETRY_BACKOFF_MS: u64 = 220;
-const DEFAULT_PLANNER_MAX_TOKENS: u32 = 512;
+const DEFAULT_PLANNER_MAX_TOKENS: u32 = 768;
 const DEFAULT_PLANNER_TEXT_MAX_TOKENS: u32 = 1_200;
+const MODEL_VISIBLE_PRIOR_ATTEMPTS_MAX: usize = 8;
+const MODEL_VISIBLE_EVIDENCE_ITEMS_MAX: usize = 4;
+const MODEL_VISIBLE_TEXT_MAX_CHARS: usize = 700;
 const PLANNER_SYSTEM_PROMPT: &str = r#"You are the protocol planner for cua, a backend-neutral computer-use runtime. You are not a general chat assistant and you do not have hidden tools.
 
 You receive:
@@ -61,7 +64,7 @@ Coordinate rules:
 - Prefer open_app when the user asks only to open or launch a desktop app by name.
 - Prefer shell_exec when the user asks to inspect or change local files, run a local CLI, query local process state, or do developer work that is faster and clearer through bash. Keep commands short, bounded, and directly tied to the user request.
 - Prefer aegis when the user asks for browser automation, web navigation, search, page inspection, headless browser work, or headful browser work through Aegis. Pass explicit Aegis CLI args only; do not wrap Aegis in shell_exec.
-- Supported Aegis research forms are `search <query words>`, `navigate <url>`, `page actions`, `page links`, `page text --scope main`, `page markdown --scope article`, `page find <text>`, and `page open-link <link text>`. If `page open-link` is ambiguous, use `page links`, then retry `page open-link` with `--exact`, `--index`, or `--href-contains`. Do not invent unsupported commands such as `page actions --url` or `page click --index`; use `navigate` before page inspection and `page open-link` for links.
+- Supported Aegis research forms are `search <query words>`, `navigate <url>`, `page actions`, `page links`, `page text --scope main`, `page markdown --scope article`, `page find <text>`, and `page open-link <link text>`. If `page open-link` is ambiguous, use `page links`, then retry `page open-link` with `--exact`, `--index`, or `--href-contains` followed immediately by its value. Do not emit incomplete options, trailing `--`, runtime-only `--server-addr`/`--profile`, or unsupported commands such as `page actions --url` or `page click --index`; use `navigate` before page inspection and `page open-link` for links.
 - Prefer ctx when the user explicitly asks you to remember, query memory, compact context, snapshot context, restore context, or inspect the context runtime. Pass explicit ctx CLI args only; do not wrap ctx in shell_exec. Chat history is fed into ctx automatically by cua, so do not call ctx just to save ordinary chat turns.
 - Profile scratchpads are fed into planner context automatically. If the user explicitly asks to add, read, list, or delete a scratchpad, use shell_exec with the bounded cua scratchpad CLI command and the active owner session only when that session is available in the runtime evidence.
 - Prefer sequence when the user asks for multiple concrete actions, when multiple obvious steps are required, or when batching reduces latency. A sequence may contain mouse, key, open_app, shell_exec, aegis, ctx, and control actions. Do not nest sequence inside sequence.
@@ -172,12 +175,13 @@ impl Planner {
             .desktop
             .map(desktop_context)
             .unwrap_or_else(|| "Desktop context: unavailable.".to_string());
-        let attempt_context = if request.prior_attempts.is_empty() {
+        let model_prior_attempts = model_visible_prior_attempts(request.prior_attempts);
+        let attempt_context = if model_prior_attempts.is_empty() {
             "Prior attempts: none.".to_string()
         } else {
             format!(
                 "Prior attempts in this turn:\n{}",
-                serde_json::to_string_pretty(request.prior_attempts)
+                serde_json::to_string_pretty(&model_prior_attempts)
                     .unwrap_or_else(|_| "[]".to_string())
             )
         };
@@ -211,6 +215,7 @@ impl Planner {
                 {"role": "user", "content": content}
             ],
             "max_tokens": planner_max_tokens(transcript),
+            "temperature": 0,
             "response_format": {"type": "json_object"},
         });
         let output_attempts = retry_attempts_from_env(
@@ -369,6 +374,105 @@ fn desktop_context(desktop: &DesktopState) -> String {
         "Desktop context: cursor at {},{}; displays [{}]; windows [{}]; {frame}.",
         desktop.cursor.x, desktop.cursor.y, displays, windows
     )
+}
+
+fn model_visible_prior_attempts(prior_attempts: &[PlanAttemptContext]) -> Vec<PlanAttemptContext> {
+    prior_attempts
+        .iter()
+        .skip(
+            prior_attempts
+                .len()
+                .saturating_sub(MODEL_VISIBLE_PRIOR_ATTEMPTS_MAX),
+        )
+        .cloned()
+        .map(|mut attempt| {
+            if let Some(action) = attempt.action.as_mut() {
+                strip_runtime_only_action_args(action);
+            }
+            if let Some(evidence) = attempt.evidence.as_mut() {
+                compact_model_visible_evidence(evidence);
+            }
+            attempt
+        })
+        .collect()
+}
+
+fn strip_runtime_only_action_args(action: &mut serde_json::Value) {
+    match action.get("kind").and_then(|kind| kind.as_str()) {
+        Some("aegis") => strip_runtime_only_aegis_args(action),
+        Some("sequence") => {
+            if let Some(actions) = action
+                .get_mut("actions")
+                .and_then(|actions| actions.as_array_mut())
+            {
+                for action in actions {
+                    strip_runtime_only_action_args(action);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn strip_runtime_only_aegis_args(action: &mut serde_json::Value) {
+    let Some(args) = action.get_mut("args").and_then(|args| args.as_array_mut()) else {
+        return;
+    };
+    let mut cleaned = Vec::with_capacity(args.len());
+    let mut index = 0usize;
+    while index < args.len() {
+        let arg = args[index].as_str();
+        let runtime_option = matches!(arg, Some("--server-addr" | "--profile"));
+        if runtime_option {
+            index += 2;
+        } else {
+            cleaned.push(args[index].clone());
+            index += 1;
+        }
+    }
+    *args = cleaned;
+}
+
+fn compact_model_visible_evidence(evidence: &mut serde_json::Value) {
+    match evidence {
+        serde_json::Value::Object(object) => {
+            for value in object.values_mut() {
+                compact_model_visible_evidence(value);
+            }
+            if let Some(items) = object
+                .get_mut("evidence")
+                .and_then(|items| items.as_array_mut())
+            {
+                if items.len() > MODEL_VISIBLE_EVIDENCE_ITEMS_MAX {
+                    let keep_from = items.len() - MODEL_VISIBLE_EVIDENCE_ITEMS_MAX;
+                    items.drain(0..keep_from);
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                compact_model_visible_evidence(item);
+            }
+        }
+        serde_json::Value::String(text) => {
+            *text = truncate_model_visible_text(text, MODEL_VISIBLE_TEXT_MAX_CHARS);
+        }
+        _ => {}
+    }
+}
+
+fn truncate_model_visible_text(text: &str, max_chars: usize) -> String {
+    let char_count = text.chars().count();
+    if char_count <= max_chars {
+        return text.to_string();
+    }
+    if max_chars <= 3 {
+        return ".".repeat(max_chars);
+    }
+    let head_len = max_chars.saturating_sub(3);
+    let mut truncated = text.chars().take(head_len).collect::<String>();
+    truncated.push_str("...");
+    truncated
 }
 
 fn openrouter_planner_timeout() -> Duration {
@@ -1324,7 +1428,10 @@ mod tests {
         assert!(PLANNER_SYSTEM_PROMPT.contains("page open-link"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("page links"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("--href-contains"));
-        assert!(PLANNER_SYSTEM_PROMPT.contains("Do not invent unsupported commands"));
+        assert!(PLANNER_SYSTEM_PROMPT.contains("Do not emit incomplete options"));
+        assert!(PLANNER_SYSTEM_PROMPT.contains("runtime-only"));
+        assert!(PLANNER_SYSTEM_PROMPT.contains("--server-addr"));
+        assert!(PLANNER_SYSTEM_PROMPT.contains("unsupported commands"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("ctx"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("scratchpad"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("Native Skill.md support"));
@@ -1344,6 +1451,106 @@ mod tests {
         assert!(PLANNER_SYSTEM_PROMPT.contains("take or use a fresh screenshot/reobserve pass"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("Do not echo internal effect labels"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("Do not invent a separate skill runtime"));
+    }
+
+    #[test]
+    fn model_visible_prior_attempts_strip_runtime_only_aegis_wiring() {
+        let attempts = vec![PlanAttemptContext {
+            attempt_index: 1,
+            response: "Checking links.".to_string(),
+            action: Some(serde_json::json!({
+                "kind": "sequence",
+                "actions": [
+                    {
+                        "kind": "aegis",
+                        "args": [
+                            "--server-addr",
+                            "127.0.0.1:19969",
+                            "--profile",
+                            "cua-test-profile",
+                            "--mode",
+                            "headless",
+                            "page",
+                            "links"
+                        ],
+                        "timeout_ms": 15000
+                    },
+                    {
+                        "kind": "shell_exec",
+                        "command": "pwd",
+                        "timeout_ms": 5000
+                    }
+                ],
+                "inter_action_delay_ms": 120
+            })),
+            effect: Some("confirmed".to_string()),
+            evidence: Some(serde_json::json!({
+                "effect": "confirmed",
+                "evidence": [{"kind": "value_readback", "message": "aegis exited 0; stdout=[]; stderr="}]
+            })),
+        }];
+
+        let visible = model_visible_prior_attempts(&attempts);
+
+        let action = visible[0].action.as_ref().unwrap();
+        let args = action["actions"][0]["args"].as_array().unwrap();
+        assert_eq!(
+            args,
+            &[
+                serde_json::json!("--mode"),
+                serde_json::json!("headless"),
+                serde_json::json!("page"),
+                serde_json::json!("links"),
+            ]
+        );
+        assert_eq!(action["actions"][1]["kind"], "shell_exec");
+        assert_eq!(
+            visible[0].evidence, attempts[0].evidence,
+            "dispatch evidence stays truthful even when model-visible action wiring is cleaned"
+        );
+    }
+
+    #[test]
+    fn model_visible_prior_attempts_bound_repair_context_growth() {
+        let attempts = (0..10)
+            .map(|index| PlanAttemptContext {
+                attempt_index: index + 1,
+                response: format!("attempt {index}"),
+                action: Some(serde_json::json!({
+                    "kind": "aegis",
+                    "args": ["--mode", "headless", "page", "find", "Foreign Key"],
+                    "timeout_ms": 15000
+                })),
+                effect: Some("confirmed".to_string()),
+                evidence: Some(serde_json::json!({
+                    "effect": "confirmed",
+                    "evidence": [
+                        {"kind": "value_readback", "message": "old"},
+                        {"kind": "value_readback", "message": "older"},
+                        {"kind": "value_readback", "message": "oldest"},
+                        {"kind": "value_readback", "message": "still old"},
+                        {"kind": "value_readback", "message": "x".repeat(MODEL_VISIBLE_TEXT_MAX_CHARS + 32)}
+                    ]
+                })),
+            })
+            .collect::<Vec<_>>();
+
+        let visible = model_visible_prior_attempts(&attempts);
+
+        assert_eq!(visible.len(), MODEL_VISIBLE_PRIOR_ATTEMPTS_MAX);
+        assert_eq!(visible[0].attempt_index, 3);
+        let evidence_items = visible[0].evidence.as_ref().unwrap()["evidence"]
+            .as_array()
+            .unwrap();
+        assert_eq!(evidence_items.len(), MODEL_VISIBLE_EVIDENCE_ITEMS_MAX);
+        let message = evidence_items
+            .last()
+            .unwrap()
+            .get("message")
+            .and_then(|message| message.as_str())
+            .unwrap();
+        assert_eq!(message.chars().count(), MODEL_VISIBLE_TEXT_MAX_CHARS);
+        assert!(message.ends_with("..."));
     }
 
     #[test]
