@@ -1020,7 +1020,7 @@ async fn plan_and_dispatch(
                     continue;
                 }
             };
-            let mut effect = turn_effect(&turn);
+            let mut effect = observed_turn_effect(&turn, &attempts);
             let open_only_incomplete = loop_budget.can_continue_after(attempt_index)
                 && open_only_incomplete_for_goal(&transcript, &turn);
             let evidence = if open_only_incomplete {
@@ -1457,6 +1457,16 @@ fn turn_effect(turn: &CompletedAssistantTurn) -> Option<String> {
         .map(ToString::to_string)
 }
 
+fn observed_turn_effect(
+    turn: &CompletedAssistantTurn,
+    prior_attempts: &[PlanAttemptContext],
+) -> Option<String> {
+    turn_effect(turn).or_else(|| {
+        (!prior_attempts.is_empty() && turn.action.is_none())
+            .then(|| inferred_final_effect(turn, prior_attempts).to_string())
+    })
+}
+
 fn action_needs_fresh_verification(action: &serde_json::Value) -> bool {
     matches!(
         action.get("kind").and_then(|kind| kind.as_str()),
@@ -1730,9 +1740,13 @@ fn transcript_requests_long_range_work(transcript: &str) -> bool {
                 word.as_str(),
                 "research"
                     | "search"
+                    | "inspect"
+                    | "navigate"
+                    | "navigation"
                     | "browse"
                     | "browsing"
                     | "web"
+                    | "page"
                     | "google"
                     | "lookup"
                     | "look"
@@ -1741,6 +1755,10 @@ fn transcript_requests_long_range_work(transcript: &str) -> bool {
                     | "investigate"
                     | "compare"
                     | "summarize"
+                    | "title"
+                    | "heading"
+                    | "verify"
+                    | "verified"
                     | "while"
                     | "watching"
             )
@@ -2034,6 +2052,9 @@ fn final_response_claims_verified_result(response: &str) -> bool {
             "shows",
             "title",
             "reads",
+            "contains",
+            "content",
+            "contents",
         ]
         .iter()
         .any(|marker| lower.contains(marker))
@@ -3342,6 +3363,35 @@ mod tests {
     }
 
     #[test]
+    fn agent_loop_aegis_navigation_inspection_requests_continue_after_navigation() {
+        let turn = CompletedAssistantTurn {
+            response: "Navigating with Aegis.".to_string(),
+            action: Some(json!({
+                "kind": "aegis",
+                "args": ["--mode", "headless", "navigate", "https://example.com"]
+            })),
+            evidence: Some(json!({"effect": "confirmed"})),
+        };
+        let transcript = "Use Aegis in headless mode to navigate to https://example.com, inspect the page actions or page text, and report the verified page title or heading.";
+
+        assert!(transcript_requests_long_range_work(transcript));
+        assert!(should_continue_long_range_after_verified_action(
+            transcript,
+            &turn,
+            Some("confirmed"),
+            1,
+            AgentLoopBudget::Unbounded
+        ));
+        assert!(should_replan_after_turn(
+            transcript,
+            &turn,
+            Some("confirmed"),
+            1,
+            AgentLoopBudget::Unbounded
+        ));
+    }
+
+    #[test]
     fn agent_loop_treats_null_action_progress_claims_as_incomplete() {
         assert!(planner_response_claims_pending_work(
             "Opening Safari and searching for the official Gemini page."
@@ -3514,6 +3564,9 @@ mod tests {
         assert!(final_response_claims_verified_result(
             "Calculator shows 123 + 456 with a result of 579."
         ));
+        assert!(final_response_claims_verified_result(
+            "/tmp/cua-default-budget-a.txt contains 'default budget source 913'."
+        ));
         assert!(!final_response_claims_verified_result(
             "Opening Calculator via Spotlight and typing 123"
         ));
@@ -3546,6 +3599,31 @@ mod tests {
 
         assert!(final_response_reports_prior_failure(&completed.response));
         assert_eq!(inferred_final_effect(&completed, &prior_attempts), "failed");
+    }
+
+    #[test]
+    fn agent_loop_final_no_action_attempt_outcome_uses_inferred_effect() {
+        let prior_attempts = vec![PlanAttemptContext {
+            attempt_index: 1,
+            response: "Creating and reading the file.".to_string(),
+            action: Some(json!({
+                "kind": "shell_exec",
+                "command": "printf 'done' > /tmp/example && cat /tmp/example",
+                "timeout_ms": 5000
+            })),
+            effect: Some("confirmed".to_string()),
+            evidence: Some(json!({"effect": "confirmed"})),
+        }];
+        let completed = CompletedAssistantTurn {
+            response: "/tmp/example contains 'done'.".to_string(),
+            action: None,
+            evidence: None,
+        };
+
+        assert_eq!(
+            observed_turn_effect(&completed, &prior_attempts),
+            Some("confirmed".to_string())
+        );
     }
 
     #[test]
