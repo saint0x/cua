@@ -19,12 +19,29 @@ PLANNER_DIR="$OUT_DIR/planner"
 MISSING_KEY_DIR="$OUT_DIR/missing-key"
 PROVIDER_PROGRESS_DIR="$OUT_DIR/provider-progress"
 UI_DIR="$OUT_DIR/ui"
+PLANNER_MODEL="${CUA_VOICE_PLANNER_PROOF_MODEL:-gemini-3-flash-preview}"
 
 env_key_available() {
   local name="$1"
   [[ -n "${!name:-}" ]] && return 0
   grep -Eq "^[[:space:]]*(export[[:space:]]+)?${name}=" "${CUA_ENV_FILE:-$HOME/.cua/config/env}" 2>/dev/null && return 0
   return 1
+}
+
+planner_key_available() {
+  if [[ "$PLANNER_MODEL" == gemini-* ]]; then
+    env_key_available GEMINI_API_KEY || env_key_available GOOGLE_API_KEY
+  else
+    env_key_available OPENROUTER_API_KEY
+  fi
+}
+
+planner_key_name() {
+  if [[ "$PLANNER_MODEL" == gemini-* ]]; then
+    printf 'GEMINI_API_KEY or GOOGLE_API_KEY'
+  else
+    printf 'OPENROUTER_API_KEY'
+  fi
 }
 
 ACTION_RESULT="$(
@@ -34,13 +51,16 @@ ACTION_RESULT="$(
   CUA_VOICE_WAV_PROOF_OUT_DIR="$ACTION_DIR" \
   scripts/host-voice-wav-proof.sh | tail -n 1
 )"
-PLANNER_RESULT="$(
-  CUA_HTTP_TOKEN="voice-proof-suite-planner-$RUN_ID" \
-  CUA_VOICE_PLANNER_PROOF_PROFILE="voice-proof-suite-planner-$RUN_ID" \
-  CUA_VOICE_PLANNER_PROOF_ADDR="127.0.0.1:$((PORT_BASE + 1))" \
-  CUA_VOICE_PLANNER_PROOF_OUT_DIR="$PLANNER_DIR" \
-  scripts/host-voice-planner-proof.sh | tail -n 1
-)"
+PLANNER_RESULT=""
+if planner_key_available; then
+  PLANNER_RESULT="$(
+    CUA_HTTP_TOKEN="voice-proof-suite-planner-$RUN_ID" \
+    CUA_VOICE_PLANNER_PROOF_PROFILE="voice-proof-suite-planner-$RUN_ID" \
+    CUA_VOICE_PLANNER_PROOF_ADDR="127.0.0.1:$((PORT_BASE + 1))" \
+    CUA_VOICE_PLANNER_PROOF_OUT_DIR="$PLANNER_DIR" \
+    scripts/host-voice-planner-proof.sh | tail -n 1
+  )"
+fi
 MISSING_KEY_RESULT="$(
   CUA_VOICE_MISSING_KEY_PROFILE="voice-proof-suite-missing-key-$RUN_ID" \
   CUA_VOICE_MISSING_KEY_OUT_DIR="$MISSING_KEY_DIR" \
@@ -60,8 +80,12 @@ UI_RESULT="$(
   scripts/host-voice-ui-proof.sh | tail -n 1
 )"
 
-if [[ "$ACTION_RESULT" != "$ACTION_DIR" || "$PLANNER_RESULT" != "$PLANNER_DIR" || "$UI_RESULT" != "$UI_DIR" ]]; then
+if [[ "$ACTION_RESULT" != "$ACTION_DIR" || "$UI_RESULT" != "$UI_DIR" ]]; then
   echo "voice proof child output mismatch" >&2
+  exit 1
+fi
+if [[ -n "$PLANNER_RESULT" && "$PLANNER_RESULT" != "$PLANNER_DIR" ]]; then
+  echo "voice planner proof child output mismatch" >&2
   exit 1
 fi
 if [[ "$MISSING_KEY_RESULT" != "$MISSING_KEY_DIR" ]]; then
@@ -74,10 +98,26 @@ if [[ -n "$PROVIDER_PROGRESS_RESULT" && "$PROVIDER_PROGRESS_RESULT" != "$PROVIDE
 fi
 
 jq -e '.within_budget == true' "$ACTION_DIR/proof.json" >/dev/null
-jq -e '.within_budget == true' "$PLANNER_DIR/proof.json" >/dev/null
-jq -e '.ok == true and .within_budget == true' "$MISSING_KEY_DIR/proof.json" >/dev/null
+if [[ -n "$PLANNER_RESULT" ]]; then
+  jq -e '.within_budget == true' "$PLANNER_DIR/proof.json" >/dev/null
+fi
+jq -e '
+  .ok == true and
+  .within_budget == true and
+  .trace_stop.attempts == 0 and
+  .trace_stop.final_effect == "failed" and
+  .memory_persisted == true
+' "$MISSING_KEY_DIR/proof.json" >/dev/null
 if [[ -n "$PROVIDER_PROGRESS_RESULT" ]]; then
-  jq -e '.ok == true and .within_budget == true' "$PROVIDER_PROGRESS_DIR/proof.json" >/dev/null
+  jq -e '
+    .ok == true and
+    .within_budget == true and
+    (.trace_stop.attempts | type == "number") and
+    .trace_stop.attempts > 0 and
+    (.trace_stop.final_effect | IN("confirmed", "failed", "partial")) and
+    any(.trace_outcomes[]; .effect == "confirmed" and .long_range_continuation == true) and
+    .memory_persisted == true
+  ' "$PROVIDER_PROGRESS_DIR/proof.json" >/dev/null
 fi
 jq -e '.ok == true' "$UI_DIR/proof.json" >/dev/null
 
@@ -86,17 +126,23 @@ if [[ -n "$PROVIDER_PROGRESS_RESULT" ]]; then
 else
   PROVIDER_PROGRESS_ARG=(--argjson provider_progress '[]')
 fi
+if [[ -n "$PLANNER_RESULT" ]]; then
+  PLANNER_ARG=(--slurpfile planner "$PLANNER_DIR/proof.json")
+else
+  PLANNER_ARG=(--argjson planner '[]')
+fi
 
 jq -n \
   --arg action_dir "$ACTION_DIR" \
   --arg planner_dir "$PLANNER_DIR" \
+  --arg planner_skip_reason "$(planner_key_name) unavailable" \
   --arg missing_key_dir "$MISSING_KEY_DIR" \
   --arg provider_progress_dir "$PROVIDER_PROGRESS_DIR" \
   --arg ui_dir "$UI_DIR" \
   --arg action_addr "127.0.0.1:$PORT_BASE" \
   --arg planner_addr "127.0.0.1:$((PORT_BASE + 1))" \
   --slurpfile action "$ACTION_DIR/proof.json" \
-  --slurpfile planner "$PLANNER_DIR/proof.json" \
+  "${PLANNER_ARG[@]}" \
   --slurpfile missing_key "$MISSING_KEY_DIR/proof.json" \
   "${PROVIDER_PROGRESS_ARG[@]}" \
   --slurpfile ui "$UI_DIR/proof.json" \
@@ -104,12 +150,23 @@ jq -n \
     schema_version: "cua.voice_proof_suite.v1",
     ok: (
       $action[0].within_budget == true and
-      $planner[0].within_budget == true and
+      (($planner | length) == 0 or $planner[0].within_budget == true) and
       $missing_key[0].ok == true and
       $missing_key[0].within_budget == true and
+      $missing_key[0].trace_stop.attempts == 0 and
+      $missing_key[0].trace_stop.final_effect == "failed" and
+      $missing_key[0].memory_persisted == true and
       (
         ($provider_progress | length) == 0 or
-        ($provider_progress[0].ok == true and $provider_progress[0].within_budget == true)
+        (
+          $provider_progress[0].ok == true and
+          $provider_progress[0].within_budget == true and
+          ($provider_progress[0].trace_stop.attempts | type == "number") and
+          $provider_progress[0].trace_stop.attempts > 0 and
+          ($provider_progress[0].trace_stop.final_effect | IN("confirmed", "failed", "partial")) and
+          any($provider_progress[0].trace_outcomes[]; .effect == "confirmed" and .long_range_continuation == true) and
+          $provider_progress[0].memory_persisted == true
+        )
       ) and
       $ui[0].ok == true
     ),
@@ -128,16 +185,27 @@ jq -n \
       metrics: $action[0].metrics,
       safety_state: $action[0].safety_state
     },
-    planner: {
-      dir: $planner_dir,
-      elapsed_ms: $planner[0].elapsed_ms,
-      events: $planner[0].events,
-      daemon_voice_steps: $planner[0].daemon_voice_steps,
-      transcript: $planner[0].transcript,
-      reply: $planner[0].reply,
-      metrics: $planner[0].metrics,
-      safety_state: $planner[0].safety_state
-    },
+    planner: (
+      if ($planner | length) == 0 then
+        {
+          skipped: true,
+          reason: $planner_skip_reason,
+          dir: $planner_dir
+        }
+      else
+        {
+          skipped: false,
+          dir: $planner_dir,
+          elapsed_ms: $planner[0].elapsed_ms,
+          events: $planner[0].events,
+          daemon_voice_steps: $planner[0].daemon_voice_steps,
+          transcript: $planner[0].transcript,
+          reply: $planner[0].reply,
+          metrics: $planner[0].metrics,
+          safety_state: $planner[0].safety_state
+        }
+      end
+    ),
     missing_key: {
       dir: $missing_key_dir,
       elapsed_ms: $missing_key[0].elapsed_ms,
