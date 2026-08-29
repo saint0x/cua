@@ -3251,10 +3251,14 @@ fn response_reports_terminal_failure(lower_response: &str) -> bool {
         "does not exist",
         "no such file or directory",
         "permission denied",
-        "not found",
         "timed out",
-        "timeout",
-        "unavailable",
+        "timeout error",
+        "server unavailable",
+        "service unavailable",
+        "planner service stayed unavailable",
+        "temporarily unavailable",
+        "command not found",
+        "file not found",
     ]
     .iter()
     .any(|marker| lower_response.contains(marker))
@@ -5664,6 +5668,18 @@ mod tests {
 
         assert!(final_response_reports_prior_failure(&completed.response));
         assert_eq!(inferred_final_effect(&completed, &prior_attempts), "failed");
+        assert!(!final_response_reports_prior_failure(
+            "According to the source, the timeout setting defaults to 30 seconds."
+        ));
+        assert!(!final_response_reports_prior_failure(
+            "The documentation says the feature is unavailable on weekends."
+        ));
+        assert!(!final_response_reports_prior_failure(
+            "The search result says phrase not found is a normal zero-match state."
+        ));
+        assert!(final_response_reports_prior_failure(
+            "The command reported a timeout error after 500ms."
+        ));
     }
 
     #[test]
