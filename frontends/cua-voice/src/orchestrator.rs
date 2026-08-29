@@ -512,7 +512,10 @@ fn planning_error_is_provider_account_failure(error: &anyhow::Error) -> bool {
         || message.contains("limit_source")
 }
 
-fn planning_provider_account_failure_message(error: &anyhow::Error) -> String {
+fn planning_provider_account_failure_message_with_attempts(
+    error: &anyhow::Error,
+    attempts: &[PlanAttemptContext],
+) -> String {
     let message = format!("{error:#}");
     let normalized = message.to_ascii_lowercase();
     let reason = if normalized.contains("insufficient credits") {
@@ -524,7 +527,81 @@ fn planning_provider_account_failure_message(error: &anyhow::Error) -> String {
     } else {
         "the provider account could not accept the request"
     };
-    format!("Planner provider stopped the task: {reason}.")
+    let Some(progress) = last_progress_summary(attempts) else {
+        return format!("Planner provider stopped the task: {reason}.");
+    };
+    format!("Planner provider stopped the task after {progress}: {reason}.")
+}
+
+fn last_progress_summary(attempts: &[PlanAttemptContext]) -> Option<String> {
+    attempts.iter().rev().find_map(|attempt| {
+        let action = attempt.action.as_ref()?;
+        let label = progress_action_label(action)?;
+        Some(format!(
+            "{} attempt{}; last progress was {}",
+            attempts.len(),
+            if attempts.len() == 1 { "" } else { "s" },
+            label
+        ))
+    })
+}
+
+fn progress_action_label(action: &serde_json::Value) -> Option<String> {
+    let kind = action.get("kind")?.as_str()?;
+    match kind {
+        "aegis" => progress_aegis_label(action),
+        "shell_exec" => action
+            .get("command")
+            .and_then(|value| value.as_str())
+            .map(|command| format!("running shell `{}`", compact_progress_text(command, 80))),
+        "open_app" => action
+            .get("app_name")
+            .and_then(|value| value.as_str())
+            .map(|app| format!("opening {app}")),
+        "sequence" => action
+            .get("actions")
+            .and_then(|value| value.as_array())
+            .map(|actions| format!("running a {}-action sequence", actions.len())),
+        "ctx" => Some("using ctx memory".to_string()),
+        "mouse_click" | "mouse_move" | "mouse_drag" | "key_press" | "key_type" | "key_paste"
+        | "clipboard_read" | "clipboard_write" => Some("controlling the computer".to_string()),
+        _ => None,
+    }
+}
+
+fn progress_aegis_label(action: &serde_json::Value) -> Option<String> {
+    let args = action.get("args")?.as_array()?;
+    let mut words = Vec::new();
+    let mut iter = args.iter().filter_map(|value| value.as_str());
+    while let Some(arg) = iter.next() {
+        match arg {
+            "--server-addr" | "--profile" | "--mode" => {
+                let _ = iter.next();
+            }
+            "headless" | "headful" => {}
+            _ => words.push(arg),
+        }
+    }
+    if words.is_empty() {
+        return Some("using Aegis".to_string());
+    }
+    Some(format!(
+        "using Aegis `{}`",
+        compact_progress_text(&words.join(" "), 90)
+    ))
+}
+
+fn compact_progress_text(value: &str, limit: usize) -> String {
+    let compact = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.chars().count() <= limit {
+        return compact;
+    }
+    let mut truncated = compact
+        .chars()
+        .take(limit.saturating_sub(3))
+        .collect::<String>();
+    truncated.push_str("...");
+    truncated
 }
 
 fn normalized_transcript(transcript: &str) -> String {
@@ -906,7 +983,9 @@ async fn plan_and_dispatch(
                         } else if provider_account_failure {
                             let error_message = format!("{error:#}");
                             break CompletedAssistantTurn {
-                                response: planning_provider_account_failure_message(&error),
+                                response: planning_provider_account_failure_message_with_attempts(
+                                    &error, &attempts,
+                                ),
                                 action: None,
                                 evidence: Some(json!({
                                     "effect": "failed",
@@ -3711,8 +3790,32 @@ mod tests {
             &payment_required
         ));
         assert_eq!(
-            planning_provider_account_failure_message(&payment_required),
+            planning_provider_account_failure_message_with_attempts(&payment_required, &[]),
             "Planner provider stopped the task: insufficient provider credits."
+        );
+        let attempts = vec![PlanAttemptContext {
+            attempt_index: 1,
+            response: "Searching with Aegis.".to_string(),
+            action: Some(json!({
+                "kind": "aegis",
+                "args": [
+                    "--server-addr",
+                    "127.0.0.1:27682",
+                    "--profile",
+                    "cua-qor3787",
+                    "--mode",
+                    "headless",
+                    "search",
+                    "the official SQLite foreign key documentation"
+                ],
+                "timeout_ms": 15000,
+            })),
+            effect: Some("confirmed".to_string()),
+            evidence: Some(json!({"effect": "confirmed"})),
+        }];
+        assert_eq!(
+            planning_provider_account_failure_message_with_attempts(&payment_required, &attempts),
+            "Planner provider stopped the task after 1 attempt; last progress was using Aegis `search the official SQLite foreign key documentation`: insufficient provider credits."
         );
     }
 
@@ -3725,7 +3828,7 @@ mod tests {
         assert!(planning_error_is_provider_account_failure(&error));
         assert!(!planning_error_is_retryable_infrastructure(&error));
         assert_eq!(
-            planning_provider_account_failure_message(&error),
+            planning_provider_account_failure_message_with_attempts(&error, &[]),
             "Planner provider stopped the task: the provider prompt-token limit was exceeded."
         );
     }
