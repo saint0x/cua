@@ -28,7 +28,6 @@ use tokio::sync::mpsc;
 
 type LocalTask = tokio::task::JoinHandle<anyhow::Result<LocalReady>>;
 type ContextTask = tokio::task::JoinHandle<PrefetchedContext>;
-type ChatContextTask = tokio::task::JoinHandle<anyhow::Result<String>>;
 type AgentContextTask = tokio::task::JoinHandle<anyhow::Result<crate::memory::AgentContext>>;
 static VOICE_TRACE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 const VOICE_STEP_SOURCE: &str = "voice";
@@ -296,7 +295,6 @@ async fn transcribe_and_run_turn_after_local(
     let step_publisher = VoiceStepPublisher::start(local.clone());
     step_publisher.publish("transcribing audio");
     let context_task = spawn_context_prefetch(local.clone(), local_ready.session);
-    let chat_task = spawn_chat_context_prefetch(config.profile.clone());
     let stt_result = stt_task.await.context("join speech to text")?;
     let stt_elapsed = stt_started.elapsed();
     send_metric(&tx, "stt_ms", stt_elapsed);
@@ -318,7 +316,6 @@ async fn transcribe_and_run_turn_after_local(
                 )
                 .await;
             abort_context_prefetch(&context_task, &trace, "stt_missed_speech").await;
-            abort_chat_context_prefetch(&chat_task, &trace, "stt_missed_speech").await;
             tx.send(VoiceUiEvent::Error(user_visible_turn_error(&error)))
                 .ok();
             return Ok(());
@@ -331,7 +328,6 @@ async fn transcribe_and_run_turn_after_local(
                 )
                 .await;
             abort_context_prefetch(&context_task, &trace, "stt_error").await;
-            abort_chat_context_prefetch(&chat_task, &trace, "stt_error").await;
             return Err(error);
         }
     };
@@ -347,7 +343,6 @@ async fn transcribe_and_run_turn_after_local(
             )
             .await;
         abort_context_prefetch(&context_task, &trace, "transcript_validation_error").await;
-        abort_chat_context_prefetch(&chat_task, &trace, "transcript_validation_error").await;
         tx.send(VoiceUiEvent::Error(user_visible_turn_error(&error)))
             .ok();
         return Ok(());
@@ -361,7 +356,6 @@ async fn transcribe_and_run_turn_after_local(
         transcript.text,
         local,
         Some(context_task),
-        Some(chat_task),
         step_publisher,
         tx.clone(),
         trace.clone(),
@@ -411,7 +405,6 @@ async fn run_transcript_turn(
     let local_ready = preflight_local_client(&config.profile).await?;
     let local = local_ready.client;
     let step_publisher = VoiceStepPublisher::start(local.clone());
-    let chat_task = spawn_chat_context_prefetch(config.profile.clone());
     let context_task = spawn_context_prefetch(local.clone(), local_ready.session);
     tx.send(VoiceUiEvent::Transcript(transcript.clone())).ok();
     step_publisher.publish(voice_step_label("transcript", &transcript));
@@ -420,7 +413,6 @@ async fn run_transcript_turn(
         transcript,
         local,
         Some(context_task),
-        Some(chat_task),
         step_publisher,
         tx.clone(),
         trace.clone(),
@@ -601,7 +593,6 @@ async fn plan_and_dispatch(
     transcript: String,
     local: CuaClient,
     context_task: Option<ContextTask>,
-    chat_task: Option<ChatContextTask>,
     step_publisher: VoiceStepPublisher,
     tx: Sender<VoiceUiEvent>,
     trace: VoiceTurnTrace,
@@ -624,9 +615,6 @@ async fn plan_and_dispatch(
             context_task.abort();
             send_metric(&tx, "context_prefetch_aborted_ms", plan_started.elapsed());
         }
-        if let Some(chat_task) = chat_task {
-            abort_chat_context_prefetch(&chat_task, &trace, "fast_command").await;
-        }
         trace
             .append(
                 "planning_result",
@@ -646,14 +634,57 @@ async fn plan_and_dispatch(
         )
         .await?
     } else {
+        let planner = Planner::new(&config.planner_model);
+        let api_key = match planner.api_key_from_env() {
+            Some(api_key) => api_key,
+            None => {
+                if let Some(context_task) = context_task {
+                    context_task.abort();
+                    send_metric(&tx, "context_prefetch_aborted_ms", plan_started.elapsed());
+                    trace
+                        .append(
+                            "context_prefetch_aborted",
+                            json!({ "reason": "planning_credentials_missing" }),
+                        )
+                        .await;
+                }
+                let completed = CompletedAssistantTurn {
+                    response: format!(
+                        "{} is required for planner model {}.",
+                        planner.required_api_key_name(),
+                        config.planner_model
+                    ),
+                    action: None,
+                    evidence: Some(json!({
+                        "effect": "failed",
+                        "reason": "planning_credentials_missing",
+                        "required": planner.required_api_key_name(),
+                        "planner_model": config.planner_model,
+                    })),
+                };
+                trace
+                    .append(
+                        "agent_loop_stop",
+                        json!({
+                            "attempts": 0,
+                            "final_effect": "failed",
+                        }),
+                    )
+                    .await;
+                send_metric(&tx, "plan_ms", plan_started.elapsed());
+                emit_completed_reply(&completed, &step_publisher, &tx, &trace).await;
+                step_publisher.finish().await;
+                persist_turn_memory(&config, &transcript, &completed, &trace).await?;
+                return Ok(VoiceTurnCompletion::from_completed(&completed));
+            }
+        };
         tx.send(VoiceUiEvent::Planning {
             tool: "Desktop context".to_string(),
         })
         .ok();
         step_publisher.publish("checking desktop context");
         let wait_started = Instant::now();
-        let agent_context_task =
-            spawn_agent_context(config.profile.clone(), transcript.clone(), chat_task);
+        let agent_context_task = spawn_agent_context(config.profile.clone(), transcript.clone());
         let (mut context, agent_context_result) = tokio::join!(
             resolve_context_for_planning(local.clone(), context_task),
             resolve_agent_context(agent_context_task)
@@ -661,7 +692,7 @@ async fn plan_and_dispatch(
         let (agent_context, agent_context_errors) = match agent_context_result {
             Ok(agent_context) => (agent_context, Vec::new()),
             Err(error) => {
-                let chat = resolve_chat_context(config.profile.clone(), None)
+                let chat = resolve_chat_context(config.profile.clone())
                     .await
                     .unwrap_or_else(|chat_error| {
                         format!("Recent chat: unavailable. error={chat_error:#}")
@@ -710,39 +741,6 @@ async fn plan_and_dispatch(
         trace
             .append("agent_loop_start", json!({"budget": loop_budget}))
             .await;
-        let planner = Planner::new(&config.planner_model);
-        let api_key = match planner.api_key_from_env() {
-            Some(api_key) => api_key,
-            None => {
-                let completed = CompletedAssistantTurn {
-                    response: format!(
-                        "{} is required for planner model {}.",
-                        planner.required_api_key_name(),
-                        config.planner_model
-                    ),
-                    action: None,
-                    evidence: Some(json!({
-                        "effect": "failed",
-                        "reason": "planning_credentials_missing",
-                        "required": planner.required_api_key_name(),
-                        "planner_model": config.planner_model,
-                    })),
-                };
-                trace
-                    .append(
-                        "agent_loop_stop",
-                        json!({
-                            "attempts": 0,
-                            "final_effect": "failed",
-                        }),
-                    )
-                    .await;
-                emit_completed_reply(&completed, &step_publisher, &tx, &trace).await;
-                step_publisher.finish().await;
-                persist_turn_memory(&config, &transcript, &completed, &trace).await?;
-                return Ok(VoiceTurnCompletion::from_completed(&completed));
-            }
-        };
         let explicit_aegis_request = transcript_explicitly_requests_aegis(&transcript);
         let mut latest_chat_context = agent_context.chat.clone();
         let mut attempts = Vec::new();
@@ -1229,7 +1227,7 @@ async fn plan_and_dispatch(
                         &format!("after dispatch error {attempt_index}"),
                     ));
                     context = prefetch_context_for_planning(local.clone(), None).await;
-                    latest_chat_context = resolve_chat_context(config.profile.clone(), None)
+                    latest_chat_context = resolve_chat_context(config.profile.clone())
                         .await
                         .unwrap_or_else(|chat_error| {
                             format!("Recent chat: unavailable. error={chat_error:#}")
@@ -1333,7 +1331,7 @@ async fn plan_and_dispatch(
                 .await;
             let observe_started = Instant::now();
             context = prefetch_context_for_planning(local.clone(), None).await;
-            latest_chat_context = resolve_chat_context(config.profile.clone(), None)
+            latest_chat_context = resolve_chat_context(config.profile.clone())
                 .await
                 .unwrap_or_else(|chat_error| {
                     format!("Recent chat: unavailable. error={chat_error:#}")
@@ -3186,31 +3184,14 @@ fn spawn_context_prefetch(local: CuaClient, warm_session: Option<CuaSession>) ->
     tokio::spawn(async move { prefetch_context_for_planning(local, warm_session).await })
 }
 
-fn spawn_chat_context_prefetch(profile: String) -> ChatContextTask {
-    tokio::spawn(async move { load_chat_context(&profile).await })
-}
-
-fn spawn_agent_context(
-    profile: String,
-    request: String,
-    chat_task: Option<ChatContextTask>,
-) -> AgentContextTask {
+fn spawn_agent_context(profile: String, request: String) -> AgentContextTask {
     tokio::spawn(async move {
-        let chat = resolve_chat_context(profile.clone(), chat_task).await?;
+        let chat = resolve_chat_context(profile.clone()).await?;
         load_agent_context_with_chat(&profile, &request, chat).await
     })
 }
 
-async fn resolve_chat_context(
-    profile: String,
-    chat_task: Option<ChatContextTask>,
-) -> anyhow::Result<String> {
-    if let Some(chat_task) = chat_task {
-        return chat_task
-            .await
-            .context("join chat context prefetch")?
-            .context("load chat context");
-    }
+async fn resolve_chat_context(profile: String) -> anyhow::Result<String> {
     load_chat_context(&profile).await
 }
 
@@ -3227,17 +3208,6 @@ async fn abort_context_prefetch(context_task: &ContextTask, trace: &VoiceTurnTra
     context_task.abort();
     trace
         .append("context_prefetch_aborted", json!({ "reason": reason }))
-        .await;
-}
-
-async fn abort_chat_context_prefetch(
-    chat_task: &ChatContextTask,
-    trace: &VoiceTurnTrace,
-    reason: &str,
-) {
-    chat_task.abort();
-    trace
-        .append("chat_context_prefetch_aborted", json!({ "reason": reason }))
         .await;
 }
 
@@ -3270,16 +3240,19 @@ async fn persist_turn_memory(
     let turn_id = trace.turn_id.clone();
     let chat_store = ChatStore::new(config.profile.clone())?;
     let ctx_memory = CtxMemory::new(config.profile.clone())?;
-    let append_chat = chat_store.append_turn(
-        &turn_id,
-        transcript,
-        &completed.response,
-        completed.action.as_ref(),
-        completed.evidence.as_ref(),
-        &config.planner_model,
-    );
-    let remember_ctx = ctx_memory.remember_chat_turn(transcript, &completed.response);
-    tokio::try_join!(append_chat, remember_ctx)?;
+    chat_store
+        .append_turn(
+            &turn_id,
+            transcript,
+            &completed.response,
+            completed.action.as_ref(),
+            completed.evidence.as_ref(),
+            &config.planner_model,
+        )
+        .await?;
+    ctx_memory
+        .remember_chat_turn(transcript, &completed.response)
+        .await?;
     trace
         .append(
             "memory_persisted",
@@ -3961,17 +3934,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn chat_context_can_resolve_from_prefetch_task() {
-        let task = tokio::spawn(async { Ok("Recent chat:\nuser: cached".to_string()) });
-
-        let context = resolve_chat_context("unused-profile".to_string(), Some(task))
-            .await
-            .unwrap();
-
-        assert_eq!(context, "Recent chat:\nuser: cached");
-    }
-
-    #[tokio::test]
     async fn aborting_context_prefetch_cancels_background_work() {
         let task = tokio::spawn(async {
             tokio::time::sleep(Duration::from_secs(60)).await;
@@ -3990,24 +3952,6 @@ mod tests {
         };
 
         abort_context_prefetch(&task, &trace, "test").await;
-        let result = task.await;
-
-        assert!(result.is_err_and(|error| error.is_cancelled()));
-    }
-
-    #[tokio::test]
-    async fn aborting_chat_context_prefetch_cancels_background_work() {
-        let task = tokio::spawn(async {
-            tokio::time::sleep(Duration::from_secs(60)).await;
-            Ok("late chat".to_string())
-        });
-        let trace = VoiceTurnTrace {
-            enabled: false,
-            path: None,
-            turn_id: "test-turn".to_string(),
-        };
-
-        abort_chat_context_prefetch(&task, &trace, "test").await;
         let result = task.await;
 
         assert!(result.is_err_and(|error| error.is_cancelled()));
