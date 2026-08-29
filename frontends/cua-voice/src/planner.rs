@@ -670,11 +670,16 @@ fn validate_aegis_open_link_args(args: &[String]) -> anyhow::Result<()> {
             "--exact" => index += 1,
             "--href-contains" | "--index" => {
                 if index + 1 >= args.len() {
-                    bail!("aegis page open-link option `{}` requires a value", args[index]);
+                    bail!(
+                        "aegis page open-link option `{}` requires a value",
+                        args[index]
+                    );
                 }
                 index += 2;
             }
-            arg if arg.starts_with("--") => bail!("unsupported aegis page open-link option `{arg}`"),
+            arg if arg.starts_with("--") => {
+                bail!("unsupported aegis page open-link option `{arg}`")
+            }
             _ => {
                 text_parts += 1;
                 index += 1;
@@ -1523,9 +1528,7 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(
-            format!("{error:#}").contains("aegis navigate requires an absolute http(s) URL")
-        );
+        assert!(format!("{error:#}").contains("aegis navigate requires an absolute http(s) URL"));
     }
 
     #[test]

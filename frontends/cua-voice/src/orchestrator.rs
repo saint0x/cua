@@ -675,6 +675,7 @@ async fn plan_and_dispatch(
             .append("agent_loop_start", json!({"budget": loop_budget}))
             .await;
         let planner = Planner::new(&config.planner_model);
+        let explicit_aegis_request = transcript_explicitly_requests_aegis(&transcript);
         let mut latest_chat_context = agent_context.chat.clone();
         let mut attempts = Vec::new();
         let mut attempt_index = 1;
@@ -880,6 +881,76 @@ async fn plan_and_dispatch(
                 )
                 .await;
             let planned_action_json = plan.action.as_ref().map(serde_json::to_value).transpose()?;
+            if explicit_aegis_request
+                && plan
+                    .action
+                    .as_ref()
+                    .is_some_and(|action| !input_action_uses_only_aegis_backend(action))
+            {
+                trace
+                    .append(
+                        "planning_rejected",
+                        json!({
+                            "attempt_index": attempt_index,
+                            "reason": "explicit_aegis_request_requires_aegis_action",
+                            "action": planned_action_json.clone(),
+                        }),
+                    )
+                    .await;
+                attempts.push(PlanAttemptContext {
+                    attempt_index,
+                    response: plan.response,
+                    action: planned_action_json,
+                    effect: Some("suspected_noop".to_string()),
+                    evidence: Some(json!({
+                        "effect": "suspected_noop",
+                        "reason": "explicit_aegis_request_requires_aegis_action",
+                        "repair_hint": "The user explicitly requested Aegis. Use an aegis action or a sequence containing only aegis actions; do not use shell_exec, local files, visible UI, mouse, keyboard, or clipboard actions for this turn.",
+                    })),
+                });
+                if !loop_budget.can_continue_after(attempt_index) {
+                    anyhow::bail!(
+                        "planning model selected a non-Aegis action for an explicit Aegis request"
+                    );
+                }
+                attempt_index += 1;
+                continue;
+            }
+            if explicit_aegis_request
+                && planned_action_json.is_none()
+                && (final_response_claims_verified_result(&plan.response)
+                    || final_response_reports_prior_failure(&plan.response))
+                && !prior_attempts_support_explicit_aegis_final(&plan.response, &attempts)
+            {
+                trace
+                    .append(
+                        "planning_rejected",
+                        json!({
+                            "attempt_index": attempt_index,
+                            "reason": "explicit_aegis_final_without_aegis_evidence",
+                            "response": plan.response.clone(),
+                        }),
+                    )
+                    .await;
+                attempts.push(PlanAttemptContext {
+                    attempt_index,
+                    response: plan.response,
+                    action: None,
+                    effect: Some("suspected_noop".to_string()),
+                    evidence: Some(json!({
+                        "effect": "suspected_noop",
+                        "reason": "explicit_aegis_final_without_aegis_evidence",
+                        "repair_hint": "Finish an explicit Aegis request only after prior Aegis evidence proves the result or proves the Aegis failure.",
+                    })),
+                });
+                if !loop_budget.can_continue_after(attempt_index) {
+                    anyhow::bail!(
+                        "planning model tried to finish an explicit Aegis request without Aegis evidence"
+                    );
+                }
+                attempt_index += 1;
+                continue;
+            }
             if long_range_null_plan_is_incomplete(&transcript, &plan.response, &planned_action_json)
             {
                 trace
@@ -1508,6 +1579,23 @@ fn input_action_is_aegis(action: &InputAction) -> bool {
     matches!(action, InputAction::Aegis { .. })
 }
 
+fn input_action_uses_only_aegis_backend(action: &InputAction) -> bool {
+    match action {
+        InputAction::Aegis { .. } => true,
+        InputAction::Sequence { actions, .. } => {
+            !actions.is_empty() && actions.iter().all(input_action_uses_only_aegis_backend)
+        }
+        _ => false,
+    }
+}
+
+fn transcript_explicitly_requests_aegis(transcript: &str) -> bool {
+    transcript
+        .split_whitespace()
+        .map(normalize_voice_token)
+        .any(|word| word == "aegis")
+}
+
 fn action_is_text_entry(action: &serde_json::Value) -> bool {
     match action.get("kind").and_then(|kind| kind.as_str()) {
         Some("key_type" | "key_paste" | "clipboard_write") => true,
@@ -1557,7 +1645,14 @@ fn transcript_requests_text_entry(transcript: &str) -> bool {
         .collect::<Vec<_>>();
     if words
         .iter()
-        .any(|word| matches!(word.as_str(), "write" | "type" | "paste"))
+        .any(|word| matches!(word.as_str(), "write" | "paste"))
+    {
+        return true;
+    }
+    if words
+        .iter()
+        .enumerate()
+        .any(|(index, word)| word == "type" && word_is_text_entry_verb(&words, index))
     {
         return true;
     }
@@ -1578,6 +1673,29 @@ fn transcript_requests_text_entry(transcript: &str) -> bool {
         return true;
     }
     false
+}
+
+fn word_is_text_entry_verb(words: &[String], index: usize) -> bool {
+    let previous = index
+        .checked_sub(1)
+        .and_then(|previous| words.get(previous));
+    if previous.is_some_and(|word| {
+        matches!(
+            word.as_str(),
+            "page" | "file" | "mime" | "content" | "document" | "result" | "record"
+        )
+    }) {
+        return false;
+    }
+    if index == 0 {
+        return true;
+    }
+    previous.is_some_and(|word| {
+        matches!(
+            word.as_str(),
+            "please" | "you" | "and" | "then" | "to" | "can" | "could" | "will"
+        )
+    })
 }
 
 fn transcript_requests_new_note(transcript: &str) -> bool {
@@ -1921,6 +2039,41 @@ fn action_null_finishes_after_prior_attempts(
         && !prior_attempts.is_empty()
         && (final_response_claims_verified_result(response)
             || final_response_reports_prior_failure(response))
+}
+
+fn prior_attempts_include_aegis_evidence(attempts: &[PlanAttemptContext]) -> bool {
+    attempts.iter().any(|attempt| {
+        attempt.action.as_ref().is_some_and(json_action_uses_aegis)
+            && matches!(
+                attempt.effect.as_deref(),
+                Some("confirmed" | "partial" | "unverifiable" | "refused" | "failed")
+            )
+    })
+}
+
+fn prior_attempts_support_explicit_aegis_final(
+    response: &str,
+    attempts: &[PlanAttemptContext],
+) -> bool {
+    if final_response_claims_verified_result(response) {
+        return attempts.iter().any(|attempt| {
+            attempt.action.as_ref().is_some_and(json_action_uses_aegis)
+                && attempt.effect.as_deref() == Some("confirmed")
+        });
+    }
+    final_response_reports_prior_failure(response)
+        && prior_attempts_include_aegis_evidence(attempts)
+}
+
+fn json_action_uses_aegis(action: &serde_json::Value) -> bool {
+    match action.get("kind").and_then(|kind| kind.as_str()) {
+        Some("aegis") => true,
+        Some("sequence") => action
+            .get("actions")
+            .and_then(|actions| actions.as_array())
+            .is_some_and(|actions| actions.iter().any(json_action_uses_aegis)),
+        _ => false,
+    }
 }
 
 fn action_repeats_confirmed_attempt(
@@ -3383,6 +3536,16 @@ mod tests {
         assert!(!transcript_requests_text_entry(
             "Read the page and summarize what it says"
         ));
+        assert!(!transcript_requests_text_entry(
+            "Use Aegis in headless mode to navigate to https://example.com, inspect page actions, inspect page markdown, and report the verified page type and title"
+        ));
+        assert!(!transcript_requests_text_entry(
+            "Report the verified file type and page type"
+        ));
+        assert!(transcript_requests_text_entry("Type hello into Notes"));
+        assert!(transcript_requests_text_entry(
+            "Open Notes and type hello there"
+        ));
         assert!(!transcript_requests_text_entry("Read the story aloud"));
         assert!(!transcript_requests_text_entry("Find the map marker"));
         assert!(!transcript_requests_text_entry("Open Notes"));
@@ -3438,6 +3601,79 @@ mod tests {
         assert!(input_action_is_open_only_setup(&action));
         assert!(transcript_requests_long_range_work(
             "Open Safari and search for the official Gemini documentation"
+        ));
+    }
+
+    #[test]
+    fn explicit_aegis_requests_only_use_aegis_backend_actions() {
+        assert!(transcript_explicitly_requests_aegis(
+            "Use Aegis in headless mode to inspect the page"
+        ));
+        assert!(!transcript_explicitly_requests_aegis(
+            "Use the browser in headless mode to inspect the page"
+        ));
+        assert!(input_action_uses_only_aegis_backend(
+            &cua_core::InputAction::Aegis {
+                args: vec![
+                    "--mode".to_string(),
+                    "headless".to_string(),
+                    "page".to_string(),
+                    "actions".to_string(),
+                ],
+                timeout_ms: 15_000,
+            }
+        ));
+        assert!(input_action_uses_only_aegis_backend(
+            &cua_core::InputAction::Sequence {
+                actions: vec![
+                    cua_core::InputAction::Aegis {
+                        args: vec![
+                            "--mode".to_string(),
+                            "headless".to_string(),
+                            "navigate".to_string(),
+                            "https://example.com".to_string(),
+                        ],
+                        timeout_ms: 15_000,
+                    },
+                    cua_core::InputAction::Aegis {
+                        args: vec![
+                            "--mode".to_string(),
+                            "headless".to_string(),
+                            "page".to_string(),
+                            "markdown".to_string(),
+                            "--scope".to_string(),
+                            "article".to_string(),
+                        ],
+                        timeout_ms: 15_000,
+                    },
+                ],
+                inter_action_delay_ms: 120,
+            }
+        ));
+        assert!(!input_action_uses_only_aegis_backend(
+            &cua_core::InputAction::ShellExec {
+                command: "cat ./README.md".to_string(),
+                timeout_ms: 5_000,
+            }
+        ));
+        assert!(!input_action_uses_only_aegis_backend(
+            &cua_core::InputAction::Sequence {
+                actions: vec![
+                    cua_core::InputAction::Aegis {
+                        args: vec![
+                            "--mode".to_string(),
+                            "headless".to_string(),
+                            "page".to_string(),
+                            "actions".to_string(),
+                        ],
+                        timeout_ms: 15_000,
+                    },
+                    cua_core::InputAction::KeyPaste {
+                        text: "Verified page type".to_string(),
+                    },
+                ],
+                inter_action_delay_ms: 120,
+            }
         ));
     }
 
@@ -3886,6 +4122,63 @@ mod tests {
             "The verified clipboard contents are: clipboard loop proof 612",
             &None,
             &[]
+        ));
+    }
+
+    #[test]
+    fn explicit_aegis_final_answers_require_prior_aegis_evidence() {
+        let local_attempts = vec![PlanAttemptContext {
+            attempt_index: 1,
+            response: "Reading local docs.".to_string(),
+            action: Some(json!({
+                "kind": "shell_exec",
+                "command": "cat ./README.md",
+                "timeout_ms": 5000
+            })),
+            effect: Some("confirmed".to_string()),
+            evidence: Some(json!({"effect": "confirmed"})),
+        }];
+        let aegis_attempts = vec![PlanAttemptContext {
+            attempt_index: 1,
+            response: "Inspecting page with Aegis.".to_string(),
+            action: Some(json!({
+                "kind": "sequence",
+                "actions": [
+                    {"kind": "aegis", "args": ["--mode", "headless", "page", "actions"], "timeout_ms": 15000}
+                ]
+            })),
+            effect: Some("confirmed".to_string()),
+            evidence: Some(json!({"effect": "confirmed"})),
+        }];
+        let failed_aegis_attempts = vec![PlanAttemptContext {
+            attempt_index: 1,
+            response: "Inspecting page with Aegis.".to_string(),
+            action: Some(json!({
+                "kind": "aegis",
+                "args": ["--mode", "headless", "page", "actions"],
+                "timeout_ms": 15000
+            })),
+            effect: Some("refused".to_string()),
+            evidence: Some(json!({"effect": "refused", "error": "server unavailable"})),
+        }];
+
+        assert!(!prior_attempts_include_aegis_evidence(&local_attempts));
+        assert!(prior_attempts_include_aegis_evidence(&aegis_attempts));
+        assert!(!prior_attempts_support_explicit_aegis_final(
+            "Verified page type: documentation",
+            &local_attempts
+        ));
+        assert!(prior_attempts_support_explicit_aegis_final(
+            "Verified page type: documentation",
+            &aegis_attempts
+        ));
+        assert!(!prior_attempts_support_explicit_aegis_final(
+            "Verified page type: documentation",
+            &failed_aegis_attempts
+        ));
+        assert!(prior_attempts_support_explicit_aegis_final(
+            "Aegis failed with server unavailable",
+            &failed_aegis_attempts
         ));
     }
 
