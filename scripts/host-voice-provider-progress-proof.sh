@@ -104,17 +104,24 @@ jq -s -e '
 ' "$EVENTS" >/dev/null
 
 jq -s -e '
+  def provider_stopped:
+    any(.event == "reply" and ((.data.text // "") | contains("Planner provider stopped the task")));
   any(.event == "agent_loop_start" and .data.budget.kind == "unbounded") and
   any(.event == "dispatch_result" and .data.result.effect == "confirmed") and
   any(.event == "agent_attempt_outcome" and .data.long_range_continuation == true) and
   any(.event == "agent_reobserve_result") and
+  any(.event == "agent_loop_stop") and
   any(.event == "memory_persisted") and
   (map(select(.event == "reply")) | all((.data.text // "") | test("\\b[Cc]onfirmed\\b") | not)) and
   (map(select(.event == "reply")) | all((.data.text // "") | test("127\\.0\\.0\\.1|cua-[A-Za-z0-9_-]+") | not)) and
   (
-    (map(select(.event == "reply" and ((.data.text // "") | contains("Planner provider stopped the task")))) | length == 0)
+    (provider_stopped | not)
     or
-    any(.event == "reply" and ((.data.text // "") | contains("completed attempt")) and ((.data.text // "") | contains("last progress was")))
+    (
+      any(.event == "reply" and ((.data.text // "") | contains("completed attempt")) and ((.data.text // "") | contains("last progress was"))) and
+      any(.event == "planning_error" and ((.data.error // "") | contains("402 Payment Required"))) and
+      any(.event == "agent_loop_stop" and .data.final_effect == "failed")
+    )
   )
 ' "$TRACE" >/dev/null
 
