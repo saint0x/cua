@@ -140,6 +140,20 @@ fozzy_trace_gate() {
   run fozzy ci "$trace" --json
 }
 
+fozzy_rlm_depth_gate() {
+  local scenario="$1"
+  local name="$2"
+  local trace="$ARTIFACT_DIR/$name.fozzy"
+
+  require_file "$scenario"
+  log "Fozzy RLM depth $name"
+  run fozzy fuzz "$scenario" --json
+  run fozzy explore "$scenario" --json
+  require_file "$trace"
+  run fozzy shrink "$trace" --json
+  run fozzy trace verify "${trace%.fozzy}.min.fozzy" --strict --json
+}
+
 fozzy_host_trace_gate() {
   local scenario="$1"
   local name="$2"
@@ -219,6 +233,7 @@ fi
 if [[ "$SKIP_FOZZY" -eq 0 ]]; then
   fozzy_trace_gate "$SCENARIO" "cua-smoke"
   fozzy_trace_gate "$RLM_SCENARIO" "cua-rlm-loop"
+  fozzy_rlm_depth_gate "$RLM_SCENARIO" "cua-rlm-loop"
   fozzy_host_trace_gate "$RLM_HOST_SCENARIO" "cua-rlm-loop-missing-planner-key-host"
   if env_key_available OPENROUTER_API_KEY; then
     fozzy_host_trace_gate "$RLM_PROVIDER_HOST_SCENARIO" "cua-rlm-loop-provider-progress-host"
