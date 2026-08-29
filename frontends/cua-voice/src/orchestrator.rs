@@ -2612,6 +2612,12 @@ fn planner_response_claims_pending_work(response: &str) -> bool {
     if response_reports_terminal_failure(&lower) {
         return false;
     }
+    if ["i'll ", "i will ", "i'm ", "i am ", "let me "]
+        .iter()
+        .any(|marker| lower.starts_with(marker))
+    {
+        return true;
+    }
     [
         "opening",
         "searching",
@@ -2628,12 +2634,9 @@ fn planner_response_claims_pending_work(response: &str) -> bool {
         "verifying",
         "running",
         "executing",
-        "i'll",
-        "i will",
-        "let me",
     ]
     .iter()
-    .any(|marker| lower.contains(marker))
+    .any(|marker| lower.starts_with(marker))
 }
 
 fn planning_error_can_use_bootstrap_recovery(
@@ -5212,6 +5215,14 @@ mod tests {
             "The displayed result is 579.",
             &None
         ));
+        assert!(!action_null_plan_claims_pending_work(
+            "The documentation says reading mode is supported.",
+            &None
+        ));
+        assert!(!action_null_plan_claims_pending_work(
+            "According to the source, checking happens every 30 seconds.",
+            &None
+        ));
     }
 
     #[test]
@@ -5259,6 +5270,11 @@ mod tests {
         assert!(!action_null_stops_long_range_without_evidence(
             "Use Aegis headless, read the page title, and report the verified title.",
             "The verified title is Gemini models.",
+            &None,
+            &readback_attempts
+        ));
+        assert!(action_null_finishes_after_prior_attempts(
+            "According to the source, reading mode is supported.",
             &None,
             &readback_attempts
         ));
