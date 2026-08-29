@@ -2954,14 +2954,12 @@ fn aegis_evidence_has_task_readback(
     action: &serde_json::Value,
     evidence: &serde_json::Value,
 ) -> bool {
-    let actions = flattened_actions(action);
-    let messages = evidence_messages(evidence);
-    actions.iter().enumerate().any(|(index, action)| {
-        json_action_uses_aegis_observation(action)
-            && messages
-                .get(index)
-                .is_some_and(|message| message_has_semantic_stdout(message))
-    })
+    flattened_actions(action)
+        .iter()
+        .any(|action| json_action_uses_aegis_observation(action))
+        && evidence_messages(evidence)
+            .iter()
+            .any(|message| message_has_semantic_stdout(message))
 }
 
 fn message_has_semantic_stdout(message: &str) -> bool {
@@ -5979,6 +5977,25 @@ mod tests {
                 }]
             })),
         }];
+        let mixed_aegis_readback_attempts = vec![PlanAttemptContext {
+            attempt_index: 1,
+            response: "Opening and inspecting with Aegis.".to_string(),
+            action: Some(json!({
+                "kind": "sequence",
+                "actions": [
+                    {"kind": "open_app", "app_name": "Safari"},
+                    {"kind": "aegis", "args": ["--mode", "headless", "page", "text", "--scope", "main"], "timeout_ms": 15000}
+                ]
+            })),
+            effect: Some("confirmed".to_string()),
+            evidence: Some(json!({
+                "effect": "confirmed",
+                "evidence": [{
+                    "kind": "value_readback",
+                    "message": "aegis exited 0; stdout=Example Domain; stderr="
+                }]
+            })),
+        }];
         let failed_aegis_attempts = vec![PlanAttemptContext {
             attempt_index: 1,
             response: "Inspecting page with Aegis.".to_string(),
@@ -6012,6 +6029,10 @@ mod tests {
         assert!(!prior_attempts_support_explicit_aegis_final(
             "Verified page title: Example Domain",
             &aegis_event_attempts
+        ));
+        assert!(prior_attempts_support_explicit_aegis_final(
+            "Verified page title: Example Domain",
+            &mixed_aegis_readback_attempts
         ));
         assert!(!prior_attempts_support_explicit_aegis_final(
             "Verified page type: documentation",
