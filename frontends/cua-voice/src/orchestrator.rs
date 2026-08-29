@@ -2612,9 +2612,10 @@ fn planner_response_claims_pending_work(response: &str) -> bool {
     if response_reports_terminal_failure(&lower) {
         return false;
     }
-    if ["i'll ", "i will ", "i'm ", "i am ", "let me "]
+    if ["i'll ", "i will ", "let me "]
         .iter()
         .any(|marker| lower.starts_with(marker))
+        || response_starts_with_first_person_pending_work(&lower)
     {
         return true;
     }
@@ -2637,6 +2638,36 @@ fn planner_response_claims_pending_work(response: &str) -> bool {
     ]
     .iter()
     .any(|marker| lower.starts_with(marker))
+}
+
+fn response_starts_with_first_person_pending_work(lower_response: &str) -> bool {
+    ["i'm ", "i am "].iter().any(|prefix| {
+        lower_response
+            .strip_prefix(prefix)
+            .is_some_and(response_starts_with_pending_work_verb)
+    })
+}
+
+fn response_starts_with_pending_work_verb(text: &str) -> bool {
+    [
+        "opening",
+        "searching",
+        "browsing",
+        "researching",
+        "navigating",
+        "looking up",
+        "checking",
+        "reading",
+        "inspecting",
+        "creating",
+        "writing",
+        "transforming",
+        "verifying",
+        "running",
+        "executing",
+    ]
+    .iter()
+    .any(|marker| text.starts_with(marker))
 }
 
 fn planning_error_can_use_bootstrap_recovery(
@@ -5221,6 +5252,22 @@ mod tests {
         ));
         assert!(!action_null_plan_claims_pending_work(
             "According to the source, checking happens every 30 seconds.",
+            &None
+        ));
+        assert!(!action_null_plan_claims_pending_work(
+            "I am done; the verified result is 579.",
+            &None
+        ));
+        assert!(!action_null_plan_claims_pending_work(
+            "I'm unable to continue because access is denied.",
+            &None
+        ));
+        assert!(action_null_plan_claims_pending_work(
+            "I'm opening Calculator via Spotlight.",
+            &None
+        ));
+        assert!(action_null_plan_claims_pending_work(
+            "I am searching the documentation.",
             &None
         ));
     }
