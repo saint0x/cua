@@ -522,6 +522,21 @@ fn planning_error_is_provider_account_failure(error: &anyhow::Error) -> bool {
         || message.contains("limit_source")
 }
 
+fn planning_provider_account_failure_message(error: &anyhow::Error) -> String {
+    let message = format!("{error:#}");
+    let normalized = message.to_ascii_lowercase();
+    let reason = if normalized.contains("insufficient credits") {
+        "insufficient provider credits"
+    } else if normalized.contains("prompt tokens limit exceeded") {
+        "the provider prompt-token limit was exceeded"
+    } else if normalized.contains("402 payment required") {
+        "the provider returned payment required"
+    } else {
+        "the provider account could not accept the request"
+    };
+    format!("Planner provider stopped the task: {reason}.")
+}
+
 fn normalized_transcript(transcript: &str) -> String {
     transcript
         .trim()
@@ -869,7 +884,7 @@ async fn plan_and_dispatch(
                         } else if provider_account_failure {
                             let error_message = format!("{error:#}");
                             break CompletedAssistantTurn {
-                                response: "Planner provider rejected the request, so I could not continue the task.".to_string(),
+                                response: planning_provider_account_failure_message(&error),
                                 action: None,
                                 evidence: Some(json!({
                                     "effect": "failed",
@@ -3698,6 +3713,10 @@ mod tests {
         assert!(planning_error_is_provider_account_failure(
             &payment_required
         ));
+        assert_eq!(
+            planning_provider_account_failure_message(&payment_required),
+            "Planner provider stopped the task: insufficient provider credits."
+        );
     }
 
     #[test]
@@ -3708,6 +3727,10 @@ mod tests {
 
         assert!(planning_error_is_provider_account_failure(&error));
         assert!(!planning_error_is_retryable_infrastructure(&error));
+        assert_eq!(
+            planning_provider_account_failure_message(&error),
+            "Planner provider stopped the task: the provider prompt-token limit was exceeded."
+        );
     }
 
     #[test]
