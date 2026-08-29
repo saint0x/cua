@@ -71,6 +71,7 @@ const UI_LINE_HEIGHT_PX: f32 = 15.0;
 const COMPACT_ROW_ITEM_HEIGHT_PX: f32 = 18.0;
 const COMPACT_CONTENT_Y_OFFSET_PX: f32 = 0.0;
 const STOPLIGHT_SIZE_PX: f32 = 8.0;
+const STOPLIGHT_GAP_PX: f32 = 4.0;
 const STOPLIGHT_TOP_PX: f32 = compact_content_axis_y() - (STOPLIGHT_SIZE_PX / 2.0);
 const SHELL_MOTION_SECS: f32 = 0.320;
 const CONTENT_MOTION_SECS: f32 = 0.210;
@@ -132,7 +133,7 @@ struct VoiceHud {
     compact_width_px: f32,
     expanded: bool,
     minimized: bool,
-    chrome_visible: bool,
+    stoplights_visible: bool,
     drag: Option<IslandDrag>,
     model_label: String,
     island_bounds: Arc<Mutex<Option<Bounds<Pixels>>>>,
@@ -177,7 +178,7 @@ impl VoiceHud {
             compact_width_px: COMPACT_WIDTH,
             expanded: false,
             minimized: false,
-            chrome_visible: false,
+            stoplights_visible: false,
             drag: None,
             model_label,
             island_bounds,
@@ -525,7 +526,7 @@ impl VoiceHud {
                             .items_center()
                             .child(
                                 div()
-                                    .opacity(if self.chrome_visible { 0.0 } else { 1.0 })
+                                    .opacity(if self.stoplights_visible { 0.0 } else { 1.0 })
                                     .child(self.orb()),
                             ),
                     )
@@ -582,8 +583,8 @@ impl VoiceHud {
             .top(px(STOPLIGHT_TOP_PX))
             .flex()
             .items_center()
-            .gap(px(4.0))
-            .opacity(if self.chrome_visible { 0.92 } else { 0.0 })
+            .gap(px(STOPLIGHT_GAP_PX))
+            .opacity(if self.stoplights_visible { 0.92 } else { 0.0 })
             .hover(|style| style.opacity(1.0))
             .child(stoplight(0xff5f57).on_mouse_down(
                 GpuiMouseButton::Left,
@@ -1753,6 +1754,24 @@ fn stoplight(color: u32) -> Div {
         .hover(|style| style.opacity(1.0))
 }
 
+fn stoplight_cluster_width_px() -> f32 {
+    (STOPLIGHT_SIZE_PX * 3.0) + (STOPLIGHT_GAP_PX * 2.0)
+}
+
+fn stoplight_hover_bounds(window_bounds: Bounds<Pixels>, metrics: HudMetrics) -> Bounds<Pixels> {
+    let padding = 4.0;
+    Bounds {
+        origin: point(
+            window_bounds.origin.x + px(island_fillet(metrics) + HEADER_PAD_X_PX - padding),
+            window_bounds.origin.y + px(STOPLIGHT_TOP_PX - padding),
+        ),
+        size: size(
+            px(stoplight_cluster_width_px() + padding * 2.0),
+            px(STOPLIGHT_SIZE_PX + padding * 2.0),
+        ),
+    }
+}
+
 fn content_text_color(high_contrast: bool) -> Rgba {
     if high_contrast {
         rgb(0xffffff)
@@ -2113,15 +2132,18 @@ impl Render for VoiceHud {
             .expect("voice HUD scene should be valid")
         });
         self.tick_animation(compact_shell_width_target(&preliminary_scene));
-        let chrome_visible = point_inside_bounds(current_cursor_point(), window.bounds());
-        if self.chrome_visible != chrome_visible {
-            self.chrome_visible = chrome_visible;
+        let metrics = self.metrics();
+        let stoplights_visible = point_inside_bounds(
+            current_cursor_point(),
+            stoplight_hover_bounds(window.bounds(), metrics),
+        );
+        if self.stoplights_visible != stoplights_visible {
+            self.stoplights_visible = stoplights_visible;
             cx.notify();
         }
         self.snapshot.expire_programmed_step(Instant::now());
         window.request_animation_frame();
         let display = HudDisplay::from_snapshot(&self.snapshot);
-        let metrics = self.metrics();
         let reply_visible = response_flash_visible(metrics);
         let mut scene = self.custom_scene.clone().unwrap_or_else(|| {
             island_scene_from_snapshot(
@@ -3594,7 +3616,7 @@ mod tests {
     }
 
     #[test]
-    fn hover_chrome_centers_on_compact_bar_axis() {
+    fn stoplights_center_on_compact_bar_axis() {
         assert_eq!(
             STOPLIGHT_TOP_PX + (STOPLIGHT_SIZE_PX / 2.0),
             compact_content_axis_y()
@@ -3619,11 +3641,12 @@ mod tests {
         assert_eq!(TASK_RING_PX, 22.0);
         assert_eq!(HEADER_GAP_PX, 8.0);
         assert_eq!(HEADER_TITLE_DIVIDER_GAP_PX, 2.0);
+        assert_eq!(STOPLIGHT_GAP_PX, 4.0);
         assert_eq!(HEADER_TITLE_MIN_WIDTH_PX, 0.0);
         assert_eq!(HEADER_TITLE_MAX_WIDTH_PX, 112.0);
         assert_eq!(HEADER_CENTER_MIN_WIDTH_PX, 260.0);
         assert_eq!(HEADER_LEAD_WIDTH_PX, 28.0);
-        let stoplight_cluster_width = (STOPLIGHT_SIZE_PX * 3.0) + 8.0;
+        let stoplight_cluster_width = stoplight_cluster_width_px();
         let stoplight_title_gap = HEADER_LEAD_WIDTH_PX + HEADER_GAP_PX - stoplight_cluster_width;
         assert!(stoplight_title_gap >= 4.0);
         assert!(
@@ -3919,6 +3942,45 @@ mod tests {
         assert!(point_inside_bounds(point(px(250.0), px(40.0)), bounds));
         assert!(!point_inside_bounds(point(px(99.0), px(40.0)), bounds));
         assert!(!point_inside_bounds(point(px(250.0), px(61.0)), bounds));
+    }
+
+    #[test]
+    fn stoplights_only_reveal_over_left_orb_well() {
+        let window_bounds = Bounds {
+            origin: point(px(100.0), px(20.0)),
+            size: size(px(COMPACT_WIDTH), px(COMPACT_HEIGHT)),
+        };
+        let metrics = HudMetrics::with_expansion(0.0, 0.0);
+        let hover = stoplight_hover_bounds(window_bounds, metrics);
+
+        assert!(point_inside_bounds(
+            point(
+                px(100.0 + HEADER_PAD_X_PX + HEADER_ORB_PX / 2.0),
+                px(20.0 + COMPACT_HEIGHT / 2.0)
+            ),
+            hover
+        ));
+        assert!(point_inside_bounds(
+            point(
+                px(100.0 + HEADER_PAD_X_PX + stoplight_cluster_width_px() - 1.0),
+                px(20.0 + COMPACT_HEIGHT / 2.0)
+            ),
+            hover
+        ));
+        assert!(!point_inside_bounds(
+            point(
+                px(100.0 + COMPACT_WIDTH / 2.0),
+                px(20.0 + COMPACT_HEIGHT / 2.0)
+            ),
+            hover
+        ));
+        assert!(!point_inside_bounds(
+            point(
+                px(100.0 + COMPACT_WIDTH - 20.0),
+                px(20.0 + COMPACT_HEIGHT / 2.0)
+            ),
+            hover
+        ));
     }
 
     #[test]
