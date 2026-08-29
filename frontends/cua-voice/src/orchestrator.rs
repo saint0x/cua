@@ -973,8 +973,7 @@ async fn plan_and_dispatch(
                 attempt_index += 1;
                 continue;
             }
-            if long_range_null_plan_is_incomplete(&transcript, &plan.response, &planned_action_json)
-            {
+            if action_null_plan_claims_pending_work(&plan.response, &planned_action_json) {
                 trace
                     .append(
                         "planning_rejected",
@@ -1075,7 +1074,7 @@ async fn plan_and_dispatch(
                 continue;
             }
             let source_frame = context.frame.as_ref().map(|frame| frame.envelope.clone());
-            let turn = match dispatch_plan(
+            let mut turn = match dispatch_plan(
                 local.clone(),
                 context.session,
                 plan,
@@ -1143,6 +1142,7 @@ async fn plan_and_dispatch(
                     continue;
                 }
             };
+            apply_verified_readback_reply(&transcript, &mut turn);
             let mut effect = observed_turn_effect(&turn, &attempts);
             let open_only_incomplete = loop_budget.can_continue_after(attempt_index)
                 && open_only_incomplete_for_goal(&transcript, &turn);
@@ -1194,7 +1194,7 @@ async fn plan_and_dispatch(
             let should_verify = turn
                 .action
                 .as_ref()
-                .is_some_and(action_needs_fresh_verification);
+                .is_some_and(action_requires_visible_reobserve_before_finish);
             if !should_continue && !should_verify {
                 break mark_long_range_budget_exhausted_if_needed(
                     &transcript,
@@ -1659,11 +1659,19 @@ fn observed_turn_effect(
     })
 }
 
-fn action_needs_fresh_verification(action: &serde_json::Value) -> bool {
-    matches!(
-        action.get("kind").and_then(|kind| kind.as_str()),
-        Some("sequence" | "key_type" | "key_paste" | "shell_exec" | "aegis" | "ctx")
-    )
+fn action_requires_visible_reobserve_before_finish(action: &serde_json::Value) -> bool {
+    match action.get("kind").and_then(|kind| kind.as_str()) {
+        Some("key_type" | "key_paste") => true,
+        Some("sequence") => action
+            .get("actions")
+            .and_then(|actions| actions.as_array())
+            .is_some_and(|actions| {
+                actions
+                    .iter()
+                    .any(action_requires_visible_reobserve_before_finish)
+            }),
+        _ => false,
+    }
 }
 
 fn input_action_uses_only_aegis_backend(action: &InputAction) -> bool {
@@ -1967,37 +1975,41 @@ fn open_only_incomplete_for_goal(transcript: &str, turn: &CompletedAssistantTurn
 }
 
 fn transcript_requests_long_range_work(transcript: &str) -> bool {
-    transcript
+    let words = transcript
         .split_whitespace()
         .map(normalize_voice_token)
-        .any(|word| {
-            matches!(
-                word.as_str(),
-                "research"
-                    | "search"
-                    | "inspect"
-                    | "navigate"
-                    | "navigation"
-                    | "browse"
-                    | "browsing"
-                    | "web"
-                    | "page"
-                    | "google"
-                    | "lookup"
-                    | "look"
-                    | "find"
-                    | "read"
-                    | "investigate"
-                    | "compare"
-                    | "summarize"
-                    | "title"
-                    | "heading"
-                    | "verify"
-                    | "verified"
-                    | "while"
-                    | "watching"
-            )
-        })
+        .collect::<Vec<_>>();
+    if words.iter().any(|word| {
+        matches!(
+            word.as_str(),
+            "research"
+                | "search"
+                | "inspect"
+                | "navigate"
+                | "navigation"
+                | "browse"
+                | "browsing"
+                | "web"
+                | "page"
+                | "google"
+                | "lookup"
+                | "find"
+                | "investigate"
+                | "compare"
+                | "summarize"
+        )
+    }) {
+        return true;
+    }
+    if words_request_shell_readback(&words) {
+        return false;
+    }
+    words.iter().any(|word| {
+        matches!(
+            word.as_str(),
+            "readback" | "title" | "heading" | "verify" | "verified"
+        )
+    })
 }
 
 fn action_is_open_only_setup(action: &serde_json::Value) -> bool {
@@ -2077,6 +2089,10 @@ fn transcript_requests_shell_readback(transcript: &str) -> bool {
         .split_whitespace()
         .map(normalize_voice_token)
         .collect::<Vec<_>>();
+    words_request_shell_readback(&words)
+}
+
+fn words_request_shell_readback(words: &[String]) -> bool {
     let shell_or_file = words.iter().any(|word| {
         matches!(
             word.as_str(),
@@ -2118,6 +2134,21 @@ fn dispatch_evidence_has_nonempty_shell_stdout(evidence: &serde_json::Value) -> 
     dispatch_evidence_has_nonempty_stdout(evidence)
 }
 
+fn apply_verified_readback_reply(transcript: &str, turn: &mut CompletedAssistantTurn) {
+    if !transcript_requests_shell_readback(transcript)
+        || !turn
+            .action
+            .as_ref()
+            .is_some_and(json_action_uses_shell_exec)
+        || turn_effect(turn).as_deref() != Some("confirmed")
+    {
+        return;
+    }
+    if let Some(stdout) = dispatch_evidence_last_nonempty_stdout(turn.evidence.as_ref()) {
+        turn.response = stdout.trim().to_string();
+    }
+}
+
 fn dispatch_evidence_has_nonempty_stdout(evidence: &serde_json::Value) -> bool {
     evidence
         .get("evidence")
@@ -2129,6 +2160,17 @@ fn dispatch_evidence_has_nonempty_stdout(evidence: &serde_json::Value) -> bool {
                     .is_some_and(message_has_nonempty_stdout)
             })
         })
+}
+
+fn dispatch_evidence_last_nonempty_stdout(evidence: Option<&serde_json::Value>) -> Option<&str> {
+    evidence?
+        .get("evidence")
+        .and_then(|items| items.as_array())?
+        .iter()
+        .rev()
+        .filter_map(|item| item.get("message").and_then(|message| message.as_str()))
+        .filter_map(message_stdout)
+        .find(|stdout| !stdout.trim().is_empty())
 }
 
 fn aegis_observation_readback_missing(
@@ -2292,14 +2334,11 @@ fn planner_response_claims_pending_work(response: &str) -> bool {
     .any(|marker| lower.contains(marker))
 }
 
-fn long_range_null_plan_is_incomplete(
-    transcript: &str,
+fn action_null_plan_claims_pending_work(
     response: &str,
     action: &Option<serde_json::Value>,
 ) -> bool {
-    transcript_requests_long_range_work(transcript)
-        && action.is_none()
-        && planner_response_claims_pending_work(response)
+    action.is_none() && planner_response_claims_pending_work(response)
 }
 
 fn action_null_finishes_after_prior_attempts(
@@ -3805,23 +3844,27 @@ mod tests {
     }
 
     #[test]
-    fn edge_actions_require_fresh_verification_before_final_reply() {
+    fn only_visible_text_entry_actions_require_reobserve_before_final_reply() {
         for action in [
-            json!({"kind": "sequence", "actions": []}),
             json!({"kind": "key_type", "text": "hello"}),
             json!({"kind": "key_paste", "text": "hello"}),
+            json!({"kind": "sequence", "actions": [
+                {"kind": "open_app", "app_name": "Notes"},
+                {"kind": "key_paste", "text": "hello"}
+            ]}),
+        ] {
+            assert!(action_requires_visible_reobserve_before_finish(&action));
+        }
+        for action in [
+            json!({"kind": "sequence", "actions": []}),
             json!({"kind": "shell_exec", "command": "pwd"}),
             json!({"kind": "aegis", "args": ["--help"]}),
             json!({"kind": "ctx", "args": ["query", "default", "cua"]}),
+            json!({"kind": "open_app", "app_name": "Calculator"}),
+            json!({"kind": "mouse_click", "x": 1, "y": 2}),
         ] {
-            assert!(action_needs_fresh_verification(&action));
+            assert!(!action_requires_visible_reobserve_before_finish(&action));
         }
-        assert!(!action_needs_fresh_verification(
-            &json!({"kind": "open_app", "app_name": "Calculator"})
-        ));
-        assert!(!action_needs_fresh_verification(
-            &json!({"kind": "mouse_click", "x": 1, "y": 2})
-        ));
     }
 
     #[test]
@@ -4011,6 +4054,38 @@ mod tests {
             shell_readback_missing_evidence(empty_stdout_turn.evidence)["reason"],
             "shell_readback_missing_for_verified_output_goal"
         );
+    }
+
+    #[test]
+    fn shell_readback_with_stdout_finishes_without_long_range_repair_loop() {
+        let transcript = "Using local shell only, create answer.txt containing exactly fastpath evidence 314159, read the file back to stdout, and report the exact stdout.";
+        let mut turn = CompletedAssistantTurn {
+            response: "Creating answer.txt and reading it back via shell.".to_string(),
+            action: Some(json!({
+                "kind": "shell_exec",
+                "command": "mkdir -p /tmp/example && echo 'fastpath evidence 314159' > /tmp/example/answer.txt && cat /tmp/example/answer.txt",
+                "timeout_ms": 5000
+            })),
+            evidence: Some(json!({
+                "effect": "confirmed",
+                "evidence": [
+                    {"kind": "value_readback", "message": "shell exited 0; stdout=fastpath evidence 314159; stderr="}
+                ]
+            })),
+        };
+
+        assert!(transcript_requests_shell_readback(transcript));
+        assert!(!transcript_requests_long_range_work(transcript));
+        assert!(!shell_readback_missing_for_goal(transcript, &turn));
+        apply_verified_readback_reply(transcript, &mut turn);
+        assert_eq!(turn.response, "fastpath evidence 314159");
+        assert!(!should_replan_after_turn(
+            transcript,
+            &turn,
+            Some("confirmed"),
+            1,
+            AgentLoopBudget::Unbounded
+        ));
     }
 
     #[test]
@@ -4493,19 +4568,16 @@ mod tests {
     }
 
     #[test]
-    fn long_range_null_pending_reply_is_rejected_as_incomplete() {
-        assert!(long_range_null_plan_is_incomplete(
-            "Open Calculator, calculate 123 plus 456, read the displayed result, and report the verified result.",
+    fn action_null_pending_reply_is_rejected_as_incomplete() {
+        assert!(action_null_plan_claims_pending_work(
             "Opening Calculator via Spotlight and typing 123",
             &None
         ));
-        assert!(long_range_null_plan_is_incomplete(
-            "Use the local shell to create input.txt, transform it into output.txt, read output.txt back, and report the verified contents.",
+        assert!(action_null_plan_claims_pending_work(
             "Creating input.txt, transforming it to output.txt, and verifying.",
             &None
         ));
-        assert!(!long_range_null_plan_is_incomplete(
-            "Open Calculator, calculate 123 plus 456, read the displayed result, and report the verified result.",
+        assert!(!action_null_plan_claims_pending_work(
             "The displayed result is 579.",
             &None
         ));
