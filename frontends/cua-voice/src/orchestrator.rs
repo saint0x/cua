@@ -2622,7 +2622,7 @@ fn action_null_finishes_after_prior_attempts(
 ) -> bool {
     action.is_none()
         && !prior_attempts.is_empty()
-        && (final_response_claims_verified_result(response)
+        && (prior_attempts_support_verified_final(response, prior_attempts)
             || final_response_reports_prior_failure(response))
 }
 
@@ -2744,11 +2744,34 @@ fn prior_attempts_support_explicit_aegis_final(
     if final_response_claims_verified_result(response) {
         return attempts.iter().any(|attempt| {
             attempt.action.as_ref().is_some_and(json_action_uses_aegis)
-                && attempt.effect.as_deref() == Some("confirmed")
+                && confirmed_attempt_has_task_evidence(attempt)
         });
     }
     final_response_reports_prior_failure(response)
         && prior_attempts_include_aegis_evidence(attempts)
+}
+
+fn prior_attempts_support_verified_final(response: &str, attempts: &[PlanAttemptContext]) -> bool {
+    final_response_claims_verified_result(response)
+        && attempts.iter().any(confirmed_attempt_has_task_evidence)
+}
+
+fn confirmed_attempt_has_task_evidence(attempt: &PlanAttemptContext) -> bool {
+    attempt.effect.as_deref() == Some("confirmed")
+        && attempt
+            .evidence
+            .as_ref()
+            .is_some_and(evidence_has_task_readback)
+}
+
+fn evidence_has_task_readback(evidence: &serde_json::Value) -> bool {
+    dispatch_evidence_has_nonempty_stdout(evidence)
+        || ["stdout", "text", "value", "readback"].iter().any(|key| {
+            evidence
+                .get(key)
+                .and_then(|value| value.as_str())
+                .is_some_and(|value| !value.trim().is_empty())
+        })
 }
 
 fn json_action_uses_aegis(action: &serde_json::Value) -> bool {
@@ -3002,11 +3025,7 @@ fn inferred_final_effect(
     if completed.action.is_some() {
         return "unverifiable";
     }
-    if prior_attempts
-        .iter()
-        .any(|attempt| attempt.effect.as_deref() == Some("confirmed"))
-        && final_response_claims_verified_result(&completed.response)
-    {
+    if prior_attempts_support_verified_final(&completed.response, prior_attempts) {
         return "confirmed";
     }
     if prior_attempts.iter().any(|attempt| {
@@ -5231,7 +5250,13 @@ mod tests {
                 "timeout_ms": 5000
             })),
             effect: Some("confirmed".to_string()),
-            evidence: Some(json!({"effect": "confirmed"})),
+            evidence: Some(json!({
+                "effect": "confirmed",
+                "evidence": [{
+                    "kind": "value_readback",
+                    "message": "shell exited 0; stdout=done; stderr="
+                }]
+            })),
         }];
         let completed = CompletedAssistantTurn {
             response: "/tmp/example contains 'done'.".to_string(),
@@ -5465,6 +5490,24 @@ mod tests {
             effect: Some("confirmed".to_string()),
             evidence: Some(json!({"effect": "confirmed"})),
         }];
+        let aegis_readback_attempts = vec![PlanAttemptContext {
+            attempt_index: 1,
+            response: "Inspecting page with Aegis.".to_string(),
+            action: Some(json!({
+                "kind": "sequence",
+                "actions": [
+                    {"kind": "aegis", "args": ["--mode", "headless", "page", "actions"], "timeout_ms": 15000}
+                ]
+            })),
+            effect: Some("confirmed".to_string()),
+            evidence: Some(json!({
+                "effect": "confirmed",
+                "evidence": [{
+                    "kind": "value_readback",
+                    "message": "aegis exited 0; stdout={\"page_type\":\"documentation\"}; stderr="
+                }]
+            })),
+        }];
         let failed_aegis_attempts = vec![PlanAttemptContext {
             attempt_index: 1,
             response: "Inspecting page with Aegis.".to_string(),
@@ -5483,9 +5526,13 @@ mod tests {
             "Verified page type: documentation",
             &local_attempts
         ));
-        assert!(prior_attempts_support_explicit_aegis_final(
+        assert!(!prior_attempts_support_explicit_aegis_final(
             "Verified page type: documentation",
             &aegis_attempts
+        ));
+        assert!(prior_attempts_support_explicit_aegis_final(
+            "Verified page type: documentation",
+            &aegis_readback_attempts
         ));
         assert!(!prior_attempts_support_explicit_aegis_final(
             "Verified page type: documentation",
@@ -5927,7 +5974,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_loop_marks_verified_answer_after_actions_as_confirmed() {
+    fn agent_loop_does_not_confirm_final_answer_from_bare_action_delivery() {
         let completed = CompletedAssistantTurn {
             response: "The verified page title is Gemini models.".to_string(),
             action: None,
@@ -5949,6 +5996,6 @@ mod tests {
 
         let completed = attach_loop_evidence(completed, &prior_attempts);
 
-        assert_eq!(turn_effect(&completed), Some("confirmed".to_string()));
+        assert_eq!(turn_effect(&completed), Some("stopped".to_string()));
     }
 }
