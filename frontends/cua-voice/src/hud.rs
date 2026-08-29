@@ -789,7 +789,7 @@ mod tests {
             &display,
             false,
             false,
-            "anthropic/claude-sonnet-5",
+            "google/gemini-3.7-flash",
             Duration::ZERO,
         )
         .unwrap();
@@ -833,7 +833,7 @@ mod tests {
             &display,
             false,
             true,
-            "anthropic/claude-sonnet-5",
+            "google/gemini-3.7-flash",
             Duration::ZERO,
         )
         .unwrap();
@@ -872,7 +872,7 @@ mod tests {
             &display,
             true,
             false,
-            "anthropic/claude-sonnet-5",
+            "google/gemini-3.7-flash",
             Duration::from_secs(67),
         )
         .unwrap();

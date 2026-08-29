@@ -63,7 +63,7 @@ const HEADER_GAP_PX: f32 = 8.0;
 const HEADER_TITLE_DIVIDER_GAP_PX: f32 = 2.0;
 const HEADER_LEAD_WIDTH_PX: f32 = 28.0;
 const HEADER_ORB_PX: f32 = 18.0;
-const HEADER_RING_PX: f32 = 16.0;
+const HEADER_RING_PX: f32 = HEADER_ORB_PX;
 const TASK_RING_PX: f32 = 22.0;
 const BODY_LABEL_WIDTH_PX: f32 = 68.0;
 const BODY_PAD_X_PX: f32 = 20.0;
@@ -3736,7 +3736,7 @@ mod tests {
         assert_eq!(UI_TEXT_PX, 12.0);
         assert_eq!(UI_META_PX, UI_TEXT_PX);
         assert_eq!(HEADER_ORB_PX, 18.0);
-        assert_eq!(HEADER_RING_PX, 16.0);
+        assert_eq!(HEADER_RING_PX, HEADER_ORB_PX);
         assert_eq!(TASK_RING_PX, 22.0);
         assert_eq!(HEADER_GAP_PX, 8.0);
         assert_eq!(HEADER_TITLE_DIVIDER_GAP_PX, 2.0);

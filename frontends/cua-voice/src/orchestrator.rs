@@ -34,10 +34,8 @@ const VOICE_STEP_LABEL_MAX: usize = 96;
 const VOICE_STEP_TIMEOUT_MS: u64 = 120;
 const VOICE_STEP_FLUSH_TIMEOUT_MS: u64 = 120;
 const DEFAULT_CONTEXT_PREFETCH_TIMEOUT_MS: u64 = 2_500;
-const DEFAULT_AGENT_LOOP_MAX_ATTEMPTS: usize = 5;
-const MAX_AGENT_LOOP_ATTEMPTS: usize = 12;
 const MIN_RECORDING_DURATION: Duration = Duration::from_millis(650);
-pub const DEFAULT_PLANNER_MODEL: &str = "anthropic/claude-sonnet-5";
+pub const DEFAULT_PLANNER_MODEL: &str = "google/gemini-3.7-flash";
 
 struct PrefetchedContext {
     session: Option<CuaSession>,
@@ -474,6 +472,11 @@ fn planning_error_is_empty_content(error: &anyhow::Error) -> bool {
     format!("{error:#}").contains("planning model returned empty content")
 }
 
+fn planning_error_is_invalid_action_json(error: &anyhow::Error) -> bool {
+    let message = format!("{error:#}");
+    message.contains("model output was not valid action JSON") || message.contains("parse action")
+}
+
 fn normalized_transcript(transcript: &str) -> String {
     transcript
         .trim()
@@ -703,14 +706,17 @@ async fn plan_and_dispatch(
                             .await;
                         break turn;
                     }
-                    if planning_error_is_empty_content(&error) {
+                    if planning_error_is_empty_content(&error)
+                        || planning_error_is_invalid_action_json(&error)
+                    {
                         if let Some(plan) = browser_research_bootstrap_plan(&transcript) {
                             trace
                                 .append(
-                                    "planning_empty_content_recovered",
+                                    "planning_error_recovered",
                                     json!({
                                         "attempt_index": attempt_index,
                                         "strategy": "browser_research_bootstrap",
+                                        "error": format!("{error:#}"),
                                     }),
                                 )
                                 .await;
@@ -723,6 +729,30 @@ async fn plan_and_dispatch(
                     }
                 }
             };
+            let should_bootstrap_browser_research =
+                transcript_requests_long_range_work(&transcript)
+                    && (plan
+                        .action
+                        .as_ref()
+                        .is_some_and(input_action_is_open_only_setup)
+                        || (plan.action.is_none()
+                            && planner_response_claims_pending_work(&plan.response)));
+            if should_bootstrap_browser_research {
+                if let Some(recovered_plan) = browser_research_bootstrap_plan(&transcript) {
+                    trace
+                        .append(
+                            "planning_browser_research_bootstrapped",
+                            json!({
+                                "attempt_index": attempt_index,
+                                "strategy": "browser_research_bootstrap",
+                                "model_response": plan.response,
+                                "model_action": plan.action.as_ref().map(serde_json::to_value).transpose()?,
+                            }),
+                        )
+                        .await;
+                    plan = recovered_plan;
+                }
+            }
             repair_new_note_text_entry_plan(&transcript, &mut plan.action);
             let dedupe_report = dedupe_redundant_sequence_actions(&mut plan.action);
             if dedupe_report.removed > 0 {
@@ -1191,15 +1221,13 @@ fn agent_loop_budget() -> AgentLoopBudget {
     value
         .parse::<usize>()
         .ok()
-        .filter(|value| (1..=MAX_AGENT_LOOP_ATTEMPTS).contains(value))
+        .filter(|value| *value > 0)
         .map(|max_attempts| AgentLoopBudget::Finite { max_attempts })
         .unwrap_or_else(default_agent_loop_budget)
 }
 
 fn default_agent_loop_budget() -> AgentLoopBudget {
-    AgentLoopBudget::Finite {
-        max_attempts: DEFAULT_AGENT_LOOP_MAX_ATTEMPTS,
-    }
+    AgentLoopBudget::Unbounded
 }
 
 fn turn_effect(turn: &CompletedAssistantTurn) -> Option<String> {
@@ -1225,6 +1253,30 @@ fn action_is_text_entry(action: &serde_json::Value) -> bool {
             .is_some_and(|actions| actions.iter().any(action_is_text_entry)),
         _ => false,
     }
+}
+
+fn action_is_browser_research_setup(action: &serde_json::Value) -> bool {
+    let Some(actions) = action
+        .get("actions")
+        .and_then(|actions| actions.as_array())
+        .filter(|actions| !actions.is_empty())
+    else {
+        return false;
+    };
+    let has_query_entry = actions.iter().any(|action| {
+        matches!(
+            action.get("kind").and_then(|kind| kind.as_str()),
+            Some("key_type" | "key_paste")
+        )
+    });
+    let has_submit = actions.iter().any(|action| {
+        action.get("kind").and_then(|kind| kind.as_str()) == Some("key_press")
+            && action
+                .get("combo")
+                .and_then(|combo| combo.as_str())
+                .is_some_and(|combo| combo.eq_ignore_ascii_case("enter"))
+    });
+    has_query_entry && has_submit
 }
 
 fn transcript_requests_text_entry(transcript: &str) -> bool {
@@ -1477,6 +1529,16 @@ fn action_is_open_only_setup(action: &serde_json::Value) -> bool {
     }
 }
 
+fn input_action_is_open_only_setup(action: &cua_core::InputAction) -> bool {
+    match action {
+        cua_core::InputAction::OpenApp { .. } => true,
+        cua_core::InputAction::Sequence { actions, .. } => {
+            !actions.is_empty() && actions.iter().all(input_action_is_open_only_setup)
+        }
+        _ => false,
+    }
+}
+
 fn open_only_incomplete_evidence(evidence: Option<serde_json::Value>) -> serde_json::Value {
     let mut evidence = evidence.unwrap_or_else(|| json!({}));
     if let Some(object) = evidence.as_object_mut() {
@@ -1519,7 +1581,35 @@ fn should_continue_long_range_after_verified_action(
     let Some(action) = turn.action.as_ref() else {
         return false;
     };
-    action_needs_fresh_verification(action) && !action_is_text_entry(action)
+    action_can_advance_long_range_goal(action)
+        && (!action_is_text_entry(action) || action_is_browser_research_setup(action))
+}
+
+fn action_can_advance_long_range_goal(action: &serde_json::Value) -> bool {
+    matches!(
+        action.get("kind").and_then(|kind| kind.as_str()),
+        Some(
+            "sequence" | "open_app" | "mouse_click" | "key_press" | "shell_exec" | "aegis" | "ctx"
+        )
+    )
+}
+
+fn planner_response_claims_pending_work(response: &str) -> bool {
+    let lower = response.trim().to_ascii_lowercase();
+    [
+        "opening",
+        "searching",
+        "browsing",
+        "researching",
+        "looking up",
+        "checking",
+        "reading",
+        "i'll",
+        "i will",
+        "let me",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
 }
 
 fn long_range_budget_exhausted_without_finish(
@@ -1674,7 +1764,9 @@ fn should_replan_after_turn(
     attempt_index: usize,
     loop_budget: AgentLoopBudget,
 ) -> bool {
-    if turn.action.as_ref().is_some_and(action_is_text_entry) {
+    if turn.action.as_ref().is_some_and(|action| {
+        action_is_text_entry(action) && !action_is_browser_research_setup(action)
+    }) {
         return false;
     }
     should_replan_after_effect(effect, attempt_index, loop_budget)
@@ -2304,6 +2396,15 @@ mod tests {
     }
 
     #[test]
+    fn planner_parse_failures_are_recoverable_for_deterministic_browser_bootstrap() {
+        let error = anyhow::anyhow!(
+            "model output was not valid action JSON: parse action: invalid type: null"
+        );
+
+        assert!(planning_error_is_invalid_action_json(&error));
+    }
+
+    #[test]
     fn user_visible_error_hides_local_stt_tracebacks() {
         let error = anyhow::anyhow!(
             "local speech-to-text fallback after primary failure: No such file or directory: 'ffmpeg'"
@@ -2536,12 +2637,9 @@ mod tests {
     }
 
     #[test]
-    fn agent_loop_attempt_budget_is_conservative_and_configurable() {
+    fn agent_loop_attempt_budget_defaults_to_unbounded_and_accepts_operator_overrides() {
         std::env::remove_var("CUA_AGENT_LOOP_MAX_ATTEMPTS");
-        assert_eq!(
-            agent_loop_budget(),
-            AgentLoopBudget::Finite { max_attempts: 5 }
-        );
+        assert_eq!(agent_loop_budget(), AgentLoopBudget::Unbounded);
 
         std::env::set_var("CUA_AGENT_LOOP_MAX_ATTEMPTS", "12");
         assert_eq!(
@@ -2558,20 +2656,20 @@ mod tests {
         std::env::set_var("CUA_AGENT_LOOP_MAX_ATTEMPTS", "30");
         assert_eq!(
             agent_loop_budget(),
-            AgentLoopBudget::Finite { max_attempts: 5 }
+            AgentLoopBudget::Finite { max_attempts: 30 }
         );
 
         std::env::set_var("CUA_AGENT_LOOP_MAX_ATTEMPTS", "0");
-        assert_eq!(
-            agent_loop_budget(),
-            AgentLoopBudget::Finite { max_attempts: 5 }
-        );
+        assert_eq!(agent_loop_budget(), AgentLoopBudget::Unbounded);
+
+        std::env::set_var("CUA_AGENT_LOOP_MAX_ATTEMPTS", "not-a-number");
+        assert_eq!(agent_loop_budget(), AgentLoopBudget::Unbounded);
         std::env::remove_var("CUA_AGENT_LOOP_MAX_ATTEMPTS");
     }
 
     #[test]
-    fn default_planner_model_tracks_selected_sonnet() {
-        assert_eq!(DEFAULT_PLANNER_MODEL, "anthropic/claude-sonnet-5");
+    fn default_planner_model_uses_latest_gemini_flash() {
+        assert_eq!(DEFAULT_PLANNER_MODEL, "google/gemini-3.7-flash");
     }
 
     #[test]
@@ -2805,6 +2903,18 @@ mod tests {
     }
 
     #[test]
+    fn long_range_browser_research_expands_typed_open_only_setup_before_dispatch() {
+        let action = cua_core::InputAction::OpenApp {
+            app_name: "Safari".to_string(),
+        };
+
+        assert!(input_action_is_open_only_setup(&action));
+        assert!(transcript_requests_long_range_work(
+            "Open Safari and search for the official Gemini documentation"
+        ));
+    }
+
+    #[test]
     fn agent_loop_long_range_confirmed_tool_actions_continue_after_reobserve() {
         let turn = CompletedAssistantTurn {
             response: "Searching with Aegis.".to_string(),
@@ -2853,6 +2963,19 @@ mod tests {
     }
 
     #[test]
+    fn agent_loop_treats_null_action_progress_claims_as_incomplete() {
+        assert!(planner_response_claims_pending_work(
+            "Opening Safari and searching for the official Gemini page."
+        ));
+        assert!(planner_response_claims_pending_work(
+            "Let me check the browser and read the page title."
+        ));
+        assert!(!planner_response_claims_pending_work(
+            "The verified title is Gemini models."
+        ));
+    }
+
+    #[test]
     fn agent_loop_long_range_text_entry_actions_still_do_not_replay() {
         let turn = CompletedAssistantTurn {
             response: "Writing the summary.".to_string(),
@@ -2879,6 +3002,65 @@ mod tests {
             Some("confirmed"),
             1,
             AgentLoopBudget::Finite { max_attempts: 5 }
+        ));
+    }
+
+    #[test]
+    fn agent_loop_browser_search_text_entry_continues_after_reobserve() {
+        let turn = CompletedAssistantTurn {
+            response: "Searching the web.".to_string(),
+            action: Some(json!({
+                "kind": "sequence",
+                "actions": [
+                    {"kind": "mouse_click", "x": 510, "y": 204, "button": "left", "count": 1},
+                    {"kind": "key_paste", "text": "official Gemini 3.7 Flash documentation"},
+                    {"kind": "key_press", "combo": "enter"}
+                ],
+                "inter_action_delay_ms": 120
+            })),
+            evidence: Some(json!({"effect": "confirmed"})),
+        };
+
+        assert!(turn
+            .action
+            .as_ref()
+            .is_some_and(action_is_browser_research_setup));
+        assert!(should_continue_long_range_after_verified_action(
+            "Open Safari and search for official Gemini docs, then read the title",
+            &turn,
+            Some("confirmed"),
+            1,
+            AgentLoopBudget::Unbounded
+        ));
+        assert!(should_replan_after_turn(
+            "Open Safari and search for official Gemini docs, then read the title",
+            &turn,
+            Some("confirmed"),
+            1,
+            AgentLoopBudget::Unbounded
+        ));
+    }
+
+    #[test]
+    fn agent_loop_long_range_navigation_clicks_continue_after_reobserve() {
+        let turn = CompletedAssistantTurn {
+            response: "Opening the search result.".to_string(),
+            action: Some(json!({
+                "kind": "mouse_click",
+                "x": 360,
+                "y": 430,
+                "button": "left",
+                "count": 1
+            })),
+            evidence: Some(json!({"effect": "confirmed"})),
+        };
+
+        assert!(should_replan_after_turn(
+            "Open Safari, research Gemini docs, read the title, and report it",
+            &turn,
+            Some("confirmed"),
+            4,
+            AgentLoopBudget::Unbounded
         ));
     }
 

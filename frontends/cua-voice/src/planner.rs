@@ -695,6 +695,7 @@ pub fn parse_fast_command(transcript: &str) -> Option<PlannedTurn> {
 }
 
 pub fn browser_research_bootstrap_plan(transcript: &str) -> Option<PlannedTurn> {
+    let query = browser_research_query(transcript);
     let words = transcript
         .split_whitespace()
         .map(normalize_command_token)
@@ -714,17 +715,63 @@ pub fn browser_research_bootstrap_plan(transcript: &str) -> Option<PlannedTurn> 
     Some(turn(
         "Opening Safari for research.",
         Some(InputAction::Sequence {
-            actions: vec![
-                InputAction::OpenApp {
-                    app_name: "Safari".to_string(),
-                },
-                InputAction::KeyPress {
-                    combo: "cmd+l".to_string(),
-                },
-            ],
+            actions: browser_research_bootstrap_actions(query),
             inter_action_delay_ms: 120,
         }),
     ))
+}
+
+fn browser_research_bootstrap_actions(query: String) -> Vec<InputAction> {
+    vec![
+        InputAction::OpenApp {
+            app_name: "Safari".to_string(),
+        },
+        InputAction::KeyPress {
+            combo: "cmd+l".to_string(),
+        },
+        InputAction::KeyPaste { text: query },
+        InputAction::KeyPress {
+            combo: "enter".to_string(),
+        },
+    ]
+}
+
+fn browser_research_query(transcript: &str) -> String {
+    let cleaned = transcript
+        .trim()
+        .trim_matches(|ch: char| ch == '"' || ch == '\'' || ch == '.')
+        .to_string();
+    let lower = cleaned.to_ascii_lowercase();
+    for marker in [
+        "search for ",
+        "google ",
+        "look up ",
+        "lookup ",
+        "research ",
+        "browse for ",
+    ] {
+        if let Some(index) = lower.find(marker) {
+            let start = index + marker.len();
+            let candidate = cleaned[start..]
+                .trim()
+                .trim_matches(|ch: char| ch == '"' || ch == '\'' || ch == '.');
+            if !candidate.is_empty() && !candidate.to_ascii_lowercase().starts_with("while ") {
+                return trim_browser_research_tail(candidate).to_string();
+            }
+        }
+    }
+    trim_browser_research_tail(&cleaned).to_string()
+}
+
+fn trim_browser_research_tail(query: &str) -> &str {
+    let lower = query.to_ascii_lowercase();
+    let mut end = query.len();
+    for marker in [", read ", " and read ", ", then ", " and report "] {
+        if let Some(index) = lower.find(marker) {
+            end = end.min(index);
+        }
+    }
+    query[..end].trim()
 }
 
 pub fn extract_planner_hints(transcript: &str) -> PlannerHints {
@@ -1255,8 +1302,36 @@ mod tests {
                 [
                     InputAction::OpenApp { app_name },
                     InputAction::KeyPress { combo },
+                    InputAction::KeyPaste { text },
+                    InputAction::KeyPress { combo: enter },
                 ] if app_name == "Safari"
                     && combo == "cmd+l"
+                    && text == "Open Safari browser and do some research while I am watching"
+                    && enter == "enter"
+            )
+        ));
+    }
+
+    #[test]
+    fn browser_research_bootstrap_extracts_search_query_before_followup_instructions() {
+        let plan = browser_research_bootstrap_plan(
+            "Open Safari and search for the official Gemini 3.7 Flash documentation, read the page title, and report the verified title.",
+        )
+        .unwrap();
+
+        assert!(matches!(
+            plan.action,
+            Some(InputAction::Sequence { ref actions, .. }) if matches!(
+                actions.as_slice(),
+                [
+                    InputAction::OpenApp { app_name },
+                    InputAction::KeyPress { combo },
+                    InputAction::KeyPaste { text },
+                    InputAction::KeyPress { combo: enter },
+                ] if app_name == "Safari"
+                    && combo == "cmd+l"
+                    && text == "the official Gemini 3.7 Flash documentation"
+                    && enter == "enter"
             )
         ));
     }
