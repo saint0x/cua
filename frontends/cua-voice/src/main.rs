@@ -128,6 +128,7 @@ struct VoiceHud {
     response_progress: f32,
     expansion_progress: f32,
     minimized_progress: f32,
+    compact_width_px: f32,
     expanded: bool,
     minimized: bool,
     chrome_visible: bool,
@@ -172,6 +173,7 @@ impl VoiceHud {
             response_progress: 0.0,
             expansion_progress: 0.0,
             minimized_progress: 0.0,
+            compact_width_px: COMPACT_WIDTH,
             expanded: false,
             minimized: false,
             chrome_visible: false,
@@ -361,7 +363,7 @@ impl VoiceHud {
         .flex_none()
     }
 
-    fn tick_animation(&mut self) {
+    fn tick_animation(&mut self, compact_width_target_px: f32) {
         let now = Instant::now();
         let dt = now.duration_since(self.last_frame).as_secs_f32().min(0.05);
         self.last_frame = now;
@@ -391,6 +393,12 @@ impl VoiceHud {
         self.minimized_progress = advance_motion_progress(
             self.minimized_progress,
             minimized_target,
+            dt,
+            shell_motion_secs(self.reduced_motion),
+        );
+        self.compact_width_px = advance_scalar_motion(
+            self.compact_width_px,
+            compact_width_target_px,
             dt,
             shell_motion_secs(self.reduced_motion),
         );
@@ -629,11 +637,14 @@ impl VoiceHud {
         self.expanded = !self.expanded;
         self.minimized = false;
         self.drag = None;
+        if self.expanded {
+            window.activate_window();
+        }
         window.refresh();
         if let Some(display) = window.display(cx) {
             let bounds = animated_island_bounds(
                 window.bounds(),
-                HudMetrics::with_expansion(self.response_progress, self.expansion_progress),
+                self.metrics(),
                 self.minimized_progress,
                 display.bounds(),
             );
@@ -650,11 +661,14 @@ impl VoiceHud {
         self.expanded = expanded;
         self.minimized = false;
         self.drag = None;
+        if expanded {
+            window.activate_window();
+        }
         cx.notify();
         if let Some(display) = window.display(cx) {
             let bounds = animated_island_bounds(
                 window.bounds(),
-                HudMetrics::with_expansion(self.response_progress, self.expansion_progress),
+                self.metrics(),
                 self.minimized_progress,
                 display.bounds(),
             );
@@ -687,7 +701,7 @@ impl VoiceHud {
                 if let Some(display) = window.display(cx) {
                     let bounds = animated_island_bounds(
                         window.bounds(),
-                        HudMetrics::with_expansion(this.response_progress, this.expansion_progress),
+                        this.metrics(),
                         this.minimized_progress,
                         display.bounds(),
                     );
@@ -823,6 +837,14 @@ impl VoiceHud {
             let snapped = snap_island_bounds(window.bounds(), display.bounds());
             window.set_bounds(snapped);
         }
+    }
+
+    fn metrics(&self) -> HudMetrics {
+        metrics_with_compact_width(
+            self.response_progress,
+            self.expansion_progress,
+            self.compact_width_px,
+        )
     }
 }
 
@@ -1170,6 +1192,31 @@ fn header_layout_widths(
         title: title_width,
         center: center_width,
     }
+}
+
+fn compact_shell_width_target(scene: &IslandScene) -> f32 {
+    let title = scene_text(scene, "left", "input")
+        .or_else(|| scene_text(scene, "header_left", "input"))
+        .unwrap_or_default();
+    let center = scene_text(scene, "center", "status")
+        .or_else(|| scene_text(scene, "header_center", "status"))
+        .unwrap_or_default();
+    let transport = scene_text(scene, "right", "transport")
+        .or_else(|| scene_text(scene, "header_right", "transport"))
+        .unwrap_or_default();
+    let target = scene_text(scene, "right", "target")
+        .or_else(|| scene_text(scene, "header_right", "target"))
+        .unwrap_or_default();
+    let chrome_width = HEADER_LEAD_WIDTH_PX
+        + header_title_width_px(&title)
+        + 2.0
+        + header_chips_width_px(&transport, &target)
+        + HEADER_RING_PX;
+    let center_width =
+        (estimated_center_text_width_px(&center) + 8.0).max(HEADER_CENTER_MIN_WIDTH_PX);
+    let width = (HEADER_PAD_X_PX * 2.0) + chrome_width + header_gap_width_px() + center_width;
+
+    width.clamp(COMPACT_WIDTH, EXPANDED_WIDTH)
 }
 
 fn header_title_width_px(title: &str) -> f32 {
@@ -1717,6 +1764,20 @@ fn island_shell_width(metrics: HudMetrics) -> f32 {
     metrics.width
 }
 
+fn metrics_with_compact_width(
+    response_progress: f32,
+    expansion_progress: f32,
+    compact_width_px: f32,
+) -> HudMetrics {
+    let mut metrics = HudMetrics::with_expansion(response_progress, expansion_progress);
+    metrics.width = cua_voice::hud::lerp(
+        compact_width_px.clamp(COMPACT_WIDTH, EXPANDED_WIDTH),
+        EXPANDED_WIDTH,
+        metrics.expansion_opacity,
+    );
+    metrics
+}
+
 fn island_width(metrics: HudMetrics) -> f32 {
     island_shell_width(metrics) + (island_fillet(metrics) * 2.0)
 }
@@ -1823,6 +1884,19 @@ fn advance_motion_progress(current: f32, target: f32, dt_secs: f32, duration_sec
         return target;
     }
     let step = (dt_secs / duration_secs.max(0.001)).clamp(0.0, 1.0);
+    if target > current {
+        (current + step).min(target)
+    } else {
+        (current - step).max(target)
+    }
+}
+
+fn advance_scalar_motion(current: f32, target: f32, dt_secs: f32, duration_secs: f32) -> f32 {
+    if current == target {
+        return target;
+    }
+    let full_travel_px = (EXPANDED_WIDTH - COMPACT_WIDTH).max(1.0);
+    let step = full_travel_px * (dt_secs / duration_secs.max(0.001)).clamp(0.0, 1.0);
     if target > current {
         (current + step).min(target)
     } else {
@@ -2010,7 +2084,6 @@ impl Render for VoiceHud {
         let expansion_command = self.drain_events();
         let reply_window_expired =
             self.snapshot.expanded_until.is_some() && !self.snapshot.is_expanded();
-        self.tick_animation();
         if self.snapshot.expire_transcript(Instant::now()) {
             cx.notify();
         }
@@ -2020,6 +2093,21 @@ impl Render for VoiceHud {
         if should_reset_after_reply_collapse(reply_window_expired, self.response_progress) {
             self.snapshot.apply(VoiceUiEvent::Idle);
         }
+        let preliminary_metrics = self.metrics();
+        let preliminary_reply_visible = response_flash_visible(preliminary_metrics);
+        let preliminary_display = HudDisplay::from_snapshot(&self.snapshot);
+        let preliminary_scene = self.custom_scene.clone().unwrap_or_else(|| {
+            island_scene_from_snapshot(
+                &self.snapshot,
+                &preliminary_display,
+                self.expanded && !self.minimized,
+                preliminary_reply_visible,
+                &self.model_label,
+                self.started.elapsed(),
+            )
+            .expect("voice HUD scene should be valid")
+        });
+        self.tick_animation(compact_shell_width_target(&preliminary_scene));
         let chrome_visible = point_inside_bounds(current_cursor_point(), window.bounds());
         if self.chrome_visible != chrome_visible {
             self.chrome_visible = chrome_visible;
@@ -2028,7 +2116,7 @@ impl Render for VoiceHud {
         self.snapshot.expire_programmed_step(Instant::now());
         window.request_animation_frame();
         let display = HudDisplay::from_snapshot(&self.snapshot);
-        let metrics = HudMetrics::with_expansion(self.response_progress, self.expansion_progress);
+        let metrics = self.metrics();
         let reply_visible = response_flash_visible(metrics);
         let mut scene = self.custom_scene.clone().unwrap_or_else(|| {
             island_scene_from_snapshot(
@@ -2161,52 +2249,39 @@ fn main() -> anyhow::Result<()> {
             request_desktop_access_once_if_packaged_app(&desktop_access_profile);
         }
         let bounds = top_centered_bounds(cx);
-        cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                titlebar: None,
-                focus: true,
-                kind: WindowKind::PopUp,
-                is_resizable: false,
-                is_minimizable: false,
-                mouse_passthrough: false,
-                window_background: WindowBackgroundAppearance::Transparent,
-                ..Default::default()
-            },
-            move |window, cx| {
-                let hud = cx.new(|_| {
-                    VoiceHud::new(
-                        rx,
-                        ui_mode.clone(),
-                        model_label.clone(),
-                        island_bounds.clone(),
-                        reduced_motion,
-                    )
-                });
-                let weak_hud = hud.downgrade();
-                window
-                    .spawn(cx, async move |cx| loop {
-                        cx.background_executor()
-                            .timer(Duration::from_millis(33))
-                            .await;
-                        if weak_hud
-                            .update_in(cx, |hud, window, cx| {
-                                if let Some(expanded) = hud.drain_events() {
-                                    hud.set_expanded_from_render(expanded, window, cx);
-                                } else {
-                                    cx.notify();
-                                }
-                                window.refresh();
-                            })
-                            .is_err()
-                        {
-                            break;
-                        }
-                    })
-                    .detach();
-                hud
-            },
-        )
+        cx.open_window(hud_window_options(bounds), move |window, cx| {
+            let hud = cx.new(|_| {
+                VoiceHud::new(
+                    rx,
+                    ui_mode.clone(),
+                    model_label.clone(),
+                    island_bounds.clone(),
+                    reduced_motion,
+                )
+            });
+            let weak_hud = hud.downgrade();
+            window
+                .spawn(cx, async move |cx| loop {
+                    cx.background_executor()
+                        .timer(Duration::from_millis(33))
+                        .await;
+                    if weak_hud
+                        .update_in(cx, |hud, window, cx| {
+                            if let Some(expanded) = hud.drain_events() {
+                                hud.set_expanded_from_render(expanded, window, cx);
+                            } else {
+                                cx.notify();
+                            }
+                            window.refresh();
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                })
+                .detach();
+            hud
+        })
         .unwrap();
     });
     Ok(())
@@ -2814,6 +2889,20 @@ fn top_attached_fallback_bounds(window_size: gpui::Size<Pixels>) -> Bounds<Pixel
     Bounds {
         origin: point(px(0.0), px(TOP_MARGIN)),
         size: window_size,
+    }
+}
+
+fn hud_window_options(bounds: Bounds<Pixels>) -> WindowOptions {
+    WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(bounds)),
+        titlebar: None,
+        focus: false,
+        kind: WindowKind::PopUp,
+        is_resizable: false,
+        is_minimizable: false,
+        mouse_passthrough: false,
+        window_background: WindowBackgroundAppearance::Transparent,
+        ..Default::default()
     }
 }
 
@@ -3562,6 +3651,104 @@ mod tests {
         assert!(voice.center >= HEADER_CENTER_MIN_WIDTH_PX);
     }
 
+    fn compact_width_test_scene(center: &str, transport: &str, target: &str) -> IslandScene {
+        let mut regions = std::collections::BTreeMap::new();
+        regions.insert(
+            "left".to_string(),
+            cua_core::IslandRegion {
+                items: vec![IslandItem::Label {
+                    id: "input".to_string(),
+                    text: "Voice control".to_string(),
+                }],
+            },
+        );
+        regions.insert(
+            "center".to_string(),
+            cua_core::IslandRegion {
+                items: vec![IslandItem::Marquee {
+                    id: "status".to_string(),
+                    text: center.to_string(),
+                }],
+            },
+        );
+        regions.insert(
+            "right".to_string(),
+            cua_core::IslandRegion {
+                items: vec![
+                    IslandItem::Chip {
+                        id: "transport".to_string(),
+                        text: transport.to_string(),
+                    },
+                    IslandItem::Chip {
+                        id: "target".to_string(),
+                        text: target.to_string(),
+                    },
+                ],
+            },
+        );
+
+        IslandScene {
+            schema_version: cua_core::ISLAND_SCHEMA_VERSION.to_string(),
+            layout: IslandLayout::Compact,
+            mode: UiMode::Headful,
+            background: IslandBackground::Solid {
+                color: "#000000".to_string(),
+                opacity: 92,
+            },
+            regions,
+            ambient: Vec::new(),
+            actors: Vec::new(),
+            theme: None,
+        }
+    }
+
+    #[test]
+    fn compact_shell_width_expands_to_fit_header_text_target() {
+        let baseline = compact_width_test_scene("Ready", "cua", "idle");
+        let long = compact_width_test_scene(
+            "Watching the active browser tab until verification completes",
+            "cloud computer backend",
+            "Oracle VM fleet",
+        );
+
+        assert_eq!(compact_shell_width_target(&baseline), COMPACT_WIDTH);
+        let long_target = compact_shell_width_target(&long);
+        assert!(long_target > COMPACT_WIDTH);
+        assert!(long_target <= EXPANDED_WIDTH);
+    }
+
+    #[test]
+    fn compact_shell_width_retargets_smoothly_instead_of_snapping() {
+        let mid_width = COMPACT_WIDTH + 80.0;
+        let target_width = COMPACT_WIDTH + 160.0;
+        let advanced = advance_scalar_motion(
+            mid_width,
+            target_width,
+            SHELL_MOTION_SECS / 4.0,
+            SHELL_MOTION_SECS,
+        );
+        let retreating = advance_scalar_motion(
+            advanced,
+            COMPACT_WIDTH,
+            SHELL_MOTION_SECS / 4.0,
+            SHELL_MOTION_SECS,
+        );
+
+        assert!(advanced > mid_width);
+        assert!(advanced < target_width);
+        assert!(retreating < advanced);
+        assert!(retreating > COMPACT_WIDTH);
+    }
+
+    #[test]
+    fn expanded_metrics_ignore_compact_text_fit_width() {
+        let compact = metrics_with_compact_width(0.0, 0.0, COMPACT_WIDTH + 80.0);
+        let expanded = metrics_with_compact_width(0.0, 1.0, COMPACT_WIDTH + 80.0);
+
+        assert_eq!(compact.width, COMPACT_WIDTH + 80.0);
+        assert_eq!(expanded.width, EXPANDED_WIDTH);
+    }
+
     #[test]
     fn compact_header_gives_center_slot_more_space_after_title_divider_tightening() {
         let metrics = HudMetrics::with_expansion(0.0, 0.0);
@@ -3986,6 +4173,19 @@ mod tests {
         assert_eq!(expanded.origin.y, px(TOP_MARGIN));
         assert_eq!(expanded.size, size(px(EXPANDED_WIDTH), px(EXPANDED_HEIGHT)));
         assert_eq!(expanded.origin.x, px(320.0));
+    }
+
+    #[test]
+    fn hud_window_starts_passive_until_expanded() {
+        let bounds = Bounds {
+            origin: point(px(416.0), px(0.0)),
+            size: size(px(WINDOW_WIDTH), px(COMPACT_HEIGHT)),
+        };
+        let options = hud_window_options(bounds);
+
+        assert!(!options.focus);
+        assert_eq!(options.kind, WindowKind::PopUp);
+        assert!(!options.mouse_passthrough);
     }
 
     #[test]

@@ -852,7 +852,14 @@ impl MacWindow {
             if focus && show {
                 native_window.makeKeyAndOrderFront_(nil);
             } else if show {
-                native_window.orderFront_(nil);
+                match kind {
+                    WindowKind::PopUp => {
+                        let _: () = msg_send![native_window, orderFrontRegardless];
+                    }
+                    WindowKind::Normal | WindowKind::Floating => {
+                        native_window.orderFront_(nil);
+                    }
+                }
             }
 
             // Set the initial position of the window to the specified origin.
