@@ -708,8 +708,11 @@ async fn plan_and_dispatch(
             );
             let attempt_started = Instant::now();
             let pre_model_bootstrap_plan = if attempt_index == 1 && attempts.is_empty() {
-                browser_research_bootstrap_plan(&transcript)
-                    .filter(|plan| plan.action.as_ref().is_some_and(input_action_is_aegis))
+                browser_research_bootstrap_plan(&transcript).filter(|plan| {
+                    plan.action
+                        .as_ref()
+                        .is_some_and(input_action_uses_only_aegis_backend)
+                })
             } else {
                 None
             };
@@ -1663,10 +1666,6 @@ fn action_needs_fresh_verification(action: &serde_json::Value) -> bool {
     )
 }
 
-fn input_action_is_aegis(action: &InputAction) -> bool {
-    matches!(action, InputAction::Aegis { .. })
-}
-
 fn input_action_uses_only_aegis_backend(action: &InputAction) -> bool {
     match action {
         InputAction::Aegis { .. } => true,
@@ -2165,14 +2164,17 @@ fn flattened_actions(action: &serde_json::Value) -> Vec<&serde_json::Value> {
 }
 
 fn message_has_nonempty_stdout(message: &str) -> bool {
-    let Some(after_stdout) = message.split_once("stdout=").map(|(_, after)| after) else {
-        return false;
-    };
-    let stdout = after_stdout
-        .split_once("; stderr=")
-        .map(|(stdout, _)| stdout)
-        .unwrap_or(after_stdout);
-    !stdout.trim().is_empty()
+    message_stdout(message).is_some_and(|stdout| !stdout.trim().is_empty())
+}
+
+fn message_stdout(message: &str) -> Option<&str> {
+    let after_stdout = message.split_once("stdout=").map(|(_, after)| after)?;
+    Some(
+        after_stdout
+            .split_once("; stderr=")
+            .map(|(stdout, _)| stdout)
+            .unwrap_or(after_stdout),
+    )
 }
 
 fn shell_readback_missing_evidence(evidence: Option<serde_json::Value>) -> serde_json::Value {
@@ -2325,6 +2327,9 @@ fn prior_attempts_support_explicit_aegis_final(
     response: &str,
     attempts: &[PlanAttemptContext],
 ) -> bool {
+    if final_response_reports_not_found(response) {
+        return prior_attempts_include_aegis_zero_match(attempts);
+    }
     if final_response_claims_verified_result(response) {
         return attempts.iter().any(|attempt| {
             attempt.action.as_ref().is_some_and(json_action_uses_aegis)
@@ -2342,6 +2347,63 @@ fn json_action_uses_aegis(action: &serde_json::Value) -> bool {
             .get("actions")
             .and_then(|actions| actions.as_array())
             .is_some_and(|actions| actions.iter().any(json_action_uses_aegis)),
+        _ => false,
+    }
+}
+
+fn prior_attempts_include_aegis_zero_match(attempts: &[PlanAttemptContext]) -> bool {
+    attempts.iter().any(|attempt| {
+        attempt
+            .action
+            .as_ref()
+            .zip(attempt.evidence.as_ref())
+            .is_some_and(|(action, evidence)| aegis_attempt_contains_zero_match(action, evidence))
+    })
+}
+
+fn aegis_attempt_contains_zero_match(
+    action: &serde_json::Value,
+    evidence: &serde_json::Value,
+) -> bool {
+    let actions = flattened_actions(action);
+    let messages = evidence_messages(evidence);
+    actions.iter().enumerate().any(|(index, action)| {
+        json_action_uses_aegis(action)
+            && messages
+                .get(index)
+                .is_some_and(|message| message_stdout_json_has_zero_match(message))
+    })
+}
+
+fn evidence_messages(evidence: &serde_json::Value) -> Vec<&str> {
+    evidence
+        .get("evidence")
+        .and_then(|items| items.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|item| item.get("message").and_then(|message| message.as_str()))
+        .collect()
+}
+
+fn message_stdout_json_has_zero_match(message: &str) -> bool {
+    let Some(stdout) = message_stdout(message) else {
+        return false;
+    };
+    serde_json::from_str::<serde_json::Value>(stdout)
+        .ok()
+        .is_some_and(|value| json_has_zero_match_count(&value))
+}
+
+fn json_has_zero_match_count(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Object(object) => {
+            object
+                .get("match_count")
+                .and_then(|match_count| match_count.as_u64())
+                == Some(0)
+                || object.values().any(json_has_zero_match_count)
+        }
+        serde_json::Value::Array(items) => items.iter().any(json_has_zero_match_count),
         _ => false,
     }
 }
@@ -2574,6 +2636,11 @@ fn final_response_claims_verified_result(response: &str) -> bool {
 fn final_response_reports_prior_failure(response: &str) -> bool {
     let lower = response.to_ascii_lowercase();
     !planner_response_claims_pending_work(response) && response_reports_terminal_failure(&lower)
+}
+
+fn final_response_reports_not_found(response: &str) -> bool {
+    let lower = response.to_ascii_lowercase();
+    !planner_response_claims_pending_work(response) && lower.contains("not found")
 }
 
 fn response_reports_terminal_failure(lower_response: &str) -> bool {
@@ -4743,6 +4810,74 @@ mod tests {
         assert!(prior_attempts_support_explicit_aegis_final(
             "Aegis failed with server unavailable",
             &failed_aegis_attempts
+        ));
+    }
+
+    #[test]
+    fn explicit_aegis_not_found_final_can_use_zero_match_partial_evidence() {
+        let zero_match_attempts = vec![PlanAttemptContext {
+            attempt_index: 1,
+            response: "Inspecting Example Domain with Aegis.".to_string(),
+            action: Some(json!({
+                "kind": "sequence",
+                "actions": [
+                    {
+                        "kind": "aegis",
+                        "args": ["--mode", "headless", "navigate", "https://example.com"],
+                        "timeout_ms": 15000
+                    },
+                    {
+                        "kind": "aegis",
+                        "args": ["--mode", "headless", "page", "text", "--scope", "main"],
+                        "timeout_ms": 15000
+                    },
+                    {
+                        "kind": "aegis",
+                        "args": ["--mode", "headless", "page", "find", "cua impossible phrase"],
+                        "timeout_ms": 15000
+                    }
+                ],
+                "inter_action_delay_ms": 120
+            })),
+            effect: Some("partial".to_string()),
+            evidence: Some(json!({
+                "effect": "partial",
+                "reason": "aegis_observation_readback_missing_for_long_range_goal",
+                "evidence": [
+                    {"kind": "value_readback", "message": "aegis exited 0; stdout=[{\"event\":{\"type\":\"navigation\"}}]; stderr="},
+                    {"kind": "value_readback", "message": "aegis exited 0; stdout=; stderr="},
+                    {"kind": "value_readback", "message": "aegis exited 0; stdout={\"title\":\"Example Domain\",\"match_count\":0,\"matches\":[]}; stderr="}
+                ]
+            })),
+        }];
+        let weak_partial_attempts = vec![PlanAttemptContext {
+            attempt_index: 1,
+            response: "Inspecting Example Domain with Aegis.".to_string(),
+            action: Some(json!({
+                "kind": "aegis",
+                "args": ["--mode", "headless", "page", "text", "--scope", "main"],
+                "timeout_ms": 15000
+            })),
+            effect: Some("partial".to_string()),
+            evidence: Some(json!({
+                "effect": "partial",
+                "reason": "aegis_observation_readback_missing_for_long_range_goal",
+                "evidence": [
+                    {"kind": "value_readback", "message": "aegis exited 0; stdout=; stderr="}
+                ]
+            })),
+        }];
+
+        assert!(prior_attempts_include_aegis_zero_match(
+            &zero_match_attempts
+        ));
+        assert!(prior_attempts_support_explicit_aegis_final(
+            "The phrase was not found on the verified page title Example Domain.",
+            &zero_match_attempts
+        ));
+        assert!(!prior_attempts_support_explicit_aegis_final(
+            "The phrase was not found on the verified page title Example Domain.",
+            &weak_partial_attempts
         ));
     }
 

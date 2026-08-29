@@ -890,6 +890,37 @@ pub fn browser_research_bootstrap_plan(transcript: &str) -> Option<PlannedTurn> 
     } else {
         "headless"
     };
+    if wants_aegis {
+        if let Some((url, phrase)) = first_url(transcript).zip(exact_page_find_query(transcript)) {
+            return Some(turn(
+                "Checking the exact phrase with Aegis.",
+                Some(InputAction::Sequence {
+                    actions: vec![
+                        InputAction::Aegis {
+                            args: vec![
+                                "--mode".to_string(),
+                                aegis_mode.to_string(),
+                                "navigate".to_string(),
+                                url,
+                            ],
+                            timeout_ms: 15_000,
+                        },
+                        InputAction::Aegis {
+                            args: vec![
+                                "--mode".to_string(),
+                                aegis_mode.to_string(),
+                                "page".to_string(),
+                                "find".to_string(),
+                                phrase,
+                            ],
+                            timeout_ms: 15_000,
+                        },
+                    ],
+                    inter_action_delay_ms: 120,
+                }),
+            ));
+        }
+    }
     if wants_aegis && words.iter().any(|word| word == "navigate") {
         if let Some(url) = first_url(transcript) {
             return Some(turn(
@@ -938,6 +969,32 @@ fn first_url(text: &str) -> Option<String> {
         .map(|token| token.trim_matches(|ch: char| matches!(ch, '"' | '\'' | ',' | '.')))
         .find(|token| token.starts_with("https://") || token.starts_with("http://"))
         .map(ToString::to_string)
+}
+
+fn exact_page_find_query(text: &str) -> Option<String> {
+    let lower = text.to_ascii_lowercase();
+    let marker_index = lower
+        .find("exact phrase")
+        .or_else(|| lower.find("exact text"))?;
+    quoted_text_after_marker(&text[marker_index..]).map(ToString::to_string)
+}
+
+fn quoted_text_after_marker(text: &str) -> Option<&str> {
+    let mut chars = text.char_indices();
+    while let Some((start, ch)) = chars.next() {
+        if !matches!(ch, '\'' | '"') {
+            continue;
+        }
+        let content_start = start + ch.len_utf8();
+        for (end, next) in chars.by_ref() {
+            if next == ch {
+                let candidate = text[content_start..end].trim();
+                return (!candidate.is_empty()).then_some(candidate);
+            }
+        }
+        return None;
+    }
+    None
 }
 
 fn browser_research_bootstrap_actions(query: String) -> Vec<InputAction> {
@@ -1751,6 +1808,49 @@ mod tests {
                     "navigate".to_string(),
                     "https://example.com".to_string(),
                 ] && timeout_ms == 15_000
+        ));
+    }
+
+    #[test]
+    fn browser_research_bootstrap_batches_aegis_url_exact_phrase_find() {
+        let plan = browser_research_bootstrap_plan(
+            "Inbound cua message received via unix_socket.\nMessage: Using Aegis headless only, open https://example.com and inspect the page. Find the exact phrase 'cua impossible phrase 1788025372'. If it is not present, report that it was not found and include the verified page title.",
+        )
+        .unwrap();
+
+        assert!(matches!(
+            plan.action,
+            Some(InputAction::Sequence {
+                ref actions,
+                inter_action_delay_ms
+            }) if inter_action_delay_ms == 120
+                && matches!(
+                    actions.as_slice(),
+                    [
+                        InputAction::Aegis {
+                            args: navigate_args,
+                            timeout_ms: navigate_timeout
+                        },
+                        InputAction::Aegis {
+                            args: find_args,
+                            timeout_ms: find_timeout
+                        },
+                    ] if navigate_args == &[
+                        "--mode".to_string(),
+                        "headless".to_string(),
+                        "navigate".to_string(),
+                        "https://example.com".to_string(),
+                    ]
+                    && *navigate_timeout == 15_000
+                    && find_args == &[
+                        "--mode".to_string(),
+                        "headless".to_string(),
+                        "page".to_string(),
+                        "find".to_string(),
+                        "cua impossible phrase 1788025372".to_string(),
+                    ]
+                    && *find_timeout == 15_000
+                )
         ));
     }
 
