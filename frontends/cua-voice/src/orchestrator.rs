@@ -1475,6 +1475,7 @@ fn action_is_browser_research_setup(action: &serde_json::Value) -> bool {
 fn action_is_user_text_fulfillment(transcript: &str, action: &serde_json::Value) -> bool {
     action_is_text_entry(action)
         && transcript_requests_text_entry(transcript)
+        && !transcript_requests_long_range_work(transcript)
         && !action_is_browser_research_setup(action)
 }
 
@@ -1788,7 +1789,16 @@ fn action_can_advance_long_range_goal(action: &serde_json::Value) -> bool {
     matches!(
         action.get("kind").and_then(|kind| kind.as_str()),
         Some(
-            "sequence" | "open_app" | "mouse_click" | "key_press" | "shell_exec" | "aegis" | "ctx"
+            "sequence"
+                | "open_app"
+                | "mouse_click"
+                | "key_press"
+                | "key_type"
+                | "key_paste"
+                | "clipboard_write"
+                | "shell_exec"
+                | "aegis"
+                | "ctx"
         )
     )
 }
@@ -1865,10 +1875,7 @@ fn long_range_budget_exhausted_without_finish(
 ) -> bool {
     loop_budget.exhausted_at(attempt_index)
         && transcript_requests_long_range_work(transcript)
-        && turn
-            .action
-            .as_ref()
-            .is_some_and(|action| !action_is_text_entry(action))
+        && turn.action.is_some()
 }
 
 fn mark_long_range_budget_exhausted_if_needed(
@@ -1967,7 +1974,18 @@ fn inferred_final_effect(
 
 fn final_response_claims_verified_result(response: &str) -> bool {
     let lower = response.to_ascii_lowercase();
-    lower.contains("verified") || lower.contains("confirmed")
+    !planner_response_claims_pending_work(response)
+        && [
+            "verified",
+            "result",
+            "visible",
+            "displayed",
+            "shows",
+            "title",
+            "reads",
+        ]
+        .iter()
+        .any(|marker| lower.contains(marker))
 }
 
 fn loop_attempt_count(
@@ -3267,7 +3285,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_loop_long_range_text_entry_actions_still_do_not_replay() {
+    fn agent_loop_long_range_text_entry_actions_continue_to_verification() {
         let turn = CompletedAssistantTurn {
             response: "Writing the summary.".to_string(),
             action: Some(json!({
@@ -3280,15 +3298,39 @@ mod tests {
             evidence: Some(json!({"effect": "confirmed"})),
         };
 
-        assert!(!should_continue_long_range_after_verified_action(
-            "Research cloud computer agents and write the summary in Notes",
+        assert!(should_continue_long_range_after_verified_action(
+            "Research cloud computer agents, write the summary in Notes, then read it back to verify it",
             &turn,
             Some("confirmed"),
             1,
             AgentLoopBudget::Finite { max_attempts: 5 }
         ));
-        assert!(!should_replan_after_turn(
-            "Research cloud computer agents and write the summary in Notes",
+        assert!(should_replan_after_turn(
+            "Research cloud computer agents, write the summary in Notes, then read it back to verify it",
+            &turn,
+            Some("confirmed"),
+            1,
+            AgentLoopBudget::Finite { max_attempts: 5 }
+        ));
+    }
+
+    #[test]
+    fn agent_loop_long_range_standalone_text_entry_continues_to_verification() {
+        let turn = CompletedAssistantTurn {
+            response: "Pasting the requested text.".to_string(),
+            action: Some(json!({"kind": "key_paste", "text": "Summary"})),
+            evidence: Some(json!({"effect": "confirmed"})),
+        };
+
+        assert!(should_continue_long_range_after_verified_action(
+            "Paste Summary into Notes, then read it back to verify it",
+            &turn,
+            Some("confirmed"),
+            1,
+            AgentLoopBudget::Finite { max_attempts: 5 }
+        ));
+        assert!(should_replan_after_turn(
+            "Paste Summary into Notes, then read it back to verify it",
             &turn,
             Some("confirmed"),
             1,
@@ -3391,6 +3433,19 @@ mod tests {
             "Open Calculator, calculate 123 plus 456, read the displayed result, and report the verified result.",
             "The displayed result is 579.",
             &None
+        ));
+    }
+
+    #[test]
+    fn final_visible_readback_after_confirmed_action_infers_confirmed_effect() {
+        assert!(final_response_claims_verified_result(
+            "The visible month and year in Calendar is August 2026."
+        ));
+        assert!(final_response_claims_verified_result(
+            "Calculator shows 123 + 456 with a result of 579."
+        ));
+        assert!(!final_response_claims_verified_result(
+            "Opening Calculator via Spotlight and typing 123"
         ));
     }
 
@@ -3541,7 +3596,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_loop_does_not_relabel_text_entry_budget_exhaustion() {
+    fn agent_loop_marks_text_entry_budget_exhaustion_as_partial_for_long_range_work() {
         let turn = CompletedAssistantTurn {
             response: "Writing the summary.".to_string(),
             action: Some(json!({"kind": "key_paste", "text": "Summary"})),
@@ -3555,8 +3610,8 @@ mod tests {
             AgentLoopBudget::Finite { max_attempts: 5 },
         );
 
-        assert_eq!(turn_effect(&completed), Some("confirmed".to_string()));
-        assert_eq!(completed.response, "Writing the summary.");
+        assert_eq!(turn_effect(&completed), Some("partial".to_string()));
+        assert!(completed.response.contains("5-attempt loop budget"));
     }
 
     #[test]
