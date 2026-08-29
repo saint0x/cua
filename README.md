@@ -111,6 +111,10 @@ fozzy doctor --deep --scenario fozzy/scenarios/cua-smoke.json --runs 5 --seed 42
 fozzy test --det --strict-verify fozzy/scenarios/cua-smoke.json --json
 fozzy doctor --deep --scenario fozzy/scenarios/cua-rlm-loop.fozzy.json --runs 5 --seed 4242 --json
 fozzy test --det --strict-verify fozzy/scenarios/cua-rlm-loop.fozzy.json --json
+fozzy run fozzy/scenarios/cua-rlm-loop-missing-planner-key-host.fozzy.json --host-backends --record artifacts/cua/fozzy/cua-rlm-loop-missing-planner-key-host.fozzy --json
+fozzy trace verify artifacts/cua/fozzy/cua-rlm-loop-missing-planner-key-host.fozzy --strict --json
+fozzy replay artifacts/cua/fozzy/cua-rlm-loop-missing-planner-key-host.fozzy --json
+fozzy ci artifacts/cua/fozzy/cua-rlm-loop-missing-planner-key-host.fozzy --strict --json
 ```
 
 Use `cua perf bench screenshot|stream|input|model-prep --json` for local daemon latency checks. Budgets can be tuned with `CUA_BUDGET_*`, `CUA_STREAM_SOAK_SECONDS`, and `CUA_STREAM_RSS_BUDGET_KB`.
@@ -129,6 +133,7 @@ fozzy replay artifacts/cua/macos/fozzy/cua-smoke.fozzy --json
 fozzy run fozzy/scenarios/cua-rlm-loop-missing-planner-key-host.fozzy.json --host-backends --record artifacts/cua/macos/fozzy/cua-rlm-loop-missing-planner-key-host.fozzy --json
 fozzy trace verify artifacts/cua/macos/fozzy/cua-rlm-loop-missing-planner-key-host.fozzy --strict --json
 fozzy replay artifacts/cua/macos/fozzy/cua-rlm-loop-missing-planner-key-host.fozzy --json
+fozzy ci artifacts/cua/macos/fozzy/cua-rlm-loop-missing-planner-key-host.fozzy --strict --json
 ```
 
 ## Status

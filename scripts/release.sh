@@ -10,6 +10,7 @@ ARTIFACT_DIR="${CUA_RELEASE_ARTIFACT_DIR:-$ROOT/artifacts/cua/release/$RUN_ID}"
 SEED="${CUA_RELEASE_SEED:-4242}"
 SCENARIO="${CUA_RELEASE_SCENARIO:-fozzy/scenarios/cua-smoke.json}"
 RLM_SCENARIO="${CUA_RELEASE_RLM_SCENARIO:-fozzy/scenarios/cua-rlm-loop.fozzy.json}"
+RLM_HOST_SCENARIO="${CUA_RELEASE_RLM_HOST_SCENARIO:-fozzy/scenarios/cua-rlm-loop-missing-planner-key-host.fozzy.json}"
 RUNEBOOK_SCENARIO="${CUA_RELEASE_RUNEBOOK_SCENARIO:-fozzy/scenarios/cua-runebook.json}"
 SDK_SCENARIO="${CUA_RELEASE_SDK_SCENARIO:-fozzy/scenarios/cua-sdk-action.json}"
 SCRATCHPAD_SCENARIO="${CUA_RELEASE_SCRATCHPAD_SCENARIO:-fozzy/scenarios/cua-scratchpad.json}"
@@ -138,6 +139,20 @@ fozzy_trace_gate() {
   run fozzy ci "$trace" --json
 }
 
+fozzy_host_trace_gate() {
+  local scenario="$1"
+  local name="$2"
+  local trace="$ARTIFACT_DIR/$name.fozzy"
+
+  require_file "$scenario"
+  log "Fozzy host-backed $name"
+  run fozzy validate "$scenario" --json
+  run fozzy run "$scenario" --host-backends --record "$trace" --json
+  run fozzy trace verify "$trace" --strict --json
+  run fozzy replay "$trace" --json
+  run fozzy ci "$trace" --strict --json
+}
+
 generate_voice_fixture() {
   local out="$ARTIFACT_DIR/voice-smoke.wav"
   local aiff="$ARTIFACT_DIR/voice-smoke.aiff"
@@ -175,6 +190,7 @@ log "Release config"
 printf 'artifact_dir=%s\n' "$ARTIFACT_DIR"
 printf 'smoke_scenario=%s\n' "$SCENARIO"
 printf 'rlm_scenario=%s\n' "$RLM_SCENARIO"
+printf 'rlm_host_scenario=%s\n' "$RLM_HOST_SCENARIO"
 printf 'runebook_scenario=%s\n' "$RUNEBOOK_SCENARIO"
 printf 'sdk_scenario=%s\n' "$SDK_SCENARIO"
 printf 'scratchpad_scenario=%s\n' "$SCRATCHPAD_SCENARIO"
@@ -201,6 +217,7 @@ fi
 if [[ "$SKIP_FOZZY" -eq 0 ]]; then
   fozzy_trace_gate "$SCENARIO" "cua-smoke"
   fozzy_trace_gate "$RLM_SCENARIO" "cua-rlm-loop"
+  fozzy_host_trace_gate "$RLM_HOST_SCENARIO" "cua-rlm-loop-missing-planner-key-host"
   fozzy_trace_gate "$RUNEBOOK_SCENARIO" "cua-runebook"
   fozzy_trace_gate "$SDK_SCENARIO" "cua-sdk-action"
   fozzy_trace_gate "$SCRATCHPAD_SCENARIO" "cua-scratchpad"
