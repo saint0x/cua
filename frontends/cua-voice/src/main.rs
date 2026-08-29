@@ -22,7 +22,7 @@ use cua_voice::stt::{DEFAULT_STT_BACKEND, DEFAULT_STT_MODEL};
 use cua_voice::ui_state::{HudPhase, HudSnapshot, VoiceUiEvent};
 use cua_voice::{
     run_text_turn_checked, run_voice_turn_checked, run_voice_turn_until, run_wav_turn_checked,
-    VoiceConfig, DEFAULT_PLANNER_MODEL,
+    VoiceConfig, VoiceTurnCompletion, DEFAULT_PLANNER_MODEL,
 };
 use gpui::{
     canvas, div, fill, hsla, linear_color_stop, linear_gradient, point, prelude::*, px, rgb, size,
@@ -2309,7 +2309,7 @@ fn main() -> anyhow::Result<()> {
     if let Some(transcript) = once_transcript {
         let result = runtime.block_on(run_text_turn_checked(config, transcript, tx));
         print_headless_events(rx);
-        return result;
+        return result.map(|_| ());
     } else if let Some(path) = once_wav {
         let wav_bytes = std::fs::read(&path)?;
         let result = runtime.block_on(run_wav_turn_checked(config, wav_bytes, tx));
@@ -2807,9 +2807,12 @@ fn start_inbox_turn_poll(
                             let result =
                                 run_text_turn_checked(config.clone(), prompt, tx.clone()).await;
                             match result {
-                                Ok(()) => {
+                                Ok(completion) => {
                                     if let Err(error) = client
-                                        .inbox_done(message_id, Some("completed".to_string()))
+                                        .inbox_done(
+                                            message_id,
+                                            inbox_completion_reply(&completion),
+                                        )
                                         .await
                                     {
                                         let message =
@@ -2841,6 +2844,15 @@ fn start_inbox_turn_poll(
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     });
+}
+
+fn inbox_completion_reply(completion: &VoiceTurnCompletion) -> Option<String> {
+    let reply = completion.reply.trim();
+    if reply.is_empty() {
+        None
+    } else {
+        Some(reply.to_string())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -4310,6 +4322,24 @@ mod tests {
             automation_double_click_point("Left mouse click at nope x2"),
             None
         );
+    }
+
+    #[test]
+    fn inbox_completion_reply_uses_actual_assistant_reply() {
+        let completion = VoiceTurnCompletion {
+            reply: "  verified result  ".to_string(),
+            action: true,
+        };
+        assert_eq!(
+            inbox_completion_reply(&completion),
+            Some("verified result".to_string())
+        );
+
+        let empty = VoiceTurnCompletion {
+            reply: "   ".to_string(),
+            action: false,
+        };
+        assert_eq!(inbox_completion_reply(&empty), None);
     }
 
     #[test]

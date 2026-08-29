@@ -55,6 +55,21 @@ struct CompletedAssistantTurn {
     evidence: Option<serde_json::Value>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VoiceTurnCompletion {
+    pub reply: String,
+    pub action: bool,
+}
+
+impl VoiceTurnCompletion {
+    fn from_completed(completed: &CompletedAssistantTurn) -> Self {
+        Self {
+            reply: user_visible_reply_text(completed),
+            action: completed.action.is_some(),
+        }
+    }
+}
+
 struct LocalReady {
     client: CuaClient,
     session: Option<CuaSession>,
@@ -119,7 +134,7 @@ pub async fn run_text_turn_checked(
     config: VoiceConfig,
     transcript: String,
     tx: Sender<VoiceUiEvent>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<VoiceTurnCompletion> {
     run_transcript_turn(config, transcript, tx).await
 }
 
@@ -384,7 +399,7 @@ async fn run_transcript_turn(
     config: VoiceConfig,
     transcript: String,
     tx: Sender<VoiceUiEvent>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<VoiceTurnCompletion> {
     let turn_started = Instant::now();
     let trace = VoiceTurnTrace::new(&config);
     trace
@@ -401,7 +416,7 @@ async fn run_transcript_turn(
     let context_task = spawn_context_prefetch(local.clone(), local_ready.session);
     tx.send(VoiceUiEvent::Transcript(transcript.clone())).ok();
     step_publisher.publish(voice_step_label("transcript", &transcript));
-    plan_and_dispatch(
+    let completion = plan_and_dispatch(
         config,
         transcript,
         None,
@@ -420,7 +435,7 @@ async fn run_transcript_turn(
             json!({"total_ms": elapsed_ms(turn_started.elapsed())}),
         )
         .await;
-    Ok(())
+    Ok(completion)
 }
 
 fn validate_recorded_audio(audio: &RecordedAudio) -> anyhow::Result<()> {
@@ -566,7 +581,7 @@ async fn plan_and_dispatch(
     step_publisher: VoiceStepPublisher,
     tx: Sender<VoiceUiEvent>,
     trace: VoiceTurnTrace,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<VoiceTurnCompletion> {
     let plan_started = Instant::now();
     trace
         .append("planning_start", json!({"transcript": &transcript}))
@@ -1245,7 +1260,7 @@ async fn plan_and_dispatch(
     emit_completed_reply(&completed, &step_publisher, &tx, &trace).await;
     step_publisher.finish().await;
     persist_turn_memory(&config, &transcript, &completed, &trace).await?;
-    Ok(())
+    Ok(VoiceTurnCompletion::from_completed(&completed))
 }
 
 async fn prefetch_context(local: CuaClient, warm_session: Option<CuaSession>) -> PrefetchedContext {
@@ -1349,6 +1364,7 @@ async fn dispatch_plan(
 ) -> anyhow::Result<CompletedAssistantTurn> {
     if let Some(action) = plan.action.as_mut() {
         stamp_ctx_workspace_root(action, profile);
+        stamp_aegis_runtime(action, profile);
     }
     if let Some(action) = &plan.action {
         tx.send(VoiceUiEvent::Dispatching(format!("{action:?}")))
@@ -1487,6 +1503,62 @@ fn stamp_ctx_workspace_root(action: &mut cua_core::InputAction, profile: &str) {
         }
         _ => {}
     }
+}
+
+fn stamp_aegis_runtime(action: &mut cua_core::InputAction, profile: &str) {
+    match action {
+        cua_core::InputAction::Aegis { args, .. } => {
+            if !aegis_args_have_option(args, "--profile") {
+                args.splice(0..0, ["--profile".to_string(), cua_aegis_profile(profile)]);
+            }
+            if !aegis_args_have_option(args, "--server-addr") {
+                args.splice(
+                    0..0,
+                    ["--server-addr".to_string(), cua_aegis_server_addr(profile)],
+                );
+            }
+        }
+        cua_core::InputAction::Sequence { actions, .. } => {
+            for action in actions {
+                stamp_aegis_runtime(action, profile);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn aegis_args_have_option(args: &[String], option: &str) -> bool {
+    args.iter().any(|arg| arg == option)
+}
+
+fn cua_aegis_profile(profile: &str) -> String {
+    let suffix = profile
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    format!("cua-{suffix}")
+}
+
+fn cua_aegis_server_addr(profile: &str) -> String {
+    if let Ok(addr) = std::env::var("CUA_AEGIS_SERVER_ADDR") {
+        let addr = addr.trim();
+        if !addr.is_empty() {
+            return addr.to_string();
+        }
+    }
+    let mut hash = 14_695_981_039_346_656_037_u64;
+    for byte in profile.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(1_099_511_628_211);
+    }
+    let port = 18_000 + (hash % 20_000) as u16;
+    format!("127.0.0.1:{port}")
 }
 
 fn ctx_workspace_root(profile: &str) -> String {
@@ -2373,6 +2445,11 @@ fn final_response_claims_verified_result(response: &str) -> bool {
             "reads",
             "contains",
             "contents",
+            "according to",
+            "based on",
+            "documentation",
+            "official",
+            "source",
         ]
         .iter()
         .any(|marker| lower.contains(marker))
@@ -3750,6 +3827,72 @@ mod tests {
     }
 
     #[test]
+    fn aegis_actions_are_stamped_with_profile_scoped_runtime() {
+        let mut action = cua_core::InputAction::Sequence {
+            actions: vec![cua_core::InputAction::Aegis {
+                args: vec![
+                    "--mode".to_string(),
+                    "headless".to_string(),
+                    "page".to_string(),
+                    "text".to_string(),
+                    "--scope".to_string(),
+                    "main".to_string(),
+                ],
+                timeout_ms: 15_000,
+            }],
+            inter_action_delay_ms: 0,
+        };
+
+        stamp_aegis_runtime(&mut action, "profile with spaces");
+
+        let cua_core::InputAction::Sequence { actions, .. } = action else {
+            panic!("expected sequence");
+        };
+        let cua_core::InputAction::Aegis { args, .. } = &actions[0] else {
+            panic!("expected aegis action");
+        };
+        assert_eq!(args[0], "--server-addr");
+        assert!(args[1].starts_with("127.0.0.1:"));
+        assert_eq!(args[2], "--profile");
+        assert_eq!(args[3], "cua-profile-with-spaces");
+        assert_eq!(args[4], "--mode");
+        assert_eq!(args[5], "headless");
+        assert_eq!(args[6], "page");
+    }
+
+    #[test]
+    fn aegis_runtime_stamp_preserves_explicit_server() {
+        let mut action = cua_core::InputAction::Aegis {
+            args: vec![
+                "--server-addr".to_string(),
+                "127.0.0.1:7878".to_string(),
+                "--profile".to_string(),
+                "custom".to_string(),
+                "page".to_string(),
+                "actions".to_string(),
+            ],
+            timeout_ms: 15_000,
+        };
+
+        stamp_aegis_runtime(&mut action, "ignored");
+
+        let cua_core::InputAction::Aegis { args, .. } = action else {
+            panic!("expected aegis action");
+        };
+        assert_eq!(
+            args,
+            vec![
+                "--server-addr".to_string(),
+                "127.0.0.1:7878".to_string(),
+                "--profile".to_string(),
+                "custom".to_string(),
+                "page".to_string(),
+                "actions".to_string(),
+            ]
+        );
+    }
+
+    #[test]
     fn long_range_browser_research_expands_typed_open_only_setup_before_dispatch() {
         let action = cua_core::InputAction::OpenApp {
             app_name: "Safari".to_string(),
@@ -4101,6 +4244,9 @@ mod tests {
         assert!(final_response_claims_verified_result(
             "/tmp/cua-default-budget-a.txt contains 'default budget source 913'."
         ));
+        assert!(final_response_claims_verified_result(
+            "Based on official SQLite documentation, foreign key constraint enforcement is disabled by default."
+        ));
         assert!(!final_response_claims_verified_result(
             "Opening Calculator via Spotlight and typing 123"
         ));
@@ -4153,6 +4299,39 @@ mod tests {
         }];
         let completed = CompletedAssistantTurn {
             response: "/tmp/example contains 'done'.".to_string(),
+            action: None,
+            evidence: None,
+        };
+
+        assert_eq!(
+            observed_turn_effect(&completed, &prior_attempts),
+            Some("confirmed".to_string())
+        );
+    }
+
+    #[test]
+    fn sourced_final_answer_after_aegis_evidence_infers_confirmed_effect() {
+        let prior_attempts = vec![PlanAttemptContext {
+            attempt_index: 1,
+            response:
+                "Finding the foreign key default status in the SQLite documentation via Aegis."
+                    .to_string(),
+            action: Some(json!({
+                "kind": "aegis",
+                "args": ["--mode", "headless", "page", "find", "disabled by default"],
+                "timeout_ms": 15000
+            })),
+            effect: Some("confirmed".to_string()),
+            evidence: Some(json!({
+                "effect": "confirmed",
+                "evidence": [{
+                    "kind": "value_readback",
+                    "message": "aegis exited 0; stdout={\"title\":\"SQLite Foreign Key Support\",\"url\":\"https://www.sqlite.org/foreignkeys.html\",\"match_count\":1}; stderr="
+                }]
+            })),
+        }];
+        let completed = CompletedAssistantTurn {
+            response: "Based on official SQLite documentation (\"SQLite Foreign Key Support\"), foreign key constraint enforcement is disabled by default and must be explicitly enabled for each database connection.".to_string(),
             action: None,
             evidence: None,
         };

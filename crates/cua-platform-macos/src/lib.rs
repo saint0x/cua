@@ -23,6 +23,7 @@ use objc2_app_kit::NSScreen;
 use sha2::{Digest, Sha256};
 #[cfg(target_os = "macos")]
 use std::ffi::CStr;
+use std::net::{SocketAddr, TcpStream};
 #[cfg(target_os = "macos")]
 use std::os::raw::c_char;
 #[cfg(target_os = "macos")]
@@ -370,6 +371,7 @@ async fn run_aegis_command(args: Vec<String>, timeout_ms: u64) -> Result<String,
         return Err("aegis args must not contain empty values".to_string());
     }
     let binary = aegis_binary();
+    ensure_aegis_runtime(&binary, &args).await?;
     let timeout = Duration::from_millis(timeout_ms.clamp(100, 60_000));
     let child = tokio::process::Command::new(&binary)
         .args(&args)
@@ -390,6 +392,79 @@ async fn run_aegis_command(args: Vec<String>, timeout_ms: u64) -> Result<String,
         &output.stdout,
         &output.stderr,
     )
+}
+
+async fn ensure_aegis_runtime(binary: &std::path::Path, args: &[String]) -> Result<(), String> {
+    if aegis_command(args).as_deref() == Some("serve") {
+        return Ok(());
+    }
+    let addr = aegis_arg_value(args, "--server-addr").unwrap_or("127.0.0.1:7878");
+    if loopback_tcp_is_listening(addr) {
+        return Ok(());
+    }
+    let profile = aegis_arg_value(args, "--profile").unwrap_or("default");
+    let mode = aegis_arg_value(args, "--mode").unwrap_or("headless");
+    let output = tokio::process::Command::new(binary)
+        .arg("--mode")
+        .arg(mode)
+        .arg("--profile")
+        .arg(profile)
+        .arg("serve")
+        .arg("--detach")
+        .arg("--addr")
+        .arg(addr)
+        .kill_on_drop(true)
+        .output()
+        .await
+        .map_err(|error| {
+            format!(
+                "aegis serve failed to launch {} for {addr}: {error}",
+                binary.display()
+            )
+        })?;
+    if output.status.success() || loopback_tcp_is_listening(addr) {
+        return Ok(());
+    }
+    Err(command_output_message(
+        "aegis serve",
+        output.status.code(),
+        &output.stdout,
+        &output.stderr,
+    )
+    .unwrap_or_else(|error| error))
+}
+
+fn aegis_command(args: &[String]) -> Option<String> {
+    let mut index = 0usize;
+    while index < args.len() {
+        let arg = args[index].as_str();
+        if !arg.starts_with("--") {
+            return Some(arg.to_string());
+        }
+        index += match arg {
+            "--exact" => 1,
+            "--mode" | "--profile" | "--host-lib" | "--start-url" | "--download-dir"
+            | "--upload-dir" | "--server-addr" | "--href-contains" | "--index" | "--scope" => 2,
+            _ => 1,
+        };
+    }
+    None
+}
+
+fn aegis_arg_value<'a>(args: &'a [String], option: &str) -> Option<&'a str> {
+    args.windows(2)
+        .find(|window| window[0] == option)
+        .map(|window| window[1].as_str())
+}
+
+fn loopback_tcp_is_listening(addr: &str) -> bool {
+    let Ok(addr) = addr.parse::<SocketAddr>() else {
+        return false;
+    };
+    if !addr.ip().is_loopback() {
+        return false;
+    }
+    TcpStream::connect_timeout(&addr, Duration::from_millis(80)).is_ok()
 }
 
 async fn run_ctx_command(
@@ -2050,6 +2125,36 @@ mod tests {
             message.starts_with("sequence posted 2 actions: opened app Messages | shell exited 0")
         );
         assert!(message.chars().count() <= 1_200);
+    }
+
+    #[test]
+    fn aegis_option_parser_finds_command_and_runtime_args() {
+        let args = vec![
+            "--server-addr".to_string(),
+            "127.0.0.1:28000".to_string(),
+            "--profile".to_string(),
+            "cua-test".to_string(),
+            "--mode".to_string(),
+            "headless".to_string(),
+            "page".to_string(),
+            "text".to_string(),
+            "--scope".to_string(),
+            "main".to_string(),
+        ];
+
+        assert_eq!(aegis_command(&args).as_deref(), Some("page"));
+        assert_eq!(
+            aegis_arg_value(&args, "--server-addr"),
+            Some("127.0.0.1:28000")
+        );
+        assert_eq!(aegis_arg_value(&args, "--profile"), Some("cua-test"));
+        assert_eq!(aegis_arg_value(&args, "--mode"), Some("headless"));
+    }
+
+    #[test]
+    fn aegis_runtime_probe_only_accepts_loopback_socket_addresses() {
+        assert!(!loopback_tcp_is_listening("not-an-address"));
+        assert!(!loopback_tcp_is_listening("8.8.8.8:53"));
     }
 
     #[tokio::test]

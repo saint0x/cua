@@ -16,6 +16,7 @@ pub mod ui_state;
 pub use activation::ControlDoubleTap;
 pub use orchestrator::{
     run_text_turn, run_text_turn_checked, run_voice_turn, run_voice_turn_checked,
-    run_voice_turn_until, run_wav_turn, run_wav_turn_checked, VoiceConfig, DEFAULT_PLANNER_MODEL,
+    run_voice_turn_until, run_wav_turn, run_wav_turn_checked, VoiceConfig, VoiceTurnCompletion,
+    DEFAULT_PLANNER_MODEL,
 };
 pub use ui_state::{HudPhase, HudSnapshot, HudStep, VoiceUiEvent};
