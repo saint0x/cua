@@ -3234,7 +3234,23 @@ fn final_response_reports_prior_failure(response: &str) -> bool {
 
 fn final_response_reports_not_found(response: &str) -> bool {
     let lower = response.to_ascii_lowercase();
-    !planner_response_claims_pending_work(response) && lower.contains("not found")
+    !planner_response_claims_pending_work(response)
+        && [
+            "phrase was not found",
+            "text was not found",
+            "target was not found",
+            "item was not found",
+            "result was not found",
+            "match was not found",
+            "no matching",
+            "no matches",
+            "zero matches",
+            "0 matches",
+            "match_count\":0",
+            "match_count: 0",
+        ]
+        .iter()
+        .any(|marker| lower.contains(marker))
 }
 
 fn response_reports_terminal_failure(lower_response: &str) -> bool {
@@ -5979,9 +5995,17 @@ mod tests {
             "The phrase was not found on the verified page title Example Domain.",
             &zero_match_attempts
         ));
+        assert!(prior_attempts_support_explicit_aegis_final(
+            "No matches were found on the verified page title Example Domain.",
+            &zero_match_attempts
+        ));
         assert!(!prior_attempts_support_explicit_aegis_final(
             "The phrase was not found on the verified page title Example Domain.",
             &weak_partial_attempts
+        ));
+        assert!(!prior_attempts_support_explicit_aegis_final(
+            "The documentation explains how not found errors are represented.",
+            &zero_match_attempts
         ));
     }
 
