@@ -722,18 +722,6 @@ async fn plan_and_dispatch(
                             }),
                         )
                         .await;
-                    if let Some(turn) = completed_from_confirmed_prior_attempt(&attempts) {
-                        trace
-                            .append(
-                                "planning_error_after_confirmed_action",
-                                json!({
-                                    "attempt_index": attempt_index,
-                                    "error": format!("{error:#}"),
-                                }),
-                            )
-                            .await;
-                        break turn;
-                    }
                     let recoverable_planning_error = planning_error_is_empty_content(&error)
                         || planning_error_is_invalid_action_json(&error);
                     if recoverable_planning_error {
@@ -777,6 +765,20 @@ async fn plan_and_dispatch(
                                 })),
                             };
                         }
+                    } else if !transcript_requests_long_range_work(&transcript) {
+                        if let Some(turn) = completed_from_confirmed_prior_attempt(&attempts) {
+                            trace
+                                .append(
+                                    "planning_error_after_confirmed_action",
+                                    json!({
+                                        "attempt_index": attempt_index,
+                                        "error": format!("{error:#}"),
+                                    }),
+                                )
+                                .await;
+                            break turn;
+                        }
+                        return Err(error);
                     } else {
                         return Err(error);
                     }
@@ -825,27 +827,89 @@ async fn plan_and_dispatch(
                     plan_trace_json(&config.planner_model, attempt_started.elapsed(), &plan),
                 )
                 .await;
-            if transcript_requests_text_entry(&transcript)
-                && !plan
-                    .action
-                    .as_ref()
-                    .is_some_and(action_satisfies_text_entry_request)
+            let planned_action_json = plan.action.as_ref().map(serde_json::to_value).transpose()?;
+            if long_range_null_plan_is_incomplete(&transcript, &plan.response, &planned_action_json)
             {
-                let action_json = plan.action.as_ref().map(serde_json::to_value).transpose()?;
                 trace
                     .append(
                         "planning_rejected",
                         json!({
                             "attempt_index": attempt_index,
-                            "reason": "text_request_without_text_entry_action",
-                            "action": action_json,
+                            "reason": "long_range_null_plan_claimed_pending_work",
+                            "response": plan.response.clone(),
                         }),
                     )
                     .await;
                 attempts.push(PlanAttemptContext {
                     attempt_index,
                     response: plan.response,
-                    action: action_json,
+                    action: None,
+                    effect: Some("suspected_noop".to_string()),
+                    evidence: Some(json!({
+                        "effect": "suspected_noop",
+                        "reason": "long_range_null_plan_claimed_pending_work",
+                        "repair_hint": "Return the next tool action needed to complete or verify the user's request, not a progress description.",
+                    })),
+                });
+                if !loop_budget.can_continue_after(attempt_index) {
+                    anyhow::bail!(
+                        "planning model returned an incomplete action-null long-range plan"
+                    );
+                }
+                attempt_index += 1;
+                continue;
+            }
+            if planned_action_json.as_ref().is_some_and(|action| {
+                transcript_requests_long_range_work(&transcript)
+                    && action_repeats_confirmed_attempt(&attempts, action)
+            }) {
+                trace
+                    .append(
+                        "planning_rejected",
+                        json!({
+                            "attempt_index": attempt_index,
+                            "reason": "repeated_confirmed_long_range_action",
+                            "action": planned_action_json.clone(),
+                        }),
+                    )
+                    .await;
+                attempts.push(PlanAttemptContext {
+                    attempt_index,
+                    response: plan.response,
+                    action: planned_action_json,
+                    effect: Some("suspected_noop".to_string()),
+                    evidence: Some(json!({
+                        "effect": "suspected_noop",
+                        "reason": "repeated_confirmed_long_range_action",
+                        "repair_hint": "The same action already produced confirmed partial progress. Use the fresh observation to choose the next different action or final verified answer.",
+                    })),
+                });
+                if !loop_budget.can_continue_after(attempt_index) {
+                    anyhow::bail!("planning model repeated a confirmed long-range action");
+                }
+                attempt_index += 1;
+                continue;
+            }
+            if transcript_requests_text_entry(&transcript)
+                && !plan
+                    .action
+                    .as_ref()
+                    .is_some_and(action_satisfies_text_entry_request)
+            {
+                trace
+                    .append(
+                        "planning_rejected",
+                        json!({
+                            "attempt_index": attempt_index,
+                            "reason": "text_request_without_text_entry_action",
+                            "action": planned_action_json.clone(),
+                        }),
+                    )
+                    .await;
+                attempts.push(PlanAttemptContext {
+                    attempt_index,
+                    response: plan.response,
+                    action: planned_action_json,
                     effect: Some("suspected_noop".to_string()),
                     evidence: Some(json!({
                         "effect": "suspected_noop",
@@ -861,7 +925,6 @@ async fn plan_and_dispatch(
                 continue;
             }
             let source_frame = context.frame.as_ref().map(|frame| frame.envelope.clone());
-            let planned_action_json = plan.action.as_ref().map(serde_json::to_value).transpose()?;
             let turn = match dispatch_plan(
                 local.clone(),
                 context.session,
@@ -1261,16 +1324,8 @@ async fn emit_completed_reply(
     trace: &VoiceTurnTrace,
 ) {
     let action = completed.action.is_some();
-    let text = if action {
-        format!(
-            "{} {}",
-            completed.response,
-            turn_effect(completed).unwrap_or_else(|| "sent".to_string())
-        )
-    } else {
-        completed.response.clone()
-    };
-    tx.send(VoiceUiEvent::Reply(text)).ok();
+    tx.send(VoiceUiEvent::Reply(user_visible_reply_text(completed)))
+        .ok();
     step_publisher.publish(voice_step_label("reply", &completed.response));
     trace
         .append(
@@ -1278,6 +1333,10 @@ async fn emit_completed_reply(
             json!({"text": completed.response, "action": action}),
         )
         .await;
+}
+
+fn user_visible_reply_text(completed: &CompletedAssistantTurn) -> String {
+    completed.response.clone()
 }
 
 fn stamp_ctx_workspace_root(action: &mut cua_core::InputAction, profile: &str) {
@@ -1411,6 +1470,12 @@ fn action_is_browser_research_setup(action: &serde_json::Value) -> bool {
                 .is_some_and(|combo| combo.eq_ignore_ascii_case("enter"))
     });
     has_query_entry && has_submit
+}
+
+fn action_is_user_text_fulfillment(transcript: &str, action: &serde_json::Value) -> bool {
+    action_is_text_entry(action)
+        && transcript_requests_text_entry(transcript)
+        && !action_is_browser_research_setup(action)
 }
 
 fn transcript_requests_text_entry(transcript: &str) -> bool {
@@ -1716,7 +1781,7 @@ fn should_continue_long_range_after_verified_action(
         return false;
     };
     action_can_advance_long_range_goal(action)
-        && (!action_is_text_entry(action) || action_is_browser_research_setup(action))
+        && !action_is_user_text_fulfillment(transcript, action)
 }
 
 fn action_can_advance_long_range_goal(action: &serde_json::Value) -> bool {
@@ -1744,6 +1809,52 @@ fn planner_response_claims_pending_work(response: &str) -> bool {
     ]
     .iter()
     .any(|marker| lower.contains(marker))
+}
+
+fn long_range_null_plan_is_incomplete(
+    transcript: &str,
+    response: &str,
+    action: &Option<serde_json::Value>,
+) -> bool {
+    transcript_requests_long_range_work(transcript)
+        && action.is_none()
+        && planner_response_claims_pending_work(response)
+}
+
+fn action_repeats_confirmed_attempt(
+    attempts: &[PlanAttemptContext],
+    action: &serde_json::Value,
+) -> bool {
+    attempts.iter().any(|attempt| {
+        attempt.effect.as_deref() == Some("confirmed")
+            && attempt
+                .action
+                .as_ref()
+                .is_some_and(|prior| actions_have_same_intent(prior, action))
+    })
+}
+
+fn actions_have_same_intent(left: &serde_json::Value, right: &serde_json::Value) -> bool {
+    let left_kind = left.get("kind").and_then(|kind| kind.as_str());
+    let right_kind = right.get("kind").and_then(|kind| kind.as_str());
+    if left_kind != right_kind {
+        return false;
+    }
+    if left_kind == Some("sequence") {
+        let Some(left_actions) = left.get("actions").and_then(|actions| actions.as_array()) else {
+            return false;
+        };
+        let Some(right_actions) = right.get("actions").and_then(|actions| actions.as_array())
+        else {
+            return false;
+        };
+        return left_actions.len() == right_actions.len()
+            && left_actions
+                .iter()
+                .zip(right_actions)
+                .all(|(left, right)| actions_have_same_intent(left, right));
+    }
+    left == right
 }
 
 fn long_range_budget_exhausted_without_finish(
@@ -1916,9 +2027,11 @@ fn should_replan_after_turn(
     attempt_index: usize,
     loop_budget: AgentLoopBudget,
 ) -> bool {
-    if turn.action.as_ref().is_some_and(|action| {
-        action_is_text_entry(action) && !action_is_browser_research_setup(action)
-    }) {
+    if turn
+        .action
+        .as_ref()
+        .is_some_and(|action| action_is_user_text_fulfillment(transcript, action))
+    {
         return false;
     }
     should_replan_after_effect(effect, attempt_index, loop_budget)
@@ -3217,6 +3330,96 @@ mod tests {
             1,
             AgentLoopBudget::Unbounded
         ));
+    }
+
+    #[test]
+    fn agent_loop_calculator_input_continues_to_read_result() {
+        let turn = CompletedAssistantTurn {
+            response: "Opening Calculator and calculating 123 + 456.".to_string(),
+            action: Some(json!({
+                "kind": "sequence",
+                "actions": [
+                    {"kind": "open_app", "app_name": "Calculator"},
+                    {"kind": "key_type", "text": "123+456="}
+                ],
+                "inter_action_delay_ms": 300
+            })),
+            evidence: Some(json!({"effect": "confirmed"})),
+        };
+
+        assert!(!turn
+            .action
+            .as_ref()
+            .is_some_and(|action| action_is_user_text_fulfillment(
+                "Open Calculator, calculate 123 plus 456, read the displayed result, and report the verified result.",
+                action
+            )));
+        assert!(should_replan_after_turn(
+            "Open Calculator, calculate 123 plus 456, read the displayed result, and report the verified result.",
+            &turn,
+            Some("confirmed"),
+            1,
+            AgentLoopBudget::Unbounded
+        ));
+    }
+
+    #[test]
+    fn action_reply_text_does_not_append_dispatch_effect() {
+        let turn = CompletedAssistantTurn {
+            response: "Opening Calculator and calculating 123 + 456.".to_string(),
+            action: Some(json!({
+                "kind": "key_type",
+                "text": "123+456="
+            })),
+            evidence: Some(json!({"effect": "confirmed"})),
+        };
+
+        assert_eq!(
+            user_visible_reply_text(&turn),
+            "Opening Calculator and calculating 123 + 456."
+        );
+    }
+
+    #[test]
+    fn long_range_null_pending_reply_is_rejected_as_incomplete() {
+        assert!(long_range_null_plan_is_incomplete(
+            "Open Calculator, calculate 123 plus 456, read the displayed result, and report the verified result.",
+            "Opening Calculator via Spotlight and typing 123",
+            &None
+        ));
+        assert!(!long_range_null_plan_is_incomplete(
+            "Open Calculator, calculate 123 plus 456, read the displayed result, and report the verified result.",
+            "The displayed result is 579.",
+            &None
+        ));
+    }
+
+    #[test]
+    fn repeated_confirmed_long_range_action_is_repair_evidence_not_dispatch() {
+        let action = json!({
+            "kind": "sequence",
+            "actions": [
+                {"kind": "open_app", "app_name": "Calculator"},
+                {"kind": "key_type", "text": "123+456="}
+            ],
+            "inter_action_delay_ms": 300
+        });
+        let attempts = vec![PlanAttemptContext {
+            attempt_index: 1,
+            response: "Opening Calculator and calculating 123 + 456.".to_string(),
+            action: Some(json!({
+                "kind": "sequence",
+                "actions": [
+                    {"kind": "open_app", "app_name": "Calculator"},
+                    {"kind": "key_type", "text": "123+456="}
+                ],
+                "inter_action_delay_ms": 500
+            })),
+            effect: Some("confirmed".to_string()),
+            evidence: Some(json!({"effect": "confirmed"})),
+        }];
+
+        assert!(action_repeats_confirmed_attempt(&attempts, &action));
     }
 
     #[test]

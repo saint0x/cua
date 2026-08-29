@@ -64,6 +64,7 @@ const HEADER_TITLE_DIVIDER_GAP_PX: f32 = 2.0;
 const HEADER_LEAD_WIDTH_PX: f32 = 28.0;
 const HEADER_ORB_PX: f32 = 18.0;
 const HEADER_RING_PX: f32 = HEADER_ORB_PX;
+const HEADER_RING_VISUAL_PX: f32 = 15.0;
 const TASK_RING_PX: f32 = 22.0;
 const BODY_LABEL_WIDTH_PX: f32 = 68.0;
 const BODY_PAD_X_PX: f32 = 20.0;
@@ -378,7 +379,7 @@ impl VoiceHud {
                 )
             },
             move |bounds, (active, speed, count, step_counter, elapsed, accent), window, _| {
-                paint_activity_ring(
+                paint_activity_ring_in_diameter(
                     window,
                     bounds,
                     accent,
@@ -387,6 +388,7 @@ impl VoiceHud {
                     count as usize,
                     step_counter,
                     elapsed,
+                    HEADER_RING_VISUAL_PX,
                 );
             },
         )
@@ -1717,6 +1719,33 @@ fn paint_activity_ring(
     elapsed: f32,
 ) {
     let size = bounds.size.width.min(bounds.size.height).to_f64() as f32;
+    paint_activity_ring_in_diameter(
+        window,
+        bounds,
+        accent,
+        active,
+        speed,
+        count,
+        step_counter,
+        elapsed,
+        size,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn paint_activity_ring_in_diameter(
+    window: &mut Window,
+    bounds: Bounds<Pixels>,
+    accent: Hsla,
+    active: bool,
+    speed: f32,
+    count: usize,
+    step_counter: Option<(usize, usize)>,
+    elapsed: f32,
+    visual_diameter: f32,
+) {
+    let size = bounds.size.width.min(bounds.size.height).to_f64() as f32;
+    let size = visual_diameter.min(size);
     let center = bounds.center();
     let stroke = (size * 0.09).max(2.0);
     let radius = size / 2.0 - stroke / 2.0;
@@ -3737,6 +3766,8 @@ mod tests {
         assert_eq!(UI_META_PX, UI_TEXT_PX);
         assert_eq!(HEADER_ORB_PX, 18.0);
         assert_eq!(HEADER_RING_PX, HEADER_ORB_PX);
+        assert_eq!(HEADER_RING_VISUAL_PX, 15.0);
+        const { assert!(HEADER_RING_VISUAL_PX < HEADER_RING_PX) };
         assert_eq!(TASK_RING_PX, 22.0);
         assert_eq!(HEADER_GAP_PX, 8.0);
         assert_eq!(HEADER_TITLE_DIVIDER_GAP_PX, 2.0);
@@ -3907,6 +3938,11 @@ mod tests {
         assert_eq!(
             island_width(metrics) - ring_right_edge,
             HEADER_TRAILING_PAD_X_PX
+        );
+        let visual_ring_right_edge = ring_center_x + (HEADER_RING_VISUAL_PX / 2.0);
+        assert_eq!(
+            island_width(metrics) - visual_ring_right_edge,
+            HEADER_TRAILING_PAD_X_PX + ((HEADER_RING_PX - HEADER_RING_VISUAL_PX) / 2.0)
         );
     }
 
