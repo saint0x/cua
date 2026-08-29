@@ -979,7 +979,7 @@ async fn plan_and_dispatch(
                         "planning_rejected",
                         json!({
                             "attempt_index": attempt_index,
-                            "reason": "long_range_null_plan_claimed_pending_work",
+                            "reason": "action_null_plan_claimed_pending_work",
                             "response": plan.response.clone(),
                         }),
                     )
@@ -991,7 +991,7 @@ async fn plan_and_dispatch(
                     effect: Some("suspected_noop".to_string()),
                     evidence: Some(json!({
                         "effect": "suspected_noop",
-                        "reason": "long_range_null_plan_claimed_pending_work",
+                        "reason": "action_null_plan_claimed_pending_work",
                         "repair_hint": "Return the next tool action needed to complete or verify the user's request, not a progress description.",
                     })),
                 });
@@ -5227,7 +5227,7 @@ mod tests {
     }
 
     #[test]
-    fn confirmed_edge_actions_finish_after_reobserve_without_replanning() {
+    fn visible_reobserve_finishes_when_no_more_repair_is_needed() {
         assert!(should_finish_after_reobserve(true, false));
         assert!(!should_finish_after_reobserve(true, true));
         assert!(!should_finish_after_reobserve(false, false));
