@@ -76,6 +76,7 @@ const SHELL_MOTION_SECS: f32 = 0.320;
 const CONTENT_MOTION_SECS: f32 = 0.210;
 const REDUCED_SHELL_MOTION_SECS: f32 = 0.110;
 const REDUCED_CONTENT_MOTION_SECS: f32 = 0.110;
+const ACTIVE_RING_SWEEP_DEG: f32 = 132.0;
 
 #[derive(Debug, Parser)]
 #[command(name = "cua-voice", version, about = "Rust voice HUD for cua")]
@@ -1671,13 +1672,7 @@ fn paint_activity_ring(
     let radius = size / 2.0 - stroke / 2.0;
     paint_ring_arc(window, center, radius, stroke, 0.0, 360.0, rule_color(0.09));
 
-    let sweep = if let Some((index, total)) = step_counter {
-        360.0 * (index as f32 / total.max(1) as f32).clamp(0.0, 1.0)
-    } else if active {
-        64.0
-    } else {
-        0.0
-    };
+    let sweep = activity_ring_sweep_deg(active, step_counter);
     if sweep <= 0.1 {
         return;
     }
@@ -1690,6 +1685,16 @@ fn paint_activity_ring(
     paint_ring_arc(window, center, radius, stroke, start, sweep, accent);
 }
 
+fn activity_ring_sweep_deg(active: bool, step_counter: Option<(usize, usize)>) -> f32 {
+    if let Some((index, total)) = step_counter {
+        360.0 * (index as f32 / total.max(1) as f32).clamp(0.0, 1.0)
+    } else if active {
+        ACTIVE_RING_SWEEP_DEG
+    } else {
+        0.0
+    }
+}
+
 fn paint_ring_arc(
     window: &mut Window,
     center: Point<Pixels>,
@@ -1699,7 +1704,7 @@ fn paint_ring_arc(
     sweep_deg: f32,
     color: Hsla,
 ) {
-    let steps = ((sweep_deg.abs() / 9.0).ceil() as usize).clamp(4, 48);
+    let steps = ((sweep_deg.abs() / 4.5).ceil() as usize).clamp(8, 96);
     let outer = radius + stroke / 2.0;
     let inner = (radius - stroke / 2.0).max(0.0);
     let mut outer_points = Vec::with_capacity(steps + 1);
@@ -4476,6 +4481,23 @@ mod tests {
         assert_eq!(start[5], 0.72);
         assert_eq!(start[4], 0.44);
         assert!(start[0] > start[3]);
+    }
+
+    #[test]
+    fn activity_ring_active_spinner_exposes_curved_partial_sweep() {
+        let sweep = activity_ring_sweep_deg(true, None);
+
+        assert_eq!(sweep, ACTIVE_RING_SWEEP_DEG);
+        assert!(sweep >= 120.0);
+        assert!(sweep < 180.0);
+        assert_eq!(activity_ring_sweep_deg(false, None), 0.0);
+    }
+
+    #[test]
+    fn activity_ring_step_counter_remains_progress_gauge() {
+        assert_eq!(activity_ring_sweep_deg(true, Some((1, 4))), 90.0);
+        assert_eq!(activity_ring_sweep_deg(false, Some((2, 4))), 180.0);
+        assert_eq!(activity_ring_sweep_deg(true, Some((5, 4))), 360.0);
     }
 
     #[test]
