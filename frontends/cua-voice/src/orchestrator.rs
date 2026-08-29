@@ -787,9 +787,12 @@ async fn plan_and_dispatch(
                         let recoverable_planning_error =
                             empty_or_invalid_planner_output || retryable_planner_infrastructure;
                         if recoverable_planning_error {
-                            if let Some(plan) = empty_or_invalid_planner_output
-                                .then(|| browser_research_bootstrap_plan(&transcript))
-                                .flatten()
+                            if let Some(plan) = planning_error_can_use_bootstrap_recovery(
+                                empty_or_invalid_planner_output,
+                                &attempts,
+                            )
+                            .then(|| browser_research_bootstrap_plan(&transcript))
+                            .flatten()
                             {
                                 trace
                                     .append(
@@ -2334,6 +2337,13 @@ fn planner_response_claims_pending_work(response: &str) -> bool {
     .any(|marker| lower.contains(marker))
 }
 
+fn planning_error_can_use_bootstrap_recovery(
+    empty_or_invalid_planner_output: bool,
+    attempts: &[PlanAttemptContext],
+) -> bool {
+    empty_or_invalid_planner_output && attempts.is_empty()
+}
+
 fn action_null_plan_claims_pending_work(
     response: &str,
     action: &Option<serde_json::Value>,
@@ -3407,6 +3417,24 @@ mod tests {
 
         assert!(planning_error_is_invalid_action_json(&error));
         assert!(planning_error_is_invalid_action_json(&parse_plan));
+    }
+
+    #[test]
+    fn planner_parse_recovery_does_not_reset_after_loop_progress() {
+        let attempts = vec![PlanAttemptContext {
+            attempt_index: 1,
+            response: "Found relevant page text.".to_string(),
+            action: Some(json!({
+                "kind": "aegis",
+                "args": ["--mode", "headless", "page", "find", "foreign key constraints"]
+            })),
+            effect: Some("confirmed".to_string()),
+            evidence: Some(json!({"effect": "confirmed"})),
+        }];
+
+        assert!(planning_error_can_use_bootstrap_recovery(true, &[]));
+        assert!(!planning_error_can_use_bootstrap_recovery(true, &attempts));
+        assert!(!planning_error_can_use_bootstrap_recovery(false, &[]));
     }
 
     #[test]
