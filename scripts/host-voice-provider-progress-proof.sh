@@ -96,7 +96,7 @@ jq -s -e '
   (
     (map(select(.event == "reply" and ((.text // "") | contains("Planner provider stopped the task")))) | length == 0)
     or
-    any(.event == "reply" and ((.text // "") | contains("last progress was")))
+    any(.event == "reply" and ((.text // "") | contains("completed attempt")) and ((.text // "") | contains("last progress was")))
   ) and
   any(.event == "metric" and .name == "dispatch_ms") and
   any(.event == "metric" and .name == "reobserve_ms") and
@@ -114,7 +114,7 @@ jq -s -e '
   (
     (map(select(.event == "reply" and ((.data.text // "") | contains("Planner provider stopped the task")))) | length == 0)
     or
-    any(.event == "reply" and ((.data.text // "") | contains("last progress was")))
+    any(.event == "reply" and ((.data.text // "") | contains("completed attempt")) and ((.data.text // "") | contains("last progress was")))
   )
 ' "$TRACE" >/dev/null
 
