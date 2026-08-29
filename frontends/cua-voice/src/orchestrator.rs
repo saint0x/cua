@@ -558,15 +558,25 @@ fn progress_action_label(action: &serde_json::Value) -> Option<String> {
             .get("app_name")
             .and_then(|value| value.as_str())
             .map(|app| format!("opening {app}")),
-        "sequence" => action
-            .get("actions")
-            .and_then(|value| value.as_array())
-            .map(|actions| format!("running a {}-action sequence", actions.len())),
+        "sequence" => progress_sequence_label(action),
         "ctx" => Some("using ctx memory".to_string()),
         "mouse_click" | "mouse_move" | "mouse_drag" | "key_press" | "key_type" | "key_paste"
         | "clipboard_read" | "clipboard_write" => Some("controlling the computer".to_string()),
         _ => None,
     }
+}
+
+fn progress_sequence_label(action: &serde_json::Value) -> Option<String> {
+    let actions = action.get("actions")?.as_array()?;
+    let detail = actions.iter().rev().find_map(progress_action_label);
+    Some(match detail {
+        Some(detail) => format!(
+            "running a {}-action sequence ending with {}",
+            actions.len(),
+            detail
+        ),
+        None => format!("running a {}-action sequence", actions.len()),
+    })
 }
 
 fn progress_aegis_label(action: &serde_json::Value) -> Option<String> {
@@ -3816,6 +3826,39 @@ mod tests {
         assert_eq!(
             planning_provider_account_failure_message_with_attempts(&payment_required, &attempts),
             "Planner provider stopped the task after 1 completed attempt; last progress was using Aegis `search the official SQLite foreign key documentation`: insufficient provider credits."
+        );
+        let sequence_attempts = vec![PlanAttemptContext {
+            attempt_index: 1,
+            response: "Opening and searching.".to_string(),
+            action: Some(json!({
+                "kind": "sequence",
+                "actions": [
+                    {"kind": "open_app", "app_name": "Safari"},
+                    {
+                        "kind": "aegis",
+                        "args": [
+                            "--server-addr",
+                            "127.0.0.1:27682",
+                            "--profile",
+                            "cua-qor3787",
+                            "--mode",
+                            "headless",
+                            "search",
+                            "SQLite foreign key documentation"
+                        ],
+                        "timeout_ms": 15000
+                    }
+                ],
+            })),
+            effect: Some("confirmed".to_string()),
+            evidence: Some(json!({"effect": "confirmed"})),
+        }];
+        assert_eq!(
+            planning_provider_account_failure_message_with_attempts(
+                &payment_required,
+                &sequence_attempts
+            ),
+            "Planner provider stopped the task after 1 completed attempt; last progress was running a 2-action sequence ending with using Aegis `search SQLite foreign key documentation`: insufficient provider credits."
         );
     }
 
