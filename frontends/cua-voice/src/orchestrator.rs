@@ -1859,9 +1859,11 @@ fn planner_response_claims_pending_work(response: &str) -> bool {
         "searching",
         "browsing",
         "researching",
+        "navigating",
         "looking up",
         "checking",
         "reading",
+        "inspecting",
         "i'll",
         "i will",
         "let me",
@@ -1895,6 +1897,9 @@ fn action_repeats_confirmed_attempt(
     attempts: &[PlanAttemptContext],
     action: &serde_json::Value,
 ) -> bool {
+    if action_is_observation_only(action) {
+        return false;
+    }
     attempts.iter().any(|attempt| {
         attempt.effect.as_deref() == Some("confirmed")
             && attempt
@@ -1902,6 +1907,37 @@ fn action_repeats_confirmed_attempt(
                 .as_ref()
                 .is_some_and(|prior| actions_have_same_intent(prior, action))
     })
+}
+
+fn action_is_observation_only(action: &serde_json::Value) -> bool {
+    match action.get("kind").and_then(|kind| kind.as_str()) {
+        Some("ctx" | "clipboard_read") => true,
+        Some("aegis") => action
+            .get("args")
+            .and_then(|args| args.as_array())
+            .is_some_and(|args| aegis_args_are_observation_only(args.as_slice())),
+        Some("sequence") => action
+            .get("actions")
+            .and_then(|actions| actions.as_array())
+            .is_some_and(|actions| {
+                !actions.is_empty() && actions.iter().all(action_is_observation_only)
+            }),
+        _ => false,
+    }
+}
+
+fn aegis_args_are_observation_only(args: &[serde_json::Value]) -> bool {
+    let words = args
+        .iter()
+        .filter_map(|arg| arg.as_str())
+        .collect::<Vec<_>>();
+    let Some(page_index) = words.iter().position(|word| *word == "page") else {
+        return false;
+    };
+    matches!(
+        words.get(page_index + 1),
+        Some(&"actions" | &"links" | &"text" | &"markdown" | &"find")
+    )
 }
 
 fn actions_have_same_intent(left: &serde_json::Value, right: &serde_json::Value) -> bool {
@@ -2053,7 +2089,6 @@ fn final_response_claims_verified_result(response: &str) -> bool {
             "title",
             "reads",
             "contains",
-            "content",
             "contents",
         ]
         .iter()
@@ -3575,6 +3610,9 @@ mod tests {
         assert!(!final_response_claims_verified_result(
             "Opening Calculator via Spotlight and typing 123"
         ));
+        assert!(!final_response_claims_verified_result(
+            "Navigating to Example Domain to inspect its content and links."
+        ));
     }
 
     #[test]
@@ -3695,6 +3733,42 @@ mod tests {
     }
 
     #[test]
+    fn agent_loop_pending_navigation_reply_is_not_confirmed_final_result() {
+        let prior_attempts = vec![PlanAttemptContext {
+            attempt_index: 1,
+            response: "Opening the Example result.".to_string(),
+            action: Some(json!({
+                "kind": "aegis",
+                "args": ["--mode", "headless", "page", "open-link", "Example"],
+                "timeout_ms": 15000
+            })),
+            effect: Some("refused".to_string()),
+            evidence: Some(json!({
+                "effect": "refused",
+                "error": "ambiguous_link_match"
+            })),
+        }];
+        let completed = CompletedAssistantTurn {
+            response: "Navigating to Example Domain to inspect its content and links.".to_string(),
+            action: None,
+            evidence: None,
+        };
+
+        assert!(planner_response_claims_pending_work(&completed.response));
+        assert_eq!(
+            observed_turn_effect(&completed, &prior_attempts),
+            Some("stopped".to_string())
+        );
+        assert!(!should_replan_after_turn(
+            "Use Aegis in headless mode to search the web for Example Domain IANA, open the most relevant result if needed, inspect the page actions or text, and report the verified page title and one link label.",
+            &completed,
+            Some("stopped"),
+            9,
+            AgentLoopBudget::Unbounded
+        ));
+    }
+
+    #[test]
     fn verified_action_null_reply_can_finish_text_request_after_prior_evidence() {
         let prior_attempts = vec![PlanAttemptContext {
             attempt_index: 1,
@@ -3753,6 +3827,44 @@ mod tests {
             evidence: Some(json!({"effect": "confirmed"})),
         }];
 
+        assert!(action_repeats_confirmed_attempt(&attempts, &action));
+    }
+
+    #[test]
+    fn agent_loop_allows_repeated_observation_after_state_changes() {
+        let action = json!({
+            "kind": "aegis",
+            "args": ["--mode", "headless", "page", "links"],
+            "timeout_ms": 15000
+        });
+        let attempts = vec![PlanAttemptContext {
+            attempt_index: 1,
+            response: "Checking search result links.".to_string(),
+            action: Some(action.clone()),
+            effect: Some("confirmed".to_string()),
+            evidence: Some(json!({"effect": "confirmed"})),
+        }];
+
+        assert!(action_is_observation_only(&action));
+        assert!(!action_repeats_confirmed_attempt(&attempts, &action));
+    }
+
+    #[test]
+    fn agent_loop_treats_aegis_navigation_as_side_effecting_for_repeat_guard() {
+        let action = json!({
+            "kind": "aegis",
+            "args": ["--mode", "headless", "navigate", "https://example.com"],
+            "timeout_ms": 15000
+        });
+        let attempts = vec![PlanAttemptContext {
+            attempt_index: 1,
+            response: "Navigating.".to_string(),
+            action: Some(action.clone()),
+            effect: Some("confirmed".to_string()),
+            evidence: Some(json!({"effect": "confirmed"})),
+        }];
+
+        assert!(!action_is_observation_only(&action));
         assert!(action_repeats_confirmed_attempt(&attempts, &action));
     }
 

@@ -38,8 +38,11 @@ Supported ACTION shapes:
 {"kind":"shell_exec","command":"pwd && ls","timeout_ms":5000}
 {"kind":"aegis","args":["--mode","headless","search","cloud computer agents"],"timeout_ms":15000}
 {"kind":"aegis","args":["--mode","headful","page","actions"],"timeout_ms":15000}
+{"kind":"aegis","args":["--mode","headful","page","links"],"timeout_ms":15000}
 {"kind":"aegis","args":["--mode","headful","page","text","--scope","main"],"timeout_ms":15000}
 {"kind":"aegis","args":["--mode","headful","page","open-link","AWS Bedrock"],"timeout_ms":15000}
+{"kind":"aegis","args":["--mode","headful","page","open-link","--exact","AWS Bedrock"],"timeout_ms":15000}
+{"kind":"aegis","args":["--mode","headful","page","open-link","--href-contains","aws.amazon.com","AWS Bedrock"],"timeout_ms":15000}
 {"kind":"ctx","args":["query","default","cua","open safari"],"timeout_ms":5000}
 {"kind":"sequence","actions":[{"kind":"open_app","app_name":"Messages"},{"kind":"key_press","combo":"cmd+n"}],"inter_action_delay_ms":120}
 {"kind":"clipboard_read","allow_sensitive":false}
@@ -58,7 +61,7 @@ Coordinate rules:
 - Prefer open_app when the user asks only to open or launch a desktop app by name.
 - Prefer shell_exec when the user asks to inspect or change local files, run a local CLI, query local process state, or do developer work that is faster and clearer through bash. Keep commands short, bounded, and directly tied to the user request.
 - Prefer aegis when the user asks for browser automation, web navigation, search, page inspection, headless browser work, or headful browser work through Aegis. Pass explicit Aegis CLI args only; do not wrap Aegis in shell_exec.
-- Supported Aegis research forms are `search <query words>`, `navigate <url>`, `page actions`, `page text --scope main`, `page markdown --scope article`, `page find <text>`, and `page open-link <link text>`. Do not invent unsupported flags or commands such as `page actions --url` or `page click --index`; use `navigate` before page inspection and `page open-link` for links.
+- Supported Aegis research forms are `search <query words>`, `navigate <url>`, `page actions`, `page links`, `page text --scope main`, `page markdown --scope article`, `page find <text>`, and `page open-link <link text>`. If `page open-link` is ambiguous, use `page links`, then retry `page open-link` with `--exact`, `--index`, or `--href-contains`. Do not invent unsupported commands such as `page actions --url` or `page click --index`; use `navigate` before page inspection and `page open-link` for links.
 - Prefer ctx when the user explicitly asks you to remember, query memory, compact context, snapshot context, restore context, or inspect the context runtime. Pass explicit ctx CLI args only; do not wrap ctx in shell_exec. Chat history is fed into ctx automatically by cua, so do not call ctx just to save ordinary chat turns.
 - Profile scratchpads are fed into planner context automatically. If the user explicitly asks to add, read, list, or delete a scratchpad, use shell_exec with the bounded cua scratchpad CLI command and the active owner session only when that session is available in the runtime evidence.
 - Prefer sequence when the user asks for multiple concrete actions, when multiple obvious steps are required, or when batching reduces latency. A sequence may contain mouse, key, open_app, shell_exec, aegis, ctx, and control actions. Do not nest sequence inside sequence.
@@ -550,13 +553,159 @@ fn extract_first_json_object(raw: &str) -> Option<&str> {
 
 fn parse_action_value(mut value: serde_json::Value) -> anyhow::Result<InputAction> {
     normalize_action_value(&mut value);
-    serde_json::from_value(value).context("parse action")
+    let action = serde_json::from_value(value).context("parse action")?;
+    validate_model_action(&action)?;
+    Ok(action)
+}
+
+fn validate_model_action(action: &InputAction) -> anyhow::Result<()> {
+    match action {
+        InputAction::Aegis { args, .. } => validate_aegis_args(args),
+        InputAction::Sequence { actions, .. } => {
+            if actions.is_empty() {
+                bail!("sequence action must contain at least one action");
+            }
+            for action in actions {
+                validate_model_action(action)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn validate_aegis_args(args: &[String]) -> anyhow::Result<()> {
+    if args.is_empty() {
+        bail!("aegis action requires args");
+    }
+    if args.iter().any(|arg| arg.trim().is_empty()) {
+        bail!("aegis action contains an empty argument");
+    }
+
+    let Some(command_index) = aegis_command_index(args)? else {
+        bail!("aegis action must include a command");
+    };
+    match args[command_index].as_str() {
+        "search" => {
+            if command_index + 1 >= args.len() {
+                bail!("aegis search requires a query");
+            }
+            Ok(())
+        }
+        "navigate" => {
+            if command_index + 2 != args.len() {
+                bail!("aegis navigate accepts exactly one URL");
+            }
+            validate_aegis_navigation_target(args.get(command_index + 1))
+        }
+        "page" => validate_aegis_page_args(&args[command_index + 1..]),
+        command => bail!("unsupported aegis command `{command}`"),
+    }
+}
+
+fn validate_aegis_navigation_target(target: Option<&String>) -> anyhow::Result<()> {
+    let Some(target) = target else {
+        bail!("aegis navigate requires a URL");
+    };
+    let url = reqwest::Url::parse(target).context("parse aegis navigate URL")?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        bail!("aegis navigate requires an absolute http(s) URL with a host");
+    }
+    Ok(())
+}
+
+fn aegis_command_index(args: &[String]) -> anyhow::Result<Option<usize>> {
+    let mut index = 0usize;
+    while index < args.len() {
+        let arg = args[index].as_str();
+        if !arg.starts_with("--") {
+            return Ok(Some(index));
+        }
+        let step = match arg {
+            "--exact" => 1,
+            "--mode" | "--profile" | "--host-lib" | "--start-url" | "--download-dir"
+            | "--upload-dir" | "--server-addr" | "--href-contains" | "--index" | "--scope" => 2,
+            _ => bail!("unsupported aegis option `{arg}`"),
+        };
+        if index + step > args.len() {
+            bail!("aegis option `{arg}` requires a value");
+        }
+        index += step;
+    }
+    Ok(None)
+}
+
+fn validate_aegis_page_args(args: &[String]) -> anyhow::Result<()> {
+    let Some(subcommand) = args.first().map(String::as_str) else {
+        bail!("aegis page requires a subcommand");
+    };
+    match subcommand {
+        "actions" | "links" if args.len() == 1 => Ok(()),
+        "actions" | "links" => bail!("aegis page {subcommand} accepts no extra arguments"),
+        "text" | "markdown" => validate_optional_scope_args(&args[1..], subcommand),
+        "find" => {
+            if args.len() < 2 {
+                bail!("aegis page find requires text");
+            }
+            Ok(())
+        }
+        "open-link" => validate_aegis_open_link_args(&args[1..]),
+        _ => bail!("unsupported aegis page subcommand `{subcommand}`"),
+    }
+}
+
+fn validate_optional_scope_args(args: &[String], subcommand: &str) -> anyhow::Result<()> {
+    match args {
+        [] => Ok(()),
+        [flag, _scope] if flag == "--scope" => Ok(()),
+        _ => bail!("aegis page {subcommand} only supports optional --scope"),
+    }
+}
+
+fn validate_aegis_open_link_args(args: &[String]) -> anyhow::Result<()> {
+    let mut index = 0usize;
+    let mut text_parts = 0usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--exact" => index += 1,
+            "--href-contains" | "--index" => {
+                if index + 1 >= args.len() {
+                    bail!("aegis page open-link option `{}` requires a value", args[index]);
+                }
+                index += 2;
+            }
+            arg if arg.starts_with("--") => bail!("unsupported aegis page open-link option `{arg}`"),
+            _ => {
+                text_parts += 1;
+                index += 1;
+            }
+        }
+    }
+    if text_parts == 0 {
+        bail!("aegis page open-link requires link text");
+    }
+    Ok(())
 }
 
 fn normalize_action_value(value: &mut serde_json::Value) {
     let Some(object) = value.as_object_mut() else {
         return;
     };
+    if !object.contains_key("kind") {
+        if object
+            .get("actions")
+            .and_then(|value| value.as_array())
+            .is_some()
+        {
+            object.insert("kind".to_string(), serde_json::json!("sequence"));
+        } else if object
+            .get("args")
+            .and_then(|value| value.as_array())
+            .is_some_and(|args| args_look_like_aegis(args.as_slice()))
+        {
+            object.insert("kind".to_string(), serde_json::json!("aegis"));
+        }
+    }
     let Some(kind) = object.get("kind").and_then(|kind| kind.as_str()) else {
         return;
     };
@@ -620,6 +769,14 @@ fn normalize_action_value(value: &mut serde_json::Value) {
             object.insert("button".to_string(), serde_json::json!(normalized));
         }
     }
+}
+
+fn args_look_like_aegis(args: &[serde_json::Value]) -> bool {
+    args.iter().any(|arg| arg.as_str() == Some("--mode"))
+        || args
+            .first()
+            .and_then(|arg| arg.as_str())
+            .is_some_and(|arg| matches!(arg, "search" | "navigate" | "page"))
 }
 
 pub fn parse_fast_command(transcript: &str) -> Option<PlannedTurn> {
@@ -816,6 +973,8 @@ fn trim_browser_research_tail(query: &str) -> &str {
     for marker in [
         ", inspect ",
         " and inspect ",
+        ", open ",
+        " and open ",
         ", read ",
         " and read ",
         ", then ",
@@ -1089,7 +1248,9 @@ mod tests {
         assert!(PLANNER_SYSTEM_PROMPT.contains("aegis"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("page text --scope main"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("page open-link"));
-        assert!(PLANNER_SYSTEM_PROMPT.contains("Do not invent unsupported flags"));
+        assert!(PLANNER_SYSTEM_PROMPT.contains("page links"));
+        assert!(PLANNER_SYSTEM_PROMPT.contains("--href-contains"));
+        assert!(PLANNER_SYSTEM_PROMPT.contains("Do not invent unsupported commands"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("ctx"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("scratchpad"));
         assert!(PLANNER_SYSTEM_PROMPT.contains("Native Skill.md support"));
@@ -1250,6 +1411,144 @@ mod tests {
     }
 
     #[test]
+    fn parses_model_aegis_action_with_missing_kind_from_args() {
+        let plan = parse_model_plan(
+            r#"{"response":"Navigating.","action":{"args":["--mode","headless","navigate","https://www.iana.org/help"]}}"#,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            plan.action,
+            Some(InputAction::Aegis {
+                ref args,
+                timeout_ms: 15_000
+            }) if args == &[
+                "--mode".to_string(),
+                "headless".to_string(),
+                "navigate".to_string(),
+                "https://www.iana.org/help".to_string()
+            ]
+        ));
+    }
+
+    #[test]
+    fn parses_model_sequence_with_missing_kind_from_actions() {
+        let plan = parse_model_plan(
+            r#"{"response":"Inspecting.","action":{"actions":[{"args":["--mode","headless","page","links"]},{"kind":"aegis","args":["--mode","headless","page","actions"]}]}}"#,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            plan.action,
+            Some(InputAction::Sequence {
+                ref actions,
+                inter_action_delay_ms: 120
+            }) if matches!(
+                actions.as_slice(),
+                [
+                    InputAction::Aegis { args: first, timeout_ms: 15_000 },
+                    InputAction::Aegis { args: second, timeout_ms: 15_000 },
+                ] if first == &[
+                    "--mode".to_string(),
+                    "headless".to_string(),
+                    "page".to_string(),
+                    "links".to_string()
+                ] && second == &[
+                    "--mode".to_string(),
+                    "headless".to_string(),
+                    "page".to_string(),
+                    "actions".to_string()
+                ]
+            )
+        ));
+    }
+
+    #[test]
+    fn rejects_empty_aegis_page_subcommand_before_dispatch() {
+        let error = parse_model_plan(
+            r#"{"response":"Inspecting.","action":{"kind":"sequence","actions":[{"kind":"aegis","args":["--mode","headless","page",""]}]}}"#,
+        )
+        .unwrap_err();
+
+        assert!(format!("{error:#}").contains("aegis action contains an empty argument"));
+    }
+
+    #[test]
+    fn validates_aegis_open_link_refinement_options() {
+        let plan = parse_model_plan(
+            r#"{"response":"Opening result.","action":{"kind":"aegis","args":["--mode","headless","page","open-link","--href-contains","iana.org","--exact","Learn more"]}}"#,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            plan.action,
+            Some(InputAction::Aegis { ref args, .. })
+                if args == &[
+                    "--mode".to_string(),
+                    "headless".to_string(),
+                    "page".to_string(),
+                    "open-link".to_string(),
+                    "--href-contains".to_string(),
+                    "iana.org".to_string(),
+                    "--exact".to_string(),
+                    "Learn more".to_string(),
+                ]
+        ));
+    }
+
+    #[test]
+    fn rejects_aegis_open_link_without_link_text() {
+        let error = parse_model_plan(
+            r#"{"response":"Opening result.","action":{"kind":"aegis","args":["--mode","headless","page","open-link","--href-contains","iana.org"]}}"#,
+        )
+        .unwrap_err();
+
+        assert!(format!("{error:#}").contains("aegis page open-link requires link text"));
+    }
+
+    #[test]
+    fn rejects_partial_aegis_navigation_url_before_dispatch() {
+        let error = parse_model_plan(
+            r#"{"response":"Navigating.","action":{"kind":"aegis","args":["--mode","headless","navigate","https://"]}}"#,
+        )
+        .unwrap_err();
+
+        assert!(format!("{error:#}").contains("parse aegis navigate URL"));
+    }
+
+    #[test]
+    fn rejects_non_http_aegis_navigation_target_before_dispatch() {
+        let error = parse_model_plan(
+            r#"{"response":"Navigating.","action":{"kind":"aegis","args":["--mode","headless","navigate","file:///tmp/page.html"]}}"#,
+        )
+        .unwrap_err();
+
+        assert!(
+            format!("{error:#}").contains("aegis navigate requires an absolute http(s) URL")
+        );
+    }
+
+    #[test]
+    fn rejects_aegis_navigation_with_trailing_junk_before_dispatch() {
+        let error = parse_model_plan(
+            r#"{"response":"Navigating.","action":{"kind":"aegis","args":["--mode","headless","navigate","https://example.com","then","inspect"]}}"#,
+        )
+        .unwrap_err();
+
+        assert!(format!("{error:#}").contains("aegis navigate accepts exactly one URL"));
+    }
+
+    #[test]
+    fn rejects_aegis_links_with_trailing_junk_before_dispatch() {
+        let error = parse_model_plan(
+            r#"{"response":"Inspecting.","action":{"kind":"aegis","args":["--mode","headless","page","links","--url","https://example.com"]}}"#,
+        )
+        .unwrap_err();
+
+        assert!(format!("{error:#}").contains("aegis page links accepts no extra arguments"));
+    }
+
+    #[test]
     fn parse_model_plan_error_includes_raw_preview_context() {
         let error = parse_model_plan("not json at all").unwrap_err();
 
@@ -1387,6 +1686,25 @@ mod tests {
     }
 
     #[test]
+    fn browser_research_bootstrap_trims_open_followup_from_aegis_query() {
+        let plan = browser_research_bootstrap_plan(
+            "Use Aegis in headless mode to search the web for Example Domain IANA, open the most relevant result if needed, inspect the page actions or text, and report the verified page title and one link label.",
+        )
+        .unwrap();
+
+        assert!(matches!(
+            plan.action,
+            Some(InputAction::Aegis { ref args, timeout_ms })
+                if args == &[
+                    "--mode".to_string(),
+                    "headless".to_string(),
+                    "search".to_string(),
+                    "Example Domain IANA".to_string(),
+                ] && timeout_ms == 15_000
+        ));
+    }
+
+    #[test]
     fn browser_research_bootstrap_preserves_explicit_headful_aegis() {
         let plan = browser_research_bootstrap_plan("Use Aegis headful to search for cloud agents")
             .unwrap();
@@ -1441,6 +1759,30 @@ mod tests {
                 ] if app_name == "Safari"
                     && combo == "cmd+l"
                     && text == "the official Gemini 3.7 Flash documentation"
+                    && enter == "enter"
+            )
+        ));
+    }
+
+    #[test]
+    fn browser_research_bootstrap_trims_open_followup_from_visible_browser_query() {
+        let plan = browser_research_bootstrap_plan(
+            "Open Safari and search for Example Domain IANA, open the most relevant result if needed, inspect the page actions or text, and report the verified title.",
+        )
+        .unwrap();
+
+        assert!(matches!(
+            plan.action,
+            Some(InputAction::Sequence { ref actions, .. }) if matches!(
+                actions.as_slice(),
+                [
+                    InputAction::OpenApp { app_name },
+                    InputAction::KeyPress { combo },
+                    InputAction::KeyPaste { text },
+                    InputAction::KeyPress { combo: enter },
+                ] if app_name == "Safari"
+                    && combo == "cmd+l"
+                    && text == "Example Domain IANA"
                     && enter == "enter"
             )
         ));
