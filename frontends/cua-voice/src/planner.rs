@@ -36,7 +36,7 @@ Supported ACTION shapes:
 {"kind":"key_paste","text":"text to paste"}
 {"kind":"open_app","app_name":"Messages"}
 {"kind":"shell_exec","command":"pwd && ls","timeout_ms":5000}
-{"kind":"aegis","args":["--mode","headful","search","cloud computer agents"],"timeout_ms":15000}
+{"kind":"aegis","args":["--mode","headless","search","cloud computer agents"],"timeout_ms":15000}
 {"kind":"aegis","args":["--mode","headful","page","actions"],"timeout_ms":15000}
 {"kind":"aegis","args":["--mode","headful","page","text","--scope","main"],"timeout_ms":15000}
 {"kind":"aegis","args":["--mode","headful","page","open-link","AWS Bedrock"],"timeout_ms":15000}
@@ -709,6 +709,44 @@ pub fn browser_research_bootstrap_plan(transcript: &str) -> Option<PlannedTurn> 
     let wants_research = words
         .iter()
         .any(|word| matches!(word.as_str(), "research" | "search" | "browse" | "browsing"));
+    let wants_aegis = words
+        .iter()
+        .any(|word| matches!(word.as_str(), "aegis" | "headless"));
+    let aegis_mode = if words.iter().any(|word| word == "headful") {
+        "headful"
+    } else {
+        "headless"
+    };
+    if wants_aegis && words.iter().any(|word| word == "navigate") {
+        if let Some(url) = first_url(transcript) {
+            return Some(turn(
+                "Navigating with Aegis.",
+                Some(InputAction::Aegis {
+                    args: vec![
+                        "--mode".to_string(),
+                        aegis_mode.to_string(),
+                        "navigate".to_string(),
+                        url,
+                    ],
+                    timeout_ms: 15_000,
+                }),
+            ));
+        }
+    }
+    if wants_aegis && wants_research {
+        return Some(turn(
+            "Searching with Aegis.",
+            Some(InputAction::Aegis {
+                args: vec![
+                    "--mode".to_string(),
+                    aegis_mode.to_string(),
+                    "search".to_string(),
+                    query,
+                ],
+                timeout_ms: 15_000,
+            }),
+        ));
+    }
     if !wants_browser || !wants_research {
         return None;
     }
@@ -720,6 +758,13 @@ pub fn browser_research_bootstrap_plan(transcript: &str) -> Option<PlannedTurn> 
             inter_action_delay_ms: 120,
         }),
     ))
+}
+
+fn first_url(text: &str) -> Option<String> {
+    text.split_whitespace()
+        .map(|token| token.trim_matches(|ch: char| matches!(ch, '"' | '\'' | ',' | '.')))
+        .find(|token| token.starts_with("https://") || token.starts_with("http://"))
+        .map(ToString::to_string)
 }
 
 fn browser_research_bootstrap_actions(query: String) -> Vec<InputAction> {
@@ -744,6 +789,7 @@ fn browser_research_query(transcript: &str) -> String {
         .to_string();
     let lower = cleaned.to_ascii_lowercase();
     for marker in [
+        "search the web for ",
         "search for ",
         "google ",
         "look up ",
@@ -767,7 +813,14 @@ fn browser_research_query(transcript: &str) -> String {
 fn trim_browser_research_tail(query: &str) -> &str {
     let lower = query.to_ascii_lowercase();
     let mut end = query.len();
-    for marker in [", read ", " and read ", ", then ", " and report "] {
+    for marker in [
+        ", inspect ",
+        " and inspect ",
+        ", read ",
+        " and read ",
+        ", then ",
+        " and report ",
+    ] {
         if let Some(index) = lower.find(marker) {
             end = end.min(index);
         }
@@ -1311,6 +1364,61 @@ mod tests {
                     && text == "Open Safari browser and do some research while I am watching"
                     && enter == "enter"
             )
+        ));
+    }
+
+    #[test]
+    fn browser_research_bootstrap_uses_headless_aegis_when_requested() {
+        let plan = browser_research_bootstrap_plan(
+            "Use Aegis in headless mode to search the web for OpenAI Codex CLI GitHub, inspect the current page text or actions, and report one concrete result title.",
+        )
+        .unwrap();
+
+        assert!(matches!(
+            plan.action,
+            Some(InputAction::Aegis { ref args, timeout_ms })
+                if args == &[
+                    "--mode".to_string(),
+                    "headless".to_string(),
+                    "search".to_string(),
+                    "OpenAI Codex CLI GitHub".to_string(),
+                ] && timeout_ms == 15_000
+        ));
+    }
+
+    #[test]
+    fn browser_research_bootstrap_preserves_explicit_headful_aegis() {
+        let plan = browser_research_bootstrap_plan("Use Aegis headful to search for cloud agents")
+            .unwrap();
+
+        assert!(matches!(
+            plan.action,
+            Some(InputAction::Aegis { ref args, .. })
+                if args == &[
+                    "--mode".to_string(),
+                    "headful".to_string(),
+                    "search".to_string(),
+                    "cloud agents".to_string(),
+                ]
+        ));
+    }
+
+    #[test]
+    fn browser_research_bootstrap_uses_aegis_navigation_for_explicit_url() {
+        let plan = browser_research_bootstrap_plan(
+            "Use Aegis in headless mode to navigate to https://example.com, read the main page text, and report the verified page heading.",
+        )
+        .unwrap();
+
+        assert!(matches!(
+            plan.action,
+            Some(InputAction::Aegis { ref args, timeout_ms })
+                if args == &[
+                    "--mode".to_string(),
+                    "headless".to_string(),
+                    "navigate".to_string(),
+                    "https://example.com".to_string(),
+                ] && timeout_ms == 15_000
         ));
     }
 

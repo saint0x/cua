@@ -13,6 +13,7 @@ use crate::ui_state::VoiceUiEvent;
 use anyhow::Context;
 use cua_core::{
     profile_ctx_dir, profile_voice_trace_path, DesktopState, FrameEnvelope, FramePayload,
+    InputAction,
 };
 use serde::Serialize;
 use serde_json::json;
@@ -673,8 +674,16 @@ async fn plan_and_dispatch(
                 &agent_context_errors,
             );
             let attempt_started = Instant::now();
+            let pre_model_bootstrap_plan = if attempt_index == 1 && attempts.is_empty() {
+                browser_research_bootstrap_plan(&transcript)
+                    .filter(|plan| plan.action.as_ref().is_some_and(input_action_is_aegis))
+            } else {
+                None
+            };
             tx.send(VoiceUiEvent::Planning {
-                tool: if attempt_index == 1 {
+                tool: if pre_model_bootstrap_plan.is_some() {
+                    "Command parser".to_string()
+                } else if attempt_index == 1 {
                     "OpenRouter Vision".to_string()
                 } else {
                     format!(
@@ -697,90 +706,103 @@ async fn plan_and_dispatch(
                     }),
                 )
                 .await;
-            let mut plan = match planner
-                .plan_request(
-                    &api_key,
-                    PlannerRequest {
-                        transcript: &transcript,
-                        agent_context: Some(&planner_agent_context),
-                        hints: Some(&planner_hints),
-                        frame: context.frame.as_ref(),
-                        desktop: context.desktop.as_ref(),
-                        prior_attempts: &attempts,
-                    },
-                )
-                .await
-            {
-                Ok(plan) => plan,
-                Err(error) => {
-                    trace
-                        .append(
-                            "planning_error",
-                            json!({
-                                "attempt_index": attempt_index,
-                                "error": format!("{error:#}")
-                            }),
-                        )
-                        .await;
-                    let recoverable_planning_error = planning_error_is_empty_content(&error)
-                        || planning_error_is_invalid_action_json(&error);
-                    if recoverable_planning_error {
-                        if let Some(plan) = browser_research_bootstrap_plan(&transcript) {
-                            trace
-                                .append(
-                                    "planning_error_recovered",
-                                    json!({
-                                        "attempt_index": attempt_index,
-                                        "strategy": "browser_research_bootstrap",
+            let mut plan = if let Some(plan) = pre_model_bootstrap_plan {
+                trace
+                    .append(
+                        "planning_pre_model_bootstrap",
+                        json!({
+                            "attempt_index": attempt_index,
+                            "strategy": "browser_research_bootstrap",
+                        }),
+                    )
+                    .await;
+                plan
+            } else {
+                match planner
+                    .plan_request(
+                        &api_key,
+                        PlannerRequest {
+                            transcript: &transcript,
+                            agent_context: Some(&planner_agent_context),
+                            hints: Some(&planner_hints),
+                            frame: context.frame.as_ref(),
+                            desktop: context.desktop.as_ref(),
+                            prior_attempts: &attempts,
+                        },
+                    )
+                    .await
+                {
+                    Ok(plan) => plan,
+                    Err(error) => {
+                        trace
+                            .append(
+                                "planning_error",
+                                json!({
+                                    "attempt_index": attempt_index,
+                                    "error": format!("{error:#}")
+                                }),
+                            )
+                            .await;
+                        let recoverable_planning_error = planning_error_is_empty_content(&error)
+                            || planning_error_is_invalid_action_json(&error);
+                        if recoverable_planning_error {
+                            if let Some(plan) = browser_research_bootstrap_plan(&transcript) {
+                                trace
+                                    .append(
+                                        "planning_error_recovered",
+                                        json!({
+                                            "attempt_index": attempt_index,
+                                            "strategy": "browser_research_bootstrap",
+                                            "error": format!("{error:#}"),
+                                        }),
+                                    )
+                                    .await;
+                                plan
+                            } else if loop_budget.can_continue_after(attempt_index) {
+                                let error_message = format!("{error:#}");
+                                attempts.push(PlanAttemptContext {
+                                    attempt_index,
+                                    response: "Planner output could not be used.".to_string(),
+                                    action: None,
+                                    effect: Some("failed".to_string()),
+                                    evidence: Some(json!({
+                                        "effect": "failed",
+                                        "reason": "planning_error",
+                                        "error": error_message,
+                                    })),
+                                });
+                                attempt_index += 1;
+                                continue;
+                            } else {
+                                break CompletedAssistantTurn {
+                                    response:
+                                        "Planner output could not be used before the loop budget ended."
+                                            .to_string(),
+                                    action: None,
+                                    evidence: Some(json!({
+                                        "effect": "partial",
+                                        "reason": "planning_error",
                                         "error": format!("{error:#}"),
-                                    }),
-                                )
-                                .await;
-                            plan
-                        } else if loop_budget.can_continue_after(attempt_index) {
-                            let error_message = format!("{error:#}");
-                            attempts.push(PlanAttemptContext {
-                                attempt_index,
-                                response: "Planner output could not be used.".to_string(),
-                                action: None,
-                                effect: Some("failed".to_string()),
-                                evidence: Some(json!({
-                                    "effect": "failed",
-                                    "reason": "planning_error",
-                                    "error": error_message,
-                                })),
-                            });
-                            attempt_index += 1;
-                            continue;
+                                    })),
+                                };
+                            }
+                        } else if !transcript_requests_long_range_work(&transcript) {
+                            if let Some(turn) = completed_from_confirmed_prior_attempt(&attempts) {
+                                trace
+                                    .append(
+                                        "planning_error_after_confirmed_action",
+                                        json!({
+                                            "attempt_index": attempt_index,
+                                            "error": format!("{error:#}"),
+                                        }),
+                                    )
+                                    .await;
+                                break turn;
+                            }
+                            return Err(error);
                         } else {
-                            break CompletedAssistantTurn {
-                                response:
-                                    "Planner output could not be used before the loop budget ended."
-                                        .to_string(),
-                                action: None,
-                                evidence: Some(json!({
-                                    "effect": "partial",
-                                    "reason": "planning_error",
-                                    "error": format!("{error:#}"),
-                                })),
-                            };
+                            return Err(error);
                         }
-                    } else if !transcript_requests_long_range_work(&transcript) {
-                        if let Some(turn) = completed_from_confirmed_prior_attempt(&attempts) {
-                            trace
-                                .append(
-                                    "planning_error_after_confirmed_action",
-                                    json!({
-                                        "attempt_index": attempt_index,
-                                        "error": format!("{error:#}"),
-                                    }),
-                                )
-                                .await;
-                            break turn;
-                        }
-                        return Err(error);
-                    } else {
-                        return Err(error);
                     }
                 }
             };
@@ -1440,6 +1462,10 @@ fn action_needs_fresh_verification(action: &serde_json::Value) -> bool {
         action.get("kind").and_then(|kind| kind.as_str()),
         Some("sequence" | "key_type" | "key_paste" | "shell_exec" | "aegis" | "ctx")
     )
+}
+
+fn input_action_is_aegis(action: &InputAction) -> bool {
+    matches!(action, InputAction::Aegis { .. })
 }
 
 fn action_is_text_entry(action: &serde_json::Value) -> bool {
