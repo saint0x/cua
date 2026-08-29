@@ -2066,6 +2066,8 @@ fn final_response_reports_prior_failure(response: &str) -> bool {
         && [
             "error:",
             "failed",
+            "exited with status",
+            "exit status",
             "refused",
             "does not exist",
             "no such file or directory",
@@ -2136,6 +2138,9 @@ fn should_replan_after_turn(
     attempt_index: usize,
     loop_budget: AgentLoopBudget,
 ) -> bool {
+    if turn.action.is_none() && matches!(effect, Some("confirmed" | "failed")) {
+        return false;
+    }
     if turn
         .action
         .as_ref()
@@ -3652,6 +3657,41 @@ mod tests {
 
         assert!(final_response_reports_prior_failure(&completed.response));
         assert_eq!(inferred_final_effect(&completed, &prior_attempts), "failed");
+    }
+
+    #[test]
+    fn agent_loop_final_failure_report_stops_without_extra_repair() {
+        let prior_attempts = vec![PlanAttemptContext {
+            attempt_index: 1,
+            response: "Running /usr/bin/false via shell.".to_string(),
+            action: Some(json!({
+                "kind": "shell_exec",
+                "command": "/usr/bin/false",
+                "timeout_ms": 5000
+            })),
+            effect: Some("refused".to_string()),
+            evidence: Some(json!({
+                "effect": "refused",
+                "reason": "dispatch_error",
+                "error": "shell exited 1; stdout=; stderr="
+            })),
+        }];
+        let completed = CompletedAssistantTurn {
+            response: "Running `/usr/bin/false` failed with exit status 1 (stdout='', stderr='')."
+                .to_string(),
+            action: None,
+            evidence: None,
+        };
+        let effect = observed_turn_effect(&completed, &prior_attempts);
+
+        assert_eq!(effect, Some("failed".to_string()));
+        assert!(!should_replan_after_turn(
+            "Use the local shell to run exactly /usr/bin/false, then report the exact failure context. Do not retry and do not recover.",
+            &completed,
+            effect.as_deref(),
+            2,
+            AgentLoopBudget::Unbounded
+        ));
     }
 
     #[test]
