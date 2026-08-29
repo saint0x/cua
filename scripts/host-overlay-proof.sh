@@ -90,7 +90,6 @@ done
 CUA_HTTP_TOKEN="$TOKEN" "$CUA_BIN_PATH" --profile "$PROFILE" \
   --server-addr "$ADDR" status --json >"$OUT_DIR/status.json"
 
-OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-ui-proof-only}" \
 CUA_HTTP_TOKEN="$TOKEN" \
 "$CUA_VOICE_BIN_PATH" --profile "$PROFILE" --demo >"$OUT_DIR/voice.log" 2>&1 &
 VOICE_PID="$!"

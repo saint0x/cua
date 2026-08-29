@@ -90,7 +90,7 @@ PY
   screencapture -x -l "$window_id" "$out"
 }
 
-OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-ui-proof-only}" "$BIN" \
+"$BIN" \
   --profile "$PROFILE" \
   --headful >"$OUT_DIR/voice.log" 2>&1 &
 PID="$!"

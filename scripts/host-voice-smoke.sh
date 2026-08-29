@@ -21,7 +21,7 @@ if [[ -z "$BIN" || ! -x "$BIN" ]]; then
   exit 1
 fi
 
-OPENROUTER_API_KEY="${OPENROUTER_API_KEY:-smoke-only}" "$BIN" \
+"$BIN" \
   --profile "$PROFILE" \
   --record-ms 250 &
 PID="$!"
