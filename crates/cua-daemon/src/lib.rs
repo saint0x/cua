@@ -5612,6 +5612,8 @@ async fn dispatch_sequence_action(
     let step_total = sequence_step_total(action_count);
     let delay = Duration::from_millis(inter_action_delay_ms.min(2_000));
     let last_index = action_count.saturating_sub(1);
+    let mut aggregate_route = None;
+    let mut aggregate_delivery_mode = None;
     let mut aggregate = input_result_with_id(
         Uuid::new_v4(),
         Effect::Confirmed,
@@ -5651,24 +5653,21 @@ async fn dispatch_sequence_action(
         state
             .metrics
             .observe(MetricKind::InputDispatch, dispatch_started.elapsed());
-        match result.effect {
-            Effect::Refused => {
-                state.metrics.increment(CounterKind::InputRefusals);
-                aggregate.effect = Effect::Refused;
-            }
-            Effect::Failed if aggregate.effect != Effect::Refused => {
-                aggregate.effect = Effect::Failed;
-            }
-            _ => {}
+        if result.effect == Effect::Refused {
+            state.metrics.increment(CounterKind::InputRefusals);
         }
-        aggregate.route = result.route;
-        aggregate.delivery_mode = result.delivery_mode;
+        aggregate.effect = aggregate_sequence_effect(&aggregate.effect, &result.effect);
+        aggregate_route = merge_sequence_route(aggregate_route, &result.route);
+        aggregate_delivery_mode =
+            merge_sequence_delivery_mode(aggregate_delivery_mode, &result.delivery_mode);
         aggregate.evidence.extend(result.evidence);
         if index < last_index && !delay.is_zero() {
             tokio::time::sleep(delay).await;
         }
     }
 
+    aggregate.route = aggregate_route.unwrap_or(InputRoute::SystemApi);
+    aggregate.delivery_mode = aggregate_delivery_mode.unwrap_or(DeliveryMode::NotApplicable);
     aggregate.ended_mono_ns = started.elapsed().as_nanos();
     let after = if capture_trace_snapshots {
         trace_snapshot(state, &turn_id, "after").await
@@ -5707,6 +5706,37 @@ async fn dispatch_sequence_action(
     }
     publish_input_event(state, "input_completed", &aggregate);
     aggregate
+}
+
+fn aggregate_sequence_effect(current: &Effect, next: &Effect) -> Effect {
+    use Effect::*;
+    match (current, next) {
+        (Refused, _) | (_, Refused) => Refused,
+        (Failed, _) | (_, Failed) => Failed,
+        (Partial, _) | (_, Partial) => Partial,
+        (SuspectedNoop, _) | (_, SuspectedNoop) => SuspectedNoop,
+        (Unverifiable, _) | (_, Unverifiable) => Unverifiable,
+        _ => Confirmed,
+    }
+}
+
+fn merge_sequence_route(current: Option<InputRoute>, next: &InputRoute) -> Option<InputRoute> {
+    match current {
+        None => Some(next.clone()),
+        Some(current) if current == *next => Some(current),
+        Some(_) => Some(InputRoute::SystemApi),
+    }
+}
+
+fn merge_sequence_delivery_mode(
+    current: Option<DeliveryMode>,
+    next: &DeliveryMode,
+) -> Option<DeliveryMode> {
+    match current {
+        None => Some(next.clone()),
+        Some(current) if current == *next => Some(current),
+        Some(_) => Some(DeliveryMode::Unknown),
+    }
 }
 
 async fn refused_traced_input(
@@ -8605,6 +8635,55 @@ mod tests {
         assert!(
             labels.contains(&"Completed sequence 2 actions"),
             "{labels:?}"
+        );
+    }
+
+    #[test]
+    fn sequence_effect_aggregation_preserves_unverified_delivery() {
+        assert_eq!(
+            aggregate_sequence_effect(&Effect::Confirmed, &Effect::Unverifiable),
+            Effect::Unverifiable
+        );
+        assert_eq!(
+            aggregate_sequence_effect(&Effect::Unverifiable, &Effect::Confirmed),
+            Effect::Unverifiable
+        );
+        assert_eq!(
+            aggregate_sequence_effect(&Effect::Unverifiable, &Effect::Failed),
+            Effect::Failed
+        );
+        assert_eq!(
+            aggregate_sequence_effect(&Effect::Failed, &Effect::Refused),
+            Effect::Refused
+        );
+    }
+
+    #[test]
+    fn sequence_metadata_preserves_homogeneous_paths_and_marks_mixed_paths() {
+        assert_eq!(
+            merge_sequence_route(None, &InputRoute::GlobalInput),
+            Some(InputRoute::GlobalInput)
+        );
+        assert_eq!(
+            merge_sequence_route(Some(InputRoute::GlobalInput), &InputRoute::GlobalInput),
+            Some(InputRoute::GlobalInput)
+        );
+        assert_eq!(
+            merge_sequence_route(Some(InputRoute::GlobalInput), &InputRoute::SystemApi),
+            Some(InputRoute::SystemApi)
+        );
+
+        assert_eq!(
+            merge_sequence_delivery_mode(None, &DeliveryMode::Desktop),
+            Some(DeliveryMode::Desktop)
+        );
+        assert_eq!(
+            merge_sequence_delivery_mode(Some(DeliveryMode::Desktop), &DeliveryMode::Desktop),
+            Some(DeliveryMode::Desktop)
+        );
+        assert_eq!(
+            merge_sequence_delivery_mode(Some(DeliveryMode::Desktop), &DeliveryMode::Background),
+            Some(DeliveryMode::Unknown)
         );
     }
 

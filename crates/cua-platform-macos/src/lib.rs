@@ -180,6 +180,7 @@ pub struct MacosInputBackend;
 
 struct MacosActionOutcome {
     message: String,
+    effect: Effect,
     route: InputRoute,
     delivery_mode: DeliveryMode,
     evidence_kind: EvidenceKind,
@@ -197,18 +198,49 @@ impl MacosActionOutcome {
     fn desktop(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            effect: Effect::Unverifiable,
             route: InputRoute::Accessibility,
             delivery_mode: DeliveryMode::Desktop,
-            evidence_kind: EvidenceKind::ValueReadback,
+            evidence_kind: EvidenceKind::ModelObservation,
         }
     }
 
     fn system(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            effect: Effect::Confirmed,
             route: InputRoute::SystemApi,
             delivery_mode: DeliveryMode::Background,
             evidence_kind: EvidenceKind::ValueReadback,
+        }
+    }
+
+    fn sequence(action_count: usize, outcomes: &[Self]) -> Self {
+        let effect = if outcomes
+            .iter()
+            .all(|outcome| outcome.effect == Effect::Confirmed)
+        {
+            Effect::Confirmed
+        } else {
+            Effect::Unverifiable
+        };
+        let route = common_route(outcomes).unwrap_or(InputRoute::SystemApi);
+        let delivery_mode = common_delivery_mode(outcomes).unwrap_or(DeliveryMode::Unknown);
+        let evidence_kind = if effect == Effect::Confirmed {
+            EvidenceKind::ValueReadback
+        } else {
+            EvidenceKind::ModelObservation
+        };
+        let messages = outcomes
+            .iter()
+            .map(|outcome| outcome.message.clone())
+            .collect::<Vec<_>>();
+        Self {
+            message: sequence_message(action_count, &messages),
+            effect,
+            route,
+            delivery_mode,
+            evidence_kind,
         }
     }
 }
@@ -245,6 +277,22 @@ impl MacosActionFailure {
     }
 }
 
+fn common_route(outcomes: &[MacosActionOutcome]) -> Option<InputRoute> {
+    let first = outcomes.first()?.route.clone();
+    outcomes
+        .iter()
+        .all(|outcome| outcome.route == first)
+        .then_some(first)
+}
+
+fn common_delivery_mode(outcomes: &[MacosActionOutcome]) -> Option<DeliveryMode> {
+    let first = outcomes.first()?.delivery_mode.clone();
+    outcomes
+        .iter()
+        .all(|outcome| outcome.delivery_mode == first)
+        .then_some(first)
+}
+
 #[async_trait]
 impl InputBackend for MacosInputBackend {
     async fn execute(&self, request: InputRequest) -> InputResult {
@@ -254,7 +302,7 @@ impl InputBackend for MacosInputBackend {
         match result {
             Ok(outcome) => input_result(
                 idempotency_key,
-                Effect::Confirmed,
+                outcome.effect,
                 outcome.route,
                 outcome.delivery_mode,
                 outcome.evidence_kind,
@@ -294,18 +342,15 @@ async fn execute_macos_input_action(
             let delay = Duration::from_millis(inter_action_delay_ms.min(2_000));
             let last_index = actions.len().saturating_sub(1);
             let action_count = actions.len();
-            let mut messages = Vec::with_capacity(action_count);
+            let mut outcomes = Vec::with_capacity(action_count);
             for (index, action) in actions.into_iter().enumerate() {
                 let outcome = execute_macos_input_leaf(action).await?;
-                messages.push(outcome.message);
+                outcomes.push(outcome);
                 if index < last_index && !delay.is_zero() {
                     tokio::time::sleep(delay).await;
                 }
             }
-            Ok(MacosActionOutcome::system(sequence_message(
-                action_count,
-                &messages,
-            )))
+            Ok(MacosActionOutcome::sequence(action_count, &outcomes))
         }
         action => execute_macos_input_leaf(action).await,
     }
@@ -2240,6 +2285,32 @@ mod tests {
         assert_eq!(result.route, InputRoute::SystemApi);
         assert_eq!(result.delivery_mode, DeliveryMode::Background);
         assert!(result.evidence[0].message.contains("cua-shell-ok"));
+    }
+
+    #[test]
+    fn desktop_outcomes_are_unverifiable_until_reobserved() {
+        let outcome = MacosActionOutcome::desktop("posted key event");
+
+        assert_eq!(outcome.effect, Effect::Unverifiable);
+        assert_eq!(outcome.route, InputRoute::Accessibility);
+        assert_eq!(outcome.delivery_mode, DeliveryMode::Desktop);
+        assert_eq!(outcome.evidence_kind, EvidenceKind::ModelObservation);
+    }
+
+    #[test]
+    fn mixed_sequences_are_unverifiable_even_with_readback_leaves() {
+        let outcomes = vec![
+            MacosActionOutcome::desktop("posted mouse click"),
+            MacosActionOutcome::system("shell exited 0; stdout=ok; stderr="),
+        ];
+        let outcome = MacosActionOutcome::sequence(2, &outcomes);
+
+        assert_eq!(outcome.effect, Effect::Unverifiable);
+        assert_eq!(outcome.route, InputRoute::SystemApi);
+        assert_eq!(outcome.delivery_mode, DeliveryMode::Unknown);
+        assert_eq!(outcome.evidence_kind, EvidenceKind::ModelObservation);
+        assert!(outcome.message.contains("posted mouse click"));
+        assert!(outcome.message.contains("stdout=ok"));
     }
 
     #[tokio::test]

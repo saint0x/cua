@@ -3,6 +3,18 @@
   "name": "cua-rlm-loop-provider-progress-host",
   "steps": [
     {
+      "type": "proc_when",
+      "cmd": "bash",
+      "args": [
+        "-lc",
+        "CUA_VOICE_PROVIDER_PROGRESS_OUT_DIR=artifacts/cua/fozzy-pr-proof CUA_VOICE_PROVIDER_PROGRESS_HOME=/tmp/cpr CUA_VOICE_PROVIDER_PROGRESS_PROFILE=fpr scripts/host-voice-provider-progress-proof.sh"
+      ],
+      "exit_code": 0,
+      "stdout": "artifacts/cua/fozzy-pr-proof\n",
+      "stderr": "",
+      "times": 1
+    },
+    {
       "type": "proc_spawn",
       "cmd": "bash",
       "args": [

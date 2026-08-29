@@ -293,6 +293,87 @@ struct QguiInputBackend {
     clipboard_owner: Mutex<Option<Child>>,
 }
 
+struct QguiActionOutcome {
+    effect: Effect,
+    route: InputRoute,
+    delivery_mode: DeliveryMode,
+    evidence_kind: EvidenceKind,
+    message: String,
+}
+
+impl QguiActionOutcome {
+    fn desktop(message: impl Into<String>) -> Self {
+        Self {
+            effect: Effect::Unverifiable,
+            route: InputRoute::GlobalInput,
+            delivery_mode: DeliveryMode::Desktop,
+            evidence_kind: EvidenceKind::ModelObservation,
+            message: message.into(),
+        }
+    }
+
+    fn readback(message: impl Into<String>) -> Self {
+        Self {
+            effect: Effect::Confirmed,
+            route: InputRoute::SystemApi,
+            delivery_mode: DeliveryMode::Background,
+            evidence_kind: EvidenceKind::ValueReadback,
+            message: message.into(),
+        }
+    }
+
+    fn sequence(action_count: usize, outcomes: &[Self]) -> Self {
+        let effect = if outcomes
+            .iter()
+            .all(|outcome| outcome.effect == Effect::Confirmed)
+        {
+            Effect::Confirmed
+        } else {
+            Effect::Unverifiable
+        };
+        let evidence_kind = if effect == Effect::Confirmed {
+            EvidenceKind::ValueReadback
+        } else {
+            EvidenceKind::ModelObservation
+        };
+        let route = common_qgui_route(outcomes).unwrap_or(InputRoute::SystemApi);
+        let delivery_mode = common_qgui_delivery_mode(outcomes).unwrap_or(DeliveryMode::Unknown);
+        let mut message = format!("qgui sequence executed {action_count} actions");
+        let readbacks = outcomes
+            .iter()
+            .filter(|outcome| outcome.effect == Effect::Confirmed)
+            .map(|outcome| outcome.message.as_str())
+            .collect::<Vec<_>>();
+        if !readbacks.is_empty() {
+            message.push_str(": ");
+            message.push_str(&readbacks.join(" | "));
+        }
+        Self {
+            effect,
+            route,
+            delivery_mode,
+            evidence_kind,
+            message,
+        }
+    }
+}
+
+fn common_qgui_route(outcomes: &[QguiActionOutcome]) -> Option<InputRoute> {
+    let first = outcomes.first()?.route.clone();
+    outcomes
+        .iter()
+        .all(|outcome| outcome.route == first)
+        .then_some(first)
+}
+
+fn common_qgui_delivery_mode(outcomes: &[QguiActionOutcome]) -> Option<DeliveryMode> {
+    let first = outcomes.first()?.delivery_mode.clone();
+    outcomes
+        .iter()
+        .all(|outcome| outcome.delivery_mode == first)
+        .then_some(first)
+}
+
 impl std::fmt::Debug for QguiInputBackend {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -317,17 +398,21 @@ impl InputBackend for QguiInputBackend {
         let started = Instant::now();
         let result = self.execute_action(request.action).await;
         match result {
-            Ok(message) => input_result(
+            Ok(outcome) => input_result(
                 request.idempotency_key,
                 started,
-                Effect::Confirmed,
-                EvidenceKind::ValueReadback,
-                message,
+                outcome.effect,
+                outcome.route,
+                outcome.delivery_mode,
+                outcome.evidence_kind,
+                outcome.message,
             ),
             Err(error) => input_result(
                 request.idempotency_key,
                 started,
                 Effect::Failed,
+                InputRoute::SystemApi,
+                DeliveryMode::Unknown,
                 EvidenceKind::Error,
                 error.to_string(),
             ),
@@ -340,18 +425,19 @@ impl InputBackend for QguiInputBackend {
 }
 
 impl QguiInputBackend {
-    async fn execute_action(&self, action: InputAction) -> anyhow::Result<String> {
+    async fn execute_action(&self, action: InputAction) -> anyhow::Result<QguiActionOutcome> {
         let session = read_session(&self.config.session_path)?;
         match action {
             InputAction::MouseMove { x, y, duration_ms } => {
-                run_checked(
+                let message = run_checked(
                     gui_command(&self.config, &session, &self.config.input_binary)
                         .arg("mouse-move")
                         .arg(x.to_string())
                         .arg(y.to_string())
                         .arg(duration_ms.to_string()),
                 )
-                .await
+                .await?;
+                Ok(QguiActionOutcome::desktop(message))
             }
             InputAction::MouseClick {
                 x,
@@ -359,7 +445,7 @@ impl QguiInputBackend {
                 button,
                 count,
             } => {
-                run_checked(
+                let message = run_checked(
                     gui_command(&self.config, &session, &self.config.input_binary)
                         .arg("mouse-click")
                         .arg(x.to_string())
@@ -367,7 +453,8 @@ impl QguiInputBackend {
                         .arg(mouse_button_name(button))
                         .arg(count.max(1).to_string()),
                 )
-                .await
+                .await?;
+                Ok(QguiActionOutcome::desktop(message))
             }
             InputAction::MouseDrag {
                 from_x,
@@ -376,7 +463,7 @@ impl QguiInputBackend {
                 to_y,
                 duration_ms,
             } => {
-                run_checked(
+                let message = run_checked(
                     gui_command(&self.config, &session, &self.config.input_binary)
                         .arg("mouse-drag")
                         .arg(from_x.to_string())
@@ -385,76 +472,91 @@ impl QguiInputBackend {
                         .arg(to_y.to_string())
                         .arg(duration_ms.to_string()),
                 )
-                .await
+                .await?;
+                Ok(QguiActionOutcome::desktop(message))
             }
             InputAction::KeyPress { combo } => {
-                run_checked(
+                let message = run_checked(
                     gui_command(&self.config, &session, &self.config.input_binary)
                         .arg("key")
                         .arg(combo),
                 )
-                .await
+                .await?;
+                Ok(QguiActionOutcome::desktop(message))
             }
             InputAction::KeyType { text } => {
                 if requires_clipboard_text_path(&text) {
-                    self.paste_text(&session, text, "qgui text inserted through clipboard paste")
-                        .await
+                    let message = self
+                        .paste_text(&session, text, "qgui text inserted through clipboard paste")
+                        .await?;
+                    Ok(QguiActionOutcome::desktop(message))
                 } else {
-                    run_checked(
+                    let message = run_checked(
                         gui_command(&self.config, &session, &self.config.input_binary)
                             .arg("type")
                             .arg(text),
                     )
-                    .await
+                    .await?;
+                    Ok(QguiActionOutcome::desktop(message))
                 }
             }
             InputAction::KeyPaste { text } => {
-                self.paste_text(&session, text, "qgui paste delivered through clipboard")
-                    .await
+                let message = self
+                    .paste_text(&session, text, "qgui paste delivered through clipboard")
+                    .await?;
+                Ok(QguiActionOutcome::desktop(message))
             }
             InputAction::Sequence {
                 actions,
                 inter_action_delay_ms,
             } => {
+                let action_count = actions.len();
+                if action_count == 0 {
+                    bail!("sequence must contain at least one action");
+                }
+                let mut outcomes = Vec::with_capacity(action_count);
                 for action in actions {
-                    Box::pin(self.execute_action(action)).await?;
+                    outcomes.push(Box::pin(self.execute_action(action)).await?);
                     if inter_action_delay_ms > 0 {
                         tokio::time::sleep(std::time::Duration::from_millis(inter_action_delay_ms))
                             .await;
                     }
                 }
-                Ok("qgui sequence executed".to_string())
+                Ok(QguiActionOutcome::sequence(action_count, &outcomes))
             }
             InputAction::OpenApp { app_name } => {
-                run_checked(
+                let message = run_checked(
                     qgui_run_command(&self.config, &session)
                         .arg("sh")
                         .arg("-lc")
                         .arg(format!("{app_name} >/tmp/qgui-open-app.log 2>&1 &")),
                 )
-                .await
+                .await?;
+                Ok(QguiActionOutcome::desktop(message))
             }
             InputAction::ShellExec {
                 command,
                 timeout_ms,
             } => {
-                run_checked_with_timeout(
+                let message = run_checked_with_timeout(
                     qgui_run_command(&self.config, &session)
                         .arg("sh")
                         .arg("-lc")
                         .arg(command),
                     timeout_ms,
                 )
-                .await
+                .await?;
+                Ok(QguiActionOutcome::readback(message))
             }
             InputAction::Aegis { args, timeout_ms } => {
-                run_checked_with_timeout(
+                let message = run_checked_with_timeout(
                     qgui_run_command(&self.config, &session)
                         .arg("aegis")
                         .args(args),
                     timeout_ms,
                 )
-                .await
+                .await?;
+                Ok(QguiActionOutcome::readback(message))
             }
             InputAction::Ctx {
                 args,
@@ -465,28 +567,33 @@ impl QguiInputBackend {
                 if let Some(workspace_root) = workspace_root {
                     command.current_dir(workspace_root);
                 }
-                run_checked_with_timeout(command.arg("ctx").args(args), timeout_ms).await
+                let message =
+                    run_checked_with_timeout(command.arg("ctx").args(args), timeout_ms).await?;
+                Ok(QguiActionOutcome::readback(message))
             }
             InputAction::ClipboardRead { allow_sensitive } => {
                 if !allow_sensitive {
                     bail!("clipboard read requires allow_sensitive=true");
                 }
-                run_checked(
+                let message = run_checked(
                     gui_command(&self.config, &session, &self.config.clipboard_binary)
                         .arg("clipboard-read"),
                 )
-                .await
+                .await?;
+                Ok(QguiActionOutcome::readback(message))
             }
             InputAction::ClipboardWrite { text } => {
                 self.install_clipboard_owner(&session, &text).await?;
-                Ok("qgui clipboard owner updated".to_string())
+                Ok(QguiActionOutcome::readback("qgui clipboard owner updated"))
             }
             InputAction::Pause | InputAction::Resume | InputAction::KillSwitch => {
                 let mut owner = self.clipboard_owner.lock().await;
                 if let Some(mut child) = owner.take() {
                     let _ = child.kill().await;
                 }
-                Ok("safety action accepted by qgui coordinator".to_string())
+                Ok(QguiActionOutcome::readback(
+                    "safety action accepted by qgui coordinator",
+                ))
             }
         }
     }
@@ -659,6 +766,8 @@ fn input_result(
     idempotency_key: uuid::Uuid,
     started: Instant,
     effect: Effect,
+    route: InputRoute,
+    delivery_mode: DeliveryMode,
     kind: EvidenceKind,
     message: String,
 ) -> InputResult {
@@ -666,8 +775,8 @@ fn input_result(
         schema_version: SCHEMA_VERSION.to_string(),
         idempotency_key,
         effect,
-        route: InputRoute::GlobalInput,
-        delivery_mode: DeliveryMode::Desktop,
+        route,
+        delivery_mode,
         started_mono_ns: 0,
         ended_mono_ns: started.elapsed().as_nanos(),
         evidence: vec![Evidence {
@@ -767,6 +876,47 @@ mod tests {
         assert_eq!(descriptor.kind, ComputerBackendKind::OracleVm);
         assert_eq!(descriptor.provider, "oracle-vm");
         assert_eq!(descriptor.runtime, "qgui+cua");
+    }
+
+    #[test]
+    fn desktop_outcomes_are_unverifiable_until_reobserved() {
+        let outcome = QguiActionOutcome::desktop("qgui desktop command completed");
+
+        assert_eq!(outcome.effect, Effect::Unverifiable);
+        assert_eq!(outcome.route, InputRoute::GlobalInput);
+        assert_eq!(outcome.delivery_mode, DeliveryMode::Desktop);
+        assert_eq!(outcome.evidence_kind, EvidenceKind::ModelObservation);
+    }
+
+    #[test]
+    fn readback_only_sequences_stay_confirmed() {
+        let outcomes = vec![
+            QguiActionOutcome::readback("stdout=one"),
+            QguiActionOutcome::readback("stdout=two"),
+        ];
+        let outcome = QguiActionOutcome::sequence(2, &outcomes);
+
+        assert_eq!(outcome.effect, Effect::Confirmed);
+        assert_eq!(outcome.route, InputRoute::SystemApi);
+        assert_eq!(outcome.delivery_mode, DeliveryMode::Background);
+        assert_eq!(outcome.evidence_kind, EvidenceKind::ValueReadback);
+        assert!(outcome.message.contains("stdout=one"));
+        assert!(outcome.message.contains("stdout=two"));
+    }
+
+    #[test]
+    fn mixed_sequences_are_unverifiable_until_reobserved() {
+        let outcomes = vec![
+            QguiActionOutcome::desktop("qgui click delivered"),
+            QguiActionOutcome::readback("stdout=done"),
+        ];
+        let outcome = QguiActionOutcome::sequence(2, &outcomes);
+
+        assert_eq!(outcome.effect, Effect::Unverifiable);
+        assert_eq!(outcome.route, InputRoute::SystemApi);
+        assert_eq!(outcome.delivery_mode, DeliveryMode::Unknown);
+        assert_eq!(outcome.evidence_kind, EvidenceKind::ModelObservation);
+        assert!(outcome.message.contains("stdout=done"));
     }
 
     #[test]
