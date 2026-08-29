@@ -1498,6 +1498,9 @@ async fn plan_and_dispatch(
                     }),
                 )
                 .await;
+            if should_verify {
+                attach_verification_observation_to_last_attempt(&mut attempts, &context);
+            }
             attempt_index += 1;
         };
         send_metric(&tx, "plan_ms", plan_started.elapsed());
@@ -3187,6 +3190,56 @@ fn visible_attempt_awaited_verification(attempt: &PlanAttemptContext) -> bool {
         .action
         .as_ref()
         .is_some_and(action_requires_visible_reobserve_before_finish)
+        && attempt
+            .evidence
+            .as_ref()
+            .is_some_and(evidence_has_verification_observation)
+}
+
+fn evidence_has_verification_observation(evidence: &serde_json::Value) -> bool {
+    evidence
+        .get("verification_observation")
+        .is_some_and(|observation| {
+            observation
+                .get("has_frame")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false)
+                || observation
+                    .get("has_desktop")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false)
+        })
+}
+
+fn attach_verification_observation_to_last_attempt(
+    attempts: &mut [PlanAttemptContext],
+    context: &PrefetchedContext,
+) {
+    let Some(attempt) = attempts.last_mut() else {
+        return;
+    };
+    let observation = json!({
+        "has_frame": context.frame.is_some(),
+        "has_desktop": context.desktop.is_some(),
+        "errors": &context.errors,
+    });
+    match attempt.evidence.as_mut() {
+        Some(serde_json::Value::Object(object)) => {
+            object.insert("verification_observation".to_string(), observation);
+        }
+        Some(existing) => {
+            let dispatch_evidence = std::mem::take(existing);
+            *existing = json!({
+                "dispatch_evidence": dispatch_evidence,
+                "verification_observation": observation,
+            });
+        }
+        None => {
+            attempt.evidence = Some(json!({
+                "verification_observation": observation,
+            }));
+        }
+    }
 }
 
 fn observation_repeats_without_intervening_change(
@@ -6860,7 +6913,14 @@ mod tests {
             response: "Writing the note.".to_string(),
             action: Some(json!({"kind": "key_paste", "text": "hello"})),
             effect: Some("unverifiable".to_string()),
-            evidence: Some(json!({"effect": "unverifiable"})),
+            evidence: Some(json!({
+                "effect": "unverifiable",
+                "verification_observation": {
+                    "has_frame": true,
+                    "has_desktop": true,
+                    "errors": []
+                }
+            })),
         }];
 
         assert!(prior_attempts_support_verified_final(
@@ -6868,6 +6928,12 @@ mod tests {
             &attempts
         ));
         assert!(!prior_attempts_support_verified_final("Done.", &attempts));
+        let mut unobserved_attempts = attempts;
+        unobserved_attempts[0].evidence = Some(json!({"effect": "unverifiable"}));
+        assert!(!prior_attempts_support_verified_final(
+            "The visible note now reads hello.",
+            &unobserved_attempts
+        ));
     }
 
     #[test]
