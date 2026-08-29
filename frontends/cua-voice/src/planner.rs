@@ -432,9 +432,20 @@ fn planner_transcript_requests_text_payload(transcript: &str) -> bool {
                     | "message"
                     | "says"
                     | "content"
+                    | "contents"
                     | "story"
                     | "draft"
                     | "marker"
+                    | "shell"
+                    | "file"
+                    | "directory"
+                    | "input"
+                    | "output"
+                    | "transform"
+                    | "transformed"
+                    | "uppercased"
+                    | "uppercase"
+                    | "readback"
             )
         })
 }
@@ -1897,6 +1908,12 @@ mod tests {
         assert_eq!(planner_max_tokens("Open Notes"), DEFAULT_PLANNER_MAX_TOKENS);
         assert_eq!(
             planner_max_tokens("Open Notes and write me a short story"),
+            DEFAULT_PLANNER_TEXT_MAX_TOKENS
+        );
+        assert_eq!(
+            planner_max_tokens(
+                "Use the local shell to create input.txt, transform it into output.txt, and read output.txt back"
+            ),
             DEFAULT_PLANNER_TEXT_MAX_TOKENS
         );
 

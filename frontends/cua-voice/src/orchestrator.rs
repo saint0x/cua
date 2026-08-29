@@ -1124,9 +1124,14 @@ async fn plan_and_dispatch(
             let mut effect = observed_turn_effect(&turn, &attempts);
             let open_only_incomplete = loop_budget.can_continue_after(attempt_index)
                 && open_only_incomplete_for_goal(&transcript, &turn);
+            let shell_readback_missing = loop_budget.can_continue_after(attempt_index)
+                && shell_readback_missing_for_goal(&transcript, &turn);
             let evidence = if open_only_incomplete {
                 effect = Some("partial".to_string());
                 Some(open_only_incomplete_evidence(turn.evidence.clone()))
+            } else if shell_readback_missing {
+                effect = Some("partial".to_string());
+                Some(shell_readback_missing_evidence(turn.evidence.clone()))
             } else {
                 turn.evidence.clone()
             };
@@ -1152,6 +1157,7 @@ async fn plan_and_dispatch(
                         "effect": effect,
                         "should_replan": should_continue,
                         "open_only_incomplete": open_only_incomplete,
+                        "shell_readback_missing": shell_readback_missing,
                         "long_range_continuation": long_range_continuation,
                         "has_action": turn.action.is_some(),
                     }),
@@ -1958,6 +1964,96 @@ fn open_only_incomplete_evidence(evidence: Option<serde_json::Value>) -> serde_j
     }
 }
 
+fn shell_readback_missing_for_goal(transcript: &str, turn: &CompletedAssistantTurn) -> bool {
+    transcript_requests_shell_readback(transcript)
+        && turn
+            .action
+            .as_ref()
+            .is_some_and(json_action_uses_shell_exec)
+        && turn_effect(turn).as_deref() == Some("confirmed")
+        && !turn
+            .evidence
+            .as_ref()
+            .is_some_and(dispatch_evidence_has_nonempty_shell_stdout)
+}
+
+fn transcript_requests_shell_readback(transcript: &str) -> bool {
+    let words = transcript
+        .split_whitespace()
+        .map(normalize_voice_token)
+        .collect::<Vec<_>>();
+    let shell_or_file = words.iter().any(|word| {
+        matches!(
+            word.as_str(),
+            "shell" | "file" | "files" | "directory" | "output" | "input"
+        )
+    });
+    let verification = words.iter().any(|word| {
+        matches!(
+            word.as_str(),
+            "read" | "readback" | "verify" | "verified" | "report" | "contents" | "content"
+        )
+    });
+    shell_or_file && verification
+}
+
+fn json_action_uses_shell_exec(action: &serde_json::Value) -> bool {
+    match action.get("kind").and_then(|kind| kind.as_str()) {
+        Some("shell_exec") => true,
+        Some("sequence") => action
+            .get("actions")
+            .and_then(|actions| actions.as_array())
+            .is_some_and(|actions| actions.iter().any(json_action_uses_shell_exec)),
+        _ => false,
+    }
+}
+
+fn dispatch_evidence_has_nonempty_shell_stdout(evidence: &serde_json::Value) -> bool {
+    evidence
+        .get("evidence")
+        .and_then(|items| items.as_array())
+        .is_some_and(|items| {
+            items.iter().any(|item| {
+                item.get("message")
+                    .and_then(|message| message.as_str())
+                    .is_some_and(shell_message_has_nonempty_stdout)
+            })
+        })
+}
+
+fn shell_message_has_nonempty_stdout(message: &str) -> bool {
+    let Some(after_stdout) = message.split_once("stdout=").map(|(_, after)| after) else {
+        return false;
+    };
+    let stdout = after_stdout
+        .split_once("; stderr=")
+        .map(|(stdout, _)| stdout)
+        .unwrap_or(after_stdout);
+    !stdout.trim().is_empty()
+}
+
+fn shell_readback_missing_evidence(evidence: Option<serde_json::Value>) -> serde_json::Value {
+    let mut evidence = evidence.unwrap_or_else(|| json!({}));
+    if let Some(object) = evidence.as_object_mut() {
+        object.insert("effect".to_string(), json!("partial"));
+        object.insert(
+            "reason".to_string(),
+            json!("shell_readback_missing_for_verified_output_goal"),
+        );
+        object.insert(
+            "repair_hint".to_string(),
+            json!("The shell action did not produce stdout for a request that requires verified readback. Run a bounded shell command that reads the target output and emits the verified value."),
+        );
+        evidence
+    } else {
+        json!({
+            "effect": "partial",
+            "reason": "shell_readback_missing_for_verified_output_goal",
+            "dispatch_evidence": evidence,
+        })
+    }
+}
+
 fn should_finish_after_reobserve(should_verify: bool, should_continue: bool) -> bool {
     should_verify && !should_continue
 }
@@ -2002,6 +2098,9 @@ fn action_can_advance_long_range_goal(action: &serde_json::Value) -> bool {
 
 fn planner_response_claims_pending_work(response: &str) -> bool {
     let lower = response.trim().to_ascii_lowercase();
+    if response_reports_terminal_failure(&lower) {
+        return false;
+    }
     [
         "opening",
         "searching",
@@ -2012,6 +2111,12 @@ fn planner_response_claims_pending_work(response: &str) -> bool {
         "checking",
         "reading",
         "inspecting",
+        "creating",
+        "writing",
+        "transforming",
+        "verifying",
+        "running",
+        "executing",
         "i'll",
         "i will",
         "let me",
@@ -2275,27 +2380,30 @@ fn final_response_claims_verified_result(response: &str) -> bool {
 
 fn final_response_reports_prior_failure(response: &str) -> bool {
     let lower = response.to_ascii_lowercase();
-    !planner_response_claims_pending_work(response)
-        && [
-            "error:",
-            "failed",
-            "exited with status",
-            "exit status",
-            "return code",
-            "returned code",
-            "non-zero",
-            "nonzero",
-            "refused",
-            "does not exist",
-            "no such file or directory",
-            "permission denied",
-            "not found",
-            "timed out",
-            "timeout",
-            "unavailable",
-        ]
-        .iter()
-        .any(|marker| lower.contains(marker))
+    !planner_response_claims_pending_work(response) && response_reports_terminal_failure(&lower)
+}
+
+fn response_reports_terminal_failure(lower_response: &str) -> bool {
+    [
+        "error:",
+        "failed",
+        "exited with status",
+        "exit status",
+        "return code",
+        "returned code",
+        "non-zero",
+        "nonzero",
+        "refused",
+        "does not exist",
+        "no such file or directory",
+        "permission denied",
+        "not found",
+        "timed out",
+        "timeout",
+        "unavailable",
+    ]
+    .iter()
+    .any(|marker| lower_response.contains(marker))
 }
 
 fn loop_attempt_count(
@@ -3597,6 +3705,51 @@ mod tests {
     }
 
     #[test]
+    fn shell_readback_requests_reject_empty_stdout_confirmations() {
+        let transcript = "Use the local shell to create input.txt, transform it into output.txt, then read output.txt back and report the verified contents.";
+        let empty_stdout_turn = CompletedAssistantTurn {
+            response: "Creating input.txt, transforming output.txt, and reading it back."
+                .to_string(),
+            action: Some(json!({
+                "kind": "shell_exec",
+                "command": "mkdir -p /tmp/example",
+                "timeout_ms": 5000
+            })),
+            evidence: Some(json!({
+                "effect": "confirmed",
+                "evidence": [
+                    {"kind": "value_readback", "message": "shell exited 0; stdout=; stderr="}
+                ]
+            })),
+        };
+        let stdout_turn = CompletedAssistantTurn {
+            response: "Reading output.txt.".to_string(),
+            action: Some(json!({
+                "kind": "shell_exec",
+                "command": "cat /tmp/example/output.txt",
+                "timeout_ms": 5000
+            })),
+            evidence: Some(json!({
+                "effect": "confirmed",
+                "evidence": [
+                    {"kind": "value_readback", "message": "shell exited 0; stdout=ALPHA,BETA,GAMMA; stderr="}
+                ]
+            })),
+        };
+
+        assert!(transcript_requests_shell_readback(transcript));
+        assert!(shell_readback_missing_for_goal(
+            transcript,
+            &empty_stdout_turn
+        ));
+        assert!(!shell_readback_missing_for_goal(transcript, &stdout_turn));
+        assert_eq!(
+            shell_readback_missing_evidence(empty_stdout_turn.evidence)["reason"],
+            "shell_readback_missing_for_verified_output_goal"
+        );
+    }
+
+    #[test]
     fn long_range_browser_research_expands_typed_open_only_setup_before_dispatch() {
         let action = cua_core::InputAction::OpenApp {
             app_name: "Safari".to_string(),
@@ -3766,6 +3919,15 @@ mod tests {
         assert!(planner_response_claims_pending_work(
             "Let me check the browser and read the page title."
         ));
+        assert!(planner_response_claims_pending_work(
+            "Creating directory, writing input.txt, transforming it to output.txt, and verifying"
+        ));
+        assert!(planner_response_claims_pending_work(
+            "Running the shell command and checking the output."
+        ));
+        assert!(!planner_response_claims_pending_work(
+            "Running `/usr/bin/false` failed with exit status 1."
+        ));
         assert!(!planner_response_claims_pending_work(
             "The verified title is Gemini models."
         ));
@@ -3914,6 +4076,11 @@ mod tests {
         assert!(long_range_null_plan_is_incomplete(
             "Open Calculator, calculate 123 plus 456, read the displayed result, and report the verified result.",
             "Opening Calculator via Spotlight and typing 123",
+            &None
+        ));
+        assert!(long_range_null_plan_is_incomplete(
+            "Use the local shell to create input.txt, transform it into output.txt, read output.txt back, and report the verified contents.",
+            "Creating input.txt, transforming it to output.txt, and verifying.",
             &None
         ));
         assert!(!long_range_null_plan_is_incomplete(
