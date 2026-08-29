@@ -16,7 +16,15 @@ mkdir -p "$OUT_DIR"
 
 ACTION_DIR="$OUT_DIR/action"
 PLANNER_DIR="$OUT_DIR/planner"
+PROVIDER_PROGRESS_DIR="$OUT_DIR/provider-progress"
 UI_DIR="$OUT_DIR/ui"
+
+env_key_available() {
+  local name="$1"
+  [[ -n "${!name:-}" ]] && return 0
+  grep -Eq "^[[:space:]]*(export[[:space:]]+)?${name}=" "${CUA_ENV_FILE:-$HOME/.cua/config/env}" 2>/dev/null && return 0
+  return 1
+}
 
 ACTION_RESULT="$(
   CUA_HTTP_TOKEN="voice-proof-suite-action-$RUN_ID" \
@@ -32,6 +40,15 @@ PLANNER_RESULT="$(
   CUA_VOICE_PLANNER_PROOF_OUT_DIR="$PLANNER_DIR" \
   scripts/host-voice-planner-proof.sh | tail -n 1
 )"
+PROVIDER_PROGRESS_RESULT=""
+if env_key_available OPENROUTER_API_KEY; then
+  PROVIDER_PROGRESS_RESULT="$(
+    CUA_VOICE_PROVIDER_PROGRESS_PROFILE="voice-proof-suite-provider-$RUN_ID" \
+    CUA_VOICE_PROVIDER_PROGRESS_HOME="/tmp/cuavpp${RUN_ID: -5}" \
+    CUA_VOICE_PROVIDER_PROGRESS_OUT_DIR="$PROVIDER_PROGRESS_DIR" \
+    scripts/host-voice-provider-progress-proof.sh | tail -n 1
+  )"
+fi
 UI_RESULT="$(
   CUA_VOICE_UI_PROOF_PROFILE="voice-proof-suite-ui-$RUN_ID" \
   CUA_VOICE_UI_PROOF_OUT_DIR="$UI_DIR" \
@@ -42,19 +59,34 @@ if [[ "$ACTION_RESULT" != "$ACTION_DIR" || "$PLANNER_RESULT" != "$PLANNER_DIR" |
   echo "voice proof child output mismatch" >&2
   exit 1
 fi
+if [[ -n "$PROVIDER_PROGRESS_RESULT" && "$PROVIDER_PROGRESS_RESULT" != "$PROVIDER_PROGRESS_DIR" ]]; then
+  echo "voice provider progress proof child output mismatch" >&2
+  exit 1
+fi
 
 jq -e '.within_budget == true' "$ACTION_DIR/proof.json" >/dev/null
 jq -e '.within_budget == true' "$PLANNER_DIR/proof.json" >/dev/null
+if [[ -n "$PROVIDER_PROGRESS_RESULT" ]]; then
+  jq -e '.ok == true and .within_budget == true' "$PROVIDER_PROGRESS_DIR/proof.json" >/dev/null
+fi
 jq -e '.ok == true' "$UI_DIR/proof.json" >/dev/null
+
+if [[ -n "$PROVIDER_PROGRESS_RESULT" ]]; then
+  PROVIDER_PROGRESS_ARG=(--slurpfile provider_progress "$PROVIDER_PROGRESS_DIR/proof.json")
+else
+  PROVIDER_PROGRESS_ARG=(--argjson provider_progress '[]')
+fi
 
 jq -n \
   --arg action_dir "$ACTION_DIR" \
   --arg planner_dir "$PLANNER_DIR" \
+  --arg provider_progress_dir "$PROVIDER_PROGRESS_DIR" \
   --arg ui_dir "$UI_DIR" \
   --arg action_addr "127.0.0.1:$PORT_BASE" \
   --arg planner_addr "127.0.0.1:$((PORT_BASE + 1))" \
   --slurpfile action "$ACTION_DIR/proof.json" \
   --slurpfile planner "$PLANNER_DIR/proof.json" \
+  "${PROVIDER_PROGRESS_ARG[@]}" \
   --slurpfile ui "$UI_DIR/proof.json" \
   '{
     schema_version: "cua.voice_proof_suite.v1",
@@ -88,6 +120,26 @@ jq -n \
       metrics: $planner[0].metrics,
       safety_state: $planner[0].safety_state
     },
+    provider_progress: (
+      if ($provider_progress | length) == 0 then
+        {
+          skipped: true,
+          reason: "OPENROUTER_API_KEY unavailable",
+          dir: $provider_progress_dir
+        }
+      else
+        {
+          skipped: false,
+          dir: $provider_progress_dir,
+          elapsed_ms: $provider_progress[0].elapsed_ms,
+          events: $provider_progress[0].events,
+          dispatches: $provider_progress[0].dispatches,
+          reply: $provider_progress[0].reply,
+          trace_outcomes: $provider_progress[0].trace_outcomes,
+          memory_persisted: $provider_progress[0].memory_persisted
+        }
+      end
+    ),
     ui: {
       dir: $ui_dir,
       screen: $ui[0].screen,
