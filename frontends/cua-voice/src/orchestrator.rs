@@ -38,7 +38,7 @@ const VOICE_STEP_FLUSH_TIMEOUT_MS: u64 = 120;
 const DEFAULT_CONTEXT_PREFETCH_TIMEOUT_MS: u64 = 2_500;
 const MAX_CONSECUTIVE_PLANNER_INFRASTRUCTURE_ERRORS: usize = 3;
 const MIN_RECORDING_DURATION: Duration = Duration::from_millis(650);
-pub const DEFAULT_PLANNER_MODEL: &str = "gemini-3-flash-preview";
+pub const DEFAULT_PLANNER_MODEL: &str = "gemini-3.7-flash";
 
 struct PrefetchedContext {
     session: Option<CuaSession>,
@@ -4130,10 +4130,10 @@ mod tests {
         assert_eq!(
             planning_credentials_missing_message_with_attempts(
                 "GEMINI_API_KEY or GOOGLE_API_KEY",
-                "gemini-3-flash-preview",
+                "gemini-3.7-flash",
                 &[]
             ),
-            "GEMINI_API_KEY or GOOGLE_API_KEY is required for planner model gemini-3-flash-preview."
+            "GEMINI_API_KEY or GOOGLE_API_KEY is required for planner model gemini-3.7-flash."
         );
         let attempts = vec![PlanAttemptContext {
             attempt_index: 1,
@@ -4162,10 +4162,10 @@ mod tests {
         assert_eq!(
             planning_credentials_missing_message_with_attempts(
                 "GEMINI_API_KEY or GOOGLE_API_KEY",
-                "gemini-3-flash-preview",
+                "gemini-3.7-flash",
                 &attempts
             ),
-            "GEMINI_API_KEY or GOOGLE_API_KEY is required for planner model gemini-3-flash-preview; stopped after 1 completed attempt; last progress was using Aegis `search the official SQLite foreign key documentation`."
+            "GEMINI_API_KEY or GOOGLE_API_KEY is required for planner model gemini-3.7-flash; stopped after 1 completed attempt; last progress was using Aegis `search the official SQLite foreign key documentation`."
         );
         let sequence_attempts = vec![PlanAttemptContext {
             attempt_index: 1,
@@ -4493,7 +4493,7 @@ mod tests {
 
     #[test]
     fn default_planner_model_uses_latest_gemini_flash() {
-        assert_eq!(DEFAULT_PLANNER_MODEL, "gemini-3-flash-preview");
+        assert_eq!(DEFAULT_PLANNER_MODEL, "gemini-3.7-flash");
     }
 
     #[test]

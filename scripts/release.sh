@@ -18,7 +18,7 @@ SDK_SCENARIO="${CUA_RELEASE_SDK_SCENARIO:-fozzy/scenarios/cua-sdk-action.json}"
 SCRATCHPAD_SCENARIO="${CUA_RELEASE_SCRATCHPAD_SCENARIO:-fozzy/scenarios/cua-scratchpad.json}"
 STT_BACKEND="${CUA_RELEASE_STT_BACKEND:-local}"
 STT_MODEL="${CUA_RELEASE_STT_MODEL:-tiny.en}"
-PLANNER_MODEL="${CUA_RELEASE_PLANNER_MODEL:-gemini-3-flash-preview}"
+PLANNER_MODEL="${CUA_RELEASE_PLANNER_MODEL:-gemini-3.7-flash}"
 SKIP_TESTS=0
 SKIP_FOZZY=0
 SKIP_INSTALL=0
@@ -42,7 +42,7 @@ Options:
 Environment:
   CUA_RELEASE_STT_BACKEND   Speech-to-text backend for live smoke. Default: local.
   CUA_RELEASE_STT_MODEL     Speech-to-text model for live smoke. Default: tiny.en.
-  CUA_RELEASE_PLANNER_MODEL Planner model for live smoke. Default: gemini-3-flash-preview.
+  CUA_RELEASE_PLANNER_MODEL Planner model for live smoke. Default: gemini-3.7-flash.
 USAGE
 }
 

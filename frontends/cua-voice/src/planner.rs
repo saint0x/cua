@@ -1557,12 +1557,12 @@ mod tests {
 
     #[test]
     fn planner_provider_defaults_to_direct_gemini() {
-        let provider = PlannerProvider::from_model("gemini-3-flash-preview");
+        let provider = PlannerProvider::from_model("gemini-3.7-flash");
 
         assert_eq!(provider, PlannerProvider::Gemini);
         assert_eq!(
-            provider.request_model("gemini-3-flash-preview"),
-            "gemini-3-flash-preview"
+            provider.request_model("gemini-3.7-flash"),
+            "gemini-3.7-flash"
         );
         assert_eq!(
             provider.chat_completions_url(),
@@ -1572,7 +1572,7 @@ mod tests {
             provider.required_api_key_name(),
             "GEMINI_API_KEY or GOOGLE_API_KEY"
         );
-        assert!(!provider.should_pin_temperature("gemini-3-flash-preview"));
+        assert!(!provider.should_pin_temperature("gemini-3.7-flash"));
         let headers = provider.headers("test-gemini-key").unwrap();
         assert_eq!(
             headers
@@ -1625,11 +1625,11 @@ mod tests {
     fn planner_request_body_uses_provider_model_and_temperature_contract() {
         let content = vec![serde_json::json!({"type": "text", "text": "Transcript: test"})];
         let gemini =
-            Planner::new("gemini-3-flash-preview").request_body("open calculator", content.clone());
+            Planner::new("gemini-3.7-flash").request_body("open calculator", content.clone());
         let openrouter =
             Planner::new("openrouter/openai/gpt-5.4-mini").request_body("open calculator", content);
 
-        assert_eq!(gemini["model"], "gemini-3-flash-preview");
+        assert_eq!(gemini["model"], "gemini-3.7-flash");
         assert!(gemini.get("temperature").is_none());
         assert_eq!(gemini["response_format"]["type"], "json_object");
         assert_eq!(openrouter["model"], "openai/gpt-5.4-mini");

@@ -6,7 +6,7 @@ This file documents the tools and prompts currently exposed to the cua agent/run
 
 Current voice defaults:
 
-- planner model: `anthropic/claude-sonnet-5`
+- planner model: `gemini-3.7-flash`
 - speech-to-text backend: `local`
 - speech-to-text model: `tiny.en`
 - local speech-to-text fallback model: `base.en`

@@ -19,7 +19,7 @@ PLANNER_DIR="$OUT_DIR/planner"
 MISSING_KEY_DIR="$OUT_DIR/missing-key"
 PROVIDER_PROGRESS_DIR="$OUT_DIR/provider-progress"
 UI_DIR="$OUT_DIR/ui"
-PLANNER_MODEL="${CUA_VOICE_PLANNER_PROOF_MODEL:-gemini-3-flash-preview}"
+PLANNER_MODEL="${CUA_VOICE_PLANNER_PROOF_MODEL:-gemini-3.7-flash}"
 
 env_key_available() {
   local name="$1"
