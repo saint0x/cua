@@ -57,6 +57,8 @@ const MINIMIZED_HEIGHT: f32 = 28.0;
 const MINIMIZED_RADIUS: f32 = 14.0;
 const MINIMIZED_RIGHT_OFFSET: f32 = 220.0;
 const HEADER_PAD_X_PX: f32 = 16.0;
+const HEADER_TRAILING_PAD_X_PX: f32 = 24.0;
+const _: () = assert!(HEADER_TRAILING_PAD_X_PX > HEADER_PAD_X_PX);
 const HEADER_GAP_PX: f32 = 8.0;
 const HEADER_TITLE_DIVIDER_GAP_PX: f32 = 2.0;
 const HEADER_LEAD_WIDTH_PX: f32 = 28.0;
@@ -547,7 +549,8 @@ impl VoiceHud {
                     .top(px(COMPACT_CONTENT_Y_OFFSET_PX))
                     .flex()
                     .items_center()
-                    .px(px(HEADER_PAD_X_PX))
+                    .pl(px(HEADER_PAD_X_PX))
+                    .pr(px(HEADER_TRAILING_PAD_X_PX))
                     .child(
                         div()
                             .w(px(HEADER_LEAD_WIDTH_PX))
@@ -965,9 +968,16 @@ fn actor_region_anchor(region: &str, item: &str, metrics: HudMetrics) -> Option<
         ("left", "orb") | ("header_left", "orb") => Some((20.0, header_y)),
         ("left", "input") | ("header_left", "input") => Some((56.0, header_y)),
         ("center", "status") | ("header_center", "status") => Some((width * 0.5, header_y)),
-        ("right", "transport") | ("header_right", "transport") => Some((width - 240.0, header_y)),
-        ("right", "target") | ("header_right", "target") => Some((width - 170.0, header_y)),
-        ("right", "activity") | ("header_right", "activity") => Some((width - 58.0, header_y)),
+        ("right", "transport") | ("header_right", "transport") => {
+            Some((width - HEADER_TRAILING_PAD_X_PX - 224.0, header_y))
+        }
+        ("right", "target") | ("header_right", "target") => {
+            Some((width - HEADER_TRAILING_PAD_X_PX - 154.0, header_y))
+        }
+        ("right", "activity") | ("header_right", "activity") => Some((
+            width - HEADER_TRAILING_PAD_X_PX - (HEADER_RING_PX / 2.0),
+            header_y,
+        )),
         ("task", _) => Some((width * 0.24, actor_anchor_y(92.0, height))),
         ("response", _) => Some((width * 0.50, actor_anchor_y(142.0, height))),
         ("details_left", _) => Some((width * 0.24, actor_anchor_y(194.0, height))),
@@ -1221,7 +1231,7 @@ fn header_layout_widths(
         + HEADER_RING_PX;
     let gap_width = header_gap_width_px();
     let center_width =
-        (island_shell_width(metrics) - (HEADER_PAD_X_PX * 2.0) - chrome_width - gap_width)
+        (island_shell_width(metrics) - header_horizontal_padding_px() - chrome_width - gap_width)
             .max(HEADER_CENTER_MIN_WIDTH_PX);
 
     HeaderLayoutWidths {
@@ -1250,7 +1260,8 @@ fn compact_shell_width_target(scene: &IslandScene) -> f32 {
         + HEADER_RING_PX;
     let center_width =
         (estimated_center_text_width_px(&center) + 8.0).max(HEADER_CENTER_MIN_WIDTH_PX);
-    let width = (HEADER_PAD_X_PX * 2.0) + chrome_width + header_gap_width_px() + center_width;
+    let width =
+        header_horizontal_padding_px() + chrome_width + header_gap_width_px() + center_width;
 
     width.clamp(COMPACT_WIDTH, EXPANDED_WIDTH)
 }
@@ -1262,6 +1273,10 @@ fn header_title_width_px(title: &str) -> f32 {
 
 fn header_gap_width_px() -> f32 {
     (HEADER_GAP_PX * 5.0) + HEADER_TITLE_DIVIDER_GAP_PX
+}
+
+fn header_horizontal_padding_px() -> f32 {
+    HEADER_PAD_X_PX + HEADER_TRAILING_PAD_X_PX
 }
 
 fn header_chips_width_px(transport: &str, target: &str) -> f32 {
@@ -3869,7 +3884,7 @@ mod tests {
         let title = "Voice control";
         let old_uniform_gap_width = HEADER_GAP_PX * 6.0;
         let old_center = (island_shell_width(metrics)
-            - (HEADER_PAD_X_PX * 2.0)
+            - header_horizontal_padding_px()
             - HEADER_LEAD_WIDTH_PX
             - header_title_width_px(title)
             - 2.0
@@ -3881,6 +3896,18 @@ mod tests {
 
         assert_eq!(header_gap_width_px(), old_uniform_gap_width - 6.0);
         assert_eq!(tightened.center, old_center + 6.0);
+    }
+
+    #[test]
+    fn compact_header_reserves_trailing_breathing_room_for_activity_ring() {
+        let metrics = HudMetrics::with_expansion(0.0, 0.0);
+        let (ring_center_x, _) = actor_region_anchor("header_right", "activity", metrics).unwrap();
+        let ring_right_edge = ring_center_x + (HEADER_RING_PX / 2.0);
+
+        assert_eq!(
+            island_width(metrics) - ring_right_edge,
+            HEADER_TRAILING_PAD_X_PX
+        );
     }
 
     #[test]
