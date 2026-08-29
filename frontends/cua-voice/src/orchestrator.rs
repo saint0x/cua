@@ -830,20 +830,6 @@ async fn plan_and_dispatch(
                                     })),
                                 };
                             }
-                        } else if !transcript_requests_long_range_work(&transcript) {
-                            if let Some(turn) = completed_from_confirmed_prior_attempt(&attempts) {
-                                trace
-                                    .append(
-                                        "planning_error_after_confirmed_action",
-                                        json!({
-                                            "attempt_index": attempt_index,
-                                            "error": format!("{error:#}"),
-                                        }),
-                                    )
-                                    .await;
-                                break turn;
-                            }
-                            return Err(error);
                         } else {
                             return Err(error);
                         }
@@ -2041,24 +2027,6 @@ fn mark_long_range_budget_exhausted_if_needed(
         "last_evidence": prior_evidence,
     }));
     turn
-}
-
-fn completed_from_confirmed_prior_attempt(
-    attempts: &[PlanAttemptContext],
-) -> Option<CompletedAssistantTurn> {
-    let attempt = attempts.last()?;
-    if attempt.effect.as_deref() != Some("confirmed") {
-        return None;
-    }
-    let action = attempt.action.as_ref()?;
-    if !action_needs_fresh_verification(action) {
-        return None;
-    }
-    Some(CompletedAssistantTurn {
-        response: attempt.response.clone(),
-        action: attempt.action.clone(),
-        evidence: attempt.evidence.clone(),
-    })
 }
 
 fn attach_loop_evidence(
@@ -4167,28 +4135,6 @@ mod tests {
         assert!(should_finish_after_reobserve(true, false));
         assert!(!should_finish_after_reobserve(true, true));
         assert!(!should_finish_after_reobserve(false, false));
-    }
-
-    #[test]
-    fn malformed_verification_after_confirmed_edge_action_keeps_confirmed_turn() {
-        let attempts = vec![PlanAttemptContext {
-            attempt_index: 1,
-            response: "Creating the note.".to_string(),
-            action: Some(json!({
-                "kind": "sequence",
-                "actions": [
-                    {"kind": "open_app", "app_name": "Notes"},
-                    {"kind": "key_paste", "text": "hello"}
-                ]
-            })),
-            effect: Some("confirmed".to_string()),
-            evidence: Some(json!({"effect": "confirmed"})),
-        }];
-
-        let completed = completed_from_confirmed_prior_attempt(&attempts).unwrap();
-
-        assert_eq!(completed.response, "Creating the note.");
-        assert_eq!(turn_effect(&completed), Some("confirmed".to_string()));
     }
 
     #[test]
