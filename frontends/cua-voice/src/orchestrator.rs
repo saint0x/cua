@@ -2281,6 +2281,10 @@ fn final_response_reports_prior_failure(response: &str) -> bool {
             "failed",
             "exited with status",
             "exit status",
+            "return code",
+            "returned code",
+            "non-zero",
+            "nonzero",
             "refused",
             "does not exist",
             "no such file or directory",
@@ -4046,6 +4050,9 @@ mod tests {
         let effect = observed_turn_effect(&completed, &prior_attempts);
 
         assert_eq!(effect, Some("failed".to_string()));
+        assert!(final_response_reports_prior_failure(
+            "Running `/usr/bin/false` exited with return code 1 (stdout was empty, stderr was empty)."
+        ));
         assert!(!should_replan_after_turn(
             "Use the local shell to run exactly /usr/bin/false, then report the exact failure context. Do not retry and do not recover.",
             &completed,
