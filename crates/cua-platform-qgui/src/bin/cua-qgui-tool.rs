@@ -85,8 +85,8 @@ fn main() -> anyhow::Result<()> {
             motion(&conn, root, x, y)?;
             let button = parse_button(&button)?;
             for _ in 0..count.max(1) {
-                fake(&conn, BUTTON_PRESS, button, root, x, y)?;
-                fake(&conn, BUTTON_RELEASE, button, root, x, y)?;
+                send_xtest_input(&conn, BUTTON_PRESS, button, root, x, y)?;
+                send_xtest_input(&conn, BUTTON_RELEASE, button, root, x, y)?;
             }
         }
         Cmd::MouseDrag {
@@ -97,10 +97,10 @@ fn main() -> anyhow::Result<()> {
             duration_ms,
         } => {
             motion(&conn, root, from_x, from_y)?;
-            fake(&conn, BUTTON_PRESS, 1, root, from_x, from_y)?;
+            send_xtest_input(&conn, BUTTON_PRESS, 1, root, from_x, from_y)?;
             motion(&conn, root, to_x, to_y)?;
             sleep_ms(duration_ms);
-            fake(&conn, BUTTON_RELEASE, 1, root, to_x, to_y)?;
+            send_xtest_input(&conn, BUTTON_RELEASE, 1, root, to_x, to_y)?;
         }
         Cmd::Key { combo } => send_combo(&conn, root, &combo)?,
         Cmd::Type { text } => type_text(&conn, root, &text)?,
@@ -396,11 +396,11 @@ fn send_combo(conn: &RustConnection, root: Window, combo: &str) -> anyhow::Resul
         let keycode = keyboard
             .keycode_for(keysym)
             .with_context(|| format!("keysym 0x{keysym:x} is not present in the X11 keymap"))?;
-        fake(conn, KEY_PRESS, keycode, root, 0, 0)?;
+        send_xtest_input(conn, KEY_PRESS, keycode, root, 0, 0)?;
         pressed.push(keycode);
     }
     for keycode in pressed.into_iter().rev() {
-        fake(conn, KEY_RELEASE, keycode, root, 0, 0)?;
+        send_xtest_input(conn, KEY_RELEASE, keycode, root, 0, 0)?;
     }
     Ok(())
 }
@@ -438,15 +438,15 @@ fn type_text(conn: &RustConnection, root: Window, text: &str) -> anyhow::Result<
             );
         if needs_shift {
             if let Some(shift) = keyboard.keycode_for(0xffe1) {
-                fake(conn, KEY_PRESS, shift, root, 0, 0)?;
-                fake(conn, KEY_PRESS, keycode, root, 0, 0)?;
-                fake(conn, KEY_RELEASE, keycode, root, 0, 0)?;
-                fake(conn, KEY_RELEASE, shift, root, 0, 0)?;
+                send_xtest_input(conn, KEY_PRESS, shift, root, 0, 0)?;
+                send_xtest_input(conn, KEY_PRESS, keycode, root, 0, 0)?;
+                send_xtest_input(conn, KEY_RELEASE, keycode, root, 0, 0)?;
+                send_xtest_input(conn, KEY_RELEASE, shift, root, 0, 0)?;
                 continue;
             }
         }
-        fake(conn, KEY_PRESS, keycode, root, 0, 0)?;
-        fake(conn, KEY_RELEASE, keycode, root, 0, 0)?;
+        send_xtest_input(conn, KEY_PRESS, keycode, root, 0, 0)?;
+        send_xtest_input(conn, KEY_RELEASE, keycode, root, 0, 0)?;
     }
     Ok(())
 }
@@ -545,10 +545,10 @@ fn parse_button(button: &str) -> anyhow::Result<u8> {
 }
 
 fn motion(conn: &RustConnection, root: Window, x: i16, y: i16) -> anyhow::Result<()> {
-    fake(conn, MOTION_NOTIFY, 0, root, x, y)
+    send_xtest_input(conn, MOTION_NOTIFY, 0, root, x, y)
 }
 
-fn fake(
+fn send_xtest_input(
     conn: &RustConnection,
     event_type: u8,
     detail: u8,
@@ -557,9 +557,9 @@ fn fake(
     y: i16,
 ) -> anyhow::Result<()> {
     conn.xtest_fake_input(event_type, detail, 0, root, x, y, 0)
-        .context("send XTEST fake input")?
+        .context("send XTEST input event")?
         .check()
-        .context("confirm XTEST fake input")
+        .context("confirm XTEST input event")
 }
 
 fn sleep_ms(ms: u64) {

@@ -395,13 +395,22 @@ impl QguiInputBackend {
                 )
                 .await
             }
-            InputAction::KeyType { text } | InputAction::KeyPaste { text } => {
-                run_checked(
-                    gui_command(&self.config, &session, &self.config.input_binary)
-                        .arg("type")
-                        .arg(text),
-                )
-                .await
+            InputAction::KeyType { text } => {
+                if requires_clipboard_text_path(&text) {
+                    self.paste_text(&session, text, "qgui text inserted through clipboard paste")
+                        .await
+                } else {
+                    run_checked(
+                        gui_command(&self.config, &session, &self.config.input_binary)
+                            .arg("type")
+                            .arg(text),
+                    )
+                    .await
+                }
+            }
+            InputAction::KeyPaste { text } => {
+                self.paste_text(&session, text, "qgui paste delivered through clipboard")
+                    .await
             }
             InputAction::Sequence {
                 actions,
@@ -466,42 +475,7 @@ impl QguiInputBackend {
                 .await
             }
             InputAction::ClipboardWrite { text } => {
-                let mut command =
-                    gui_command(&self.config, &session, &self.config.clipboard_binary);
-                command.arg("clipboard-serve");
-                let mut child = command
-                    .stdin(Stdio::piped())
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .spawn()
-                    .context("spawn bundled cua-qgui-tool clipboard owner")?;
-                if let Some(mut stdin) = child.stdin.take() {
-                    stdin
-                        .write_all(text.as_bytes())
-                        .await
-                        .context("write clipboard stdin")?;
-                }
-                let stdout = child
-                    .stdout
-                    .take()
-                    .context("clipboard owner stdout unavailable")?;
-                let mut ready = String::new();
-                let read = tokio::time::timeout(
-                    std::time::Duration::from_secs(3),
-                    BufReader::new(stdout).read_line(&mut ready),
-                )
-                .await
-                .map_err(|_| anyhow!("timed out waiting for clipboard owner readiness"))?
-                .context("read clipboard owner readiness")?;
-                if read == 0 || ready.trim() != "ready" {
-                    let _ = child.kill().await;
-                    bail!("clipboard owner did not become ready");
-                }
-                let mut owner = self.clipboard_owner.lock().await;
-                if let Some(mut old_owner) = owner.take() {
-                    let _ = old_owner.kill().await;
-                }
-                *owner = Some(child);
+                self.install_clipboard_owner(&session, &text).await?;
                 Ok("qgui clipboard owner updated".to_string())
             }
             InputAction::Pause | InputAction::Resume | InputAction::KillSwitch => {
@@ -513,6 +487,69 @@ impl QguiInputBackend {
             }
         }
     }
+
+    async fn paste_text(
+        &self,
+        session: &QguiSessionState,
+        text: String,
+        message: &'static str,
+    ) -> anyhow::Result<String> {
+        self.install_clipboard_owner(session, &text).await?;
+        run_checked(
+            gui_command(&self.config, session, &self.config.input_binary)
+                .arg("key")
+                .arg("Control+v"),
+        )
+        .await?;
+        Ok(message.to_string())
+    }
+
+    async fn install_clipboard_owner(
+        &self,
+        session: &QguiSessionState,
+        text: &str,
+    ) -> anyhow::Result<()> {
+        let mut command = gui_command(&self.config, session, &self.config.clipboard_binary);
+        command.arg("clipboard-serve");
+        let mut child = command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("spawn bundled cua-qgui-tool clipboard owner")?;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(text.as_bytes())
+                .await
+                .context("write clipboard stdin")?;
+        }
+        let stdout = child
+            .stdout
+            .take()
+            .context("clipboard owner stdout unavailable")?;
+        let mut ready = String::new();
+        let read = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            BufReader::new(stdout).read_line(&mut ready),
+        )
+        .await
+        .map_err(|_| anyhow!("timed out waiting for clipboard owner readiness"))?
+        .context("read clipboard owner readiness")?;
+        if read == 0 || ready.trim() != "ready" {
+            let _ = child.kill().await;
+            bail!("clipboard owner did not become ready");
+        }
+        let mut owner = self.clipboard_owner.lock().await;
+        if let Some(mut old_owner) = owner.take() {
+            let _ = old_owner.kill().await;
+        }
+        *owner = Some(child);
+        Ok(())
+    }
+}
+
+fn requires_clipboard_text_path(text: &str) -> bool {
+    !text.is_ascii()
 }
 
 fn qgui_capabilities() -> CapabilityManifest {
@@ -727,5 +764,12 @@ mod tests {
         assert_eq!(descriptor.kind, ComputerBackendKind::OracleVm);
         assert_eq!(descriptor.provider, "oracle-vm");
         assert_eq!(descriptor.runtime, "qgui+cua");
+    }
+
+    #[test]
+    fn non_ascii_text_uses_clipboard_paste_path() {
+        assert!(!requires_clipboard_text_path("plain ascii text"));
+        assert!(requires_clipboard_text_path("hello 🌍"));
+        assert!(requires_clipboard_text_path("cafe\u{301}"));
     }
 }
