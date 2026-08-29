@@ -12,14 +12,12 @@ RUN_ID="$(date +%s)"
 SUFFIX="${RUN_ID: -5}"
 PROFILE="${CUA_VOICE_PROVIDER_PROGRESS_PROFILE:-qpr$SUFFIX}"
 OUT_DIR="${CUA_VOICE_PROVIDER_PROGRESS_OUT_DIR:-artifacts/cua/voice-provider-progress-$RUN_ID}"
-CUA_HOME_DIR="${CUA_VOICE_PROVIDER_PROGRESS_HOME:-/tmp/cuapr$SUFFIX}"
+CUA_HOME_DIR="${CUA_VOICE_PROVIDER_PROGRESS_HOME:-}"
 ENV_FILE="${CUA_ENV_FILE:-$HOME/.cua/config/env}"
 PLANNER_MODEL="${CUA_VOICE_PROVIDER_PROGRESS_MODEL:-openrouter/google/gemini-3.7-flash}"
 BUDGET_MS="${CUA_VOICE_PROVIDER_PROGRESS_BUDGET_MS:-120000}"
 TRANSCRIPT="${CUA_VOICE_PROVIDER_PROGRESS_TRANSCRIPT:-Using Aegis headless only, search the web for the official SQLite foreign key documentation and report the verified page title.}"
 EVENTS="$OUT_DIR/events.jsonl"
-TRACE="$CUA_HOME_DIR/profiles/$PROFILE/traces/voice.jsonl"
-CHAT_DB="$CUA_HOME_DIR/profiles/$PROFILE/chat.db"
 PROOF="$OUT_DIR/proof.json"
 
 cargo build -p cua-voice
@@ -54,7 +52,14 @@ if ! env_key_available OPENROUTER_API_KEY; then
   exit 1
 fi
 
-mkdir -p "$OUT_DIR" "$CUA_HOME_DIR"
+mkdir -p "$OUT_DIR"
+if [[ -z "$CUA_HOME_DIR" ]]; then
+  CUA_HOME_DIR="$(mktemp -d /tmp/cuapr.XXXXXX)"
+else
+  mkdir -p "$CUA_HOME_DIR"
+fi
+TRACE="$CUA_HOME_DIR/profiles/$PROFILE/traces/voice.jsonl"
+CHAT_DB="$CUA_HOME_DIR/profiles/$PROFILE/chat.db"
 
 START_MS="$(perl -MTime::HiRes=time -e 'printf "%.0f\n", time() * 1000')"
 CUA_HOME="$CUA_HOME_DIR" \

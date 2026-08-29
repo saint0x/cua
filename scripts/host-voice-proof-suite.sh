@@ -44,7 +44,6 @@ PROVIDER_PROGRESS_RESULT=""
 if env_key_available OPENROUTER_API_KEY; then
   PROVIDER_PROGRESS_RESULT="$(
     CUA_VOICE_PROVIDER_PROGRESS_PROFILE="voice-proof-suite-provider-$RUN_ID" \
-    CUA_VOICE_PROVIDER_PROGRESS_HOME="/tmp/cuavpp${RUN_ID: -5}" \
     CUA_VOICE_PROVIDER_PROGRESS_OUT_DIR="$PROVIDER_PROGRESS_DIR" \
     scripts/host-voice-provider-progress-proof.sh | tail -n 1
   )"
