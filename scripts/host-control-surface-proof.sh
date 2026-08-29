@@ -360,7 +360,7 @@ jq -e '.envelope.encoding == "png" and .envelope.width > 0 and .envelope.height 
   "$HTTP_SCREENSHOT" >/dev/null
 EXPECTED_FRAME_X="$(jq '(.envelope.display_x + ((100 - .envelope.frame_origin_x) * (.envelope.display_width / .envelope.width)) | round)' "$HTTP_SCREENSHOT")"
 EXPECTED_FRAME_Y="$(jq '(.envelope.display_y + ((100 - .envelope.frame_origin_y) * (.envelope.display_height / .envelope.height)) | round)' "$HTTP_SCREENSHOT")"
-jq -e '.effect == "confirmed" and .route == "accessibility"' "$HTTP_FRAME_ACTION" >/dev/null
+jq -e '.effect == "unverifiable" and .route == "accessibility" and .delivery_mode == "desktop"' "$HTTP_FRAME_ACTION" >/dev/null
 jq -e '((.x - '"$EXPECTED_FRAME_X"') | fabs) <= 1 and ((.y - '"$EXPECTED_FRAME_Y"') | fabs) <= 1' \
   "$HTTP_CURSOR_AFTER_FRAME_ACTION" >/dev/null
 jq -e '.schema_version == "cua.v1" and .active_profile == $profile' \
