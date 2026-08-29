@@ -1006,6 +1006,38 @@ async fn plan_and_dispatch(
                 attempt_index += 1;
                 continue;
             }
+            if plan.action.as_ref().is_some_and(|action| {
+                failure_boundary_plan_collapses_recovery(&transcript, action, &attempts)
+            }) {
+                trace
+                    .append(
+                        "planning_rejected",
+                        json!({
+                            "attempt_index": attempt_index,
+                            "reason": "failure_boundary_collapsed_into_single_action",
+                            "action": planned_action_json.clone(),
+                        }),
+                    )
+                    .await;
+                attempts.push(PlanAttemptContext {
+                    attempt_index,
+                    response: plan.response,
+                    action: planned_action_json,
+                    effect: Some("suspected_noop".to_string()),
+                    evidence: Some(json!({
+                        "effect": "suspected_noop",
+                        "reason": "failure_boundary_collapsed_into_single_action",
+                        "repair_hint": "The user asked to observe a failure before recovery. Return only the initial failing action next; do not suppress the failure or combine recovery into the same shell command or sequence.",
+                    })),
+                });
+                if !loop_budget.can_continue_after(attempt_index) {
+                    anyhow::bail!(
+                        "planning model collapsed a required failure observation and recovery into one action"
+                    );
+                }
+                attempt_index += 1;
+                continue;
+            }
             if planned_action_json.as_ref().is_some_and(|action| {
                 transcript_requests_long_range_work(&transcript)
                     && action_repeats_confirmed_attempt(&attempts, action)
@@ -2360,6 +2392,104 @@ fn action_null_finishes_after_prior_attempts(
         && !prior_attempts.is_empty()
         && (final_response_claims_verified_result(response)
             || final_response_reports_prior_failure(response))
+}
+
+fn failure_boundary_plan_collapses_recovery(
+    transcript: &str,
+    action: &InputAction,
+    prior_attempts: &[PlanAttemptContext],
+) -> bool {
+    if !transcript_requires_observed_failure_boundary(transcript) {
+        return false;
+    }
+    if prior_attempts_observed_failure_boundary(prior_attempts) {
+        return false;
+    }
+    match action {
+        InputAction::ShellExec { command, .. } => {
+            shell_command_collapses_failure_recovery_boundary(command)
+        }
+        InputAction::Sequence { actions, .. } => {
+            actions.len() > 1
+                && actions
+                    .iter()
+                    .any(action_attempts_failure_or_recovery_boundary_work)
+        }
+        _ => false,
+    }
+}
+
+fn transcript_requires_observed_failure_boundary(transcript: &str) -> bool {
+    let lower = transcript.to_ascii_lowercase();
+    let asks_to_recover = lower.contains("recover")
+        || lower.contains("fallback")
+        || lower.contains("then create")
+        || lower.contains("then write");
+    let asks_to_observe_failure = lower.contains("observe the failure")
+        || lower.contains("observe failure")
+        || lower.contains("do not skip the initial failing")
+        || lower.contains("don't skip the initial failing")
+        || lower.contains("do not skip initial failing")
+        || lower.contains("first try") && lower.contains("failure")
+        || lower.contains("first attempt") && lower.contains("failure")
+        || lower.contains("expected failure");
+    asks_to_recover && asks_to_observe_failure
+}
+
+fn prior_attempts_observed_failure_boundary(prior_attempts: &[PlanAttemptContext]) -> bool {
+    prior_attempts.iter().any(|attempt| {
+        attempt.effect.as_deref() == Some("failed")
+            && attempt
+                .action
+                .as_ref()
+                .is_some_and(json_action_uses_shell_exec)
+    })
+}
+
+fn action_attempts_failure_or_recovery_boundary_work(action: &InputAction) -> bool {
+    match action {
+        InputAction::ShellExec { command, .. } => {
+            shell_command_attempts_failure_boundary_work(command)
+                || shell_command_attempts_recovery_boundary_work(command)
+        }
+        InputAction::Sequence { actions, .. } => actions
+            .iter()
+            .any(action_attempts_failure_or_recovery_boundary_work),
+        _ => false,
+    }
+}
+
+fn shell_command_collapses_failure_recovery_boundary(command: &str) -> bool {
+    shell_command_attempts_failure_boundary_work(command)
+        && shell_command_attempts_recovery_boundary_work(command)
+        && shell_command_continues_after_failure(command)
+}
+
+fn shell_command_attempts_failure_boundary_work(command: &str) -> bool {
+    let lower = command.to_ascii_lowercase();
+    lower.contains("cat ")
+        || lower.contains("test ")
+        || lower.contains("[ -")
+        || lower.contains("stat ")
+        || lower.contains("ls ")
+}
+
+fn shell_command_attempts_recovery_boundary_work(command: &str) -> bool {
+    let lower = command.to_ascii_lowercase();
+    lower.contains("recover")
+        || lower.contains("mkdir ")
+        || lower.contains("printf ")
+        || lower.contains("echo ")
+        || lower.contains("touch ")
+        || lower.contains(" >")
+        || lower.contains(">>")
+}
+
+fn shell_command_continues_after_failure(command: &str) -> bool {
+    command.contains("||")
+        || command.contains("&&")
+        || command.contains(';')
+        || command.contains('\n')
 }
 
 fn prior_attempts_include_aegis_evidence(attempts: &[PlanAttemptContext]) -> bool {
@@ -4608,6 +4738,107 @@ mod tests {
         assert!(!action_null_plan_claims_pending_work(
             "The displayed result is 579.",
             &None
+        ));
+    }
+
+    #[test]
+    fn failure_boundary_rejects_single_shell_command_that_swallows_failure_and_recovers() {
+        let transcript = "Using local shell only, first try to read /tmp/cua/does-not-exist.txt and observe the failure. Then recover by creating /tmp/cua/recovered.txt containing exactly recovered after deliberate failure 909, read recovered.txt back to stdout, and report the exact stdout. Do not skip the initial failing read.";
+        let collapsed = cua_core::InputAction::ShellExec {
+            command: "cat /tmp/cua/does-not-exist.txt 2>&1 || true; mkdir -p /tmp/cua && printf 'recovered after deliberate failure 909' > /tmp/cua/recovered.txt && cat /tmp/cua/recovered.txt".to_string(),
+            timeout_ms: 5000,
+        };
+
+        assert!(failure_boundary_plan_collapses_recovery(
+            transcript,
+            &collapsed,
+            &[]
+        ));
+    }
+
+    #[test]
+    fn failure_boundary_allows_pure_initial_failing_read() {
+        let transcript = "Using local shell only, first try to read /tmp/cua/does-not-exist.txt and observe the failure. Then recover by creating /tmp/cua/recovered.txt.";
+        let first_read = cua_core::InputAction::ShellExec {
+            command: "cat /tmp/cua/does-not-exist.txt".to_string(),
+            timeout_ms: 5000,
+        };
+
+        assert!(!failure_boundary_plan_collapses_recovery(
+            transcript,
+            &first_read,
+            &[]
+        ));
+    }
+
+    #[test]
+    fn failure_boundary_allows_recovery_after_failed_read_was_observed() {
+        let transcript = "Using local shell only, first try to read /tmp/cua/does-not-exist.txt and observe the failure. Then recover by creating /tmp/cua/recovered.txt.";
+        let prior_attempts = vec![PlanAttemptContext {
+            attempt_index: 1,
+            response: "Attempting to read the missing file.".to_string(),
+            action: Some(json!({
+                "kind": "shell_exec",
+                "command": "cat /tmp/cua/does-not-exist.txt",
+                "timeout_ms": 5000
+            })),
+            effect: Some("failed".to_string()),
+            evidence: Some(json!({
+                "effect": "failed",
+                "evidence": [{
+                    "kind": "error",
+                    "message": "shell exited 1; stdout=; stderr=cat: /tmp/cua/does-not-exist.txt: No such file or directory"
+                }]
+            })),
+        }];
+        let recovery = cua_core::InputAction::ShellExec {
+            command: "mkdir -p /tmp/cua && printf 'recovered after deliberate failure 909' > /tmp/cua/recovered.txt && cat /tmp/cua/recovered.txt".to_string(),
+            timeout_ms: 5000,
+        };
+
+        assert!(!failure_boundary_plan_collapses_recovery(
+            transcript,
+            &recovery,
+            &prior_attempts
+        ));
+    }
+
+    #[test]
+    fn failure_boundary_does_not_block_normal_shell_batching_without_observed_failure_request() {
+        let transcript = "Create /tmp/cua/recovered.txt, read it back, and report stdout.";
+        let batched = cua_core::InputAction::ShellExec {
+            command: "mkdir -p /tmp/cua && printf 'recovered after deliberate failure 909' > /tmp/cua/recovered.txt && cat /tmp/cua/recovered.txt".to_string(),
+            timeout_ms: 5000,
+        };
+
+        assert!(!failure_boundary_plan_collapses_recovery(
+            transcript,
+            &batched,
+            &[]
+        ));
+    }
+
+    #[test]
+    fn failure_boundary_rejects_sequence_that_hides_required_observation_between_actions() {
+        let transcript = "First try the missing file read and observe the failure, then recover by writing the output file.";
+        let sequence = cua_core::InputAction::Sequence {
+            actions: vec![
+                cua_core::InputAction::ShellExec {
+                    command: "cat /tmp/cua/missing.txt".to_string(),
+                    timeout_ms: 5000,
+                },
+                cua_core::InputAction::ShellExec {
+                    command: "printf 'ok' > /tmp/cua/recovered.txt".to_string(),
+                    timeout_ms: 5000,
+                },
+            ],
+            inter_action_delay_ms: 120,
+        };
+
+        assert!(failure_boundary_plan_collapses_recovery(
+            transcript,
+            &sequence,
+            &[]
         ));
     }
 

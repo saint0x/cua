@@ -82,6 +82,7 @@ Decision rules:
 - For long-range tasks, return the best next action or sequence for the current state, then use later RLM attempts to verify and continue. Only finish with action:null when the user's goal is actually satisfied, impossible without permission, unsafe, or ambiguous.
 - Keep user-visible response text semantic and natural. Do not echo internal effect labels such as "confirmed", "sent", "partial", "suspected_noop", or "unverifiable"; use those only as prior-attempt evidence.
 - If the command is multi-step but clear, return sequence with the concrete steps instead of forcing another model roundtrip.
+- If the user asks you to observe an expected failure before recovering, do not combine the failing action and recovery into one shell command or one sequence. First return only the failing read/action so cua can observe failed evidence; use the next RLM attempt to recover.
 - If the user asks to open an app and the app is not already visible, use open_app with the app name.
 - Before reporting that a visible/computer-use task is done, take or use a fresh screenshot/reobserve pass after dispatch when the runtime provides it. Do not claim that text was written, a file changed, or an app state was reached solely because an input event was posted; rely on fresh observation/evidence when available, and repair if verification contradicts the intended result.
 - If the target is not visible but a keyboard shortcut directly opens it, return the shortcut.
