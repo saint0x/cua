@@ -2998,26 +2998,52 @@ fn prior_attempts_support_failure_final(response: &str, attempts: &[PlanAttemptC
 }
 
 fn confirmed_attempt_has_task_evidence(attempt: &PlanAttemptContext) -> bool {
+    let Some(action) = attempt.action.as_ref() else {
+        return false;
+    };
     attempt.effect.as_deref() == Some("confirmed")
         && attempt.evidence.as_ref().is_some_and(|evidence| {
-            attempt
-                .action
-                .as_ref()
-                .filter(|action| json_action_uses_aegis(action))
-                .map_or_else(
-                    || evidence_has_task_readback(evidence),
-                    |action| aegis_evidence_has_task_readback(action, evidence),
-                )
+            if json_action_uses_aegis(action) {
+                aegis_evidence_has_task_readback(action, evidence)
+            } else if json_action_uses_clipboard_read(action) {
+                evidence_has_nonempty_readback_message(evidence)
+            } else {
+                evidence_has_task_readback(evidence)
+            }
         })
 }
 
 fn evidence_has_task_readback(evidence: &serde_json::Value) -> bool {
     dispatch_evidence_has_nonempty_stdout(evidence)
-        || ["stdout", "text", "value", "readback"].iter().any(|key| {
+        || ["stdout", "readback"].iter().any(|key| {
             evidence
                 .get(key)
                 .and_then(|value| value.as_str())
                 .is_some_and(|value| !value.trim().is_empty())
+        })
+}
+
+fn json_action_uses_clipboard_read(action: &serde_json::Value) -> bool {
+    match action.get("kind").and_then(|kind| kind.as_str()) {
+        Some("clipboard_read") => true,
+        Some("sequence") => action
+            .get("actions")
+            .and_then(|actions| actions.as_array())
+            .is_some_and(|actions| actions.iter().any(json_action_uses_clipboard_read)),
+        _ => false,
+    }
+}
+
+fn evidence_has_nonempty_readback_message(evidence: &serde_json::Value) -> bool {
+    evidence
+        .get("evidence")
+        .and_then(|items| items.as_array())
+        .is_some_and(|items| {
+            items.iter().any(|item| {
+                item.get("message")
+                    .and_then(|message| message.as_str())
+                    .is_some_and(|message| !message.trim().is_empty())
+            })
         })
 }
 
@@ -6299,7 +6325,10 @@ mod tests {
             effect: Some("confirmed".to_string()),
             evidence: Some(json!({
                 "effect": "confirmed",
-                "stdout": "clipboard loop proof 612"
+                "evidence": [{
+                    "kind": "value_readback",
+                    "message": "shell exited 0; stdout=clipboard loop proof 612; stderr="
+                }]
             })),
         }];
 
@@ -6317,6 +6346,51 @@ mod tests {
             "The verified clipboard contents are: clipboard loop proof 612",
             &None,
             &[]
+        ));
+    }
+
+    #[test]
+    fn loose_text_or_value_metadata_does_not_support_verified_final() {
+        for evidence in [
+            json!({"effect": "confirmed", "text": "looks done"}),
+            json!({"effect": "confirmed", "value": "looks done"}),
+        ] {
+            let prior_attempts = vec![PlanAttemptContext {
+                attempt_index: 1,
+                response: "Opening Safari.".to_string(),
+                action: Some(json!({"kind": "open_app", "app_name": "Safari"})),
+                effect: Some("confirmed".to_string()),
+                evidence: Some(evidence),
+            }];
+
+            assert!(!action_null_finishes_after_prior_attempts(
+                "The verified browser title is Example Domain.",
+                &None,
+                &prior_attempts
+            ));
+        }
+    }
+
+    #[test]
+    fn clipboard_readback_message_supports_verified_final() {
+        let prior_attempts = vec![PlanAttemptContext {
+            attempt_index: 1,
+            response: "Reading clipboard contents.".to_string(),
+            action: Some(json!({"kind": "clipboard_read", "allow_sensitive": true})),
+            effect: Some("confirmed".to_string()),
+            evidence: Some(json!({
+                "effect": "confirmed",
+                "evidence": [{
+                    "kind": "value_readback",
+                    "message": "clipboard proof 812"
+                }]
+            })),
+        }];
+
+        assert!(action_null_finishes_after_prior_attempts(
+            "The verified clipboard contents are clipboard proof 812.",
+            &None,
+            &prior_attempts
         ));
     }
 
