@@ -338,7 +338,7 @@ impl QguiActionOutcome {
         };
         let route = common_qgui_route(outcomes).unwrap_or(InputRoute::SystemApi);
         let delivery_mode = common_qgui_delivery_mode(outcomes).unwrap_or(DeliveryMode::Unknown);
-        let mut message = format!("qgui sequence executed {action_count} actions");
+        let mut message = format!("qgui sequence accepted {action_count} actions");
         let readbacks = outcomes
             .iter()
             .filter(|outcome| outcome.effect == Effect::Confirmed)
@@ -753,7 +753,7 @@ fn checked_output(output: std::process::Output, label: &str) -> anyhow::Result<S
     if output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if stdout.is_empty() {
-            Ok(format!("{label} completed"))
+            Ok(format!("{label} accepted"))
         } else {
             Ok(stdout)
         }
@@ -880,7 +880,7 @@ mod tests {
 
     #[test]
     fn desktop_outcomes_are_unverifiable_until_reobserved() {
-        let outcome = QguiActionOutcome::desktop("qgui desktop command completed");
+        let outcome = QguiActionOutcome::desktop("qgui desktop command accepted");
 
         assert_eq!(outcome.effect, Effect::Unverifiable);
         assert_eq!(outcome.route, InputRoute::GlobalInput);
