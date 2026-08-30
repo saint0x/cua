@@ -2989,12 +2989,9 @@ fn prior_attempts_support_verified_final(response: &str, attempts: &[PlanAttempt
 
 fn prior_attempts_support_failure_final(response: &str, attempts: &[PlanAttemptContext]) -> bool {
     final_response_reports_prior_failure(response)
-        && attempts.iter().any(|attempt| {
-            matches!(
-                attempt.effect.as_deref(),
-                Some("failed" | "refused" | "suspected_noop" | "unverifiable")
-            )
-        })
+        && attempts
+            .iter()
+            .any(|attempt| matches!(attempt.effect.as_deref(), Some("failed" | "refused")))
 }
 
 fn confirmed_attempt_has_task_evidence(attempt: &PlanAttemptContext) -> bool {
@@ -5885,6 +5882,41 @@ mod tests {
                 evidence: Some(json!({
                     "effect": "failed",
                     "error": "cat: /tmp/does-not-exist: No such file or directory"
+                })),
+            }]
+        ));
+        assert!(action_null_stops_long_range_without_evidence(
+            "Search the web and summarize what you verify.",
+            "I failed to complete the search.",
+            &None,
+            &[PlanAttemptContext {
+                attempt_index: 1,
+                response: "I will search the web.".to_string(),
+                action: None,
+                effect: Some("suspected_noop".to_string()),
+                evidence: Some(json!({
+                    "effect": "suspected_noop",
+                    "reason": "action_null_plan_claimed_pending_work"
+                })),
+            }]
+        ));
+        assert!(action_null_stops_long_range_without_evidence(
+            "Open Safari, research the page, and report the verified title.",
+            "I failed to verify the page title.",
+            &None,
+            &[PlanAttemptContext {
+                attempt_index: 1,
+                response: "Clicking the result.".to_string(),
+                action: Some(json!({
+                    "kind": "mouse_click",
+                    "x": 320,
+                    "y": 428,
+                    "button": "left",
+                    "count": 1
+                })),
+                effect: Some("unverifiable".to_string()),
+                evidence: Some(json!({
+                    "effect": "unverifiable"
                 })),
             }]
         ));
