@@ -2371,13 +2371,40 @@ fn expected_final_shell_stdout_value(transcript: &str) -> Option<String> {
     if !(lower.contains("final stdout") || lower.contains("exact final stdout")) {
         return None;
     }
-    let final_section_start = lower
+    if let Some(final_section_start) = lower
         .rfind("then repair")
         .or_else(|| lower.rfind("finally"))
-        .or_else(|| lower.rfind("final stdout"))?;
-    let transcript_final_section = &transcript[final_section_start..];
-    extract_exact_value_after_marker(transcript_final_section, " exactly ")
-        .or_else(|| extract_exact_value_after_marker(transcript_final_section, " exact "))
+    {
+        let transcript_final_section = &transcript[final_section_start..];
+        if let Some(value) = extract_exact_value_after_marker(transcript_final_section, " exactly ")
+            .or_else(|| extract_exact_value_after_marker(transcript_final_section, " exact "))
+        {
+            return Some(value);
+        }
+    }
+    extract_last_exact_value_after_markers(
+        transcript,
+        &[
+            "containing exactly ",
+            "contains exactly ",
+            "contain exactly ",
+            "writing exactly ",
+            "write exactly ",
+            "wrote exactly ",
+            "with exactly ",
+            "says exactly ",
+            "say exactly ",
+        ],
+    )
+}
+
+fn extract_last_exact_value_after_markers(text: &str, markers: &[&str]) -> Option<String> {
+    let lower = text.to_ascii_lowercase();
+    markers
+        .iter()
+        .filter_map(|marker| lower.rfind(marker).map(|start| (start, *marker)))
+        .max_by_key(|(start, _)| *start)
+        .and_then(|(_, marker)| extract_exact_value_after_marker(text, marker))
 }
 
 fn extract_exact_value_after_marker(text: &str, marker: &str) -> Option<String> {
@@ -5141,6 +5168,31 @@ mod tests {
             shell_expected_stdout_missing_evidence(transcript, turn.evidence)["reason"],
             "shell_expected_final_stdout_not_observed"
         );
+    }
+
+    #[test]
+    fn shell_expected_final_stdout_extracts_containing_exactly_request() {
+        let transcript = "Using local shell only, create /tmp/cua/value.txt containing exactly rlm proof 42, then read the file back to stdout, and report the exact final stdout.";
+        let turn = CompletedAssistantTurn {
+            response: "Writing and reading value.txt.".to_string(),
+            action: Some(json!({
+                "kind": "shell_exec",
+                "command": "printf WRONG-VALUE > /tmp/cua/value.txt && cat /tmp/cua/value.txt",
+                "timeout_ms": 5000
+            })),
+            evidence: Some(json!({
+                "effect": "confirmed",
+                "evidence": [
+                    {"kind": "value_readback", "message": "shell exited 0; stdout=WRONG-VALUE; stderr="}
+                ]
+            })),
+        };
+
+        assert_eq!(
+            expected_final_shell_stdout_value(transcript).as_deref(),
+            Some("rlm proof 42")
+        );
+        assert!(shell_expected_stdout_missing_for_goal(transcript, &turn));
     }
 
     #[test]

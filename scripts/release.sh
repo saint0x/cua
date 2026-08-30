@@ -243,6 +243,8 @@ run scripts/host-config-migration-proof.sh | tee "$ARTIFACT_DIR/host-config-migr
 run scripts/host-sdk-session-proof.sh | tee "$ARTIFACT_DIR/host-sdk-session-proof.json"
 run scripts/host-inbox-webhook-proof.sh | tee "$ARTIFACT_DIR/host-inbox-webhook-proof.json"
 run scripts/host-scratchpad-proof.sh | tee "$ARTIFACT_DIR/host-scratchpad-proof.json"
+run scripts/host-voice-local-planner-loop-proof.sh | tee "$ARTIFACT_DIR/host-voice-local-planner-missing-readback-path.txt"
+run env CUA_VOICE_LOCAL_PLANNER_SCENARIO=mismatch-readback scripts/host-voice-local-planner-loop-proof.sh | tee "$ARTIFACT_DIR/host-voice-local-planner-mismatch-readback-path.txt"
 
 log "Package app"
 APP_PATH="$(scripts/package-macos-app.sh | tail -n 1)"

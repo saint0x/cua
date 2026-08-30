@@ -106,6 +106,7 @@ cargo build -p cua
 scripts/host-gui-smoke.sh
 scripts/host-voice-smoke.sh
 scripts/host-voice-local-planner-loop-proof.sh
+CUA_VOICE_LOCAL_PLANNER_SCENARIO=mismatch-readback scripts/host-voice-local-planner-loop-proof.sh
 scripts/host-voice-missing-planner-key-proof.sh
 fozzy doctor --deep --scenario fozzy/scenarios/cua-smoke.json --runs 5 --seed 4242 --json
 fozzy test --det --strict-verify fozzy/scenarios/cua-smoke.json --json

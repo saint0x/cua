@@ -17,6 +17,7 @@ PLANNER_ADDR="${CUA_VOICE_LOCAL_PLANNER_MODEL_ADDR:-127.0.0.1:9895}"
 TOKEN="${CUA_HTTP_TOKEN:-host-voice-local-planner-token-$RUN_ID}"
 OUT_DIR="${CUA_VOICE_LOCAL_PLANNER_OUT_DIR:-artifacts/cua/voice-local-planner-$RUN_ID}"
 CUA_HOME_DIR="${CUA_VOICE_LOCAL_PLANNER_HOME:-}"
+SCENARIO="${CUA_VOICE_LOCAL_PLANNER_SCENARIO:-missing-readback}"
 EVENTS="$OUT_DIR/events.jsonl"
 DAEMON_EVENTS="$OUT_DIR/daemon-events.json"
 STATUS="$OUT_DIR/status.json"
@@ -26,7 +27,16 @@ VOICE_TRACE="$OUT_DIR/voice.jsonl"
 TARGET_DIR="$OUT_DIR/work"
 TARGET_FILE="$TARGET_DIR/value.txt"
 EXPECTED="rlm loop verified stdout $RUN_ID"
+WRONG_VALUE="wrong loop stdout $RUN_ID"
 TRANSCRIPT="Using local shell only, create $TARGET_FILE containing exactly $EXPECTED, then read the file back to stdout, and report the exact final stdout."
+
+case "$SCENARIO" in
+  missing-readback | mismatch-readback) ;;
+  *)
+    echo "unknown local planner proof scenario: $SCENARIO" >&2
+    exit 1
+    ;;
+esac
 
 cargo build -p cua -p cua-voice
 
@@ -64,7 +74,7 @@ fi
 mkdir -p "$CUA_HOME_DIR/config"
 : > "$CUA_HOME_DIR/config/env"
 
-python3 - "$PLANNER_ADDR" "$REQUESTS" "$TARGET_FILE" "$EXPECTED" <<'PY' &
+python3 - "$PLANNER_ADDR" "$REQUESTS" "$TARGET_FILE" "$EXPECTED" "$WRONG_VALUE" "$SCENARIO" <<'PY' &
 import json
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -73,10 +83,21 @@ host, port_text = sys.argv[1].rsplit(":", 1)
 requests_path = sys.argv[2]
 target_file = sys.argv[3]
 expected = sys.argv[4]
+wrong_value = sys.argv[5]
+scenario = sys.argv[6]
 counter = 0
 
 def planner_content(index):
     if index == 1:
+        if scenario == "mismatch-readback":
+            return {
+                "response": "Writing and reading an initial value.",
+                "action": {
+                    "kind": "shell_exec",
+                    "command": f"mkdir -p {json.dumps(target_file.rsplit('/', 1)[0])} && printf %s {json.dumps(wrong_value)} > {json.dumps(target_file)} && cat {json.dumps(target_file)}",
+                    "timeout_ms": 5000,
+                },
+            }
         return {
             "response": "Creating the file.",
             "action": {
@@ -91,6 +112,15 @@ def planner_content(index):
             "action": None,
         }
     if index == 3:
+        if scenario == "mismatch-readback":
+            return {
+                "response": "Repairing and reading the file back.",
+                "action": {
+                    "kind": "shell_exec",
+                    "command": f"printf %s {json.dumps(expected)} > {json.dumps(target_file)} && cat {json.dumps(target_file)}",
+                    "timeout_ms": 5000,
+                },
+            }
         return {
             "response": "Reading the file back.",
             "action": {
@@ -204,6 +234,17 @@ CUA_HTTP_TOKEN="$TOKEN" \
 
 test "$(cat "$TARGET_FILE")" = "$EXPECTED"
 
+case "$SCENARIO" in
+  missing-readback)
+    PARTIAL_REASON="shell_readback_missing_for_verified_output_goal"
+    TRACE_PARTIAL_FIELD='"shell_readback_missing":true'
+    ;;
+  mismatch-readback)
+    PARTIAL_REASON="shell_expected_final_stdout_not_observed"
+    TRACE_PARTIAL_FIELD='"shell_expected_stdout_missing":true'
+    ;;
+esac
+
 jq -s -e \
   --arg expected "$EXPECTED" '
   def idx($name): map(.event) | index($name);
@@ -226,28 +267,32 @@ jq -e '
 ' "$DAEMON_EVENTS" >/dev/null
 
 jq -s -e '
+  def contains_reason($reason): .body.messages[-1].content[0].text | contains($reason);
   length == 3 and
   .[0].path == "/v1/chat/completions" and
   (.[1].body.messages[-1].content[0].text | contains("Prior attempts in this turn")) and
   (.[1].body.messages[-1].content[0].text | contains("\"effect\": \"partial\"")) and
-  (.[1].body.messages[-1].content[0].text | contains("shell_readback_missing_for_verified_output_goal")) and
+  (.[1] | contains_reason($partial_reason)) and
   (.[1].body.messages[-1].content[0].text | contains("\"effect\": \"confirmed\"") | not) and
   (.[2].body.messages[-1].content[0].text | contains("action_null_concrete_goal_without_evidence")) and
-  (.[2].body.messages[-1].content[0].text | contains("shell_readback_missing_for_verified_output_goal"))
-' "$REQUESTS" >/dev/null
+  (.[2] | contains_reason($partial_reason))
+' --arg partial_reason "$PARTIAL_REASON" "$REQUESTS" >/dev/null
 
 jq -s -e '
   any(.event == "agent_loop_start" and .data.budget.kind == "unbounded") and
-  any(.event == "agent_attempt_outcome" and .data.effect == "partial" and .data.shell_readback_missing == true) and
+  any(.event == "agent_attempt_outcome" and .data.effect == "partial" and (. | tostring | contains($trace_partial_field))) and
   any(.event == "planning_rejected" and .data.reason == "action_null_concrete_goal_without_evidence") and
   any(.event == "agent_loop_stop" and .data.attempts == 3 and .data.final_effect == "confirmed")
-' "$VOICE_TRACE" >/dev/null
+' --arg trace_partial_field "$TRACE_PARTIAL_FIELD" "$VOICE_TRACE" >/dev/null
 
 jq -n \
+  --arg scenario "$SCENARIO" \
   --arg profile "$PROFILE" \
   --arg transcript "$TRANSCRIPT" \
   --arg expected "$EXPECTED" \
   --arg target_file "$TARGET_FILE" \
+  --arg partial_reason "$PARTIAL_REASON" \
+  --arg trace_partial_field "$TRACE_PARTIAL_FIELD" \
   --slurpfile events "$EVENTS" \
   --slurpfile daemon_events "$DAEMON_EVENTS" \
   --slurpfile requests "$REQUESTS" \
@@ -256,6 +301,7 @@ jq -n \
   '{
     schema_version: "cua.voice_local_planner_loop_proof.v1",
     ok: true,
+    scenario: $scenario,
     profile: $profile,
     transcript: $transcript,
     expected: $expected,
@@ -265,11 +311,11 @@ jq -n \
     request_paths: ($requests | map(.path)),
     repair_context_preserved_partial_evidence: (
       ($requests[1].body.messages[-1].content[0].text | contains("\"effect\": \"partial\"")) and
-      ($requests[1].body.messages[-1].content[0].text | contains("shell_readback_missing_for_verified_output_goal"))
+      ($requests[1].body.messages[-1].content[0].text | contains($partial_reason))
     ),
     model_visible_confirmed_leaked: ($requests[1].body.messages[-1].content[0].text | contains("\"effect\": \"confirmed\"")),
     premature_final_rejected: ($trace | contains("action_null_concrete_goal_without_evidence")),
-    shell_readback_repaired: ($trace | contains("\"shell_readback_missing\":true")),
+    partial_repaired: ($trace | contains($trace_partial_field)),
     safety_state: $status[0].safety_state
   }' > "$PROOF"
 
@@ -280,7 +326,7 @@ jq -e '
   .repair_context_preserved_partial_evidence == true and
   .model_visible_confirmed_leaked == false and
   .premature_final_rejected == true and
-  .shell_readback_repaired == true
+  .partial_repaired == true
 ' "$PROOF" >/dev/null
 
 echo "$OUT_DIR"

@@ -16,6 +16,8 @@ mkdir -p "$OUT_DIR"
 
 ACTION_DIR="$OUT_DIR/action"
 PLANNER_DIR="$OUT_DIR/planner"
+LOCAL_PLANNER_MISSING_DIR="$OUT_DIR/local-planner-missing-readback"
+LOCAL_PLANNER_MISMATCH_DIR="$OUT_DIR/local-planner-mismatch-readback"
 MISSING_KEY_DIR="$OUT_DIR/missing-key"
 PROVIDER_PROGRESS_DIR="$OUT_DIR/provider-progress"
 UI_DIR="$OUT_DIR/ui"
@@ -61,6 +63,24 @@ if planner_key_available; then
     scripts/host-voice-planner-proof.sh | tail -n 1
   )"
 fi
+LOCAL_PLANNER_MISSING_RESULT="$(
+  CUA_HTTP_TOKEN="voice-proof-suite-local-missing-$RUN_ID" \
+  CUA_VOICE_LOCAL_PLANNER_PROFILE="voice-proof-suite-local-missing-$RUN_ID" \
+  CUA_VOICE_LOCAL_PLANNER_ADDR="127.0.0.1:$((PORT_BASE + 2))" \
+  CUA_VOICE_LOCAL_PLANNER_MODEL_ADDR="127.0.0.1:$((PORT_BASE + 3))" \
+  CUA_VOICE_LOCAL_PLANNER_OUT_DIR="$LOCAL_PLANNER_MISSING_DIR" \
+  CUA_VOICE_LOCAL_PLANNER_SCENARIO="missing-readback" \
+  scripts/host-voice-local-planner-loop-proof.sh | tail -n 1
+)"
+LOCAL_PLANNER_MISMATCH_RESULT="$(
+  CUA_HTTP_TOKEN="voice-proof-suite-local-mismatch-$RUN_ID" \
+  CUA_VOICE_LOCAL_PLANNER_PROFILE="voice-proof-suite-local-mismatch-$RUN_ID" \
+  CUA_VOICE_LOCAL_PLANNER_ADDR="127.0.0.1:$((PORT_BASE + 4))" \
+  CUA_VOICE_LOCAL_PLANNER_MODEL_ADDR="127.0.0.1:$((PORT_BASE + 5))" \
+  CUA_VOICE_LOCAL_PLANNER_OUT_DIR="$LOCAL_PLANNER_MISMATCH_DIR" \
+  CUA_VOICE_LOCAL_PLANNER_SCENARIO="mismatch-readback" \
+  scripts/host-voice-local-planner-loop-proof.sh | tail -n 1
+)"
 MISSING_KEY_RESULT="$(
   CUA_VOICE_MISSING_KEY_PROFILE="voice-proof-suite-missing-key-$RUN_ID" \
   CUA_VOICE_MISSING_KEY_OUT_DIR="$MISSING_KEY_DIR" \
@@ -88,6 +108,14 @@ if [[ -n "$PLANNER_RESULT" && "$PLANNER_RESULT" != "$PLANNER_DIR" ]]; then
   echo "voice planner proof child output mismatch" >&2
   exit 1
 fi
+if [[ "$LOCAL_PLANNER_MISSING_RESULT" != "$LOCAL_PLANNER_MISSING_DIR" ]]; then
+  echo "voice local planner missing-readback proof child output mismatch" >&2
+  exit 1
+fi
+if [[ "$LOCAL_PLANNER_MISMATCH_RESULT" != "$LOCAL_PLANNER_MISMATCH_DIR" ]]; then
+  echo "voice local planner mismatch-readback proof child output mismatch" >&2
+  exit 1
+fi
 if [[ "$MISSING_KEY_RESULT" != "$MISSING_KEY_DIR" ]]; then
   echo "voice missing-key proof child output mismatch" >&2
   exit 1
@@ -101,6 +129,26 @@ jq -e '.within_budget == true' "$ACTION_DIR/proof.json" >/dev/null
 if [[ -n "$PLANNER_RESULT" ]]; then
   jq -e '.within_budget == true' "$PLANNER_DIR/proof.json" >/dev/null
 fi
+jq -e '
+  .ok == true and
+  .scenario == "missing-readback" and
+  .final_reply == .expected and
+  .planner_requests == 3 and
+  .repair_context_preserved_partial_evidence == true and
+  .model_visible_confirmed_leaked == false and
+  .premature_final_rejected == true and
+  .partial_repaired == true
+' "$LOCAL_PLANNER_MISSING_DIR/proof.json" >/dev/null
+jq -e '
+  .ok == true and
+  .scenario == "mismatch-readback" and
+  .final_reply == .expected and
+  .planner_requests == 3 and
+  .repair_context_preserved_partial_evidence == true and
+  .model_visible_confirmed_leaked == false and
+  .premature_final_rejected == true and
+  .partial_repaired == true
+' "$LOCAL_PLANNER_MISMATCH_DIR/proof.json" >/dev/null
 jq -e '
   .ok == true and
   .within_budget == true and
@@ -136,6 +184,8 @@ jq -n \
   --arg action_dir "$ACTION_DIR" \
   --arg planner_dir "$PLANNER_DIR" \
   --arg planner_skip_reason "$(planner_key_name) unavailable" \
+  --arg local_planner_missing_dir "$LOCAL_PLANNER_MISSING_DIR" \
+  --arg local_planner_mismatch_dir "$LOCAL_PLANNER_MISMATCH_DIR" \
   --arg missing_key_dir "$MISSING_KEY_DIR" \
   --arg provider_progress_dir "$PROVIDER_PROGRESS_DIR" \
   --arg ui_dir "$UI_DIR" \
@@ -143,6 +193,8 @@ jq -n \
   --arg planner_addr "127.0.0.1:$((PORT_BASE + 1))" \
   --slurpfile action "$ACTION_DIR/proof.json" \
   "${PLANNER_ARG[@]}" \
+  --slurpfile local_planner_missing "$LOCAL_PLANNER_MISSING_DIR/proof.json" \
+  --slurpfile local_planner_mismatch "$LOCAL_PLANNER_MISMATCH_DIR/proof.json" \
   --slurpfile missing_key "$MISSING_KEY_DIR/proof.json" \
   "${PROVIDER_PROGRESS_ARG[@]}" \
   --slurpfile ui "$UI_DIR/proof.json" \
@@ -151,6 +203,14 @@ jq -n \
     ok: (
       $action[0].within_budget == true and
       (($planner | length) == 0 or $planner[0].within_budget == true) and
+      $local_planner_missing[0].ok == true and
+      $local_planner_missing[0].scenario == "missing-readback" and
+      $local_planner_missing[0].final_reply == $local_planner_missing[0].expected and
+      $local_planner_missing[0].partial_repaired == true and
+      $local_planner_mismatch[0].ok == true and
+      $local_planner_mismatch[0].scenario == "mismatch-readback" and
+      $local_planner_mismatch[0].final_reply == $local_planner_mismatch[0].expected and
+      $local_planner_mismatch[0].partial_repaired == true and
       $missing_key[0].ok == true and
       $missing_key[0].within_budget == true and
       $missing_key[0].trace_stop.attempts > 0 and
@@ -206,6 +266,22 @@ jq -n \
         }
       end
     ),
+    local_planner: {
+      missing_readback: {
+        dir: $local_planner_missing_dir,
+        final_reply: $local_planner_missing[0].final_reply,
+        planner_requests: $local_planner_missing[0].planner_requests,
+        premature_final_rejected: $local_planner_missing[0].premature_final_rejected,
+        partial_repaired: $local_planner_missing[0].partial_repaired
+      },
+      mismatch_readback: {
+        dir: $local_planner_mismatch_dir,
+        final_reply: $local_planner_mismatch[0].final_reply,
+        planner_requests: $local_planner_mismatch[0].planner_requests,
+        premature_final_rejected: $local_planner_mismatch[0].premature_final_rejected,
+        partial_repaired: $local_planner_mismatch[0].partial_repaired
+      }
+    },
     missing_key: {
       dir: $missing_key_dir,
       elapsed_ms: $missing_key[0].elapsed_ms,
