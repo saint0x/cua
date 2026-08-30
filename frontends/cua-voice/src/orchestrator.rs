@@ -1219,14 +1219,14 @@ async fn plan_and_dispatch(
             }
             if planned_action_json.as_ref().is_some_and(|action| {
                 transcript_requests_long_range_work(&transcript)
-                    && action_repeats_confirmed_attempt(&attempts, action)
+                    && action_repeats_accepted_attempt(&attempts, action)
             }) {
                 trace
                     .append(
                         "planning_rejected",
                         json!({
                             "attempt_index": attempt_index,
-                            "reason": "repeated_confirmed_long_range_action",
+                            "reason": "repeated_accepted_long_range_action",
                             "action": planned_action_json.clone(),
                         }),
                     )
@@ -1238,12 +1238,12 @@ async fn plan_and_dispatch(
                     effect: Some("suspected_noop".to_string()),
                     evidence: Some(json!({
                         "effect": "suspected_noop",
-                        "reason": "repeated_confirmed_long_range_action",
-                        "repair_hint": "The same action already completed partial progress. Use the fresh observation to choose the next different action or final verified answer.",
+                        "reason": "repeated_accepted_long_range_action",
+                        "repair_hint": "The same action was already accepted in this turn. Use the fresh observation to choose the next different action or final verified answer.",
                     })),
                 });
                 if !loop_budget.can_continue_after(attempt_index) {
-                    anyhow::bail!("planning model repeated an already completed long-range action");
+                    anyhow::bail!("planning model repeated an already accepted long-range action");
                 }
                 attempt_index += 1;
                 continue;
@@ -3264,7 +3264,7 @@ fn json_has_zero_match_count(value: &serde_json::Value) -> bool {
     }
 }
 
-fn action_repeats_confirmed_attempt(
+fn action_repeats_accepted_attempt(
     attempts: &[PlanAttemptContext],
     action: &serde_json::Value,
 ) -> bool {
@@ -3473,7 +3473,7 @@ fn attach_loop_evidence(
         return completed;
     }
     let final_attempt_already_recorded =
-        prior_attempts_include_completed(&completed, prior_attempts);
+        prior_attempts_include_final_turn(&completed, prior_attempts);
     let final_evidence = completed.evidence.take();
     let final_effect = final_evidence
         .as_ref()
@@ -3609,14 +3609,14 @@ fn loop_attempt_count(
     attempts: &[PlanAttemptContext],
 ) -> usize {
     attempts.len()
-        + if prior_attempts_include_completed(completed, attempts) {
+        + if prior_attempts_include_final_turn(completed, attempts) {
             0
         } else {
             1
         }
 }
 
-fn prior_attempts_include_completed(
+fn prior_attempts_include_final_turn(
     completed: &CompletedAssistantTurn,
     attempts: &[PlanAttemptContext],
 ) -> bool {
@@ -6888,7 +6888,7 @@ mod tests {
     }
 
     #[test]
-    fn repeated_confirmed_long_range_action_is_repair_evidence_not_dispatch() {
+    fn repeated_accepted_long_range_action_is_repair_evidence_not_dispatch() {
         let action = json!({
             "kind": "sequence",
             "actions": [
@@ -6912,7 +6912,7 @@ mod tests {
             evidence: Some(json!({"effect": "confirmed"})),
         }];
 
-        assert!(action_repeats_confirmed_attempt(&attempts, &action));
+        assert!(action_repeats_accepted_attempt(&attempts, &action));
     }
 
     #[test]
@@ -6931,7 +6931,7 @@ mod tests {
         }];
 
         assert!(action_is_observation_only(&action));
-        assert!(action_repeats_confirmed_attempt(&attempts, &action));
+        assert!(action_repeats_accepted_attempt(&attempts, &action));
     }
 
     #[test]
@@ -6963,7 +6963,7 @@ mod tests {
         ];
 
         assert!(action_is_observation_only(&action));
-        assert!(!action_repeats_confirmed_attempt(&attempts, &action));
+        assert!(!action_repeats_accepted_attempt(&attempts, &action));
     }
 
     #[test]
@@ -6982,7 +6982,7 @@ mod tests {
         }];
 
         assert!(!action_is_observation_only(&action));
-        assert!(action_repeats_confirmed_attempt(&attempts, &action));
+        assert!(action_repeats_accepted_attempt(&attempts, &action));
     }
 
     #[test]

@@ -119,7 +119,7 @@ fozzy replay artifacts/cua/fozzy/cua-rlm-loop-missing-planner-key-host.fozzy --j
 fozzy ci artifacts/cua/fozzy/cua-rlm-loop-missing-planner-key-host.fozzy --strict --json
 ```
 
-With `OPENROUTER_API_KEY` configured, also verify that provider failures preserve completed action progress:
+With `OPENROUTER_API_KEY` configured, also verify that provider failures preserve attempted action context:
 
 ```sh
 scripts/host-voice-provider-progress-proof.sh
