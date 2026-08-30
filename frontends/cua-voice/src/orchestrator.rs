@@ -1448,7 +1448,7 @@ async fn plan_and_dispatch(
             let should_verify = turn
                 .action
                 .as_ref()
-                .is_some_and(action_requires_visible_reobserve_before_finish);
+                .is_some_and(action_requires_reobserve_before_finish);
             if !should_continue && !should_verify {
                 break mark_long_range_budget_exhausted_if_needed(
                     &transcript,
@@ -1906,17 +1906,15 @@ fn observed_turn_effect(
     })
 }
 
-fn action_requires_visible_reobserve_before_finish(action: &serde_json::Value) -> bool {
+fn action_requires_reobserve_before_finish(action: &serde_json::Value) -> bool {
     match action.get("kind").and_then(|kind| kind.as_str()) {
-        Some("key_type" | "key_paste") => true,
+        Some(
+            "open_app" | "mouse_click" | "mouse_drag" | "key_press" | "key_type" | "key_paste",
+        ) => true,
         Some("sequence") => action
             .get("actions")
             .and_then(|actions| actions.as_array())
-            .is_some_and(|actions| {
-                actions
-                    .iter()
-                    .any(action_requires_visible_reobserve_before_finish)
-            }),
+            .is_some_and(|actions| actions.iter().any(action_requires_reobserve_before_finish)),
         _ => false,
     }
 }
@@ -3301,7 +3299,7 @@ fn visible_attempt_awaited_verification(attempt: &PlanAttemptContext) -> bool {
     ) && attempt
         .action
         .as_ref()
-        .is_some_and(action_requires_visible_reobserve_before_finish)
+        .is_some_and(action_requires_reobserve_before_finish)
         && attempt
             .evidence
             .as_ref()
@@ -4820,8 +4818,12 @@ mod tests {
     }
 
     #[test]
-    fn only_visible_text_entry_actions_require_reobserve_before_final_reply() {
+    fn visible_side_effect_actions_require_reobserve_before_final_reply() {
         for action in [
+            json!({"kind": "open_app", "app_name": "Calculator"}),
+            json!({"kind": "mouse_click", "x": 1, "y": 2}),
+            json!({"kind": "mouse_drag", "from_x": 1, "from_y": 2, "to_x": 3, "to_y": 4}),
+            json!({"kind": "key_press", "combo": "enter"}),
             json!({"kind": "key_type", "text": "hello"}),
             json!({"kind": "key_paste", "text": "hello"}),
             json!({"kind": "sequence", "actions": [
@@ -4829,17 +4831,17 @@ mod tests {
                 {"kind": "key_paste", "text": "hello"}
             ]}),
         ] {
-            assert!(action_requires_visible_reobserve_before_finish(&action));
+            assert!(action_requires_reobserve_before_finish(&action));
         }
         for action in [
             json!({"kind": "sequence", "actions": []}),
             json!({"kind": "shell_exec", "command": "pwd"}),
             json!({"kind": "aegis", "args": ["--help"]}),
             json!({"kind": "ctx", "args": ["query", "default", "cua"]}),
-            json!({"kind": "open_app", "app_name": "Calculator"}),
-            json!({"kind": "mouse_click", "x": 1, "y": 2}),
+            json!({"kind": "clipboard_read", "allow_sensitive": false}),
+            json!({"kind": "mouse_move", "x": 1, "y": 2}),
         ] {
-            assert!(!action_requires_visible_reobserve_before_finish(&action));
+            assert!(!action_requires_reobserve_before_finish(&action));
         }
     }
 
