@@ -2736,8 +2736,13 @@ fn action_null_stops_long_range_without_evidence(
         && transcript_requests_long_range_work(transcript)
         && !action_null_finishes_after_prior_attempts(response, action, prior_attempts)
         && !planner_response_claims_pending_work(response)
-        && !response_requests_clarification(response)
+        && !response_requests_supported_clarification(response, transcript)
         && !response_reports_evidence_backed_blocker(response, prior_attempts)
+}
+
+fn response_requests_supported_clarification(response: &str, transcript: &str) -> bool {
+    response_requests_clarification(response)
+        && transcript_allows_long_range_clarification(transcript)
 }
 
 fn response_requests_clarification(response: &str) -> bool {
@@ -2759,6 +2764,69 @@ fn response_requests_clarification(response: &str) -> bool {
         ]
         .iter()
         .any(|marker| lower.contains(marker))
+}
+
+fn transcript_allows_long_range_clarification(transcript: &str) -> bool {
+    !transcript_has_concrete_long_range_target(transcript)
+}
+
+fn transcript_has_concrete_long_range_target(transcript: &str) -> bool {
+    let lower = transcript.to_ascii_lowercase();
+    if first_transcript_url(transcript).is_some() {
+        return true;
+    }
+    [" for ", " about ", " on ", " regarding "]
+        .iter()
+        .filter_map(|marker| lower.split_once(marker).map(|(_, after)| after))
+        .map(concrete_target_phrase)
+        .any(|target| !target.is_empty())
+}
+
+fn concrete_target_phrase(text: &str) -> String {
+    let trimmed = text.trim_start();
+    let lower = trimmed.to_ascii_lowercase();
+    let end = [" then ", " and ", ",", ".", "?"]
+        .iter()
+        .filter_map(|delimiter| lower.find(delimiter))
+        .min()
+        .unwrap_or(trimmed.len());
+    let phrase = trimmed[..end].trim();
+    let words = phrase
+        .split_whitespace()
+        .map(normalize_voice_token)
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>();
+    if words.is_empty()
+        || words.iter().all(|word| {
+            matches!(
+                word.as_str(),
+                "the"
+                    | "a"
+                    | "an"
+                    | "item"
+                    | "thing"
+                    | "stuff"
+                    | "page"
+                    | "site"
+                    | "website"
+                    | "source"
+                    | "result"
+                    | "results"
+                    | "it"
+                    | "that"
+                    | "this"
+            )
+        })
+    {
+        return String::new();
+    }
+    words.join(" ")
+}
+
+fn first_transcript_url(text: &str) -> Option<&str> {
+    text.split_whitespace()
+        .map(|token| token.trim_matches(|ch: char| matches!(ch, '"' | '\'' | ',' | '.')))
+        .find(|token| token.starts_with("https://") || token.starts_with("http://"))
 }
 
 fn response_reports_evidence_backed_blocker(
@@ -6006,6 +6074,27 @@ mod tests {
             "The request is ambiguous; please clarify which item to search for.",
             &None,
             &[]
+        ));
+        assert!(action_null_stops_long_range_without_evidence(
+            "Search the web for official SQLite foreign key documentation and report the verified title.",
+            "Which documentation should I search for?",
+            &None,
+            &[]
+        ));
+        assert!(action_null_stops_long_range_without_evidence(
+            "Use Aegis headless to navigate to https://www.sqlite.org/foreignkeys.html and report the verified title.",
+            "Could you clarify which page to inspect?",
+            &None,
+            &[]
+        ));
+        assert!(transcript_allows_long_range_clarification(
+            "Search the web for the item."
+        ));
+        assert!(!transcript_allows_long_range_clarification(
+            "Search the web for official SQLite foreign key documentation."
+        ));
+        assert!(!transcript_allows_long_range_clarification(
+            "Navigate to https://example.com and inspect the page title."
         ));
         assert!(action_null_stops_long_range_without_evidence(
             "Search the web and summarize what you verify.",
