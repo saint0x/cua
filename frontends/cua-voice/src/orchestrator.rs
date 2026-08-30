@@ -1416,7 +1416,7 @@ async fn plan_and_dispatch(
             } else {
                 turn.evidence.clone()
             };
-            let long_range_continuation = should_continue_long_range_after_verified_action(
+            let long_range_continuation = should_continue_long_range_after_accepted_action(
                 &transcript,
                 &turn,
                 effect.as_deref(),
@@ -2573,7 +2573,7 @@ fn aegis_readback_missing_evidence(evidence: Option<serde_json::Value>) -> serde
     }
 }
 
-fn should_continue_long_range_after_verified_action(
+fn should_continue_long_range_after_accepted_action(
     transcript: &str,
     turn: &CompletedAssistantTurn,
     effect: Option<&str>,
@@ -3666,7 +3666,7 @@ fn should_replan_after_turn(
         return false;
     }
     should_replan_after_effect(effect, attempt_index, loop_budget)
-        || should_continue_long_range_after_verified_action(
+        || should_continue_long_range_after_accepted_action(
             transcript,
             turn,
             effect,
@@ -5403,7 +5403,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_loop_long_range_confirmed_tool_actions_continue_after_reobserve() {
+    fn agent_loop_long_range_accepted_tool_actions_continue_after_reobserve() {
         let turn = CompletedAssistantTurn {
             response: "Searching with Aegis.".to_string(),
             action: Some(json!({
@@ -5413,7 +5413,7 @@ mod tests {
             evidence: Some(json!({"effect": "confirmed"})),
         };
 
-        assert!(should_continue_long_range_after_verified_action(
+        assert!(should_continue_long_range_after_accepted_action(
             "Research cloud computer agents and summarize the options",
             &turn,
             Some("confirmed"),
@@ -5427,21 +5427,21 @@ mod tests {
             1,
             AgentLoopBudget::Finite { max_attempts: 5 }
         ));
-        assert!(!should_continue_long_range_after_verified_action(
+        assert!(!should_continue_long_range_after_accepted_action(
             "Open the browser",
             &turn,
             Some("confirmed"),
             1,
             AgentLoopBudget::Finite { max_attempts: 5 }
         ));
-        assert!(!should_continue_long_range_after_verified_action(
+        assert!(!should_continue_long_range_after_accepted_action(
             "Research cloud computer agents",
             &turn,
             Some("confirmed"),
             5,
             AgentLoopBudget::Finite { max_attempts: 5 }
         ));
-        assert!(should_continue_long_range_after_verified_action(
+        assert!(should_continue_long_range_after_accepted_action(
             "Research cloud computer agents",
             &turn,
             Some("confirmed"),
@@ -5463,7 +5463,7 @@ mod tests {
         let transcript = "Use Aegis in headless mode to navigate to https://example.com, inspect the page actions or page text, and report the verified page title or heading.";
 
         assert!(transcript_requests_long_range_work(transcript));
-        assert!(should_continue_long_range_after_verified_action(
+        assert!(should_continue_long_range_after_accepted_action(
             transcript,
             &turn,
             Some("confirmed"),
@@ -5635,7 +5635,7 @@ mod tests {
             evidence: Some(json!({"effect": "confirmed"})),
         };
 
-        assert!(should_continue_long_range_after_verified_action(
+        assert!(should_continue_long_range_after_accepted_action(
             "Research cloud computer agents, write the summary in Notes, then read it back to verify it",
             &turn,
             Some("confirmed"),
@@ -5659,7 +5659,7 @@ mod tests {
             evidence: Some(json!({"effect": "confirmed"})),
         };
 
-        assert!(should_continue_long_range_after_verified_action(
+        assert!(should_continue_long_range_after_accepted_action(
             "Paste Summary into Notes, then read it back to verify it",
             &turn,
             Some("confirmed"),
@@ -5695,7 +5695,7 @@ mod tests {
             .action
             .as_ref()
             .is_some_and(action_is_browser_research_setup));
-        assert!(should_continue_long_range_after_verified_action(
+        assert!(should_continue_long_range_after_accepted_action(
             "Open Safari and search for official Gemini docs, then read the title",
             &turn,
             Some("confirmed"),
