@@ -4950,7 +4950,7 @@ fn bound_preserved_text(value: &str, limit: usize) -> String {
 
 fn input_effect_status_prefix(effect: &Effect) -> &'static str {
     match effect {
-        Effect::Confirmed => "Completed",
+        Effect::Confirmed => "Accepted",
         Effect::Failed => "Failed",
         Effect::Partial => "Partial",
         Effect::Unverifiable => "Unverifiable",
@@ -5862,7 +5862,7 @@ async fn dispatch_control_action(
     .await;
     publish_protocol_status(
         state,
-        format!("Completed {action_label}"),
+        format!("Accepted {action_label}"),
         "Unix socket",
         3_500,
     );
@@ -8667,7 +8667,7 @@ mod tests {
             "{labels:?}"
         );
         assert!(
-            labels.contains(&"Completed sequence 2 actions"),
+            labels.contains(&"Accepted sequence 2 actions"),
             "{labels:?}"
         );
     }
@@ -8870,7 +8870,7 @@ mod tests {
         assert_eq!(steps[1]["data"]["label"], "Dispatching pause control");
         assert_eq!(steps[2]["data"]["step_index"], serde_json::Value::Null);
         assert_eq!(steps[2]["data"]["step_total"], serde_json::Value::Null);
-        assert_eq!(steps[2]["data"]["label"], "Completed pause control");
+        assert_eq!(steps[2]["data"]["label"], "Accepted pause control");
     }
 
     #[tokio::test]
