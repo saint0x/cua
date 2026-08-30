@@ -42,6 +42,7 @@ Supported ACTION shapes:
 {"kind":"key_paste","text":"text to paste"}
 {"kind":"open_app","app_name":"Messages"}
 {"kind":"shell_exec","command":"pwd && ls","timeout_ms":5000}
+{"kind":"sequence","actions":[{"kind":"open_app","app_name":"Safari"},{"kind":"key_press","combo":"cmd+l"},{"kind":"key_paste","text":"cloud computer agents"},{"kind":"key_press","combo":"enter"}],"inter_action_delay_ms":120}
 {"kind":"aegis","args":["--mode","headless","search","cloud computer agents"],"timeout_ms":15000}
 {"kind":"aegis","args":["--mode","headful","page","actions"],"timeout_ms":15000}
 {"kind":"aegis","args":["--mode","headful","page","links"],"timeout_ms":15000}
@@ -2160,6 +2161,30 @@ mod tests {
                 ] if app_name == "Safari"
                     && combo == "cmd+l"
                     && text == "Open Safari browser and do some research while I am watching"
+                    && enter == "enter"
+            )
+        ));
+    }
+
+    #[test]
+    fn generic_web_search_bootstrap_uses_visible_browser_not_aegis() {
+        let plan = browser_research_bootstrap_plan(
+            "Search the web for official SQLite foreign key documentation and report the verified page title.",
+        )
+        .unwrap();
+
+        assert!(matches!(
+            plan.action,
+            Some(InputAction::Sequence { ref actions, .. }) if matches!(
+                actions.as_slice(),
+                [
+                    InputAction::OpenApp { app_name },
+                    InputAction::KeyPress { combo },
+                    InputAction::KeyPaste { text },
+                    InputAction::KeyPress { combo: enter },
+                ] if app_name == "Safari"
+                    && combo == "cmd+l"
+                    && text == "official SQLite foreign key documentation"
                     && enter == "enter"
             )
         ));

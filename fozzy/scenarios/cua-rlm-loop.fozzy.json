@@ -96,6 +96,33 @@
     },
     {
       "type": "proc_when",
+      "cmd": "cargo",
+      "args": [
+        "test",
+        "-p",
+        "cua-voice",
+        "generic_web_search_bootstrap_uses_visible_browser_not_aegis",
+        "--",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "times": 1
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "cargo",
+      "args": [
+        "test",
+        "-p",
+        "cua-voice",
+        "generic_web_search_bootstrap_uses_visible_browser_not_aegis",
+        "--",
+        "--test-threads=1"
+      ],
+      "expect_exit": 0
+    },
+    {
+      "type": "proc_when",
       "cmd": "bash",
       "args": [
         "-n",
