@@ -1740,6 +1740,40 @@ mod tests {
     }
 
     #[test]
+    fn model_visible_prior_attempts_preserve_verification_observation() {
+        let attempts = vec![PlanAttemptContext {
+            attempt_index: 1,
+            response: "Writing the note.".to_string(),
+            action: Some(serde_json::json!({"kind": "key_paste", "text": "hello"})),
+            effect: Some("unverifiable".to_string()),
+            evidence: Some(serde_json::json!({
+                "effect": "unverifiable",
+                "verification_observation": {
+                    "has_frame": true,
+                    "has_desktop": true,
+                    "errors": []
+                },
+                "evidence": [
+                    {"kind": "model_observation", "message": "visible input dispatched"}
+                ]
+            })),
+        }];
+
+        let visible = model_visible_prior_attempts(&attempts);
+
+        let evidence = visible[0].evidence.as_ref().unwrap();
+        assert_eq!(
+            evidence["verification_observation"],
+            serde_json::json!({
+                "has_frame": true,
+                "has_desktop": true,
+                "errors": []
+            })
+        );
+        assert_eq!(evidence["effect"], "unverifiable");
+    }
+
+    #[test]
     fn planner_frame_image_data_uses_frame_encoding_mime() {
         let jpeg = test_frame_payload(FrameEncoding::Jpeg, Some("abc"));
         let png = test_frame_payload(FrameEncoding::Png, Some("def"));
