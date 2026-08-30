@@ -2817,13 +2817,26 @@ fn response_reports_blocker(response: &str) -> bool {
 }
 
 fn prior_attempts_have_blocker_evidence(prior_attempts: &[PlanAttemptContext]) -> bool {
-    prior_attempts.iter().any(|attempt| {
-        attempt.effect.as_deref() == Some("refused")
-            || attempt
-                .evidence
-                .as_ref()
-                .is_some_and(evidence_reports_blocker)
-    })
+    prior_attempts.iter().any(attempt_has_blocker_evidence)
+}
+
+fn attempt_has_blocker_evidence(attempt: &PlanAttemptContext) -> bool {
+    match attempt.effect.as_deref() {
+        Some("refused") => true,
+        Some("failed") => attempt
+            .evidence
+            .as_ref()
+            .is_some_and(evidence_reports_blocker),
+        Some("confirmed" | "partial") => attempt
+            .action
+            .as_ref()
+            .zip(attempt.evidence.as_ref())
+            .is_some_and(|(action, evidence)| {
+                evidence_has_task_readback_for_action(action, evidence)
+                    && evidence_reports_blocker(evidence)
+            }),
+        _ => false,
+    }
 }
 
 fn evidence_reports_blocker(evidence: &serde_json::Value) -> bool {
@@ -2999,15 +3012,23 @@ fn confirmed_attempt_has_task_evidence(attempt: &PlanAttemptContext) -> bool {
         return false;
     };
     attempt.effect.as_deref() == Some("confirmed")
-        && attempt.evidence.as_ref().is_some_and(|evidence| {
-            if json_action_uses_aegis(action) {
-                aegis_evidence_has_task_readback(action, evidence)
-            } else if json_action_uses_clipboard_read(action) {
-                evidence_has_nonempty_readback_message(evidence)
-            } else {
-                evidence_has_task_readback(evidence)
-            }
-        })
+        && attempt
+            .evidence
+            .as_ref()
+            .is_some_and(|evidence| evidence_has_task_readback_for_action(action, evidence))
+}
+
+fn evidence_has_task_readback_for_action(
+    action: &serde_json::Value,
+    evidence: &serde_json::Value,
+) -> bool {
+    if json_action_uses_aegis(action) {
+        aegis_evidence_has_task_readback(action, evidence)
+    } else if json_action_uses_clipboard_read(action) {
+        evidence_has_nonempty_readback_message(evidence)
+    } else {
+        evidence_has_task_readback(evidence)
+    }
 }
 
 fn evidence_has_task_readback(evidence: &serde_json::Value) -> bool {
@@ -5901,6 +5922,21 @@ mod tests {
             }]
         ));
         assert!(action_null_stops_long_range_without_evidence(
+            "Open Safari and research the internal admin page.",
+            "Permission is required before I can continue.",
+            &None,
+            &[PlanAttemptContext {
+                attempt_index: 1,
+                response: "The planner must try a real action.".to_string(),
+                action: None,
+                effect: Some("suspected_noop".to_string()),
+                evidence: Some(json!({
+                    "effect": "suspected_noop",
+                    "repair_hint": "Do not stop for permission until a real action observes permission denied."
+                })),
+            }]
+        ));
+        assert!(action_null_stops_long_range_without_evidence(
             "Open Safari, research the page, and report the verified title.",
             "I failed to verify the page title.",
             &None,
@@ -5917,6 +5953,27 @@ mod tests {
                 effect: Some("unverifiable".to_string()),
                 evidence: Some(json!({
                     "effect": "unverifiable"
+                })),
+            }]
+        ));
+        assert!(!action_null_stops_long_range_without_evidence(
+            "Open Safari and research the internal admin page.",
+            "The page requires login before I can continue.",
+            &None,
+            &[PlanAttemptContext {
+                attempt_index: 1,
+                response: "Reading the admin page.".to_string(),
+                action: Some(json!({
+                    "kind": "aegis",
+                    "args": ["--mode", "headless", "page", "text", "--scope", "main"]
+                })),
+                effect: Some("confirmed".to_string()),
+                evidence: Some(json!({
+                    "effect": "confirmed",
+                    "evidence": [{
+                        "kind": "value_readback",
+                        "message": "aegis exited 0; stdout=Login required to continue; stderr="
+                    }]
                 })),
             }]
         ));
