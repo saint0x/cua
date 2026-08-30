@@ -493,9 +493,42 @@ fn model_visible_prior_attempts(prior_attempts: &[PlanAttemptContext]) -> Vec<Pl
             if let Some(evidence) = attempt.evidence.as_mut() {
                 compact_model_visible_evidence(evidence);
             }
+            normalize_model_visible_attempt_status(&mut attempt);
             attempt
         })
         .collect()
+}
+
+fn normalize_model_visible_attempt_status(attempt: &mut PlanAttemptContext) {
+    if attempt.effect.as_deref() == Some("confirmed") {
+        attempt.effect = Some("accepted".to_string());
+    }
+    if let Some(evidence) = attempt.evidence.as_mut() {
+        normalize_model_visible_evidence_status(evidence);
+    }
+}
+
+fn normalize_model_visible_evidence_status(evidence: &mut serde_json::Value) {
+    match evidence {
+        serde_json::Value::Object(object) => {
+            if object
+                .get("effect")
+                .and_then(|effect| effect.as_str())
+                .is_some_and(|effect| effect == "confirmed")
+            {
+                object.insert("effect".to_string(), serde_json::json!("accepted"));
+            }
+            for value in object.values_mut() {
+                normalize_model_visible_evidence_status(value);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                normalize_model_visible_evidence_status(item);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn strip_runtime_only_action_args(action: &mut serde_json::Value) {
@@ -1691,9 +1724,12 @@ mod tests {
             ]
         );
         assert_eq!(action["actions"][1]["kind"], "shell_exec");
+        assert_eq!(visible[0].effect.as_deref(), Some("accepted"));
+        assert_eq!(visible[0].evidence.as_ref().unwrap()["effect"], "accepted");
         assert_eq!(
-            visible[0].evidence, attempts[0].evidence,
-            "dispatch evidence stays truthful even when model-visible action wiring is cleaned"
+            visible[0].evidence.as_ref().unwrap()["evidence"][0]["message"],
+            attempts[0].evidence.as_ref().unwrap()["evidence"][0]["message"],
+            "readback evidence stays truthful even when model-visible status wording is softened"
         );
     }
 
@@ -1726,6 +1762,9 @@ mod tests {
 
         assert_eq!(visible.len(), MODEL_VISIBLE_PRIOR_ATTEMPTS_MAX);
         assert_eq!(visible[0].attempt_index, 3);
+        assert!(visible
+            .iter()
+            .all(|attempt| attempt.effect.as_deref() == Some("accepted")));
         let evidence_items = visible[0].evidence.as_ref().unwrap()["evidence"]
             .as_array()
             .unwrap();
@@ -1772,6 +1811,38 @@ mod tests {
             })
         );
         assert_eq!(evidence["effect"], "unverifiable");
+    }
+
+    #[test]
+    fn model_visible_prior_attempts_soften_nested_confirmed_effects() {
+        let attempts = vec![PlanAttemptContext {
+            attempt_index: 1,
+            response: "Reading back the result.".to_string(),
+            action: Some(serde_json::json!({
+                "kind": "shell_exec",
+                "command": "printf done",
+                "timeout_ms": 5000
+            })),
+            effect: Some("confirmed".to_string()),
+            evidence: Some(serde_json::json!({
+                "effect": "confirmed",
+                "final_evidence": {"effect": "confirmed"},
+                "attempts": [
+                    {"effect": "confirmed", "evidence": {"effect": "confirmed"}},
+                    {"effect": "partial"}
+                ],
+                "evidence": [
+                    {"kind": "value_readback", "message": "shell exited 0; stdout=done; stderr="}
+                ]
+            })),
+        }];
+
+        let visible = model_visible_prior_attempts(&attempts);
+        let evidence_text = serde_json::to_string(&visible).unwrap();
+
+        assert_eq!(visible[0].effect.as_deref(), Some("accepted"));
+        assert!(!evidence_text.contains(r#""effect":"confirmed""#));
+        assert!(evidence_text.contains("stdout=done"));
     }
 
     #[test]
