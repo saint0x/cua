@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "name": "cua-rlm-loop-local-planner-host",
+  "steps": [
+    {
+      "type": "proc_when",
+      "cmd": "bash",
+      "args": [
+        "-lc",
+        "CUA_VOICE_LOCAL_PLANNER_OUT_DIR=artifacts/cua/fozzy-lp-proof CUA_VOICE_LOCAL_PLANNER_HOME=/tmp/clp CUA_VOICE_LOCAL_PLANNER_PROFILE=flp CUA_VOICE_LOCAL_PLANNER_ADDR=127.0.0.1:9914 CUA_VOICE_LOCAL_PLANNER_MODEL_ADDR=127.0.0.1:9915 scripts/host-voice-local-planner-loop-proof.sh"
+      ],
+      "exit_code": 0,
+      "stdout": "artifacts/cua/fozzy-lp-proof\n",
+      "stderr": "",
+      "times": 1
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "bash",
+      "args": [
+        "-lc",
+        "CUA_VOICE_LOCAL_PLANNER_OUT_DIR=artifacts/cua/fozzy-lp-proof CUA_VOICE_LOCAL_PLANNER_HOME=/tmp/clp CUA_VOICE_LOCAL_PLANNER_PROFILE=flp CUA_VOICE_LOCAL_PLANNER_ADDR=127.0.0.1:9914 CUA_VOICE_LOCAL_PLANNER_MODEL_ADDR=127.0.0.1:9915 scripts/host-voice-local-planner-loop-proof.sh"
+      ],
+      "expect_exit": 0,
+      "expect_stdout": "artifacts/cua/fozzy-lp-proof\n"
+    }
+  ]
+}

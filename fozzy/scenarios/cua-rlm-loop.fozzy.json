@@ -166,6 +166,7 @@
       "cmd": "bash",
       "args": [
         "-n",
+        "scripts/host-voice-local-planner-loop-proof.sh",
         "scripts/host-voice-missing-planner-key-proof.sh",
         "scripts/host-voice-provider-progress-proof.sh",
         "scripts/host-voice-proof-suite.sh"
@@ -180,6 +181,7 @@
       "cmd": "bash",
       "args": [
         "-n",
+        "scripts/host-voice-local-planner-loop-proof.sh",
         "scripts/host-voice-missing-planner-key-proof.sh",
         "scripts/host-voice-provider-progress-proof.sh",
         "scripts/host-voice-proof-suite.sh"

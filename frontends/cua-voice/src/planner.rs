@@ -13,6 +13,7 @@ const DEFAULT_PLANNER_TEXT_MAX_TOKENS: u32 = 1_200;
 const MODEL_VISIBLE_PRIOR_ATTEMPTS_MAX: usize = 8;
 const MODEL_VISIBLE_EVIDENCE_ITEMS_MAX: usize = 4;
 const MODEL_VISIBLE_TEXT_MAX_CHARS: usize = 700;
+const PLANNER_CHAT_COMPLETIONS_URL_ENV: &str = "CUA_VOICE_PLANNER_CHAT_COMPLETIONS_URL";
 const GEMINI_OPENAI_CHAT_COMPLETIONS_URL: &str =
     "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
 const OPENROUTER_CHAT_COMPLETIONS_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
@@ -365,11 +366,19 @@ impl PlannerProvider {
         }
     }
 
-    fn chat_completions_url(self) -> &'static str {
+    fn default_chat_completions_url(self) -> &'static str {
         match self {
             Self::Gemini => GEMINI_OPENAI_CHAT_COMPLETIONS_URL,
             Self::OpenRouter => OPENROUTER_CHAT_COMPLETIONS_URL,
         }
+    }
+
+    fn chat_completions_url(self) -> String {
+        std::env::var(PLANNER_CHAT_COMPLETIONS_URL_ENV)
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| self.default_chat_completions_url().to_string())
     }
 
     fn required_api_key_name(self) -> &'static str {
@@ -1644,6 +1653,42 @@ mod tests {
             headers.get(REFERER).and_then(|value| value.to_str().ok()),
             Some("http://localhost/cua")
         );
+    }
+
+    #[test]
+    fn planner_provider_allows_explicit_chat_completions_endpoint_override() {
+        let previous = std::env::var(PLANNER_CHAT_COMPLETIONS_URL_ENV).ok();
+
+        std::env::remove_var(PLANNER_CHAT_COMPLETIONS_URL_ENV);
+        assert_eq!(
+            PlannerProvider::Gemini.chat_completions_url(),
+            GEMINI_OPENAI_CHAT_COMPLETIONS_URL
+        );
+
+        std::env::set_var(PLANNER_CHAT_COMPLETIONS_URL_ENV, "   ");
+        assert_eq!(
+            PlannerProvider::OpenRouter.chat_completions_url(),
+            OPENROUTER_CHAT_COMPLETIONS_URL
+        );
+
+        std::env::set_var(
+            PLANNER_CHAT_COMPLETIONS_URL_ENV,
+            "http://127.0.0.1:18080/v1/chat/completions",
+        );
+        assert_eq!(
+            PlannerProvider::Gemini.chat_completions_url(),
+            "http://127.0.0.1:18080/v1/chat/completions"
+        );
+        assert_eq!(
+            PlannerProvider::OpenRouter.chat_completions_url(),
+            "http://127.0.0.1:18080/v1/chat/completions"
+        );
+
+        if let Some(previous) = previous {
+            std::env::set_var(PLANNER_CHAT_COMPLETIONS_URL_ENV, previous);
+        } else {
+            std::env::remove_var(PLANNER_CHAT_COMPLETIONS_URL_ENV);
+        }
     }
 
     #[test]

@@ -1150,7 +1150,7 @@ async fn plan_and_dispatch(
                 attempt_index += 1;
                 continue;
             }
-            if action_null_stops_long_range_without_evidence(
+            if action_null_stops_concrete_goal_without_evidence(
                 &transcript,
                 &plan.response,
                 &planned_action_json,
@@ -1161,7 +1161,7 @@ async fn plan_and_dispatch(
                         "planning_rejected",
                         json!({
                             "attempt_index": attempt_index,
-                            "reason": "action_null_long_range_without_evidence",
+                            "reason": "action_null_concrete_goal_without_evidence",
                             "response": plan.response.clone(),
                         }),
                     )
@@ -1173,13 +1173,13 @@ async fn plan_and_dispatch(
                     effect: Some("suspected_noop".to_string()),
                     evidence: Some(json!({
                         "effect": "suspected_noop",
-                        "reason": "action_null_long_range_without_evidence",
-                        "repair_hint": "Long-range work needs a concrete next action or a final answer backed by prior evidence. Use an available tool action, or ask for clarification only when the goal is genuinely ambiguous or blocked.",
+                        "reason": "action_null_concrete_goal_without_evidence",
+                        "repair_hint": "This goal needs a concrete next action or a final answer backed by prior evidence. Use an available tool action, or ask for clarification only when the goal is genuinely ambiguous or blocked.",
                     })),
                 });
                 if !loop_budget.can_continue_after(attempt_index) {
                     anyhow::bail!(
-                        "planning model stopped long-range work without evidence or a real blocker"
+                        "planning model stopped concrete work without evidence or a real blocker"
                     );
                 }
                 attempt_index += 1;
@@ -2725,18 +2725,23 @@ fn action_null_finishes_after_prior_attempts(
             || prior_attempts_support_failure_final(response, prior_attempts))
 }
 
-fn action_null_stops_long_range_without_evidence(
+fn action_null_stops_concrete_goal_without_evidence(
     transcript: &str,
     response: &str,
     action: &Option<serde_json::Value>,
     prior_attempts: &[PlanAttemptContext],
 ) -> bool {
     action.is_none()
-        && transcript_requests_long_range_work(transcript)
+        && transcript_requires_concrete_goal_evidence(transcript)
         && !action_null_finishes_after_prior_attempts(response, action, prior_attempts)
         && !planner_response_claims_pending_work(response)
         && !response_requests_supported_clarification(response, transcript)
         && !response_reports_evidence_backed_blocker(response, prior_attempts)
+}
+
+fn transcript_requires_concrete_goal_evidence(transcript: &str) -> bool {
+    transcript_requests_long_range_work(transcript)
+        || transcript_requests_shell_readback(transcript)
 }
 
 fn response_requests_supported_clarification(response: &str, transcript: &str) -> bool {
@@ -5068,6 +5073,41 @@ mod tests {
     }
 
     #[test]
+    fn shell_readback_action_null_stop_without_evidence_is_rejected() {
+        let transcript = "Using local shell only, create /tmp/cua/value.txt containing exactly rlm proof 42, then read the file back to stdout, and report the exact final stdout.";
+        let prior_attempts = vec![PlanAttemptContext {
+            attempt_index: 1,
+            response: "Creating the file.".to_string(),
+            action: Some(json!({
+                "kind": "shell_exec",
+                "command": "mkdir -p /tmp/cua && printf 'rlm proof 42' > /tmp/cua/value.txt",
+                "timeout_ms": 5000
+            })),
+            effect: Some("partial".to_string()),
+            evidence: Some(json!({
+                "effect": "partial",
+                "reason": "shell_readback_missing_for_verified_output_goal",
+                "evidence": [
+                    {"kind": "value_readback", "message": "shell exited 0; stdout=; stderr="}
+                ]
+            })),
+        }];
+
+        assert!(transcript_requires_concrete_goal_evidence(transcript));
+        assert!(action_null_stops_concrete_goal_without_evidence(
+            transcript,
+            "The exact final stdout is rlm proof 42.",
+            &None,
+            &prior_attempts
+        ));
+        assert!(!action_null_finishes_after_prior_attempts(
+            "The exact final stdout is rlm proof 42.",
+            &None,
+            &prior_attempts
+        ));
+    }
+
+    #[test]
     fn shell_expected_final_stdout_replans_when_wrong_value_was_read() {
         let transcript = "Use local shell only. First deliberately write WRONG-VALUE to result.txt and read it back to observe that it does not match the desired value. Then repair it by writing exactly FINAL-VALUE-441 to result.txt, read result.txt back to stdout, and report the exact final stdout.";
         let turn = CompletedAssistantTurn {
@@ -5542,7 +5582,7 @@ mod tests {
         });
 
         let premature_final = "The verified title is SQLite Foreign Key Support.".to_string();
-        assert!(action_null_stops_long_range_without_evidence(
+        assert!(action_null_stops_concrete_goal_without_evidence(
             transcript,
             &premature_final,
             &None,
@@ -5580,7 +5620,7 @@ mod tests {
             &None,
             &attempts
         ));
-        assert!(!action_null_stops_long_range_without_evidence(
+        assert!(!action_null_stops_concrete_goal_without_evidence(
             transcript,
             &premature_final,
             &None,
@@ -5854,13 +5894,13 @@ mod tests {
 
     #[test]
     fn long_range_action_null_stop_without_evidence_is_rejected() {
-        assert!(action_null_stops_long_range_without_evidence(
+        assert!(action_null_stops_concrete_goal_without_evidence(
             "Open Safari, research Gemini docs, read the page title, and report it.",
             "The page title is Gemini models.",
             &None,
             &[]
         ));
-        assert!(action_null_stops_long_range_without_evidence(
+        assert!(action_null_stops_concrete_goal_without_evidence(
             "Search the web and summarize what you verify.",
             "I could not complete the search.",
             &None,
@@ -5894,7 +5934,7 @@ mod tests {
             })),
         }];
 
-        assert!(!action_null_stops_long_range_without_evidence(
+        assert!(!action_null_stops_concrete_goal_without_evidence(
             "Use Aegis headless, read the page title, and report the verified title.",
             "The verified title is Gemini models.",
             &None,
@@ -5905,25 +5945,25 @@ mod tests {
             &None,
             &readback_attempts
         ));
-        assert!(action_null_stops_long_range_without_evidence(
+        assert!(action_null_stops_concrete_goal_without_evidence(
             "Open Safari and research the internal admin page.",
             "I need you to sign in before I can continue.",
             &None,
             &[]
         ));
-        assert!(action_null_stops_long_range_without_evidence(
+        assert!(action_null_stops_concrete_goal_without_evidence(
             "Open Safari and research the internal admin page.",
             "Permission is required before I can continue.",
             &None,
             &[]
         ));
-        assert!(action_null_stops_long_range_without_evidence(
+        assert!(action_null_stops_concrete_goal_without_evidence(
             "Open Safari and research the internal admin page.",
             "Access denied.",
             &None,
             &[]
         ));
-        assert!(!action_null_stops_long_range_without_evidence(
+        assert!(!action_null_stops_concrete_goal_without_evidence(
             "Open Safari and research the internal admin page.",
             "I need you to sign in before I can continue.",
             &None,
@@ -5941,7 +5981,7 @@ mod tests {
                 })),
             }]
         ));
-        assert!(action_null_stops_long_range_without_evidence(
+        assert!(action_null_stops_concrete_goal_without_evidence(
             "Open Safari and research the internal admin page.",
             "I need you to sign in before I can continue.",
             &None,
@@ -5959,7 +5999,7 @@ mod tests {
                 })),
             }]
         ));
-        assert!(action_null_stops_long_range_without_evidence(
+        assert!(action_null_stops_concrete_goal_without_evidence(
             "Open Safari and research the internal admin page.",
             "I need you to sign in before I can continue.",
             &None,
@@ -5977,7 +6017,7 @@ mod tests {
                 })),
             }]
         ));
-        assert!(action_null_stops_long_range_without_evidence(
+        assert!(action_null_stops_concrete_goal_without_evidence(
             "Search the web and summarize what you verify.",
             "I failed to complete the search.",
             &None,
@@ -5992,7 +6032,7 @@ mod tests {
                 })),
             }]
         ));
-        assert!(action_null_stops_long_range_without_evidence(
+        assert!(action_null_stops_concrete_goal_without_evidence(
             "Open Safari and research the internal admin page.",
             "Permission is required before I can continue.",
             &None,
@@ -6007,7 +6047,7 @@ mod tests {
                 })),
             }]
         ));
-        assert!(action_null_stops_long_range_without_evidence(
+        assert!(action_null_stops_concrete_goal_without_evidence(
             "Open Safari, research the page, and report the verified title.",
             "I failed to verify the page title.",
             &None,
@@ -6027,7 +6067,7 @@ mod tests {
                 })),
             }]
         ));
-        assert!(!action_null_stops_long_range_without_evidence(
+        assert!(!action_null_stops_concrete_goal_without_evidence(
             "Open Safari and research the internal admin page.",
             "The page requires login before I can continue.",
             &None,
@@ -6048,7 +6088,7 @@ mod tests {
                 })),
             }]
         ));
-        assert!(!action_null_stops_long_range_without_evidence(
+        assert!(!action_null_stops_concrete_goal_without_evidence(
             "Open Safari and research the internal admin page.",
             "Permission is required before I can continue.",
             &None,
@@ -6066,25 +6106,25 @@ mod tests {
                 })),
             }]
         ));
-        assert!(!action_null_stops_long_range_without_evidence(
+        assert!(!action_null_stops_concrete_goal_without_evidence(
             "Search the web for the item.",
             "Which item should I search for?",
             &None,
             &[]
         ));
-        assert!(!action_null_stops_long_range_without_evidence(
+        assert!(!action_null_stops_concrete_goal_without_evidence(
             "Search the web for the item.",
             "The request is ambiguous; please clarify which item to search for.",
             &None,
             &[]
         ));
-        assert!(action_null_stops_long_range_without_evidence(
+        assert!(action_null_stops_concrete_goal_without_evidence(
             "Search the web for official SQLite foreign key documentation and report the verified title.",
             "Which documentation should I search for?",
             &None,
             &[]
         ));
-        assert!(action_null_stops_long_range_without_evidence(
+        assert!(action_null_stops_concrete_goal_without_evidence(
             "Use Aegis headless to navigate to https://www.sqlite.org/foreignkeys.html and report the verified title.",
             "Could you clarify which page to inspect?",
             &None,
@@ -6099,37 +6139,37 @@ mod tests {
         assert!(!transcript_allows_long_range_clarification(
             "Navigate to https://example.com and inspect the page title."
         ));
-        assert!(action_null_stops_long_range_without_evidence(
+        assert!(action_null_stops_concrete_goal_without_evidence(
             "Search the web and summarize what you verify.",
             "I found what you asked for.",
             &None,
             &[]
         ));
-        assert!(action_null_stops_long_range_without_evidence(
+        assert!(action_null_stops_concrete_goal_without_evidence(
             "Search the web and report what the source allows.",
             "The page allows API access.",
             &None,
             &[]
         ));
-        assert!(action_null_stops_long_range_without_evidence(
+        assert!(action_null_stops_concrete_goal_without_evidence(
             "Search the web and summarize the docs.",
             "The permission docs describe OAuth login.",
             &None,
             &[]
         ));
-        assert!(action_null_stops_long_range_without_evidence(
+        assert!(action_null_stops_concrete_goal_without_evidence(
             "Search the web and summarize the docs.",
             "The authorization guide mentions that blocked popups can affect login flows.",
             &None,
             &[]
         ));
-        assert!(action_null_stops_long_range_without_evidence(
+        assert!(action_null_stops_concrete_goal_without_evidence(
             "Search the web and summarize the docs.",
             "The FAQ asks: what is OAuth?",
             &None,
             &[]
         ));
-        assert!(action_null_stops_long_range_without_evidence(
+        assert!(action_null_stops_concrete_goal_without_evidence(
             "Search the web and summarize the docs.",
             "The Rust guide discusses unsafe code and why some APIs are not allowed in safe contexts.",
             &None,
