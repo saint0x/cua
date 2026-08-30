@@ -88,7 +88,7 @@ jq -s -e '
   any(.event == "metric" and .name == "dispatch_ms") and
   any(.event == "metric" and .name == "reobserve_ms") and
   any(.event == "metric" and .name == "plan_ms") and
-  any(.event == "reply" and ((.text // "") | contains("GEMINI_API_KEY or GOOGLE_API_KEY is required")) and ((.text // "") | contains("completed attempt")) and ((.text // "") | contains("last progress was"))) and
+  any(.event == "reply" and ((.text // "") | contains("GEMINI_API_KEY or GOOGLE_API_KEY is required")) and ((.text // "") | contains("action attempt")) and ((.text // "") | contains("last attempted"))) and
   any(.event == "metric" and .name == "turn_total_ms") and
   (idx("transcript") < idx("dispatching")) and
   (idx("dispatching") < idx("reply")) and
@@ -107,7 +107,7 @@ jq -s -e '
   any(.event == "agent_reobserve_result") and
   any(.event == "planning_error" and .data.reason == "planning_credentials_missing") and
   any(.event == "agent_loop_stop" and .data.attempts > 0 and .data.final_effect == "failed") and
-  any(.event == "reply" and ((.data.text // "") | contains("GEMINI_API_KEY or GOOGLE_API_KEY is required")) and ((.data.text // "") | contains("completed attempt")) and ((.data.text // "") | contains("last progress was"))) and
+  any(.event == "reply" and ((.data.text // "") | contains("GEMINI_API_KEY or GOOGLE_API_KEY is required")) and ((.data.text // "") | contains("action attempt")) and ((.data.text // "") | contains("last attempted"))) and
   any(.event == "memory_persisted") and
   any(.event == "turn_complete") and
   (map(select(.event == "reply")) | all((.data.text // "") | test("\\b[Cc]onfirmed\\b") | not))

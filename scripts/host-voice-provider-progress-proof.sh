@@ -96,7 +96,7 @@ jq -s -e '
   (
     (map(select(.event == "reply" and ((.text // "") | contains("Planner provider stopped the task")))) | length == 0)
     or
-    any(.event == "reply" and ((.text // "") | contains("completed attempt")) and ((.text // "") | contains("last progress was")))
+    any(.event == "reply" and ((.text // "") | contains("action attempt")) and ((.text // "") | contains("last attempted")))
   ) and
   any(.event == "metric" and .name == "dispatch_ms") and
   any(.event == "metric" and .name == "reobserve_ms") and
@@ -118,7 +118,7 @@ jq -s -e '
     (provider_stopped | not)
     or
     (
-      any(.event == "reply" and ((.data.text // "") | contains("completed attempt")) and ((.data.text // "") | contains("last progress was"))) and
+      any(.event == "reply" and ((.data.text // "") | contains("action attempt")) and ((.data.text // "") | contains("last attempted"))) and
       any(.event == "planning_error" and ((.data.error // "") | contains("402 Payment Required"))) and
       any(.event == "agent_loop_stop" and .data.final_effect == "failed")
     )

@@ -549,7 +549,7 @@ fn last_progress_summary(attempts: &[PlanAttemptContext]) -> Option<String> {
         let action = attempt.action.as_ref()?;
         let label = progress_action_label(action)?;
         Some(format!(
-            "{} completed attempt{}; last progress was {}",
+            "{} action attempt{}; last attempted {}",
             attempts.len(),
             if attempts.len() == 1 { "" } else { "s" },
             label
@@ -4353,7 +4353,7 @@ mod tests {
         }];
         assert_eq!(
             planning_provider_account_failure_message_with_attempts(&payment_required, &attempts),
-            "Planner provider stopped the task after 1 completed attempt; last progress was using Aegis `search the official SQLite foreign key documentation`: insufficient provider credits."
+            "Planner provider stopped the task after 1 action attempt; last attempted using Aegis `search the official SQLite foreign key documentation`: insufficient provider credits."
         );
         assert_eq!(
             planning_credentials_missing_message_with_attempts(
@@ -4361,7 +4361,7 @@ mod tests {
                 "gemini-3.7-flash",
                 &attempts
             ),
-            "GEMINI_API_KEY or GOOGLE_API_KEY is required for planner model gemini-3.7-flash; stopped after 1 completed attempt; last progress was using Aegis `search the official SQLite foreign key documentation`."
+            "GEMINI_API_KEY or GOOGLE_API_KEY is required for planner model gemini-3.7-flash; stopped after 1 action attempt; last attempted using Aegis `search the official SQLite foreign key documentation`."
         );
         let sequence_attempts = vec![PlanAttemptContext {
             attempt_index: 1,
@@ -4394,7 +4394,7 @@ mod tests {
                 &payment_required,
                 &sequence_attempts
             ),
-            "Planner provider stopped the task after 1 completed attempt; last progress was running a 2-action sequence ending with using Aegis `search SQLite foreign key documentation`: insufficient provider credits."
+            "Planner provider stopped the task after 1 action attempt; last attempted running a 2-action sequence ending with using Aegis `search SQLite foreign key documentation`: insufficient provider credits."
         );
     }
 
