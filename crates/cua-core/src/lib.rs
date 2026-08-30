@@ -13,6 +13,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 pub const SCHEMA_VERSION: &str = "cua.v1";
+const MAX_PORTABLE_UNIX_SOCKET_PATH_BYTES: usize = 100;
 
 pub fn cua_home() -> anyhow::Result<PathBuf> {
     if let Some(home) = std::env::var_os("CUA_HOME") {
@@ -44,7 +45,11 @@ pub fn profile_token_path(profile: &str) -> anyhow::Result<PathBuf> {
 }
 
 pub fn profile_socket_path(profile: &str) -> anyhow::Result<PathBuf> {
-    Ok(profile_dir(profile)?.join("daemon.sock"))
+    let nominal = profile_dir(profile)?.join("daemon.sock");
+    if unix_socket_path_is_portable(&nominal) {
+        return Ok(nominal);
+    }
+    Ok(short_profile_socket_path(&nominal))
 }
 
 pub fn profile_chat_db_path(profile: &str) -> anyhow::Result<PathBuf> {
@@ -207,6 +212,20 @@ impl ConfigInventory {
 
 fn path_string(path: PathBuf) -> String {
     path.display().to_string()
+}
+
+fn unix_socket_path_is_portable(path: &Path) -> bool {
+    path.as_os_str().as_encoded_bytes().len() < MAX_PORTABLE_UNIX_SOCKET_PATH_BYTES
+}
+
+fn short_profile_socket_path(nominal: &Path) -> PathBuf {
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(nominal.as_os_str().as_encoded_bytes());
+    let digest = hasher.finalize();
+    let socket_id = URL_SAFE_NO_PAD.encode(&digest[..18]);
+    PathBuf::from("/tmp")
+        .join("cua-sockets")
+        .join(format!("{socket_id}.sock"))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -2848,6 +2867,31 @@ mod tests {
             cua_bin_path("ctx").unwrap(),
             PathBuf::from("/tmp/cua-home-test/bin/ctx")
         );
+
+        if let Some(old) = old {
+            std::env::set_var("CUA_HOME", old);
+        } else {
+            std::env::remove_var("CUA_HOME");
+        }
+    }
+
+    #[test]
+    fn profile_socket_path_uses_short_runtime_path_when_profile_path_exceeds_unix_limit() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let old = std::env::var_os("CUA_HOME");
+        let long_home = format!("/tmp/{}", "nested-cua-home-segment-".repeat(6));
+        std::env::set_var("CUA_HOME", &long_home);
+
+        let socket = profile_socket_path("profile-with-long-name").unwrap();
+        let second_socket = profile_socket_path("profile-with-long-name").unwrap();
+
+        assert_eq!(socket, second_socket);
+        assert!(socket.starts_with("/tmp/cua-sockets"));
+        assert!(socket.as_os_str().as_encoded_bytes().len() < 100);
+        assert!(socket
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with(".sock")));
 
         if let Some(old) = old {
             std::env::set_var("CUA_HOME", old);

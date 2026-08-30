@@ -1051,6 +1051,33 @@ async fn plan_and_dispatch(
                 )
                 .await;
             let planned_action_json = plan.action.as_ref().map(serde_json::to_value).transpose()?;
+            if planned_action_json.is_none()
+                && transcript_requests_screen_observation(&transcript)
+                && (context.frame.is_some() || context.desktop.is_some())
+            {
+                trace
+                    .append(
+                        "planning_observation_final",
+                        json!({
+                            "attempt_index": attempt_index,
+                            "has_frame": context.frame.is_some(),
+                            "has_desktop": context.desktop.is_some(),
+                            "context_errors": &context.errors,
+                        }),
+                    )
+                    .await;
+                break CompletedAssistantTurn {
+                    response: plan.response,
+                    action: None,
+                    evidence: Some(json!({
+                        "effect": "confirmed",
+                        "reason": "screen_observation_from_context",
+                        "has_frame": context.frame.is_some(),
+                        "has_desktop": context.desktop.is_some(),
+                        "context_errors": &context.errors,
+                    })),
+                };
+            }
             if explicit_aegis_request
                 && plan
                     .action
@@ -2278,6 +2305,9 @@ fn open_only_incomplete_for_goal(transcript: &str, turn: &CompletedAssistantTurn
 }
 
 fn transcript_requests_long_range_work(transcript: &str) -> bool {
+    if transcript_requests_screen_observation(transcript) {
+        return false;
+    }
     let words = transcript
         .split_whitespace()
         .map(normalize_voice_token)
@@ -2313,6 +2343,42 @@ fn transcript_requests_long_range_work(transcript: &str) -> bool {
             "readback" | "title" | "heading" | "verify" | "verified"
         )
     })
+}
+
+fn transcript_requests_screen_observation(transcript: &str) -> bool {
+    let words = transcript
+        .split_whitespace()
+        .map(normalize_voice_token)
+        .collect::<Vec<_>>();
+    let asks_to_observe = words.iter().any(|word| {
+        matches!(
+            word.as_str(),
+            "look" | "see" | "describe" | "observe" | "check" | "visible"
+        )
+    }) || words.windows(3).any(|window| {
+        matches!(window, [what, do_word, see] if what == "what" && do_word == "do" && see == "see")
+    });
+    let visible_surface = words.iter().any(|word| {
+        matches!(
+            word.as_str(),
+            "screen" | "desktop" | "window" | "windows" | "visible"
+        )
+    });
+    let asks_for_background_work = words.iter().any(|word| {
+        matches!(
+            word.as_str(),
+            "research"
+                | "search"
+                | "navigate"
+                | "browsing"
+                | "browse"
+                | "lookup"
+                | "investigate"
+                | "compare"
+                | "summarize"
+        )
+    });
+    asks_to_observe && visible_surface && !asks_for_background_work
 }
 
 fn action_is_open_only_setup(action: &serde_json::Value) -> bool {
@@ -5247,6 +5313,32 @@ mod tests {
             AgentLoopBudget::Finite { max_attempts: 3 }
         ));
         assert!(!open_only_incomplete_for_goal("Open Safari", &turn));
+    }
+
+    #[test]
+    fn screen_observation_queries_are_not_misclassified_as_long_range_page_work() {
+        assert!(transcript_requests_screen_observation(
+            "Look at the current screen and briefly describe what kind of app or page is visible."
+        ));
+        assert!(!transcript_requests_long_range_work(
+            "Look at the current screen and briefly describe what kind of app or page is visible."
+        ));
+        assert!(!action_null_stops_concrete_goal_without_evidence(
+            "Look at the current screen and briefly describe what kind of app or page is visible.",
+            "A browser page is visible.",
+            &None,
+            &[]
+        ));
+    }
+
+    #[test]
+    fn browser_research_requests_still_require_long_range_evidence() {
+        assert!(!transcript_requests_screen_observation(
+            "Look up the current browser page and research the visible topic."
+        ));
+        assert!(transcript_requests_long_range_work(
+            "Look up the current browser page and research the visible topic."
+        ));
     }
 
     #[test]
