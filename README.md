@@ -45,6 +45,8 @@ cargo run -p cua -- scratchpad read active-goal --json
 cargo run -p cua -- perf bench screenshot --iterations 5 --json
 cargo run -p cua -- context --json --force-fresh
 cargo run -p cua -- screenshot --out artifacts/cua/smoke/screen.png --json
+cargo run -p cua -- record --out artifacts/cua/smoke/screen.mp4 --duration-ms 3000 --json
+cargo run -p cua -- video inspect artifacts/cua/smoke/screen.mp4 --json
 cargo run -p cua -- profile create smoke --mode supervised --duration-ms 60000 --clipboard --json
 cargo run -p cua -- profile activate --json
 cargo run -p cua -- clipboard write "hello from cua" --json
@@ -62,7 +64,7 @@ cargo run -p cua -- stream --unix --frames 3 --json
 
 Run `cua serve --hud-mode headful` for the visible dynamic-island HUD or `cua serve --hud-mode headless` for the same resident voice/control event loop without a visible HUD. The HUD process also accepts `cua-voice --headful|--headless` directly. Agents can switch a running HUD with `cua ui mode headless|headful`.
 
-Voice capture and model calls can be tuned with `CUA_VOICE_RECORD_MIN_MS`, `CUA_VOICE_RECORD_SILENCE_MS`, `CUA_VOICE_RECORD_THRESHOLD`, `CUA_VOICE_STT_TIMEOUT_MS`, `CUA_VOICE_STT_RETRY_ATTEMPTS`, `CUA_VOICE_STT_RETRY_BACKOFF_MS`, `CUA_VOICE_PLANNER_TIMEOUT_MS`, `CUA_VOICE_PLANNER_RETRY_ATTEMPTS`, and `CUA_VOICE_PLANNER_RETRY_BACKOFF_MS`. Speech-to-text runs locally by default with Whisper `tiny.en`; pass `--stt-backend openrouter --stt-model openai/gpt-4o-mini-transcribe` to use remote transcription explicitly. Voice planning uses direct Gemini by default with `gemini-3.7-flash`; set `GEMINI_API_KEY` or `GOOGLE_API_KEY` in `~/.cua/config/env`. To route planner calls through OpenRouter instead, pass an OpenRouter-style model such as `--planner-model openrouter/google/gemini-3.7-flash` and set `OPENROUTER_API_KEY`. Set `CUA_VOICE_PLANNER_CHAT_COMPLETIONS_URL` only when routing planner calls through a self-hosted or local OpenAI-compatible gateway.
+Voice capture and model calls can be tuned with `CUA_VOICE_RECORD_MIN_MS`, `CUA_VOICE_RECORD_SILENCE_MS`, `CUA_VOICE_RECORD_THRESHOLD`, `CUA_VOICE_STT_TIMEOUT_MS`, `CUA_VOICE_STT_RETRY_ATTEMPTS`, `CUA_VOICE_STT_RETRY_BACKOFF_MS`, `CUA_VOICE_PLANNER_TIMEOUT_MS`, `CUA_VOICE_PLANNER_RETRY_ATTEMPTS`, and `CUA_VOICE_PLANNER_RETRY_BACKOFF_MS`. Speech-to-text runs locally by default with Whisper `tiny.en`; pass `--stt-backend openrouter --stt-model openai/gpt-4o-mini-transcribe` to use remote transcription explicitly. Voice planning uses OpenRouter by default with `anthropic/claude-sonnet-4.6`; set `OPENROUTER_API_KEY` in `~/.cua/config/env`. Set `CUA_VOICE_PLANNER_CHAT_COMPLETIONS_URL` only when routing planner calls through a self-hosted or local OpenAI-compatible gateway.
 
 ## Package
 

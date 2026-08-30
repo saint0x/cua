@@ -38,8 +38,14 @@ const VOICE_STEP_FLUSH_TIMEOUT_MS: u64 = 120;
 const DEFAULT_CONTEXT_PREFETCH_TIMEOUT_MS: u64 = 2_500;
 const MAX_CONSECUTIVE_PLANNER_INFRASTRUCTURE_ERRORS: usize = 3;
 const MAX_REPEATED_REJECTED_PLANNER_PLANS: usize = 3;
+const DEFAULT_ACCEPTED_ACTION_STALL_LIMIT: usize = 6;
+const MIN_ACCEPTED_ACTION_STALL_LIMIT: usize = 2;
+const MAX_ACCEPTED_ACTION_STALL_LIMIT: usize = 50;
+const DEFAULT_VISIBLE_NO_PROGRESS_STALL_LIMIT: usize = 3;
+const MIN_VISIBLE_NO_PROGRESS_STALL_LIMIT: usize = 2;
+const MAX_VISIBLE_NO_PROGRESS_STALL_LIMIT: usize = 10;
 const MIN_RECORDING_DURATION: Duration = Duration::from_millis(650);
-pub const DEFAULT_PLANNER_MODEL: &str = "gemini-3.7-flash";
+pub const DEFAULT_PLANNER_MODEL: &str = "anthropic/claude-sonnet-4.6";
 
 struct PrefetchedContext {
     session: Option<CuaSession>,
@@ -1002,7 +1008,17 @@ async fn plan_and_dispatch(
                                 })),
                             };
                         } else {
-                            return Err(error);
+                            let error_message = format!("{error:#}");
+                            break CompletedAssistantTurn {
+                                response: user_visible_turn_error(&error),
+                                action: None,
+                                evidence: Some(json!({
+                                    "effect": "failed",
+                                    "reason": "planning_error",
+                                    "attempt_count": attempt_index,
+                                    "error": error_message,
+                                })),
+                            };
                         }
                     }
                 }
@@ -1403,11 +1419,12 @@ async fn plan_and_dispatch(
                 continue;
             }
             let source_frame = context.frame.as_ref().map(|frame| frame.envelope.clone());
+            let source_desktop = context.desktop.clone();
             let mut turn = match dispatch_plan(
                 local.clone(),
                 context.session,
                 plan,
-                source_frame,
+                source_frame.clone(),
                 &step_publisher,
                 tx.clone(),
                 &trace,
@@ -1417,11 +1434,24 @@ async fn plan_and_dispatch(
             {
                 Ok(turn) => turn,
                 Err(error) => {
+                    let response =
+                        "Dispatch failed before the action produced a result.".to_string();
                     let evidence = Some(json!({
                         "effect": "failed",
                         "reason": "dispatch_error",
                         "error": format!("{error:#}"),
                     }));
+                    let failed_turn = CompletedAssistantTurn {
+                        response: response.clone(),
+                        action: planned_action_json.clone(),
+                        evidence: evidence.clone(),
+                    };
+                    let accepted_action_stall = accepted_action_stall_after_attempt(
+                        &transcript,
+                        &attempts,
+                        &failed_turn,
+                        Some("failed"),
+                    );
                     trace
                         .append(
                             "agent_attempt_outcome",
@@ -1430,14 +1460,34 @@ async fn plan_and_dispatch(
                                 "effect": "failed",
                                 "should_replan": loop_budget.can_continue_after(attempt_index),
                                 "dispatch_error": format!("{error:#}"),
+                                "accepted_action_stall": accepted_action_stall,
                                 "has_action": planned_action_json.is_some(),
                             }),
                         )
                         .await;
+                    if accepted_action_stall.stalled {
+                        let completed = stop_for_accepted_action_stall(
+                            &failed_turn,
+                            accepted_action_stall.clone(),
+                        );
+                        trace
+                            .append(
+                                "agent_loop_stalled",
+                                json!({
+                                    "attempt_index": attempt_index,
+                                    "reason": accepted_action_stall.reason,
+                                    "consecutive_attempts": accepted_action_stall.consecutive_attempts,
+                                    "stall_limit": accepted_action_stall.stall_limit,
+                                    "last_effect": "failed",
+                                    "last_action": failed_turn.action,
+                                }),
+                            )
+                            .await;
+                        break completed;
+                    }
                     attempts.push(PlanAttemptContext {
                         attempt_index,
-                        response: "Dispatch failed before the action produced a result."
-                            .to_string(),
+                        response,
                         action: planned_action_json,
                         effect: Some("failed".to_string()),
                         evidence,
@@ -1514,6 +1564,12 @@ async fn plan_and_dispatch(
                 attempt_index,
                 loop_budget,
             );
+            let accepted_action_stall = accepted_action_stall_after_attempt(
+                &transcript,
+                &attempts,
+                &turn,
+                effect.as_deref(),
+            );
             trace
                 .append(
                     "agent_attempt_outcome",
@@ -1526,10 +1582,29 @@ async fn plan_and_dispatch(
                         "shell_expected_stdout_missing": shell_expected_stdout_missing,
                         "aegis_readback_missing": aegis_readback_missing,
                         "long_range_continuation": long_range_continuation,
+                        "accepted_action_stall": accepted_action_stall,
                         "has_action": turn.action.is_some(),
                     }),
                 )
                 .await;
+            if accepted_action_stall.stalled {
+                let completed =
+                    stop_for_accepted_action_stall(&turn, accepted_action_stall.clone());
+                trace
+                    .append(
+                        "agent_loop_stalled",
+                        json!({
+                            "attempt_index": attempt_index,
+                            "reason": accepted_action_stall.reason,
+                            "consecutive_attempts": accepted_action_stall.consecutive_attempts,
+                            "stall_limit": accepted_action_stall.stall_limit,
+                            "last_effect": effect,
+                            "last_action": turn.action,
+                        }),
+                    )
+                    .await;
+                break completed;
+            }
             let should_verify = turn
                 .action
                 .as_ref()
@@ -1584,7 +1659,31 @@ async fn plan_and_dispatch(
                 )
                 .await;
             if should_verify {
-                attach_verification_observation_to_last_attempt(&mut attempts, &context);
+                attach_verification_observation_to_last_attempt(
+                    &mut attempts,
+                    source_frame.as_ref(),
+                    source_desktop.as_ref(),
+                    &context,
+                );
+                if let Some(stall) =
+                    visible_no_progress_stall_after_reobserve(&transcript, &attempts)
+                {
+                    let completed = stop_for_visible_no_progress_stall(&attempts, stall.clone());
+                    trace
+                        .append(
+                            "agent_loop_stalled",
+                            json!({
+                                "attempt_index": attempt_index,
+                                "reason": stall.reason,
+                                "consecutive_attempts": stall.consecutive_attempts,
+                                "stall_limit": stall.stall_limit,
+                                "last_action": attempts.last().and_then(|attempt| attempt.action.clone()),
+                                "last_evidence": attempts.last().and_then(|attempt| attempt.evidence.clone()),
+                            }),
+                        )
+                        .await;
+                    break completed;
+                }
             }
             attempt_index += 1;
         };
@@ -1919,6 +2018,14 @@ enum AgentLoopBudget {
     Unbounded,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct AcceptedActionStall {
+    stalled: bool,
+    reason: &'static str,
+    consecutive_attempts: usize,
+    stall_limit: usize,
+}
+
 impl AgentLoopBudget {
     fn can_continue_after(self, attempt_index: usize) -> bool {
         match self {
@@ -1974,6 +2081,240 @@ fn default_agent_loop_budget() -> AgentLoopBudget {
     AgentLoopBudget::Unbounded
 }
 
+fn accepted_action_stall_limit() -> usize {
+    std::env::var("CUA_AGENT_ACCEPTED_ACTION_STALL_LIMIT")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .map(|limit| {
+            limit.clamp(
+                MIN_ACCEPTED_ACTION_STALL_LIMIT,
+                MAX_ACCEPTED_ACTION_STALL_LIMIT,
+            )
+        })
+        .unwrap_or(DEFAULT_ACCEPTED_ACTION_STALL_LIMIT)
+}
+
+fn visible_no_progress_stall_limit() -> usize {
+    std::env::var("CUA_AGENT_VISIBLE_NO_PROGRESS_STALL_LIMIT")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .map(|limit| {
+            limit.clamp(
+                MIN_VISIBLE_NO_PROGRESS_STALL_LIMIT,
+                MAX_VISIBLE_NO_PROGRESS_STALL_LIMIT,
+            )
+        })
+        .unwrap_or(DEFAULT_VISIBLE_NO_PROGRESS_STALL_LIMIT)
+}
+
+fn accepted_action_stall_after_attempt(
+    transcript: &str,
+    prior_attempts: &[PlanAttemptContext],
+    turn: &CompletedAssistantTurn,
+    effect: Option<&str>,
+) -> AcceptedActionStall {
+    let stall_limit = accepted_action_stall_limit();
+    let mut consecutive_attempts = usize::from(attempt_is_unverified_long_range_dispatch(
+        transcript,
+        turn.action.as_ref(),
+        effect,
+        turn.evidence.as_ref(),
+    ));
+    if consecutive_attempts > 0 {
+        for attempt in prior_attempts.iter().rev() {
+            if !attempt_is_unverified_long_range_dispatch(
+                transcript,
+                attempt.action.as_ref(),
+                attempt.effect.as_deref(),
+                attempt.evidence.as_ref(),
+            ) {
+                break;
+            }
+            consecutive_attempts += 1;
+        }
+    }
+    AcceptedActionStall {
+        stalled: consecutive_attempts >= stall_limit,
+        reason: "accepted_action_without_verifiable_progress",
+        consecutive_attempts,
+        stall_limit,
+    }
+}
+
+fn attempt_is_unverified_long_range_dispatch(
+    transcript: &str,
+    action: Option<&serde_json::Value>,
+    effect: Option<&str>,
+    evidence: Option<&serde_json::Value>,
+) -> bool {
+    if !transcript_requests_long_range_work(transcript) {
+        return false;
+    }
+    let Some(action) = action else {
+        return false;
+    };
+    if !action_can_advance_long_range_goal(action) {
+        return false;
+    }
+    if !matches!(
+        effect,
+        Some("confirmed" | "partial" | "unverifiable" | "refused" | "failed")
+    ) {
+        return false;
+    }
+    !evidence.is_some_and(|evidence| evidence_has_task_readback_for_action(action, evidence))
+}
+
+fn stop_for_accepted_action_stall(
+    last_turn: &CompletedAssistantTurn,
+    stall: AcceptedActionStall,
+) -> CompletedAssistantTurn {
+    CompletedAssistantTurn {
+        response: "I stopped because the last actions were not producing verifiable progress."
+            .to_string(),
+        action: None,
+        evidence: Some(json!({
+            "effect": "partial",
+            "reason": stall.reason,
+            "consecutive_attempts": stall.consecutive_attempts,
+            "stall_limit": stall.stall_limit,
+            "last_response": last_turn.response,
+            "last_action": last_turn.action,
+            "last_evidence": last_turn.evidence,
+        })),
+    }
+}
+
+fn visible_no_progress_stall_after_reobserve(
+    _transcript: &str,
+    attempts: &[PlanAttemptContext],
+) -> Option<AcceptedActionStall> {
+    let stall_limit = visible_no_progress_stall_limit();
+    let consecutive_attempts = recent_visible_no_progress_attempts(attempts);
+    (consecutive_attempts >= stall_limit).then_some(AcceptedActionStall {
+        stalled: true,
+        reason: "visible_action_without_observed_progress",
+        consecutive_attempts,
+        stall_limit,
+    })
+}
+
+fn recent_visible_no_progress_attempts(attempts: &[PlanAttemptContext]) -> usize {
+    let mut count = 0usize;
+    for attempt in attempts.iter().rev() {
+        if attempt_is_unverified_visible_no_change(attempt) {
+            count += 1;
+            continue;
+        }
+        if attempt_reports_verifiable_progress(attempt) {
+            break;
+        }
+    }
+    count
+}
+
+fn attempt_reports_verifiable_progress(attempt: &PlanAttemptContext) -> bool {
+    attempt
+        .action
+        .as_ref()
+        .zip(attempt.evidence.as_ref())
+        .is_some_and(|(action, evidence)| evidence_has_task_readback_for_action(action, evidence))
+        || attempt
+            .evidence
+            .as_ref()
+            .and_then(|evidence| evidence.get("verification_observation"))
+            .is_some_and(|observation| {
+                observation
+                    .get("frame_changed")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false)
+                    || observation
+                        .get("focused_window_changed")
+                        .and_then(|value| value.as_bool())
+                        .unwrap_or(false)
+            })
+}
+
+fn attempt_is_unverified_visible_no_change(attempt: &PlanAttemptContext) -> bool {
+    attempt
+        .action
+        .as_ref()
+        .is_some_and(action_requires_reobserve_before_finish)
+        && matches!(
+            attempt.effect.as_deref(),
+            Some("confirmed" | "partial" | "unverifiable")
+        )
+        && !attempt
+            .evidence
+            .as_ref()
+            .zip(attempt.action.as_ref())
+            .is_some_and(|(evidence, action)| {
+                evidence_has_task_readback_for_action(action, evidence)
+            })
+        && attempt
+            .evidence
+            .as_ref()
+            .zip(attempt.action.as_ref())
+            .is_some_and(|(evidence, action)| {
+                evidence
+                    .get("verification_observation")
+                    .is_some_and(|observation| {
+                        verification_observation_reports_no_change(observation)
+                            || action_is_pointer_only(action)
+                    })
+            })
+}
+
+fn verification_observation_reports_no_change(observation: &serde_json::Value) -> bool {
+    observation
+        .get("frame_changed")
+        .and_then(|value| value.as_bool())
+        == Some(false)
+        && observation
+            .get("focused_window_changed")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+            == false
+}
+
+fn stop_for_visible_no_progress_stall(
+    attempts: &[PlanAttemptContext],
+    stall: AcceptedActionStall,
+) -> CompletedAssistantTurn {
+    let last_turn = attempts
+        .last()
+        .expect("visible no-progress stall requires at least one attempt");
+    CompletedAssistantTurn {
+        response: "I stopped because repeated visible actions did not change the screen or produce verifiable progress."
+            .to_string(),
+        action: None,
+        evidence: Some(json!({
+            "effect": "partial",
+            "reason": stall.reason,
+            "consecutive_attempts": stall.consecutive_attempts,
+            "stall_limit": stall.stall_limit,
+            "last_response": last_turn.response,
+            "last_action": last_turn.action,
+            "last_evidence": last_turn.evidence,
+        })),
+    }
+}
+
+fn action_is_pointer_only(action: &serde_json::Value) -> bool {
+    match action.get("kind").and_then(|kind| kind.as_str()) {
+        Some("mouse_move" | "mouse_click" | "mouse_drag") => true,
+        Some("sequence") => action
+            .get("actions")
+            .and_then(|actions| actions.as_array())
+            .is_some_and(|actions| {
+                !actions.is_empty() && actions.iter().all(action_is_pointer_only)
+            }),
+        _ => false,
+    }
+}
+
 fn turn_effect(turn: &CompletedAssistantTurn) -> Option<String> {
     turn.evidence
         .as_ref()
@@ -1994,7 +2335,8 @@ fn observed_turn_effect(
 fn action_requires_reobserve_before_finish(action: &serde_json::Value) -> bool {
     match action.get("kind").and_then(|kind| kind.as_str()) {
         Some(
-            "open_app" | "mouse_click" | "mouse_drag" | "key_press" | "key_type" | "key_paste",
+            "open_app" | "mouse_move" | "mouse_click" | "mouse_drag" | "key_press" | "key_type"
+            | "key_paste",
         ) => true,
         Some("sequence") => action
             .get("actions")
@@ -2741,6 +3083,78 @@ fn should_continue_long_range_after_accepted_action(
     };
     action_can_advance_long_range_goal(action)
         && !action_is_user_text_fulfillment(transcript, action)
+}
+
+fn should_continue_recording_watch_after_evidence(
+    transcript: &str,
+    turn: &CompletedAssistantTurn,
+    effect: Option<&str>,
+    attempt_index: usize,
+    loop_budget: AgentLoopBudget,
+) -> bool {
+    if !loop_budget.can_continue_after(attempt_index) || effect != Some("confirmed") {
+        return false;
+    }
+    if !transcript_requests_recording_watch_answer(transcript) {
+        return false;
+    }
+    let Some(action) = turn.action.as_ref() else {
+        return false;
+    };
+    json_action_runs_recording_watch(action)
+        && turn
+            .evidence
+            .as_ref()
+            .is_some_and(evidence_has_recording_watch_report)
+}
+
+fn transcript_requests_recording_watch_answer(transcript: &str) -> bool {
+    let words = transcript
+        .split_whitespace()
+        .map(normalize_voice_token)
+        .collect::<Vec<_>>();
+    let wants_recording = words.iter().any(|word| {
+        matches!(
+            word.as_str(),
+            "record" | "recording" | "screenrecord" | "screenrecording" | "video" | "clip"
+        )
+    });
+    let wants_watch_or_answer = words.iter().any(|word| {
+        matches!(
+            word.as_str(),
+            "watch" | "inspect" | "answer" | "reason" | "analyze" | "analyse" | "summarize"
+        )
+    });
+    wants_recording && wants_watch_or_answer
+}
+
+fn json_action_runs_recording_watch(action: &serde_json::Value) -> bool {
+    match action.get("kind").and_then(|kind| kind.as_str()) {
+        Some("shell_exec") => action
+            .get("command")
+            .and_then(|command| command.as_str())
+            .is_some_and(shell_command_runs_recording_watch),
+        Some("sequence") => action
+            .get("actions")
+            .and_then(|actions| actions.as_array())
+            .is_some_and(|actions| actions.iter().any(json_action_runs_recording_watch)),
+        _ => false,
+    }
+}
+
+fn shell_command_runs_recording_watch(command: &str) -> bool {
+    let lower = command.to_ascii_lowercase();
+    lower.contains(" record ")
+        && lower.contains(" video inspect ")
+        && (lower.contains("cua ") || lower.contains("/cua"))
+}
+
+fn evidence_has_recording_watch_report(evidence: &serde_json::Value) -> bool {
+    evidence_messages(evidence).any(|message| {
+        message_stdout(message).is_some_and(|stdout| {
+            stdout.contains("cua.recording.v1") && stdout.contains("cua.video_inspection.v1")
+        })
+    })
 }
 
 fn action_can_advance_long_range_goal(action: &serde_json::Value) -> bool {
@@ -3534,14 +3948,32 @@ fn evidence_has_verification_observation(evidence: &serde_json::Value) -> bool {
 
 fn attach_verification_observation_to_last_attempt(
     attempts: &mut [PlanAttemptContext],
+    source_frame: Option<&FrameEnvelope>,
+    source_desktop: Option<&DesktopState>,
     context: &PrefetchedContext,
 ) {
     let Some(attempt) = attempts.last_mut() else {
         return;
     };
+    let latest_frame = context.frame.as_ref().map(|frame| &frame.envelope);
+    let source_window = source_desktop.and_then(focused_window_summary_json);
+    let latest_window = context
+        .desktop
+        .as_ref()
+        .and_then(focused_window_summary_json);
+    let focused_window_changed = source_window
+        .as_ref()
+        .zip(latest_window.as_ref())
+        .map(|(before, after)| before != after);
     let observation = json!({
         "has_frame": context.frame.is_some(),
         "has_desktop": context.desktop.is_some(),
+        "source_frame": source_frame.map(frame_summary_json),
+        "latest_frame": latest_frame.map(frame_summary_json),
+        "frame_changed": source_frame.zip(latest_frame).map(|(before, after)| frame_changed(before, after)),
+        "source_focused_window": source_window,
+        "focused_window": latest_window,
+        "focused_window_changed": focused_window_changed,
         "errors": &context.errors,
     });
     match attempt.evidence.as_mut() {
@@ -3561,6 +3993,41 @@ fn attach_verification_observation_to_last_attempt(
             }));
         }
     }
+}
+
+fn frame_summary_json(frame: &FrameEnvelope) -> serde_json::Value {
+    json!({
+        "frame_id": frame.frame_id,
+        "display_id": &frame.display_id,
+        "width": frame.width,
+        "height": frame.height,
+        "sha256": &frame.sha256,
+    })
+}
+
+fn frame_changed(before: &FrameEnvelope, after: &FrameEnvelope) -> bool {
+    before.sha256 != after.sha256
+        || before.width != after.width
+        || before.height != after.height
+        || before.display_id != after.display_id
+}
+
+fn focused_window_summary_json(desktop: &DesktopState) -> Option<serde_json::Value> {
+    desktop
+        .windows
+        .iter()
+        .find(|window| window.focused)
+        .map(|window| {
+            json!({
+                "id": &window.id,
+                "app_name": window.app_name.as_deref(),
+                "title": window.title.as_deref(),
+                "x": window.x,
+                "y": window.y,
+                "width": window.width,
+                "height": window.height,
+            })
+        })
 }
 
 fn observation_repeats_without_intervening_change(
@@ -3893,6 +4360,7 @@ fn prior_attempts_include_final_turn(
             && attempt.action == completed.action
             && attempt.evidence == completed.evidence)
             || budget_exhausted_relabels_attempt(completed, attempt)
+            || terminal_guard_wraps_recorded_attempt(completed, attempt)
     })
 }
 
@@ -3905,6 +4373,23 @@ fn budget_exhausted_relabels_attempt(
     };
     evidence["reason"] == "long_range_goal_reached_agent_loop_budget"
         && completed.action == attempt.action
+        && evidence.get("last_evidence") == attempt.evidence.as_ref()
+}
+
+fn terminal_guard_wraps_recorded_attempt(
+    completed: &CompletedAssistantTurn,
+    attempt: &PlanAttemptContext,
+) -> bool {
+    let Some(evidence) = completed.evidence.as_ref() else {
+        return false;
+    };
+    let Some(reason) = evidence.get("reason").and_then(|value| value.as_str()) else {
+        return false;
+    };
+    matches!(
+        reason,
+        "accepted_action_without_verifiable_progress" | "visible_action_without_observed_progress"
+    ) && evidence.get("last_action") == attempt.action.as_ref()
         && evidence.get("last_evidence") == attempt.evidence.as_ref()
 }
 
@@ -3934,6 +4419,13 @@ fn should_replan_after_turn(
     }
     should_replan_after_effect(effect, attempt_index, loop_budget)
         || should_continue_long_range_after_accepted_action(
+            transcript,
+            turn,
+            effect,
+            attempt_index,
+            loop_budget,
+        )
+        || should_continue_recording_watch_after_evidence(
             transcript,
             turn,
             effect,
@@ -4182,6 +4674,7 @@ fn send_metric(tx: &Sender<VoiceUiEvent>, name: &'static str, elapsed: Duration)
 #[derive(Debug, Clone)]
 struct VoiceTurnTrace {
     enabled: bool,
+    artifacts_enabled: bool,
     path: Option<PathBuf>,
     turn_id: String,
 }
@@ -4190,11 +4683,9 @@ impl VoiceTurnTrace {
     fn new(config: &VoiceConfig) -> Self {
         let sequence = VOICE_TRACE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         Self {
-            enabled: config.debug_trace,
-            path: config
-                .debug_trace
-                .then(|| voice_trace_path(&config.profile))
-                .flatten(),
+            enabled: true,
+            artifacts_enabled: config.debug_trace,
+            path: voice_trace_path(&config.profile),
             turn_id: format!("{}-{}-{sequence}", std::process::id(), wall_ms()),
         }
     }
@@ -4246,7 +4737,7 @@ impl VoiceTurnTrace {
     }
 
     async fn write_artifact(&self, name: &'static str, bytes: &[u8], data: serde_json::Value) {
-        if !self.enabled {
+        if !self.enabled || !self.artifacts_enabled {
             return;
         }
         let Some(path) = self.artifact_path(name) else {
@@ -4285,7 +4776,7 @@ impl VoiceTurnTrace {
 
 fn report_voice_trace_error(action: &str, path: &std::path::Path, error: &dyn std::fmt::Display) {
     eprintln!(
-        "cua voice debug trace {action} failed for {}: {error}",
+        "cua voice trace {action} failed for {}: {error}",
         path.display()
     );
 }
@@ -4378,6 +4869,43 @@ fn plan_trace_json(model: &str, elapsed: Duration, plan: &PlannedTurn) -> serde_
 mod tests {
     use super::*;
     use std::sync::mpsc::channel;
+
+    fn test_frame_envelope(frame_id: u64, sha256: &str) -> FrameEnvelope {
+        FrameEnvelope {
+            schema_version: "cua.frame.v1".to_string(),
+            frame_id,
+            timestamp_mono_ns: u128::from(frame_id),
+            timestamp_wall_ms: frame_id as i64,
+            display_id: "1".to_string(),
+            display_x: 0,
+            display_y: 0,
+            display_width: 1280,
+            display_height: 831,
+            frame_origin_x: 0,
+            frame_origin_y: 0,
+            width: 1280,
+            height: 831,
+            scale_factor: 1.0,
+            pixel_format: "jpeg".to_string(),
+            encoding: cua_core::FrameEncoding::Jpeg,
+            byte_len: 128,
+            sha256: sha256.to_string(),
+            cursor: cua_core::CursorState {
+                x: 0.0,
+                y: 0.0,
+                visible: true,
+                included_in_frame: false,
+            },
+            damage_rects: Vec::new(),
+        }
+    }
+
+    fn test_frame_payload(frame_id: u64, sha256: &str) -> FramePayload {
+        FramePayload {
+            envelope: test_frame_envelope(frame_id, sha256),
+            bytes_base64: None,
+        }
+    }
 
     #[tokio::test]
     async fn recording_progress_emits_elapsed_listening_updates() {
@@ -4593,11 +5121,11 @@ mod tests {
         );
         assert_eq!(
             planning_credentials_missing_message_with_attempts(
-                "GEMINI_API_KEY or GOOGLE_API_KEY",
-                "gemini-3.7-flash",
+                "OPENROUTER_API_KEY",
+                "anthropic/claude-sonnet-4.6",
                 &[]
             ),
-            "GEMINI_API_KEY or GOOGLE_API_KEY is required for planner model gemini-3.7-flash."
+            "OPENROUTER_API_KEY is required for planner model anthropic/claude-sonnet-4.6."
         );
         let attempts = vec![PlanAttemptContext {
             attempt_index: 1,
@@ -4625,11 +5153,11 @@ mod tests {
         );
         assert_eq!(
             planning_credentials_missing_message_with_attempts(
-                "GEMINI_API_KEY or GOOGLE_API_KEY",
-                "gemini-3.7-flash",
+                "OPENROUTER_API_KEY",
+                "anthropic/claude-sonnet-4.6",
                 &attempts
             ),
-            "GEMINI_API_KEY or GOOGLE_API_KEY is required for planner model gemini-3.7-flash; stopped after 1 action attempt; last attempted using Aegis `search the official SQLite foreign key documentation`."
+            "OPENROUTER_API_KEY is required for planner model anthropic/claude-sonnet-4.6; stopped after 1 action attempt; last attempted using Aegis `search the official SQLite foreign key documentation`."
         );
         let sequence_attempts = vec![PlanAttemptContext {
             attempt_index: 1,
@@ -4790,36 +5318,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn debug_trace_is_off_by_default() {
+    async fn voice_trace_writes_jsonl_for_live_turns_without_debug_artifacts() {
         let trace_path = std::env::temp_dir().join(format!(
-            "cua-trace-off-{}-{}.jsonl",
+            "cua-trace-live-{}-{}.jsonl",
             std::process::id(),
             wall_ms()
         ));
+        let artifact_path = trace_path
+            .parent()
+            .unwrap()
+            .join("voice-turn-artifacts")
+            .join("test-turn")
+            .join("input.wav");
+        let _ = std::fs::remove_dir_all(artifact_path.parent().unwrap());
         VoiceTurnTrace {
-            enabled: false,
+            enabled: true,
+            artifacts_enabled: false,
             path: Some(trace_path.clone()),
             turn_id: "test-turn".to_string(),
         }
         .append("test_event", json!({"ok": true}))
         .await;
 
-        assert!(!trace_path.exists());
-    }
-
-    #[tokio::test]
-    async fn debug_trace_writes_jsonl_when_enabled() {
-        let trace_path = std::env::temp_dir().join(format!(
-            "cua-trace-on-{}-{}.jsonl",
-            std::process::id(),
-            wall_ms()
-        ));
         VoiceTurnTrace {
             enabled: true,
+            artifacts_enabled: false,
             path: Some(trace_path.clone()),
             turn_id: "test-turn".to_string(),
         }
-        .append("test_event", json!({"ok": true}))
+        .write_artifact("input.wav", b"wav", json!({"ok": true}))
         .await;
 
         let contents = std::fs::read_to_string(&trace_path).unwrap();
@@ -4827,6 +5354,40 @@ mod tests {
         assert_eq!(value["schema_version"], "cua.voice_trace.v1");
         assert_eq!(value["event"], "test_event");
         assert_eq!(value["data"]["ok"], true);
+        assert!(!artifact_path.exists());
+        let _ = std::fs::remove_file(trace_path);
+    }
+
+    #[tokio::test]
+    async fn debug_trace_writes_artifacts_when_enabled() {
+        let trace_path = std::env::temp_dir().join(format!(
+            "cua-trace-on-{}-{}.jsonl",
+            std::process::id(),
+            wall_ms()
+        ));
+        let artifact_path = trace_path
+            .parent()
+            .unwrap()
+            .join("voice-turn-artifacts")
+            .join("test-turn")
+            .join("input.wav");
+        let _ = std::fs::remove_dir_all(artifact_path.parent().unwrap());
+        VoiceTurnTrace {
+            enabled: true,
+            artifacts_enabled: true,
+            path: Some(trace_path.clone()),
+            turn_id: "test-turn".to_string(),
+        }
+        .write_artifact("input.wav", b"wav", json!({"ok": true}))
+        .await;
+
+        assert_eq!(std::fs::read(&artifact_path).unwrap(), b"wav");
+        let contents = std::fs::read_to_string(&trace_path).unwrap();
+        let value: serde_json::Value = serde_json::from_str(contents.trim()).unwrap();
+        assert_eq!(value["schema_version"], "cua.voice_trace.v1");
+        assert_eq!(value["event"], "artifact");
+        assert_eq!(value["data"]["data"]["ok"], true);
+        let _ = std::fs::remove_file(artifact_path);
         let _ = std::fs::remove_file(trace_path);
     }
 
@@ -4889,6 +5450,7 @@ mod tests {
         });
         let trace = VoiceTurnTrace {
             enabled: false,
+            artifacts_enabled: false,
             path: None,
             turn_id: "test-turn".to_string(),
         };
@@ -4956,8 +5518,8 @@ mod tests {
     }
 
     #[test]
-    fn default_planner_model_uses_latest_gemini_flash() {
-        assert_eq!(DEFAULT_PLANNER_MODEL, "gemini-3.7-flash");
+    fn default_planner_model_uses_openrouter_sonnet() {
+        assert_eq!(DEFAULT_PLANNER_MODEL, "anthropic/claude-sonnet-4.6");
     }
 
     #[test]
@@ -5147,6 +5709,7 @@ mod tests {
     fn visible_side_effect_actions_require_reobserve_before_final_reply() {
         for action in [
             json!({"kind": "open_app", "app_name": "Calculator"}),
+            json!({"kind": "mouse_move", "x": 1, "y": 2}),
             json!({"kind": "mouse_click", "x": 1, "y": 2}),
             json!({"kind": "mouse_drag", "from_x": 1, "from_y": 2, "to_x": 3, "to_y": 4}),
             json!({"kind": "key_press", "combo": "enter"}),
@@ -5165,7 +5728,6 @@ mod tests {
             json!({"kind": "aegis", "args": ["--help"]}),
             json!({"kind": "ctx", "args": ["query", "default", "cua"]}),
             json!({"kind": "clipboard_read", "allow_sensitive": false}),
-            json!({"kind": "mouse_move", "x": 1, "y": 2}),
         ] {
             assert!(!action_requires_reobserve_before_finish(&action));
         }
@@ -6144,6 +6706,71 @@ mod tests {
         assert!(!json_action_uses_aegis(action));
         assert!(should_replan_after_turn(
             "Open Safari and search for the official SQLite foreign key documentation, then read the source and report the verified title.",
+            &turn,
+            Some("confirmed"),
+            1,
+            AgentLoopBudget::Unbounded
+        ));
+    }
+
+    #[test]
+    fn recording_watch_reports_force_evidence_backed_answer_turn() {
+        let transcript =
+            "Screen record what is visible, watch the video, and answer what happened.";
+        let turn = CompletedAssistantTurn {
+            response: "Recording and inspecting a short screen clip.".to_string(),
+            action: Some(json!({
+                "kind": "shell_exec",
+                "command": "/Applications/cua.app/Contents/MacOS/cua --profile default record --out ~/.cua/artifacts/recordings/task.mp4 --json && /Applications/cua.app/Contents/MacOS/cua video inspect ~/.cua/artifacts/recordings/task.mp4 --json",
+                "timeout_ms": 20000
+            })),
+            evidence: Some(json!({
+                "effect": "confirmed",
+                "evidence": [{
+                    "kind": "value_readback",
+                    "message": "shell exited 0; stdout={\"schema_version\":\"cua.recording.v1\",\"ok\":true}\n{\"schema_version\":\"cua.video_inspection.v1\",\"ok\":true}; stderr="
+                }]
+            })),
+        };
+
+        assert!(should_continue_recording_watch_after_evidence(
+            transcript,
+            &turn,
+            Some("confirmed"),
+            1,
+            AgentLoopBudget::Unbounded
+        ));
+        assert!(should_replan_after_turn(
+            transcript,
+            &turn,
+            Some("confirmed"),
+            1,
+            AgentLoopBudget::Unbounded
+        ));
+    }
+
+    #[test]
+    fn recording_watch_does_not_continue_from_path_without_inspection_evidence() {
+        let transcript =
+            "Screen record what is visible, watch the video, and answer what happened.";
+        let turn = CompletedAssistantTurn {
+            response: "Recording a short screen clip.".to_string(),
+            action: Some(json!({
+                "kind": "shell_exec",
+                "command": "cua record --out ~/.cua/artifacts/recordings/task.mp4 --json",
+                "timeout_ms": 20000
+            })),
+            evidence: Some(json!({
+                "effect": "confirmed",
+                "evidence": [{
+                    "kind": "value_readback",
+                    "message": "shell exited 0; stdout={\"schema_version\":\"cua.recording.v1\",\"ok\":true}; stderr="
+                }]
+            })),
+        };
+
+        assert!(!should_continue_recording_watch_after_evidence(
+            transcript,
             &turn,
             Some("confirmed"),
             1,
@@ -7332,6 +7959,223 @@ mod tests {
     }
 
     #[test]
+    fn visible_action_mini_turn_records_frame_change() {
+        let mut attempts = vec![PlanAttemptContext {
+            attempt_index: 1,
+            response: "Clicking the visible button.".to_string(),
+            action: Some(json!({
+                "kind": "mouse_click",
+                "x": 431,
+                "y": 686,
+                "button": "left",
+                "count": 1
+            })),
+            effect: Some("unverifiable".to_string()),
+            evidence: Some(json!({
+                "effect": "unverifiable",
+                "evidence": [{"kind": "model_observation", "message": "mouse click posted through CGEvent"}]
+            })),
+        }];
+        let before = test_frame_envelope(10, "before-hash");
+        let after = test_frame_payload(11, "after-hash");
+        let context = PrefetchedContext {
+            session: None,
+            frame: Some(after),
+            desktop: None,
+            errors: Vec::new(),
+            elapsed: Duration::from_millis(12),
+        };
+
+        attach_verification_observation_to_last_attempt(
+            &mut attempts,
+            Some(&before),
+            None,
+            &context,
+        );
+
+        let observation = &attempts[0].evidence.as_ref().unwrap()["verification_observation"];
+        assert_eq!(observation["source_frame"]["frame_id"], 10);
+        assert_eq!(observation["latest_frame"]["frame_id"], 11);
+        assert_eq!(observation["frame_changed"], true);
+    }
+
+    #[test]
+    fn mouse_move_requires_reobserve_before_finish() {
+        assert!(action_requires_reobserve_before_finish(&json!({
+            "kind": "mouse_move",
+            "x": 1,
+            "y": 1,
+            "duration_ms": 0
+        })));
+    }
+
+    #[test]
+    fn repeated_visible_actions_without_observed_change_stall() {
+        let action = json!({
+            "kind": "mouse_click",
+            "x": 431,
+            "y": 686,
+            "button": "left",
+            "count": 1
+        });
+        let attempts = (1..=DEFAULT_VISIBLE_NO_PROGRESS_STALL_LIMIT)
+            .map(|attempt_index| PlanAttemptContext {
+                attempt_index,
+                response: "Clicking the same visible control.".to_string(),
+                action: Some(action.clone()),
+                effect: Some("unverifiable".to_string()),
+                evidence: Some(json!({
+                    "effect": "unverifiable",
+                    "evidence": [{"kind": "model_observation", "message": "mouse click posted through CGEvent"}],
+                    "verification_observation": {
+                        "has_frame": true,
+                        "has_desktop": true,
+                        "frame_changed": false,
+                        "focused_window_changed": false
+                    }
+                })),
+            })
+            .collect::<Vec<_>>();
+
+        let stall = visible_no_progress_stall_after_reobserve(
+            "Use Safari and open watch surface stream and pull up a movie.",
+            &attempts,
+        )
+        .expect("visible no-progress stall");
+
+        assert_eq!(stall.reason, "visible_action_without_observed_progress");
+        assert_eq!(
+            stall.consecutive_attempts,
+            DEFAULT_VISIBLE_NO_PROGRESS_STALL_LIMIT
+        );
+    }
+
+    #[test]
+    fn visible_no_progress_stall_ignores_intervening_planner_errors() {
+        let action = json!({
+            "kind": "mouse_click",
+            "x": 431,
+            "y": 686,
+            "button": "left",
+            "count": 1
+        });
+        let no_change_attempt = |attempt_index| PlanAttemptContext {
+            attempt_index,
+            response: "Dismissing the disclaimer.".to_string(),
+            action: Some(action.clone()),
+            effect: Some("unverifiable".to_string()),
+            evidence: Some(json!({
+                "effect": "unverifiable",
+                "evidence": [{"kind": "model_observation", "message": "mouse click posted through CGEvent"}],
+                "verification_observation": {
+                    "has_frame": true,
+                    "has_desktop": true,
+                    "frame_changed": false,
+                    "focused_window_changed": false
+                }
+            })),
+        };
+        let attempts = vec![
+            no_change_attempt(1),
+            no_change_attempt(2),
+            PlanAttemptContext {
+                attempt_index: 3,
+                response: "Planner output could not be used.".to_string(),
+                action: None,
+                effect: Some("failed".to_string()),
+                evidence: Some(json!({
+                    "effect": "failed",
+                    "reason": "planning_error",
+                    "error": "missing field `y`"
+                })),
+            },
+            no_change_attempt(4),
+        ];
+
+        let stall = visible_no_progress_stall_after_reobserve(
+            "Use Safari and open watch surface stream and pull up a movie.",
+            &attempts,
+        )
+        .expect("visible no-progress stall");
+
+        assert_eq!(
+            stall.consecutive_attempts,
+            DEFAULT_VISIBLE_NO_PROGRESS_STALL_LIMIT
+        );
+    }
+
+    #[test]
+    fn pointer_only_actions_without_readback_count_despite_incidental_frame_change() {
+        let action = json!({
+            "kind": "sequence",
+            "actions": [
+                {"kind": "mouse_click", "x": 431, "y": 686, "button": "left", "count": 1},
+                {"kind": "mouse_click", "x": 160, "y": 784, "button": "left", "count": 1}
+            ],
+            "inter_action_delay_ms": 120
+        });
+        let attempts = (1..=DEFAULT_VISIBLE_NO_PROGRESS_STALL_LIMIT)
+            .map(|attempt_index| PlanAttemptContext {
+                attempt_index,
+                response: "Clicking visible controls.".to_string(),
+                action: Some(action.clone()),
+                effect: Some("unverifiable".to_string()),
+                evidence: Some(json!({
+                    "effect": "unverifiable",
+                    "evidence": [{"kind": "model_observation", "message": "mouse click posted through CGEvent"}],
+                    "verification_observation": {
+                        "has_frame": true,
+                        "has_desktop": true,
+                        "frame_changed": true,
+                        "focused_window_changed": false
+                    }
+                })),
+            })
+            .collect::<Vec<_>>();
+
+        assert!(visible_no_progress_stall_after_reobserve(
+            "Use Safari and open the site and start the movie.",
+            &attempts,
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn loop_evidence_does_not_count_visible_stall_guard_as_extra_attempt() {
+        let action = Some(json!({"kind": "mouse_move", "x": 1, "y": 1, "duration_ms": 0}));
+        let evidence = Some(json!({
+            "effect": "unverifiable",
+            "verification_observation": {
+                "has_frame": true,
+                "frame_changed": false
+            }
+        }));
+        let attempts = vec![PlanAttemptContext {
+            attempt_index: 1,
+            response: "Moving pointer.".to_string(),
+            action: action.clone(),
+            effect: Some("unverifiable".to_string()),
+            evidence: evidence.clone(),
+        }];
+        let completed = CompletedAssistantTurn {
+            response: "I stopped because repeated visible actions did not change the screen or produce verifiable progress."
+                .to_string(),
+            action: None,
+            evidence: Some(json!({
+                "effect": "partial",
+                "reason": "visible_action_without_observed_progress",
+                "last_action": action,
+                "last_evidence": evidence,
+            })),
+        };
+
+        assert_eq!(loop_attempt_count(&completed, &attempts), 1);
+        let completed = attach_loop_evidence(completed, &attempts);
+
+        assert_eq!(completed.evidence.as_ref().unwrap()["attempt_count"], 1);
+    }
+
+    #[test]
     fn agent_loop_rejects_repeated_observation_without_state_change() {
         let action = json!({
             "kind": "aegis",
@@ -7723,6 +8567,116 @@ mod tests {
         assert_eq!(evidence["attempt_count"], 2);
         assert_eq!(evidence["attempts"][0]["effect"], "unverifiable");
         assert_eq!(evidence["attempts"][1]["effect"], "stopped");
+    }
+
+    #[test]
+    fn accepted_action_stall_stops_unbounded_visible_browsing_without_progress() {
+        let old_limit = std::env::var_os("CUA_AGENT_ACCEPTED_ACTION_STALL_LIMIT");
+        std::env::set_var("CUA_AGENT_ACCEPTED_ACTION_STALL_LIMIT", "3");
+        let transcript = "Open Safari and do extended research across different websites.";
+        let prior_attempts = vec![
+            PlanAttemptContext {
+                attempt_index: 1,
+                response: "Opening the first page.".to_string(),
+                action: Some(json!({
+                    "kind": "sequence",
+                    "actions": [
+                        {"kind": "open_app", "app_name": "Safari"},
+                        {"kind": "key_press", "combo": "cmd+l"},
+                        {"kind": "key_paste", "text": "https://news.ycombinator.com"},
+                        {"kind": "key_press", "combo": "enter"}
+                    ]
+                })),
+                effect: Some("unverifiable".to_string()),
+                evidence: Some(json!({"effect": "unverifiable"})),
+            },
+            PlanAttemptContext {
+                attempt_index: 2,
+                response: "Trying another page.".to_string(),
+                action: Some(json!({"kind": "mouse_click", "x": 425, "y": 697})),
+                effect: Some("unverifiable".to_string()),
+                evidence: Some(json!({"effect": "unverifiable"})),
+            },
+        ];
+        let turn = CompletedAssistantTurn {
+            response: "Clicking another result.".to_string(),
+            action: Some(json!({"kind": "mouse_click", "x": 449, "y": 703})),
+            evidence: Some(json!({"effect": "unverifiable"})),
+        };
+
+        let stall = accepted_action_stall_after_attempt(
+            transcript,
+            &prior_attempts,
+            &turn,
+            Some("unverifiable"),
+        );
+        assert!(stall.stalled);
+        assert_eq!(stall.consecutive_attempts, 3);
+        assert_eq!(stall.stall_limit, 3);
+        let completed = attach_loop_evidence(
+            stop_for_accepted_action_stall(&turn, stall),
+            &prior_attempts,
+        );
+        let evidence = completed.evidence.unwrap();
+
+        assert_eq!(completed.action, None);
+        assert_eq!(evidence["effect"], "partial");
+        assert_eq!(
+            evidence["final_evidence"]["reason"],
+            "accepted_action_without_verifiable_progress"
+        );
+        assert_eq!(evidence["final_evidence"]["consecutive_attempts"], 3);
+        assert_eq!(evidence["attempt_count"], 3);
+
+        if let Some(old_limit) = old_limit {
+            std::env::set_var("CUA_AGENT_ACCEPTED_ACTION_STALL_LIMIT", old_limit);
+        } else {
+            std::env::remove_var("CUA_AGENT_ACCEPTED_ACTION_STALL_LIMIT");
+        }
+    }
+
+    #[test]
+    fn accepted_action_stall_resets_when_task_readback_arrives() {
+        let old_limit = std::env::var_os("CUA_AGENT_ACCEPTED_ACTION_STALL_LIMIT");
+        std::env::set_var("CUA_AGENT_ACCEPTED_ACTION_STALL_LIMIT", "2");
+        let transcript = "Use Aegis headless to research SQLite foreign key enforcement.";
+        let prior_attempts = vec![PlanAttemptContext {
+            attempt_index: 1,
+            response: "Reading the page.".to_string(),
+            action: Some(json!({
+                "kind": "aegis",
+                "args": ["--mode", "headless", "page", "text", "--scope", "main"]
+            })),
+            effect: Some("confirmed".to_string()),
+            evidence: Some(json!({
+                "effect": "confirmed",
+                "evidence": [{
+                    "kind": "value_readback",
+                    "message": "aegis exited 0; stdout=SQLite Foreign Key Support; stderr="
+                }]
+            })),
+        }];
+        let turn = CompletedAssistantTurn {
+            response: "Reading related text.".to_string(),
+            action: Some(json!({"kind": "mouse_click", "x": 1, "y": 2})),
+            evidence: Some(json!({"effect": "unverifiable"})),
+        };
+
+        let stall = accepted_action_stall_after_attempt(
+            transcript,
+            &prior_attempts,
+            &turn,
+            Some("unverifiable"),
+        );
+
+        assert!(!stall.stalled);
+        assert_eq!(stall.consecutive_attempts, 1);
+
+        if let Some(old_limit) = old_limit {
+            std::env::set_var("CUA_AGENT_ACCEPTED_ACTION_STALL_LIMIT", old_limit);
+        } else {
+            std::env::remove_var("CUA_AGENT_ACCEPTED_ACTION_STALL_LIMIT");
+        }
     }
 
     #[test]

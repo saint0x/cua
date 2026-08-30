@@ -6,7 +6,7 @@ This file documents the tools and prompts currently exposed to the cua agent/run
 
 Current voice defaults:
 
-- planner model: `gemini-3.7-flash`
+- planner model: `anthropic/claude-sonnet-4.6`
 - speech-to-text backend: `local`
 - speech-to-text model: `tiny.en`
 - local speech-to-text fallback model: `base.en`
@@ -213,6 +213,8 @@ CLI commands:
 - `cua scratchpad list --json`
 - `cua scratchpad delete <name> --session-id <owner-session-id> --json`
 - `cua stream --unix [--frames <n>] [--fps <n>] [--max-width <px>] [--duration-ms <ms>] [--queue-depth <n>] --json`
+- `cua record --out <path>.mp4 [--duration-ms <ms>] [--fps <n>] [--max-width <px>] [--frames <n>] [--inspect-frames <n>] [--keep-frames] [--no-ocr] --json`
+- `cua video inspect <path>.mp4 [--frames <n>] [--max-width <px>] [--no-ocr] --json`
 - `cua perf live --json`
 - `cua perf bench screenshot|stream|input|model-prep --json`
 - `cua screenshot --out <path>`
@@ -320,6 +322,7 @@ Supported ACTION shapes:
 {"kind":"key_paste","text":"text to paste"}
 {"kind":"open_app","app_name":"Messages"}
 {"kind":"shell_exec","command":"pwd && ls","timeout_ms":5000}
+{"kind":"shell_exec","command":"cua record --out ~/.cua/artifacts/recordings/task.mp4 --duration-ms 3000 --fps 10 --json && cua video inspect ~/.cua/artifacts/recordings/task.mp4 --json","timeout_ms":20000}
 {"kind":"aegis","args":["--mode","headful","page","actions"],"timeout_ms":15000}
 {"kind":"ctx","args":["query","default","cua","open safari"],"timeout_ms":5000}
 {"kind":"sequence","actions":[{"kind":"open_app","app_name":"Messages"},{"kind":"key_press","combo":"cmd+n"}],"inter_action_delay_ms":120}
@@ -336,8 +339,9 @@ Coordinate rules:
 - Prefer a mouse_click for visible buttons, links, tabs, menus, fields, and icons.
 - Prefer key_type for short text into a focused field.
 - Prefer key_paste for longer text or exact multi-line text.
-- Prefer open_app when the user asks only to open or launch a macOS app by name.
+- Prefer open_app when the user asks only to open or launch a desktop app by name.
 - Prefer shell_exec when the user asks to inspect or change local files, run a local CLI, query local process state, or do developer work that is faster and clearer through bash. Keep commands short, bounded, and directly tied to the user request.
+- When the user asks to screen record, watch, inspect, or answer questions about a local screen recording, use the bounded `cua record --out <path>.mp4 --duration-ms <ms> --json` and `cua video inspect <path>.mp4 --json` CLI surfaces. Treat the returned recording manifest, ffprobe metadata, sampled keyframes, and OCR text as verification evidence. Do not claim video contents from the file path alone.
 - Prefer aegis when the user asks for browser automation, web navigation, search, page inspection, headless browser work, or headful browser work through Aegis. Pass explicit Aegis CLI args only; do not wrap Aegis in shell_exec.
 - Prefer ctx when the user explicitly asks you to remember, query memory, compact context, snapshot context, restore context, or inspect the context runtime. Pass explicit ctx CLI args only; do not wrap ctx in shell_exec. Chat history is fed into ctx automatically by cua, so do not call ctx just to save ordinary chat turns.
 - Profile scratchpads are fed into planner context automatically. If the user explicitly asks to add, read, list, or delete a scratchpad, use shell_exec with the bounded cua scratchpad CLI command and the active owner session only when that session is available in the runtime evidence.

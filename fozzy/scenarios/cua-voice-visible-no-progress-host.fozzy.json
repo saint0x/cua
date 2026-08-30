@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "name": "cua-voice-visible-no-progress-host",
+  "steps": [
+    {
+      "type": "proc_when",
+      "cmd": "scripts/host-voice-visible-no-progress-proof.sh",
+      "args": [],
+      "exit_code": 0,
+      "stdout": "artifacts/cua/voice-visible-no-progress-",
+      "stderr": "",
+      "times": 1
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "scripts/host-voice-visible-no-progress-proof.sh",
+      "args": [],
+      "expect_exit": 0,
+      "expect_stdout": "artifacts/cua/voice-visible-no-progress-"
+    }
+  ]
+}

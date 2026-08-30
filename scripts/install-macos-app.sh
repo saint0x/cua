@@ -32,8 +32,6 @@ sync_env_secret() {
 
 sync_planner_env() {
   sync_env_secret OPENROUTER_API_KEY
-  sync_env_secret GEMINI_API_KEY
-  sync_env_secret GOOGLE_API_KEY
 }
 
 if [[ -z "${CUA_APP_SOURCE:-}" ]]; then

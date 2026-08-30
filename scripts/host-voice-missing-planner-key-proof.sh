@@ -13,7 +13,7 @@ SUFFIX="${RUN_ID: -5}"
 PROFILE="${CUA_VOICE_MISSING_KEY_PROFILE:-qmk$SUFFIX}"
 OUT_DIR="${CUA_VOICE_MISSING_KEY_OUT_DIR:-artifacts/cua/voice-missing-key-$RUN_ID}"
 CUA_HOME_DIR="${CUA_VOICE_MISSING_KEY_HOME:-}"
-PLANNER_MODEL="${CUA_VOICE_MISSING_KEY_MODEL:-gemini-3.7-flash}"
+PLANNER_MODEL="${CUA_VOICE_MISSING_KEY_MODEL:-anthropic/claude-sonnet-4.6}"
 BUDGET_MS="${CUA_VOICE_MISSING_KEY_BUDGET_MS:-60000}"
 TRANSCRIPT="${CUA_VOICE_MISSING_KEY_TRANSCRIPT:-Using Aegis headless only, search the web for the official SQLite foreign key documentation and report the verified page title.}"
 EVENTS="$OUT_DIR/events.jsonl"
@@ -34,11 +34,6 @@ if [[ -z "$VOICE_BIN_PATH" || ! -x "$VOICE_BIN_PATH" ]]; then
   exit 1
 fi
 
-if [[ "$PLANNER_MODEL" != gemini-* ]]; then
-  echo "missing-key proof requires a direct Gemini planner model, got $PLANNER_MODEL" >&2
-  exit 1
-fi
-
 mkdir -p "$OUT_DIR"
 if [[ -z "$CUA_HOME_DIR" ]]; then
   CUA_HOME_DIR="$(mktemp -d /tmp/cuamk.XXXXXX)"
@@ -52,7 +47,7 @@ TRACE="$CUA_HOME_DIR/profiles/$PROFILE/traces/voice.jsonl"
 CHAT_DB="$CUA_HOME_DIR/profiles/$PROFILE/chat.db"
 
 START_MS="$(perl -MTime::HiRes=time -e 'printf "%.0f\n", time() * 1000')"
-env -u GEMINI_API_KEY -u GOOGLE_API_KEY -u OPENROUTER_API_KEY \
+env -u OPENROUTER_API_KEY \
   CUA_HOME="$CUA_HOME_DIR" \
   CUA_ENV_FILE="$ENV_FILE" \
   CUA_VOICE_DEBUG_TRACE=true \
@@ -82,13 +77,13 @@ jq -s -e '
   any(.event == "planning" and .tool == "Command parser") and
   any(.event == "dispatching" and (.action | contains("Aegis"))) and
   any(.event == "planning" and .tool == "Reobserving") and
-  any(.event == "planning" and (.tool | contains("Gemini repair 2/n"))) and
+  any(.event == "planning" and (.tool | contains("OpenRouter repair 2/n"))) and
   any(.event == "metric" and .name == "context_wait_ms") and
   any(.event == "metric" and .name == "context_prefetch_ms") and
   any(.event == "metric" and .name == "dispatch_ms") and
   any(.event == "metric" and .name == "reobserve_ms") and
   any(.event == "metric" and .name == "plan_ms") and
-  any(.event == "reply" and ((.text // "") | contains("GEMINI_API_KEY or GOOGLE_API_KEY is required")) and ((.text // "") | contains("action attempt")) and ((.text // "") | contains("last attempted"))) and
+  any(.event == "reply" and ((.text // "") | contains("OPENROUTER_API_KEY is required")) and ((.text // "") | contains("action attempt")) and ((.text // "") | contains("last attempted"))) and
   any(.event == "metric" and .name == "turn_total_ms") and
   (idx("transcript") < idx("dispatching")) and
   (idx("dispatching") < idx("reply")) and
@@ -107,7 +102,7 @@ jq -s -e '
   any(.event == "agent_reobserve_result") and
   any(.event == "planning_error" and .data.reason == "planning_credentials_missing") and
   any(.event == "agent_loop_stop" and .data.attempts > 0 and .data.final_effect == "failed") and
-  any(.event == "reply" and ((.data.text // "") | contains("GEMINI_API_KEY or GOOGLE_API_KEY is required")) and ((.data.text // "") | contains("action attempt")) and ((.data.text // "") | contains("last attempted"))) and
+  any(.event == "reply" and ((.data.text // "") | contains("OPENROUTER_API_KEY is required")) and ((.data.text // "") | contains("action attempt")) and ((.data.text // "") | contains("last attempted"))) and
   any(.event == "memory_persisted") and
   any(.event == "turn_complete") and
   (map(select(.event == "reply")) | all((.data.text // "") | test("\\b[Cc]onfirmed\\b") | not))

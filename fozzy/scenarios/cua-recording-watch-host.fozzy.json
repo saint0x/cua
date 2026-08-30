@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "name": "cua-recording-watch-host",
+  "steps": [
+    {
+      "type": "proc_when",
+      "cmd": "scripts/host-recording-watch-proof.sh",
+      "args": [],
+      "exit_code": 0,
+      "stdout": "artifacts/cua/recording-watch-proof-",
+      "stderr": "",
+      "times": 1
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "scripts/host-recording-watch-proof.sh",
+      "args": [],
+      "expect_exit": 0,
+      "expect_stdout": "artifacts/cua/recording-watch-proof-"
+    }
+  ]
+}

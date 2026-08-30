@@ -14,7 +14,7 @@ PROFILE="${CUA_VOICE_PROVIDER_PROGRESS_PROFILE:-qpr$SUFFIX}"
 OUT_DIR="${CUA_VOICE_PROVIDER_PROGRESS_OUT_DIR:-artifacts/cua/voice-provider-progress-$RUN_ID}"
 CUA_HOME_DIR="${CUA_VOICE_PROVIDER_PROGRESS_HOME:-}"
 ENV_FILE="${CUA_ENV_FILE:-$HOME/.cua/config/env}"
-PLANNER_MODEL="${CUA_VOICE_PROVIDER_PROGRESS_MODEL:-openrouter/google/gemini-3.7-flash}"
+PLANNER_MODEL="${CUA_VOICE_PROVIDER_PROGRESS_MODEL:-anthropic/claude-sonnet-4.6}"
 BUDGET_MS="${CUA_VOICE_PROVIDER_PROGRESS_BUDGET_MS:-120000}"
 TRANSCRIPT="${CUA_VOICE_PROVIDER_PROGRESS_TRANSCRIPT:-Using Aegis headless only, search the web for the official SQLite foreign key documentation and report the verified page title.}"
 EVENTS="$OUT_DIR/events.jsonl"
@@ -42,7 +42,7 @@ env_key_available() {
   return 1
 }
 
-if [[ "$PLANNER_MODEL" != openrouter/* && "$PLANNER_MODEL" != google/* ]]; then
+if [[ "$PLANNER_MODEL" != openrouter/* && "$PLANNER_MODEL" != google/* && "$PLANNER_MODEL" != anthropic/* ]]; then
   echo "provider progress proof requires an OpenRouter-routed planner model, got $PLANNER_MODEL" >&2
   exit 1
 fi

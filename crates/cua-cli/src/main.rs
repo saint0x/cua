@@ -27,6 +27,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::AsyncWriteExt;
+use tokio::process::Command as TokioCommand;
 
 #[derive(Debug, Parser)]
 #[command(name = "cua", version, about = "CLI-first local computer-use runtime")]
@@ -90,6 +91,11 @@ enum Command {
         command: ScratchpadCommand,
     },
     Stream(StreamArgs),
+    Record(RecordArgs),
+    Video {
+        #[command(subcommand)]
+        command: VideoCommand,
+    },
     Ui {
         #[command(subcommand)]
         command: UiCommand,
@@ -185,6 +191,48 @@ struct StreamArgs {
     duration_ms: Option<u64>,
     #[arg(long)]
     queue_depth: Option<usize>,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct RecordArgs {
+    #[arg(long)]
+    out: PathBuf,
+    #[arg(long, default_value_t = 10)]
+    fps: u32,
+    #[arg(long, default_value_t = 1280)]
+    max_width: u32,
+    #[arg(long, default_value_t = 3000)]
+    duration_ms: u64,
+    #[arg(long)]
+    frames: Option<usize>,
+    #[arg(long)]
+    queue_depth: Option<usize>,
+    #[arg(long)]
+    keep_frames: bool,
+    #[arg(long, default_value_t = 3)]
+    inspect_frames: usize,
+    #[arg(long)]
+    no_ocr: bool,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Subcommand)]
+enum VideoCommand {
+    Inspect(VideoInspectArgs),
+}
+
+#[derive(Debug, Args)]
+struct VideoInspectArgs {
+    video: PathBuf,
+    #[arg(long, default_value_t = 3)]
+    frames: usize,
+    #[arg(long, default_value_t = 1280)]
+    max_width: u32,
+    #[arg(long)]
+    no_ocr: bool,
     #[arg(long)]
     json: bool,
 }
@@ -853,6 +901,8 @@ async fn main() -> anyhow::Result<()> {
         Some(Command::Webhook { command }) => webhook(&cli.profile, command).await,
         Some(Command::Scratchpad { command }) => scratchpad(&cli.profile, command).await,
         Some(Command::Stream(args)) => stream(&cli.profile, args).await,
+        Some(Command::Record(args)) => record(&cli.profile, args).await,
+        Some(Command::Video { command }) => video(command).await,
         Some(Command::Ui { command }) => ui(cli.server_addr, &cli.profile, command).await,
         Some(Command::Screenshot(args)) => screenshot(&cli.profile, args).await,
         Some(Command::WindowCapture(args)) => window_capture(&cli.profile, args).await,
@@ -946,6 +996,8 @@ async fn print_usage_and_status() -> anyhow::Result<()> {
     println!("       cua metrics --json");
     println!("       cua events --json [--after <sequence>]");
     println!("       cua stream --unix --frames 3 --json");
+    println!("       cua record --out /tmp/cua-screen.mp4 --duration-ms 3000 --json");
+    println!("       cua video inspect /tmp/cua-screen.mp4 --json");
     println!("       cua ui step <label> --step-index 2 --step-total 5 --json");
     println!("       cua ui reply <text> --json");
     println!("       cua ui mode headless|headful --json");
@@ -1325,6 +1377,211 @@ async fn stream(profile: &str, args: StreamArgs) -> anyhow::Result<()> {
             }
         }
     }
+    Ok(())
+}
+
+async fn record(profile: &str, args: RecordArgs) -> anyhow::Result<()> {
+    let json = args.json;
+    let report = record_report(profile, args).await?;
+    print_recording_report(&report, json)
+}
+
+async fn record_report(profile: &str, args: RecordArgs) -> anyhow::Result<serde_json::Value> {
+    let fps = args.fps.clamp(1, 30);
+    let requested_frames = record_target_frame_count(args.frames, args.duration_ms, fps)?;
+    let max_frames = recording_max_frames();
+    if requested_frames > max_frames {
+        anyhow::bail!(
+            "recording requested {requested_frames} frames, above CUA_RECORD_MAX_FRAMES={max_frames}"
+        );
+    }
+    let out = args.out;
+    if let Some(parent) = out.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .with_context(|| format!("create recording output directory {}", parent.display()))?;
+    }
+    let manifest_path = recording_manifest_path(&out);
+    let frames_dir = recording_frames_dir(&out);
+    if frames_dir.exists() {
+        tokio::fs::remove_dir_all(&frames_dir)
+            .await
+            .with_context(|| {
+                format!("clear recording frames directory {}", frames_dir.display())
+            })?;
+    }
+    tokio::fs::create_dir_all(&frames_dir)
+        .await
+        .with_context(|| format!("create recording frames directory {}", frames_dir.display()))?;
+
+    let started = Instant::now();
+    let mut log = vec![serde_json::json!({
+        "step": "record_start",
+        "profile": profile,
+        "out": out.display().to_string(),
+        "frames_dir": frames_dir.display().to_string(),
+        "fps": fps,
+        "max_width": args.max_width,
+        "requested_frames": requested_frames,
+    })];
+    let client = CuaClient::connect(profile.to_string())
+        .await
+        .with_context(|| format!("connect to cua daemon profile {profile}"))?;
+    let mut session = client
+        .visual_session_with_options(
+            Some(args.max_width),
+            Some(fps),
+            true,
+            None,
+            None,
+            args.queue_depth,
+        )
+        .await
+        .context("open visual session for recording")?;
+    log.push(serde_json::json!({"step": "visual_session_opened"}));
+
+    let mut frames = Vec::with_capacity(requested_frames);
+    let mut frame_paths = Vec::with_capacity(requested_frames);
+    let frame_timeout = Duration::from_millis(frame_timeout_ms(requested_frames, fps));
+    while frames.len() < requested_frames {
+        let message = tokio::time::timeout(frame_timeout, session.next_message())
+            .await
+            .with_context(|| {
+                format!(
+                    "timed out waiting for recording frame {} of {}",
+                    frames.len() + 1,
+                    requested_frames
+                )
+            })??;
+        match message {
+            Some(VisualSessionMessage::Frame { frame, .. }) => {
+                let frame: FramePayload =
+                    serde_json::from_value(frame).context("decode visual session frame payload")?;
+                let frame_path = frames_dir.join(format!("{:06}.jpg", frames.len() + 1));
+                write_recording_frame(&frame, &frame_path).await?;
+                frames.push(frame.envelope);
+                frame_paths.push(frame_path);
+            }
+            Some(VisualSessionMessage::Diagnostic { message, .. }) => {
+                log.push(
+                    serde_json::json!({"step": "visual_session_diagnostic", "message": message}),
+                );
+            }
+            Some(VisualSessionMessage::Started { fps, .. }) => {
+                log.push(serde_json::json!({"step": "visual_session_started", "fps": fps}));
+            }
+            Some(VisualSessionMessage::Closed { .. }) => {
+                anyhow::bail!(
+                    "visual session closed after {} of {requested_frames} recording frames",
+                    frames.len()
+                );
+            }
+            Some(VisualSessionMessage::Error { error, .. }) => {
+                anyhow::bail!("visual session error while recording: {error}");
+            }
+            Some(VisualSessionMessage::Empty) => {
+                log.push(serde_json::json!({"step": "visual_session_empty"}));
+            }
+            None => anyhow::bail!("visual session ended before recording completed"),
+        }
+    }
+    session
+        .close()
+        .await
+        .context("close recording visual session")?;
+    log.push(serde_json::json!({"step": "frames_captured", "count": frames.len()}));
+
+    encode_recording_video(&frames_dir, &out, fps)
+        .await
+        .with_context(|| format!("encode recording video {}", out.display()))?;
+    let probe = ffprobe_json(&out).await.unwrap_or_else(|error| {
+        serde_json::json!({
+            "ok": false,
+            "error": format!("{error:#}")
+        })
+    });
+    let inspection = inspect_frame_paths(&frame_paths, args.inspect_frames, !args.no_ocr).await;
+    let report = serde_json::json!({
+        "schema_version": "cua.recording.v1",
+        "ok": true,
+        "profile": profile,
+        "video_path": out.display().to_string(),
+        "manifest_path": manifest_path.display().to_string(),
+        "frames_dir": frames_dir.display().to_string(),
+        "frames_kept": args.keep_frames,
+        "frames_captured": frames.len(),
+        "fps": fps,
+        "max_width": args.max_width,
+        "duration_ms_target": args.duration_ms,
+        "elapsed_ms": started.elapsed().as_millis(),
+        "first_frame": frames.first(),
+        "last_frame": frames.last(),
+        "ffprobe": probe,
+        "inspection": inspection,
+        "log": log,
+    });
+    write_json_report(&manifest_path, &report).await?;
+    if !args.keep_frames {
+        tokio::fs::remove_dir_all(&frames_dir)
+            .await
+            .with_context(|| {
+                format!("remove temporary recording frames {}", frames_dir.display())
+            })?;
+    }
+    Ok(report)
+}
+
+async fn video(command: VideoCommand) -> anyhow::Result<()> {
+    match command {
+        VideoCommand::Inspect(args) => inspect_video(args).await,
+    }
+}
+
+async fn inspect_video(args: VideoInspectArgs) -> anyhow::Result<()> {
+    let video = args.video;
+    if !video.is_file() {
+        anyhow::bail!("video file does not exist: {}", video.display());
+    }
+    let frames_dir = video_inspection_frames_dir(&video);
+    if frames_dir.exists() {
+        tokio::fs::remove_dir_all(&frames_dir)
+            .await
+            .with_context(|| {
+                format!(
+                    "clear video inspection frames directory {}",
+                    frames_dir.display()
+                )
+            })?;
+    }
+    tokio::fs::create_dir_all(&frames_dir)
+        .await
+        .with_context(|| {
+            format!(
+                "create video inspection frames directory {}",
+                frames_dir.display()
+            )
+        })?;
+    extract_video_frames(&video, &frames_dir, args.frames, args.max_width)
+        .await
+        .with_context(|| format!("extract inspection frames from {}", video.display()))?;
+    let mut frame_paths = Vec::new();
+    for index in 1..=args.frames {
+        let path = frames_dir.join(format!("{index:06}.jpg"));
+        if path.is_file() {
+            frame_paths.push(path);
+        }
+    }
+    let inspection = inspect_frame_paths(&frame_paths, args.frames, !args.no_ocr).await;
+    let report = serde_json::json!({
+        "schema_version": "cua.video_inspection.v1",
+        "ok": true,
+        "video_path": video.display().to_string(),
+        "frames_dir": frames_dir.display().to_string(),
+        "frames_extracted": frame_paths.len(),
+        "ffprobe": ffprobe_json(&video).await.unwrap_or_else(|error| serde_json::json!({"ok": false, "error": format!("{error:#}")})),
+        "inspection": inspection,
+    });
+    print_recording_report(&report, args.json)?;
     Ok(())
 }
 
@@ -2654,6 +2911,22 @@ impl RunebookRuntime {
                 other => anyhow::bail!("unsupported observe target {other}"),
             },
             "visual" | "visual.session" => self.visual_frames(step).await,
+            "record" | "screen.record" => {
+                let out = PathBuf::from(self.required_string(step, "out")?);
+                let args = RecordArgs {
+                    out,
+                    fps: step_u64(step, "fps")?.unwrap_or(10) as u32,
+                    max_width: step_u64(step, "max_width")?.unwrap_or(1280) as u32,
+                    duration_ms: step_u64(step, "duration_ms")?.unwrap_or(3000),
+                    frames: step_u64(step, "frames")?.map(|value| value as usize),
+                    queue_depth: step_u64(step, "queue_depth")?.map(|value| value as usize),
+                    keep_frames: step_bool(step, "keep_frames")?.unwrap_or(false),
+                    inspect_frames: step_u64(step, "inspect_frames")?.unwrap_or(3) as usize,
+                    no_ocr: step_bool(step, "no_ocr")?.unwrap_or(false),
+                    json: true,
+                };
+                record_report(&self.profile, args).await
+            }
             "screenshot" | "capture.screenshot" => {
                 self.request(
                     "capture.screenshot",
@@ -4154,6 +4427,338 @@ async fn write_frame_payload(
     Ok(())
 }
 
+fn record_target_frame_count(
+    explicit_frames: Option<usize>,
+    duration_ms: u64,
+    fps: u32,
+) -> anyhow::Result<usize> {
+    if let Some(frames) = explicit_frames {
+        return Ok(frames.max(1));
+    }
+    let numerator = u128::from(duration_ms.max(1)) * u128::from(fps.max(1));
+    let frames = numerator.div_ceil(1000).max(1);
+    usize::try_from(frames).context("recording frame count exceeds platform usize")
+}
+
+fn recording_max_frames() -> usize {
+    std::env::var("CUA_RECORD_MAX_FRAMES")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(900)
+}
+
+fn frame_timeout_ms(frames: usize, fps: u32) -> u64 {
+    let expected_ms = ((frames as u64).saturating_mul(1000) / u64::from(fps.max(1))).max(1000);
+    expected_ms.saturating_add(10_000)
+}
+
+fn recording_manifest_path(out: &Path) -> PathBuf {
+    let mut os = out.as_os_str().to_os_string();
+    os.push(".json");
+    PathBuf::from(os)
+}
+
+fn recording_frames_dir(out: &Path) -> PathBuf {
+    let stem = out
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("recording");
+    let parent = out.parent().unwrap_or_else(|| Path::new("."));
+    parent.join(format!("{stem}.frames"))
+}
+
+fn video_inspection_frames_dir(video: &Path) -> PathBuf {
+    let stem = video
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("video");
+    let parent = video.parent().unwrap_or_else(|| Path::new("."));
+    parent.join(format!("{stem}.inspect.frames"))
+}
+
+async fn write_recording_frame(frame: &FramePayload, path: &Path) -> anyhow::Result<()> {
+    let bytes_base64 = frame
+        .bytes_base64
+        .as_deref()
+        .context("visual session frame did not include bytes")?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(bytes_base64)
+        .context("decode visual session frame bytes")?;
+    tokio::fs::write(path, bytes)
+        .await
+        .with_context(|| format!("write recording frame {}", path.display()))
+}
+
+async fn encode_recording_video(frames_dir: &Path, out: &Path, fps: u32) -> anyhow::Result<()> {
+    require_executable("ffmpeg").await?;
+    let input_pattern = frames_dir.join("%06d.jpg");
+    let output = TokioCommand::new("ffmpeg")
+        .arg("-hide_banner")
+        .arg("-loglevel")
+        .arg("error")
+        .arg("-y")
+        .arg("-framerate")
+        .arg(fps.to_string())
+        .arg("-i")
+        .arg(&input_pattern)
+        .arg("-vf")
+        .arg("format=yuv420p")
+        .arg("-movflags")
+        .arg("+faststart")
+        .arg(out)
+        .output()
+        .await
+        .context("run ffmpeg recording encoder")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "ffmpeg failed with status {}; stderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(())
+}
+
+async fn extract_video_frames(
+    video: &Path,
+    frames_dir: &Path,
+    frames: usize,
+    max_width: u32,
+) -> anyhow::Result<()> {
+    require_executable("ffmpeg").await?;
+    let output_pattern = frames_dir.join("%06d.jpg");
+    let output = TokioCommand::new("ffmpeg")
+        .arg("-hide_banner")
+        .arg("-loglevel")
+        .arg("error")
+        .arg("-y")
+        .arg("-i")
+        .arg(video)
+        .arg("-vf")
+        .arg(format!("fps=1,scale={max_width}:-2"))
+        .arg("-frames:v")
+        .arg(frames.max(1).to_string())
+        .arg(&output_pattern)
+        .output()
+        .await
+        .context("run ffmpeg video frame extractor")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "ffmpeg frame extraction failed with status {}; stderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    Ok(())
+}
+
+async fn ffprobe_json(path: &Path) -> anyhow::Result<serde_json::Value> {
+    require_executable("ffprobe").await?;
+    let output = TokioCommand::new("ffprobe")
+        .arg("-v")
+        .arg("error")
+        .arg("-show_format")
+        .arg("-show_streams")
+        .arg("-of")
+        .arg("json")
+        .arg(path)
+        .output()
+        .await
+        .context("run ffprobe")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "ffprobe failed with status {}; stderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let value: serde_json::Value =
+        serde_json::from_slice(&output.stdout).context("parse ffprobe json")?;
+    Ok(value)
+}
+
+async fn inspect_frame_paths(
+    frame_paths: &[PathBuf],
+    sample_count: usize,
+    use_ocr: bool,
+) -> serde_json::Value {
+    let sample_count = sample_count.max(1);
+    let selected = sample_frame_paths(frame_paths, sample_count);
+    let ocr_available = use_ocr && executable_available("tesseract").await;
+    let mut frames = Vec::with_capacity(selected.len());
+    for (sample_index, path) in selected.into_iter().enumerate() {
+        let metadata = tokio::fs::metadata(&path).await.ok();
+        let ocr = if ocr_available {
+            ocr_frame(&path).await
+        } else if use_ocr {
+            serde_json::json!({"ok": false, "error": "tesseract executable not found"})
+        } else {
+            serde_json::json!({"ok": false, "skipped": true})
+        };
+        frames.push(serde_json::json!({
+            "sample_index": sample_index,
+            "path": path.display().to_string(),
+            "bytes": metadata.map(|metadata| metadata.len()),
+            "ocr": ocr,
+        }));
+    }
+    serde_json::json!({
+        "ocr_requested": use_ocr,
+        "ocr_available": ocr_available,
+        "sampled_frames": frames,
+    })
+}
+
+fn sample_frame_paths(frame_paths: &[PathBuf], sample_count: usize) -> Vec<PathBuf> {
+    if frame_paths.is_empty() {
+        return Vec::new();
+    }
+    if sample_count >= frame_paths.len() {
+        return frame_paths.to_vec();
+    }
+    if sample_count == 1 {
+        return vec![frame_paths[0].clone()];
+    }
+    (0..sample_count)
+        .map(|index| index * (frame_paths.len() - 1) / (sample_count - 1))
+        .map(|index| frame_paths[index].clone())
+        .collect()
+}
+
+async fn ocr_frame(path: &Path) -> serde_json::Value {
+    match tokio::time::timeout(
+        Duration::from_secs(15),
+        TokioCommand::new("tesseract")
+            .arg(path)
+            .arg("stdout")
+            .arg("--psm")
+            .arg("6")
+            .output(),
+    )
+    .await
+    {
+        Ok(Ok(output)) if output.status.success() => serde_json::json!({
+            "ok": true,
+            "text": String::from_utf8_lossy(&output.stdout).trim(),
+            "stderr": String::from_utf8_lossy(&output.stderr).trim(),
+        }),
+        Ok(Ok(output)) => serde_json::json!({
+            "ok": false,
+            "status": output.status.to_string(),
+            "stderr": String::from_utf8_lossy(&output.stderr).trim(),
+        }),
+        Ok(Err(error)) => serde_json::json!({"ok": false, "error": format!("{error:#}")}),
+        Err(_) => serde_json::json!({"ok": false, "error": "tesseract timed out"}),
+    }
+}
+
+async fn require_executable(name: &str) -> anyhow::Result<()> {
+    if executable_available(name).await {
+        return Ok(());
+    }
+    anyhow::bail!("{name} executable not found on PATH")
+}
+
+async fn executable_available(name: &str) -> bool {
+    TokioCommand::new(name)
+        .arg("-version")
+        .output()
+        .await
+        .map(|output| output.status.success() || output.status.code().is_some())
+        .unwrap_or(false)
+}
+
+async fn write_json_report(path: &Path, report: &serde_json::Value) -> anyhow::Result<()> {
+    let bytes = serde_json::to_vec_pretty(report).context("encode recording report json")?;
+    tokio::fs::write(path, bytes)
+        .await
+        .with_context(|| format!("write recording report {}", path.display()))
+}
+
+fn print_recording_report(report: &serde_json::Value, json: bool) -> anyhow::Result<()> {
+    if json {
+        println!("{}", serde_json::to_string(&compact_media_report(report))?);
+    } else {
+        println!(
+            "recording ok={} video={} frames={}",
+            report["ok"],
+            report["video_path"].as_str().unwrap_or(""),
+            report
+                .get("frames_captured")
+                .or_else(|| report.get("frames_extracted"))
+                .unwrap_or(&serde_json::Value::Null)
+        );
+    }
+    Ok(())
+}
+
+fn compact_media_report(report: &serde_json::Value) -> serde_json::Value {
+    match report
+        .get("schema_version")
+        .and_then(|value| value.as_str())
+    {
+        Some("cua.recording.v1") => serde_json::json!({
+            "schema_version": "cua.recording.v1",
+            "ok": report["ok"],
+            "video_path": report["video_path"],
+            "manifest_path": report["manifest_path"],
+            "frames_captured": report["frames_captured"],
+            "fps": report["fps"],
+            "max_width": report["max_width"],
+            "duration_ms_target": report["duration_ms_target"],
+            "inspection": compact_inspection(&report["inspection"]),
+        }),
+        Some("cua.video_inspection.v1") => serde_json::json!({
+            "schema_version": "cua.video_inspection.v1",
+            "ok": report["ok"],
+            "video_path": report["video_path"],
+            "frames_dir": report["frames_dir"],
+            "frames_extracted": report["frames_extracted"],
+            "inspection": compact_inspection(&report["inspection"]),
+        }),
+        _ => report.clone(),
+    }
+}
+
+fn compact_inspection(inspection: &serde_json::Value) -> serde_json::Value {
+    let sampled_frames = inspection
+        .get("sampled_frames")
+        .and_then(|frames| frames.as_array())
+        .map(|frames| {
+            frames
+                .iter()
+                .map(|frame| {
+                    serde_json::json!({
+                        "sample_index": frame["sample_index"],
+                        "path": frame["path"],
+                        "ocr_ok": frame["ocr"]["ok"],
+                        "ocr_text": frame["ocr"]["text"].as_str().map(|text| bound_media_text(text, 240)),
+                        "ocr_error": frame["ocr"]["error"],
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    serde_json::json!({
+        "ocr_requested": inspection["ocr_requested"],
+        "ocr_available": inspection["ocr_available"],
+        "sampled_frames": sampled_frames,
+    })
+}
+
+fn bound_media_text(text: &str, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        return text.to_string();
+    }
+    let mut truncated = text
+        .chars()
+        .take(limit.saturating_sub(3))
+        .collect::<String>();
+    truncated.push_str("...");
+    truncated
+}
+
 fn mouse_action(command: MouseCommand) -> InputAction {
     match command {
         MouseCommand::Move { x, y, duration_ms } => InputAction::MouseMove { x, y, duration_ms },
@@ -4944,6 +5549,7 @@ stops = [
             "doctor",
             "permissions",
             "visual",
+            "record",
             "observe",
             "trace.start",
             "trace.inspect",
@@ -5011,6 +5617,87 @@ items = [
         assert!(value.is_object());
         assert!(runtime.results.contains_key("doctor"));
         assert!(runtime.results.contains_key("permissions"));
+    }
+
+    #[test]
+    fn recording_frame_count_ceilings_duration_at_fps() {
+        assert_eq!(record_target_frame_count(None, 1, 10).unwrap(), 1);
+        assert_eq!(record_target_frame_count(None, 1000, 10).unwrap(), 10);
+        assert_eq!(record_target_frame_count(None, 1500, 10).unwrap(), 15);
+        assert_eq!(record_target_frame_count(Some(0), 3000, 10).unwrap(), 1);
+        assert_eq!(record_target_frame_count(Some(7), 3000, 10).unwrap(), 7);
+    }
+
+    #[test]
+    fn recording_paths_are_sidecars_of_video_path() {
+        let out = PathBuf::from("/tmp/cua-proof/demo.mp4");
+        assert_eq!(
+            recording_manifest_path(&out),
+            PathBuf::from("/tmp/cua-proof/demo.mp4.json")
+        );
+        assert_eq!(
+            recording_frames_dir(&out),
+            PathBuf::from("/tmp/cua-proof/demo.frames")
+        );
+        assert_eq!(
+            video_inspection_frames_dir(&out),
+            PathBuf::from("/tmp/cua-proof/demo.inspect.frames")
+        );
+    }
+
+    #[test]
+    fn sampled_frame_paths_cover_start_middle_and_end() {
+        let frames = (1..=5)
+            .map(|index| PathBuf::from(format!("{index}.jpg")))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            sample_frame_paths(&frames, 3),
+            vec![
+                PathBuf::from("1.jpg"),
+                PathBuf::from("3.jpg"),
+                PathBuf::from("5.jpg")
+            ]
+        );
+        assert_eq!(sample_frame_paths(&frames, 1), vec![PathBuf::from("1.jpg")]);
+        assert_eq!(sample_frame_paths(&frames, 9), frames);
+    }
+
+    #[test]
+    fn compact_recording_report_keeps_agent_evidence_small() {
+        let report = serde_json::json!({
+            "schema_version": "cua.recording.v1",
+            "ok": true,
+            "video_path": "/tmp/screen.mp4",
+            "manifest_path": "/tmp/screen.mp4.json",
+            "frames_captured": 8,
+            "fps": 5,
+            "max_width": 640,
+            "duration_ms_target": 1500,
+            "first_frame": {"large": "x".repeat(5000)},
+            "last_frame": {"large": "y".repeat(5000)},
+            "ffprobe": {"streams": [{"large": "z".repeat(5000)}]},
+            "inspection": {
+                "ocr_requested": true,
+                "ocr_available": true,
+                "sampled_frames": [{
+                    "sample_index": 0,
+                    "path": "/tmp/frame.jpg",
+                    "ocr": {"ok": true, "text": "a".repeat(1000)}
+                }]
+            }
+        });
+
+        let compact = compact_media_report(&report);
+        let encoded = serde_json::to_string(&compact).unwrap();
+
+        assert!(encoded.contains("cua.recording.v1"));
+        assert!(encoded.contains("/tmp/screen.mp4.json"));
+        assert!(!encoded.contains("first_frame"));
+        assert!(encoded.len() < 900);
+        assert!(compact["inspection"]["sampled_frames"][0]["ocr_text"]
+            .as_str()
+            .unwrap()
+            .ends_with("..."));
     }
 
     #[tokio::test]

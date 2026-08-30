@@ -603,8 +603,6 @@ pub fn short_tool(tool: &str) -> String {
         "Socket".to_string()
     } else if tool.contains("HTTP") {
         "HTTP".to_string()
-    } else if tool.contains("Gemini") {
-        "Gemini".to_string()
     } else if tool.contains("OpenRouter") {
         "Router".to_string()
     } else if tool.contains("Whisper") || tool.contains("STT") {
@@ -752,7 +750,6 @@ mod tests {
     #[test]
     fn tool_labels_stay_chip_sized() {
         assert_eq!(short_tool("Unix socket"), "Socket");
-        assert_eq!(short_tool("Gemini Vision"), "Gemini");
         assert_eq!(short_tool("OpenRouter Vision"), "Router");
         assert_eq!(short_tool("Whisper STT"), "STT");
         assert_eq!(short_tool("Microphone"), "Mic");
@@ -807,7 +804,7 @@ mod tests {
             &display,
             false,
             false,
-            "google/gemini-3.7-flash",
+            "anthropic/claude-sonnet-4.6",
             Duration::ZERO,
         )
         .unwrap();
@@ -851,7 +848,7 @@ mod tests {
             &display,
             false,
             true,
-            "google/gemini-3.7-flash",
+            "anthropic/claude-sonnet-4.6",
             Duration::ZERO,
         )
         .unwrap();
@@ -890,7 +887,7 @@ mod tests {
             &display,
             true,
             false,
-            "google/gemini-3.7-flash",
+            "anthropic/claude-sonnet-4.6",
             Duration::from_secs(67),
         )
         .unwrap();
@@ -935,7 +932,7 @@ mod tests {
             &display,
             false,
             false,
-            "google/gemini-3.7-flash",
+            "anthropic/claude-sonnet-4.6",
             Duration::from_secs(1),
         )
         .expect("compact scene should bound long status text");
@@ -944,7 +941,7 @@ mod tests {
             &display,
             true,
             false,
-            "google/gemini-3.7-flash",
+            "anthropic/claude-sonnet-4.6",
             Duration::from_secs(1),
         )
         .expect("expanded scene should bound long row text");

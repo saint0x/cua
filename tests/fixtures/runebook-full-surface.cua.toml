@@ -70,6 +70,16 @@ max_width = 640
 frames = 1
 
 [[steps]]
+id = "record"
+do = "record"
+out = "~/.cua/artifacts/recordings/runebook-full-surface.mp4"
+fps = 5
+max_width = 640
+frames = 2
+inspect_frames = 1
+no_ocr = true
+
+[[steps]]
 id = "observe-displays"
 do = "observe"
 target = "displays"

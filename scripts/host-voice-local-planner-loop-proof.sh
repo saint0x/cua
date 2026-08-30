@@ -236,14 +236,14 @@ done
 set +e
 CUA_HOME="$CUA_HOME_DIR" \
 CUA_HTTP_TOKEN="$TOKEN" \
-GEMINI_API_KEY="local-planner-test-key" \
+OPENROUTER_API_KEY="local-planner-test-key" \
 CUA_VOICE_PLANNER_CHAT_COMPLETIONS_URL="http://$PLANNER_ADDR/v1/chat/completions" \
 CUA_VOICE_TRACE_PATH="$VOICE_TRACE" \
 CUA_AGENT_LOOP_MAX_ATTEMPTS="n" \
 "$VOICE_BIN_PATH" \
   --profile "$PROFILE" \
   --debug-trace \
-  --planner-model "gemini-3.7-flash" \
+  --planner-model "anthropic/claude-sonnet-4.6" \
   --once-transcript "$TRANSCRIPT" > "$EVENTS" 2> "$VOICE_STDERR"
 VOICE_EXIT=$?
 set -e

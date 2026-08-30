@@ -23,7 +23,7 @@ LOCAL_PLANNER_STALL_DIR="$OUT_DIR/local-planner-repeated-rejected-plan"
 MISSING_KEY_DIR="$OUT_DIR/missing-key"
 PROVIDER_PROGRESS_DIR="$OUT_DIR/provider-progress"
 UI_DIR="$OUT_DIR/ui"
-PLANNER_MODEL="${CUA_VOICE_PLANNER_PROOF_MODEL:-gemini-3.7-flash}"
+PLANNER_MODEL="${CUA_VOICE_PLANNER_PROOF_MODEL:-anthropic/claude-sonnet-4.6}"
 INCLUDE_UI="${CUA_VOICE_PROOF_SUITE_INCLUDE_UI:-0}"
 
 env_key_available() {
@@ -34,19 +34,11 @@ env_key_available() {
 }
 
 planner_key_available() {
-  if [[ "$PLANNER_MODEL" == gemini-* ]]; then
-    env_key_available GEMINI_API_KEY || env_key_available GOOGLE_API_KEY
-  else
-    env_key_available OPENROUTER_API_KEY
-  fi
+  env_key_available OPENROUTER_API_KEY
 }
 
 planner_key_name() {
-  if [[ "$PLANNER_MODEL" == gemini-* ]]; then
-    printf 'GEMINI_API_KEY or GOOGLE_API_KEY'
-  else
-    printf 'OPENROUTER_API_KEY'
-  fi
+  printf 'OPENROUTER_API_KEY'
 }
 
 ACTION_RESULT="$(

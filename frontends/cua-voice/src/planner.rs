@@ -14,8 +14,6 @@ const MODEL_VISIBLE_PRIOR_ATTEMPTS_MAX: usize = 8;
 const MODEL_VISIBLE_EVIDENCE_ITEMS_MAX: usize = 4;
 const MODEL_VISIBLE_TEXT_MAX_CHARS: usize = 700;
 const PLANNER_CHAT_COMPLETIONS_URL_ENV: &str = "CUA_VOICE_PLANNER_CHAT_COMPLETIONS_URL";
-const GEMINI_OPENAI_CHAT_COMPLETIONS_URL: &str =
-    "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
 const OPENROUTER_CHAT_COMPLETIONS_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
 const PLANNER_SYSTEM_PROMPT: &str = r#"You are the protocol planner for cua, a backend-neutral computer-use runtime. You are not a general chat assistant and you do not have hidden tools.
 
@@ -43,6 +41,7 @@ Supported ACTION shapes:
 {"kind":"key_paste","text":"text to paste"}
 {"kind":"open_app","app_name":"Messages"}
 {"kind":"shell_exec","command":"pwd && ls","timeout_ms":5000}
+{"kind":"shell_exec","command":"cua record --out ~/.cua/artifacts/recordings/task.mp4 --duration-ms 3000 --fps 10 --json && cua video inspect ~/.cua/artifacts/recordings/task.mp4 --json","timeout_ms":20000}
 {"kind":"sequence","actions":[{"kind":"open_app","app_name":"Safari"},{"kind":"key_press","combo":"cmd+l"},{"kind":"key_paste","text":"cloud computer agents"},{"kind":"key_press","combo":"enter"}],"inter_action_delay_ms":120}
 {"kind":"aegis","args":["--mode","headless","search","cloud computer agents"],"timeout_ms":15000}
 {"kind":"aegis","args":["--mode","headful","page","actions"],"timeout_ms":15000}
@@ -68,6 +67,7 @@ Coordinate rules:
 - Prefer key_paste for longer text or exact multi-line text.
 - Prefer open_app when the user asks only to open or launch a desktop app by name.
 - Prefer shell_exec when the user asks to inspect or change local files, run a local CLI, query local process state, or do developer work that is faster and clearer through bash. Keep commands short, bounded, and directly tied to the user request.
+- When the user asks to screen record, watch, inspect, or answer questions about a local screen recording, use the bounded `cua record --out <path>.mp4 --duration-ms <ms> --json` and `cua video inspect <path>.mp4 --json` CLI surfaces. Treat the returned recording manifest, ffprobe metadata, sampled keyframes, and OCR text as verification evidence. Do not claim video contents from the file path alone.
 - For normal browser/search work, use the active computer backend naturally: visible browser UI actions are valid when the target is visible or the user asks to use Safari/browser normally. Use the Aegis action when the user explicitly asks for Aegis/headless browser control, when page-structured inspection is the clearest available path, or when normal visible UI is not enough to verify the task.
 - When using Aegis, pass explicit Aegis CLI args only; do not wrap Aegis in shell_exec. Supported Aegis research forms are `search <query words>`, `navigate <url>`, `page actions`, `page links`, `page text --scope main`, `page markdown --scope article`, `page find <text>`, and `page open-link <link text>`. If `page open-link` is ambiguous, use `page links`, then retry `page open-link` with `--exact`, `--index`, or `--href-contains` followed immediately by its value. Do not emit incomplete options, trailing `--`, runtime-only `--server-addr`/`--profile`, or unsupported commands such as `page actions --url` or `page click --index`; use `navigate` before page inspection and `page open-link` for links.
 - Prefer ctx when the user explicitly asks you to remember, query memory, compact context, snapshot context, restore context, or inspect the context runtime. Pass explicit ctx CLI args only; do not wrap ctx in shell_exec. Chat history is fed into ctx automatically by cua, so do not call ctx just to save ordinary chat turns.
@@ -343,32 +343,31 @@ impl Planner {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PlannerProvider {
-    Gemini,
     OpenRouter,
 }
 
 impl PlannerProvider {
-    fn from_model(model: &str) -> Self {
-        if model.starts_with("gemini-") {
-            Self::Gemini
+    fn from_model(_model: &str) -> Self {
+        Self::OpenRouter
+    }
+
+    fn normalized_openrouter_model(model: &str) -> String {
+        let model = model.strip_prefix("openrouter/").unwrap_or(model);
+        if let Some(gemini_model) = model.strip_prefix("gemini-") {
+            format!("google/gemini-{gemini_model}")
         } else {
-            Self::OpenRouter
+            model.to_string()
         }
     }
 
     fn request_model(self, model: &str) -> String {
         match self {
-            Self::Gemini => model.to_string(),
-            Self::OpenRouter => model
-                .strip_prefix("openrouter/")
-                .unwrap_or(model)
-                .to_string(),
+            Self::OpenRouter => Self::normalized_openrouter_model(model),
         }
     }
 
     fn default_chat_completions_url(self) -> &'static str {
         match self {
-            Self::Gemini => GEMINI_OPENAI_CHAT_COMPLETIONS_URL,
             Self::OpenRouter => OPENROUTER_CHAT_COMPLETIONS_URL,
         }
     }
@@ -383,16 +382,12 @@ impl PlannerProvider {
 
     fn required_api_key_name(self) -> &'static str {
         match self {
-            Self::Gemini => "GEMINI_API_KEY or GOOGLE_API_KEY",
             Self::OpenRouter => "OPENROUTER_API_KEY",
         }
     }
 
     fn api_key_from_env(self) -> Option<String> {
         match self {
-            Self::Gemini => std::env::var("GEMINI_API_KEY")
-                .ok()
-                .or_else(|| std::env::var("GOOGLE_API_KEY").ok()),
             Self::OpenRouter => std::env::var("OPENROUTER_API_KEY").ok(),
         }
     }
@@ -401,25 +396,19 @@ impl PlannerProvider {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(CONTENT_TYPE, "application/json".parse()?);
         headers.insert(AUTHORIZATION, format!("Bearer {api_key}").parse()?);
-        if self == Self::OpenRouter {
-            headers.insert(REFERER, "http://localhost/cua".parse()?);
-        }
+        headers.insert(REFERER, "http://localhost/cua".parse()?);
         Ok(headers)
     }
 
     fn should_pin_temperature(self, model: &str) -> bool {
-        self == Self::OpenRouter && !model.contains("gemini-3")
+        !Self::normalized_openrouter_model(model).contains("gemini-3")
     }
 
     fn planning_tool_label(self, attempt_index: usize, formatted_attempt: String) -> String {
-        let provider = match self {
-            Self::Gemini => "Gemini",
-            Self::OpenRouter => "OpenRouter",
-        };
         if attempt_index == 1 {
-            format!("{provider} Vision")
+            "OpenRouter Vision".to_string()
         } else {
-            format!("{provider} repair {formatted_attempt}")
+            format!("OpenRouter repair {formatted_attempt}")
         }
     }
 }
@@ -598,10 +587,87 @@ fn compact_model_visible_evidence(evidence: &mut serde_json::Value) {
             }
         }
         serde_json::Value::String(text) => {
-            *text = truncate_model_visible_text(text, MODEL_VISIBLE_TEXT_MAX_CHARS);
+            *text = compact_model_visible_text(text, MODEL_VISIBLE_TEXT_MAX_CHARS);
         }
         _ => {}
     }
+}
+
+fn compact_model_visible_text(text: &str, max_chars: usize) -> String {
+    let summarized = summarize_shell_stdout_jsonl(text)
+        .map(|summary| format!("{summary}; raw={text}"))
+        .unwrap_or_else(|| text.to_string());
+    truncate_model_visible_text(&summarized, max_chars)
+}
+
+fn summarize_shell_stdout_jsonl(message: &str) -> Option<String> {
+    let stdout = message_stdout_from_shell_message(message)?;
+    let schemas = known_stdout_schemas(stdout);
+    let entries = stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line.trim()).ok())
+        .filter_map(|value| summarize_json_stdout_entry(&value))
+        .collect::<Vec<_>>();
+    if schemas.is_empty() && entries.is_empty() {
+        return None;
+    }
+    let mut parts = Vec::new();
+    if !schemas.is_empty() {
+        parts.push(format!("schemas=[{}]", schemas.join(",")));
+    }
+    if !entries.is_empty() {
+        parts.push(format!("json=[{}]", entries.join(", ")));
+    }
+    Some(format!("stdout_summary: {}", parts.join(" ")))
+}
+
+fn message_stdout_from_shell_message(message: &str) -> Option<&str> {
+    let after_stdout = message.split_once("stdout=").map(|(_, after)| after)?;
+    Some(
+        after_stdout
+            .split_once("; stderr=")
+            .map(|(stdout, _)| stdout)
+            .unwrap_or(after_stdout),
+    )
+}
+
+fn known_stdout_schemas(stdout: &str) -> Vec<&'static str> {
+    [
+        "cua.recording.v1",
+        "cua.video_inspection.v1",
+        "cua.recording_watch_proof.v1",
+    ]
+    .into_iter()
+    .filter(|schema| stdout.contains(schema))
+    .collect()
+}
+
+fn summarize_json_stdout_entry(value: &serde_json::Value) -> Option<String> {
+    let schema = value
+        .get("schema_version")
+        .and_then(|schema| schema.as_str())?;
+    let mut fields = vec![format!("schema={schema}")];
+    if let Some(ok) = value.get("ok").and_then(|ok| ok.as_bool()) {
+        fields.push(format!("ok={ok}"));
+    }
+    if let Some(video_path) = value.get("video_path").and_then(|path| path.as_str()) {
+        fields.push(format!("video_path={video_path}"));
+    }
+    if let Some(manifest_path) = value.get("manifest_path").and_then(|path| path.as_str()) {
+        fields.push(format!("manifest_path={manifest_path}"));
+    }
+    if let Some(frames) = value
+        .get("frames_captured")
+        .and_then(|frames| frames.as_u64())
+        .or_else(|| {
+            value
+                .get("frames_extracted")
+                .and_then(|frames| frames.as_u64())
+        })
+    {
+        fields.push(format!("frames={frames}"));
+    }
+    Some(fields.join(" "))
 }
 
 fn truncate_model_visible_text(text: &str, max_chars: usize) -> String {
@@ -1601,31 +1667,31 @@ mod tests {
     }
 
     #[test]
-    fn planner_provider_defaults_to_direct_gemini() {
+    fn planner_provider_routes_bare_gemini_models_through_openrouter() {
         let provider = PlannerProvider::from_model("gemini-3.7-flash");
 
-        assert_eq!(provider, PlannerProvider::Gemini);
+        assert_eq!(provider, PlannerProvider::OpenRouter);
         assert_eq!(
             provider.request_model("gemini-3.7-flash"),
-            "gemini-3.7-flash"
+            "google/gemini-3.7-flash"
         );
         assert_eq!(
             provider.chat_completions_url(),
-            GEMINI_OPENAI_CHAT_COMPLETIONS_URL
+            OPENROUTER_CHAT_COMPLETIONS_URL
         );
-        assert_eq!(
-            provider.required_api_key_name(),
-            "GEMINI_API_KEY or GOOGLE_API_KEY"
-        );
+        assert_eq!(provider.required_api_key_name(), "OPENROUTER_API_KEY");
         assert!(!provider.should_pin_temperature("gemini-3.7-flash"));
-        let headers = provider.headers("test-gemini-key").unwrap();
+        let headers = provider.headers("test-router-key").unwrap();
         assert_eq!(
             headers
                 .get(AUTHORIZATION)
                 .and_then(|value| value.to_str().ok()),
-            Some("Bearer test-gemini-key")
+            Some("Bearer test-router-key")
         );
-        assert!(headers.get(REFERER).is_none());
+        assert_eq!(
+            headers.get(REFERER).and_then(|value| value.to_str().ok()),
+            Some("http://localhost/cua")
+        );
     }
 
     #[test]
@@ -1661,10 +1727,9 @@ mod tests {
 
         std::env::remove_var(PLANNER_CHAT_COMPLETIONS_URL_ENV);
         assert_eq!(
-            PlannerProvider::Gemini.chat_completions_url(),
-            GEMINI_OPENAI_CHAT_COMPLETIONS_URL
+            PlannerProvider::OpenRouter.chat_completions_url(),
+            OPENROUTER_CHAT_COMPLETIONS_URL
         );
-
         std::env::set_var(PLANNER_CHAT_COMPLETIONS_URL_ENV, "   ");
         assert_eq!(
             PlannerProvider::OpenRouter.chat_completions_url(),
@@ -1674,10 +1739,6 @@ mod tests {
         std::env::set_var(
             PLANNER_CHAT_COMPLETIONS_URL_ENV,
             "http://127.0.0.1:18080/v1/chat/completions",
-        );
-        assert_eq!(
-            PlannerProvider::Gemini.chat_completions_url(),
-            "http://127.0.0.1:18080/v1/chat/completions"
         );
         assert_eq!(
             PlannerProvider::OpenRouter.chat_completions_url(),
@@ -1710,7 +1771,7 @@ mod tests {
         let openrouter =
             Planner::new("openrouter/openai/gpt-5.4-mini").request_body("open calculator", content);
 
-        assert_eq!(gemini["model"], "gemini-3.7-flash");
+        assert_eq!(gemini["model"], "google/gemini-3.7-flash");
         assert!(gemini.get("temperature").is_none());
         assert_eq!(gemini["response_format"]["type"], "json_object");
         assert_eq!(openrouter["model"], "openai/gpt-5.4-mini");
@@ -1822,6 +1883,60 @@ mod tests {
             .unwrap();
         assert_eq!(message.chars().count(), MODEL_VISIBLE_TEXT_MAX_CHARS);
         assert!(message.ends_with("..."));
+    }
+
+    #[test]
+    fn model_visible_prior_attempts_preserve_jsonl_shell_schemas_before_truncation() {
+        let attempts = vec![PlanAttemptContext {
+            attempt_index: 1,
+            response: "Recording and inspecting a short screen clip.".to_string(),
+            action: Some(serde_json::json!({
+                "kind": "shell_exec",
+                "command": "/Applications/cua.app/Contents/MacOS/cua --profile default record --out /tmp/agent-screen.mp4 --duration-ms 1000 --fps 5 --json && /Applications/cua.app/Contents/MacOS/cua video inspect /tmp/agent-screen.mp4 --json",
+                "timeout_ms": 30000
+            })),
+            effect: Some("confirmed".to_string()),
+            evidence: Some(serde_json::json!({
+                "effect": "confirmed",
+                "evidence": [{
+                    "kind": "value_readback",
+                    "message": format!(
+                        "shell exited 0; stdout={}\n{}; stderr=",
+                        serde_json::json!({
+                            "schema_version": "cua.recording.v1",
+                            "ok": true,
+                            "video_path": "/tmp/agent-screen.mp4",
+                            "manifest_path": "/tmp/agent-screen.mp4.json",
+                            "frames_captured": 5,
+                            "inspection": {
+                                "sampled_frames": [
+                                    {"ocr_text": "x".repeat(MODEL_VISIBLE_TEXT_MAX_CHARS)}
+                                ]
+                            }
+                        }),
+                        serde_json::json!({
+                            "schema_version": "cua.video_inspection.v1",
+                            "ok": true,
+                            "video_path": "/tmp/agent-screen.mp4",
+                            "frames_extracted": 2
+                        })
+                    )
+                }]
+            })),
+        }];
+
+        let visible = model_visible_prior_attempts(&attempts);
+        let message = visible[0].evidence.as_ref().unwrap()["evidence"][0]["message"]
+            .as_str()
+            .unwrap();
+
+        assert_eq!(message.chars().count(), MODEL_VISIBLE_TEXT_MAX_CHARS);
+        assert!(message.contains("stdout_summary:"));
+        assert!(message.contains("schemas=[cua.recording.v1,cua.video_inspection.v1]"));
+        assert!(message.contains("schema=cua.recording.v1"));
+        assert!(message.contains("schema=cua.video_inspection.v1"));
+        assert!(message.contains("manifest_path=/tmp/agent-screen.mp4.json"));
+        assert!(message.contains("frames=2"));
     }
 
     #[test]

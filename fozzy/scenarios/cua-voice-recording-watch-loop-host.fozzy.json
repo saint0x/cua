@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "name": "cua-voice-recording-watch-loop-host",
+  "steps": [
+    {
+      "type": "proc_when",
+      "cmd": "scripts/host-voice-recording-watch-loop-proof.sh",
+      "args": [],
+      "exit_code": 0,
+      "stdout": "artifacts/cua/voice-recording-watch-loop-",
+      "stderr": "",
+      "times": 1
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "scripts/host-voice-recording-watch-loop-proof.sh",
+      "args": [],
+      "expect_exit": 0,
+      "expect_stdout": "artifacts/cua/voice-recording-watch-loop-"
+    }
+  ]
+}

@@ -672,12 +672,31 @@ fn command_output_message(
 fn compact_command_output(bytes: &[u8]) -> String {
     let text = String::from_utf8_lossy(bytes);
     let limit = 1_200;
-    if text.chars().count() <= limit {
-        return text.into_owned();
+    let output = known_schema_stdout_summary(&text)
+        .map(|summary| format!("{summary}; raw={text}"))
+        .unwrap_or_else(|| text.into_owned());
+    if output.chars().count() <= limit {
+        return output;
     }
-    let mut truncated = text.chars().take(limit).collect::<String>();
+    let mut truncated = output.chars().take(limit).collect::<String>();
     truncated.push_str("...");
     truncated
+}
+
+fn known_schema_stdout_summary(text: &str) -> Option<String> {
+    let schemas = [
+        "cua.recording.v1",
+        "cua.video_inspection.v1",
+        "cua.recording_watch_proof.v1",
+    ]
+    .into_iter()
+    .filter(|schema| text.contains(schema))
+    .collect::<Vec<_>>();
+    if schemas.is_empty() {
+        None
+    } else {
+        Some(format!("schemas=[{}]", schemas.join(",")))
+    }
 }
 
 fn sequence_message(action_count: usize, messages: &[String]) -> String {
@@ -2218,6 +2237,23 @@ mod tests {
 
         assert!(compact.chars().count() <= 1_203);
         assert!(compact.ends_with("..."));
+    }
+
+    #[test]
+    fn compact_command_output_preserves_known_json_schemas() {
+        let output = format!(
+            "{}\n{}",
+            r#"{"schema_version":"cua.recording.v1","ok":true,"ocr_text":""#,
+            format!(
+                "{}{}",
+                "x".repeat(1_500),
+                r#""}{"schema_version":"cua.video_inspection.v1","ok":true}"#
+            )
+        );
+        let compact = compact_command_output(output.as_bytes());
+
+        assert!(compact.starts_with("schemas=[cua.recording.v1,cua.video_inspection.v1]; raw="));
+        assert!(compact.chars().count() <= 1_203);
     }
 
     #[test]

@@ -19,7 +19,7 @@ SDK_SCENARIO="${CUA_RELEASE_SDK_SCENARIO:-fozzy/scenarios/cua-sdk-action.json}"
 SCRATCHPAD_SCENARIO="${CUA_RELEASE_SCRATCHPAD_SCENARIO:-fozzy/scenarios/cua-scratchpad.json}"
 STT_BACKEND="${CUA_RELEASE_STT_BACKEND:-local}"
 STT_MODEL="${CUA_RELEASE_STT_MODEL:-tiny.en}"
-PLANNER_MODEL="${CUA_RELEASE_PLANNER_MODEL:-gemini-3.7-flash}"
+PLANNER_MODEL="${CUA_RELEASE_PLANNER_MODEL:-anthropic/claude-sonnet-4.6}"
 SKIP_TESTS=0
 SKIP_FOZZY=0
 SKIP_INSTALL=0
@@ -43,7 +43,7 @@ Options:
 Environment:
   CUA_RELEASE_STT_BACKEND   Speech-to-text backend for live smoke. Default: local.
   CUA_RELEASE_STT_MODEL     Speech-to-text model for live smoke. Default: tiny.en.
-  CUA_RELEASE_PLANNER_MODEL Planner model for live smoke. Default: gemini-3.7-flash.
+  CUA_RELEASE_PLANNER_MODEL Planner model for live smoke. Default: anthropic/claude-sonnet-4.6.
 USAGE
 }
 
@@ -86,19 +86,11 @@ env_key_available() {
 }
 
 planner_key_available() {
-  if [[ "$PLANNER_MODEL" == gemini-* ]]; then
-    env_key_available GEMINI_API_KEY || env_key_available GOOGLE_API_KEY
-  else
-    env_key_available OPENROUTER_API_KEY
-  fi
+  env_key_available OPENROUTER_API_KEY
 }
 
 planner_key_name() {
-  if [[ "$PLANNER_MODEL" == gemini-* ]]; then
-    printf 'GEMINI_API_KEY or GOOGLE_API_KEY'
-  else
-    printf 'OPENROUTER_API_KEY'
-  fi
+  printf 'OPENROUTER_API_KEY'
 }
 
 require_cmd() {
