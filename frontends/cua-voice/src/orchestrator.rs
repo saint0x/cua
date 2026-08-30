@@ -1352,7 +1352,8 @@ async fn plan_and_dispatch(
                         .await;
                     attempts.push(PlanAttemptContext {
                         attempt_index,
-                        response: "Dispatch failed before the action completed.".to_string(),
+                        response: "Dispatch failed before the action produced a result."
+                            .to_string(),
                         action: planned_action_json,
                         effect: Some("failed".to_string()),
                         evidence,
