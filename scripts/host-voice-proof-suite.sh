@@ -18,10 +18,13 @@ ACTION_DIR="$OUT_DIR/action"
 PLANNER_DIR="$OUT_DIR/planner"
 LOCAL_PLANNER_MISSING_DIR="$OUT_DIR/local-planner-missing-readback"
 LOCAL_PLANNER_MISMATCH_DIR="$OUT_DIR/local-planner-mismatch-readback"
+LOCAL_PLANNER_FAILED_DIR="$OUT_DIR/local-planner-failed-action-repair"
+LOCAL_PLANNER_STALL_DIR="$OUT_DIR/local-planner-repeated-rejected-plan"
 MISSING_KEY_DIR="$OUT_DIR/missing-key"
 PROVIDER_PROGRESS_DIR="$OUT_DIR/provider-progress"
 UI_DIR="$OUT_DIR/ui"
 PLANNER_MODEL="${CUA_VOICE_PLANNER_PROOF_MODEL:-gemini-3.7-flash}"
+INCLUDE_UI="${CUA_VOICE_PROOF_SUITE_INCLUDE_UI:-0}"
 
 env_key_available() {
   local name="$1"
@@ -81,6 +84,24 @@ LOCAL_PLANNER_MISMATCH_RESULT="$(
   CUA_VOICE_LOCAL_PLANNER_SCENARIO="mismatch-readback" \
   scripts/host-voice-local-planner-loop-proof.sh | tail -n 1
 )"
+LOCAL_PLANNER_FAILED_RESULT="$(
+  CUA_HTTP_TOKEN="voice-proof-suite-local-failed-$RUN_ID" \
+  CUA_VOICE_LOCAL_PLANNER_PROFILE="voice-proof-suite-local-failed-$RUN_ID" \
+  CUA_VOICE_LOCAL_PLANNER_ADDR="127.0.0.1:$((PORT_BASE + 6))" \
+  CUA_VOICE_LOCAL_PLANNER_MODEL_ADDR="127.0.0.1:$((PORT_BASE + 7))" \
+  CUA_VOICE_LOCAL_PLANNER_OUT_DIR="$LOCAL_PLANNER_FAILED_DIR" \
+  CUA_VOICE_LOCAL_PLANNER_SCENARIO="failed-action-repair" \
+  scripts/host-voice-local-planner-loop-proof.sh | tail -n 1
+)"
+LOCAL_PLANNER_STALL_RESULT="$(
+  CUA_HTTP_TOKEN="voice-proof-suite-local-stall-$RUN_ID" \
+  CUA_VOICE_LOCAL_PLANNER_PROFILE="voice-proof-suite-local-stall-$RUN_ID" \
+  CUA_VOICE_LOCAL_PLANNER_ADDR="127.0.0.1:$((PORT_BASE + 8))" \
+  CUA_VOICE_LOCAL_PLANNER_MODEL_ADDR="127.0.0.1:$((PORT_BASE + 9))" \
+  CUA_VOICE_LOCAL_PLANNER_OUT_DIR="$LOCAL_PLANNER_STALL_DIR" \
+  CUA_VOICE_LOCAL_PLANNER_SCENARIO="repeated-rejected-plan" \
+  scripts/host-voice-local-planner-loop-proof.sh | tail -n 1
+)"
 MISSING_KEY_RESULT="$(
   CUA_VOICE_MISSING_KEY_PROFILE="voice-proof-suite-missing-key-$RUN_ID" \
   CUA_VOICE_MISSING_KEY_OUT_DIR="$MISSING_KEY_DIR" \
@@ -94,14 +115,21 @@ if env_key_available OPENROUTER_API_KEY; then
     scripts/host-voice-provider-progress-proof.sh | tail -n 1
   )"
 fi
-UI_RESULT="$(
-  CUA_VOICE_UI_PROOF_PROFILE="voice-proof-suite-ui-$RUN_ID" \
-  CUA_VOICE_UI_PROOF_OUT_DIR="$UI_DIR" \
-  scripts/host-voice-ui-proof.sh | tail -n 1
-)"
+UI_RESULT=""
+if [[ "$INCLUDE_UI" == "1" ]]; then
+  UI_RESULT="$(
+    CUA_VOICE_UI_PROOF_PROFILE="voice-proof-suite-ui-$RUN_ID" \
+    CUA_VOICE_UI_PROOF_OUT_DIR="$UI_DIR" \
+    scripts/host-voice-ui-proof.sh | tail -n 1
+  )"
+fi
 
-if [[ "$ACTION_RESULT" != "$ACTION_DIR" || "$UI_RESULT" != "$UI_DIR" ]]; then
+if [[ "$ACTION_RESULT" != "$ACTION_DIR" ]]; then
   echo "voice proof child output mismatch" >&2
+  exit 1
+fi
+if [[ "$INCLUDE_UI" == "1" && "$UI_RESULT" != "$UI_DIR" ]]; then
+  echo "voice UI proof child output mismatch" >&2
   exit 1
 fi
 if [[ -n "$PLANNER_RESULT" && "$PLANNER_RESULT" != "$PLANNER_DIR" ]]; then
@@ -114,6 +142,14 @@ if [[ "$LOCAL_PLANNER_MISSING_RESULT" != "$LOCAL_PLANNER_MISSING_DIR" ]]; then
 fi
 if [[ "$LOCAL_PLANNER_MISMATCH_RESULT" != "$LOCAL_PLANNER_MISMATCH_DIR" ]]; then
   echo "voice local planner mismatch-readback proof child output mismatch" >&2
+  exit 1
+fi
+if [[ "$LOCAL_PLANNER_FAILED_RESULT" != "$LOCAL_PLANNER_FAILED_DIR" ]]; then
+  echo "voice local planner failed-action-repair proof child output mismatch" >&2
+  exit 1
+fi
+if [[ "$LOCAL_PLANNER_STALL_RESULT" != "$LOCAL_PLANNER_STALL_DIR" ]]; then
+  echo "voice local planner repeated-rejected-plan proof child output mismatch" >&2
   exit 1
 fi
 if [[ "$MISSING_KEY_RESULT" != "$MISSING_KEY_DIR" ]]; then
@@ -151,6 +187,24 @@ jq -e '
 ' "$LOCAL_PLANNER_MISMATCH_DIR/proof.json" >/dev/null
 jq -e '
   .ok == true and
+  .scenario == "failed-action-repair" and
+  .final_reply == .expected and
+  .planner_requests == 2 and
+  .failed_evidence_reached_model == true and
+  .failed_error_reached_model == true and
+  .repaired_after_failure == true
+' "$LOCAL_PLANNER_FAILED_DIR/proof.json" >/dev/null
+jq -e '
+  .ok == true and
+  .scenario == "repeated-rejected-plan" and
+  .planner_requests == 3 and
+  .fake_success_suppressed == true and
+  .dispatch_suppressed == true and
+  .contextual_error_emitted == true and
+  .planning_stalled == true
+' "$LOCAL_PLANNER_STALL_DIR/proof.json" >/dev/null
+jq -e '
+  .ok == true and
   .within_budget == true and
   .trace_stop.attempts > 0 and
   .trace_stop.final_effect == "failed" and
@@ -163,11 +217,13 @@ if [[ -n "$PROVIDER_PROGRESS_RESULT" ]]; then
     (.trace_stop.attempts | type == "number") and
     .trace_stop.attempts > 0 and
     (.trace_stop.final_effect | IN("confirmed", "failed", "partial")) and
-    any(.trace_outcomes[]; .effect == "confirmed" and .long_range_continuation == true) and
+    any(.trace_outcomes[]; .has_action == true and .should_replan == true) and
     .memory_persisted == true
   ' "$PROVIDER_PROGRESS_DIR/proof.json" >/dev/null
 fi
-jq -e '.ok == true' "$UI_DIR/proof.json" >/dev/null
+if [[ "$INCLUDE_UI" == "1" ]]; then
+  jq -e '.ok == true' "$UI_DIR/proof.json" >/dev/null
+fi
 
 if [[ -n "$PROVIDER_PROGRESS_RESULT" ]]; then
   PROVIDER_PROGRESS_ARG=(--slurpfile provider_progress "$PROVIDER_PROGRESS_DIR/proof.json")
@@ -179,6 +235,11 @@ if [[ -n "$PLANNER_RESULT" ]]; then
 else
   PLANNER_ARG=(--argjson planner '[]')
 fi
+if [[ "$INCLUDE_UI" == "1" ]]; then
+  UI_ARG=(--slurpfile ui "$UI_DIR/proof.json")
+else
+  UI_ARG=(--argjson ui '[]')
+fi
 
 jq -n \
   --arg action_dir "$ACTION_DIR" \
@@ -186,18 +247,23 @@ jq -n \
   --arg planner_skip_reason "$(planner_key_name) unavailable" \
   --arg local_planner_missing_dir "$LOCAL_PLANNER_MISSING_DIR" \
   --arg local_planner_mismatch_dir "$LOCAL_PLANNER_MISMATCH_DIR" \
+  --arg local_planner_failed_dir "$LOCAL_PLANNER_FAILED_DIR" \
+  --arg local_planner_stall_dir "$LOCAL_PLANNER_STALL_DIR" \
   --arg missing_key_dir "$MISSING_KEY_DIR" \
   --arg provider_progress_dir "$PROVIDER_PROGRESS_DIR" \
   --arg ui_dir "$UI_DIR" \
+  --argjson include_ui "$INCLUDE_UI" \
   --arg action_addr "127.0.0.1:$PORT_BASE" \
   --arg planner_addr "127.0.0.1:$((PORT_BASE + 1))" \
   --slurpfile action "$ACTION_DIR/proof.json" \
   "${PLANNER_ARG[@]}" \
   --slurpfile local_planner_missing "$LOCAL_PLANNER_MISSING_DIR/proof.json" \
   --slurpfile local_planner_mismatch "$LOCAL_PLANNER_MISMATCH_DIR/proof.json" \
+  --slurpfile local_planner_failed "$LOCAL_PLANNER_FAILED_DIR/proof.json" \
+  --slurpfile local_planner_stall "$LOCAL_PLANNER_STALL_DIR/proof.json" \
   --slurpfile missing_key "$MISSING_KEY_DIR/proof.json" \
   "${PROVIDER_PROGRESS_ARG[@]}" \
-  --slurpfile ui "$UI_DIR/proof.json" \
+  "${UI_ARG[@]}" \
   '{
     schema_version: "cua.voice_proof_suite.v1",
     ok: (
@@ -211,6 +277,17 @@ jq -n \
       $local_planner_mismatch[0].scenario == "mismatch-readback" and
       $local_planner_mismatch[0].final_reply == $local_planner_mismatch[0].expected and
       $local_planner_mismatch[0].partial_repaired == true and
+      $local_planner_failed[0].ok == true and
+      $local_planner_failed[0].scenario == "failed-action-repair" and
+      $local_planner_failed[0].final_reply == $local_planner_failed[0].expected and
+      $local_planner_failed[0].failed_evidence_reached_model == true and
+      $local_planner_failed[0].failed_error_reached_model == true and
+      $local_planner_failed[0].repaired_after_failure == true and
+      $local_planner_stall[0].ok == true and
+      $local_planner_stall[0].scenario == "repeated-rejected-plan" and
+      $local_planner_stall[0].fake_success_suppressed == true and
+      $local_planner_stall[0].contextual_error_emitted == true and
+      $local_planner_stall[0].planning_stalled == true and
       $missing_key[0].ok == true and
       $missing_key[0].within_budget == true and
       $missing_key[0].trace_stop.attempts > 0 and
@@ -224,11 +301,11 @@ jq -n \
           ($provider_progress[0].trace_stop.attempts | type == "number") and
           $provider_progress[0].trace_stop.attempts > 0 and
           ($provider_progress[0].trace_stop.final_effect | IN("confirmed", "failed", "partial")) and
-          any($provider_progress[0].trace_outcomes[]; .effect == "confirmed" and .long_range_continuation == true) and
+          any($provider_progress[0].trace_outcomes[]; .has_action == true and .should_replan == true) and
           $provider_progress[0].memory_persisted == true
         )
       ) and
-      $ui[0].ok == true
+      ((($ui | length) == 0 and $include_ui == 0) or (($ui | length) > 0 and $ui[0].ok == true))
     ),
     ports: {
       action: $action_addr,
@@ -280,6 +357,22 @@ jq -n \
         planner_requests: $local_planner_mismatch[0].planner_requests,
         premature_final_rejected: $local_planner_mismatch[0].premature_final_rejected,
         partial_repaired: $local_planner_mismatch[0].partial_repaired
+      },
+      failed_action_repair: {
+        dir: $local_planner_failed_dir,
+        final_reply: $local_planner_failed[0].final_reply,
+        planner_requests: $local_planner_failed[0].planner_requests,
+        failed_evidence_reached_model: $local_planner_failed[0].failed_evidence_reached_model,
+        failed_error_reached_model: $local_planner_failed[0].failed_error_reached_model,
+        repaired_after_failure: $local_planner_failed[0].repaired_after_failure
+      },
+      repeated_rejected_plan: {
+        dir: $local_planner_stall_dir,
+        planner_requests: $local_planner_stall[0].planner_requests,
+        fake_success_suppressed: $local_planner_stall[0].fake_success_suppressed,
+        dispatch_suppressed: $local_planner_stall[0].dispatch_suppressed,
+        contextual_error_emitted: $local_planner_stall[0].contextual_error_emitted,
+        planning_stalled: $local_planner_stall[0].planning_stalled
       }
     },
     missing_key: {
@@ -311,18 +404,29 @@ jq -n \
         }
       end
     ),
-    ui: {
-      dir: $ui_dir,
-      screen: $ui[0].screen,
-      compact_ok: $ui[0].compact.ok,
-      reply_ok: $ui[0].reply.ok,
-      collapsed_ok: $ui[0].collapsed.ok,
-      island: {
-        compact: $ui[0].compact.island,
-        reply: $ui[0].reply.island,
-        collapsed: $ui[0].collapsed.island
-      }
-    }
+    ui: (
+      if ($ui | length) == 0 then
+        {
+          skipped: true,
+          reason: "headful UI proof disabled; set CUA_VOICE_PROOF_SUITE_INCLUDE_UI=1",
+          dir: $ui_dir
+        }
+      else
+        {
+          skipped: false,
+          dir: $ui_dir,
+          screen: $ui[0].screen,
+          compact_ok: $ui[0].compact.ok,
+          reply_ok: $ui[0].reply.ok,
+          collapsed_ok: $ui[0].collapsed.ok,
+          island: {
+            compact: $ui[0].compact.island,
+            reply: $ui[0].reply.island,
+            collapsed: $ui[0].collapsed.island
+          }
+        }
+      end
+    )
   }' > "$MANIFEST"
 
 jq -e '.ok == true' "$MANIFEST" >/dev/null

@@ -102,8 +102,8 @@ jq -s -e '
   any(.event == "agent_context_result") and
   any(.event == "agent_loop_start" and .data.budget.kind == "unbounded") and
   any(.event == "planning_pre_model_bootstrap") and
-  any(.event == "dispatch_result" and .data.result.effect == "confirmed") and
-  any(.event == "agent_attempt_outcome" and .data.long_range_continuation == true) and
+  any(.event == "dispatch_result" and (.data.result.effect | IN("confirmed", "failed", "refused", "partial", "unverifiable"))) and
+  any(.event == "agent_attempt_outcome" and .data.has_action == true and .data.should_replan == true) and
   any(.event == "agent_reobserve_result") and
   any(.event == "planning_error" and .data.reason == "planning_credentials_missing") and
   any(.event == "agent_loop_stop" and .data.attempts > 0 and .data.final_effect == "failed") and

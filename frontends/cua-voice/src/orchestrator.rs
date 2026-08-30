@@ -1,6 +1,6 @@
 use crate::audio::{record_default_input_until, record_default_input_until_stop, RecordedAudio};
 use crate::client::{CuaClient, CuaSession};
-use crate::daemon::{spawn_profile_daemon, wait_until_ready};
+use crate::daemon::{embedded_daemon_startup_timeout, spawn_profile_daemon, wait_until_ready};
 use crate::memory::{
     load_agent_context_with_chat, load_chat_context, AgentContext, ChatStore, CtxMemory,
 };
@@ -37,6 +37,7 @@ const VOICE_STEP_TIMEOUT_MS: u64 = 120;
 const VOICE_STEP_FLUSH_TIMEOUT_MS: u64 = 120;
 const DEFAULT_CONTEXT_PREFETCH_TIMEOUT_MS: u64 = 2_500;
 const MAX_CONSECUTIVE_PLANNER_INFRASTRUCTURE_ERRORS: usize = 3;
+const MAX_REPEATED_REJECTED_PLANNER_PLANS: usize = 3;
 const MIN_RECORDING_DURATION: Duration = Duration::from_millis(650);
 pub const DEFAULT_PLANNER_MODEL: &str = "gemini-3.7-flash";
 
@@ -1077,6 +1078,13 @@ async fn plan_and_dispatch(
                         "repair_hint": "The user explicitly requested Aegis. Use an aegis action or a sequence containing only aegis actions; do not use shell_exec, local files, visible UI, mouse, keyboard, or clipboard actions for this turn.",
                     })),
                 });
+                fail_if_rejected_planner_plan_stalled(
+                    &trace,
+                    attempt_index,
+                    &attempts,
+                    "explicit_aegis_request_requires_aegis_action",
+                )
+                .await?;
                 if !loop_budget.can_continue_after(attempt_index) {
                     anyhow::bail!(
                         "planning model selected a non-Aegis action for an explicit Aegis request"
@@ -1112,6 +1120,13 @@ async fn plan_and_dispatch(
                         "repair_hint": "Finish an explicit Aegis request only after prior Aegis evidence proves the result or proves the Aegis failure.",
                     })),
                 });
+                fail_if_rejected_planner_plan_stalled(
+                    &trace,
+                    attempt_index,
+                    &attempts,
+                    "explicit_aegis_final_without_aegis_evidence",
+                )
+                .await?;
                 if !loop_budget.can_continue_after(attempt_index) {
                     anyhow::bail!(
                         "planning model tried to finish an explicit Aegis request without Aegis evidence"
@@ -1142,6 +1157,13 @@ async fn plan_and_dispatch(
                         "repair_hint": "Return the next tool action needed to complete or verify the user's request, not a progress description.",
                     })),
                 });
+                fail_if_rejected_planner_plan_stalled(
+                    &trace,
+                    attempt_index,
+                    &attempts,
+                    "action_null_plan_claimed_pending_work",
+                )
+                .await?;
                 if !loop_budget.can_continue_after(attempt_index) {
                     anyhow::bail!(
                         "planning model returned an incomplete action-null long-range plan"
@@ -1177,6 +1199,13 @@ async fn plan_and_dispatch(
                         "repair_hint": "This goal needs a concrete next action or a final answer backed by prior evidence. Use an available tool action, or ask for clarification only when the goal is genuinely ambiguous or blocked.",
                     })),
                 });
+                fail_if_rejected_planner_plan_stalled(
+                    &trace,
+                    attempt_index,
+                    &attempts,
+                    "action_null_concrete_goal_without_evidence",
+                )
+                .await?;
                 if !loop_budget.can_continue_after(attempt_index) {
                     anyhow::bail!(
                         "planning model stopped concrete work without evidence or a real blocker"
@@ -1209,6 +1238,13 @@ async fn plan_and_dispatch(
                         "repair_hint": "The user asked to observe a failure before recovery. Return only the initial failing action next; do not suppress the failure or combine recovery into the same shell command or sequence.",
                     })),
                 });
+                fail_if_rejected_planner_plan_stalled(
+                    &trace,
+                    attempt_index,
+                    &attempts,
+                    "failure_boundary_collapsed_into_single_action",
+                )
+                .await?;
                 if !loop_budget.can_continue_after(attempt_index) {
                     anyhow::bail!(
                         "planning model collapsed a required failure observation and recovery into one action"
@@ -1242,6 +1278,13 @@ async fn plan_and_dispatch(
                         "repair_hint": "The same action was already accepted in this turn. Use the fresh observation to choose the next different action or final verified answer.",
                     })),
                 });
+                fail_if_rejected_planner_plan_stalled(
+                    &trace,
+                    attempt_index,
+                    &attempts,
+                    "repeated_accepted_long_range_action",
+                )
+                .await?;
                 if !loop_budget.can_continue_after(attempt_index) {
                     anyhow::bail!("planning model repeated an already accepted long-range action");
                 }
@@ -1273,6 +1316,13 @@ async fn plan_and_dispatch(
                         "repair_hint": "The text-entry side effect already ran in this turn. Use the fresh observation to verify and final-answer, or choose a different non-duplicating action.",
                     })),
                 });
+                fail_if_rejected_planner_plan_stalled(
+                    &trace,
+                    attempt_index,
+                    &attempts,
+                    "repeated_text_entry_action",
+                )
+                .await?;
                 if !loop_budget.can_continue_after(attempt_index) {
                     anyhow::bail!("planning model repeated a text-entry action in the same turn");
                 }
@@ -1310,6 +1360,13 @@ async fn plan_and_dispatch(
                         "reason": "text_request_without_text_entry_action",
                     })),
                 });
+                fail_if_rejected_planner_plan_stalled(
+                    &trace,
+                    attempt_index,
+                    &attempts,
+                    "text_request_without_text_entry_action",
+                )
+                .await?;
                 if !loop_budget.can_continue_after(attempt_index) {
                     anyhow::bail!(
                         "planning model did not include a text-entry action for a text-writing command"
@@ -3086,7 +3143,7 @@ fn prior_attempts_support_explicit_aegis_final(
     if final_response_claims_verified_result(response) {
         return attempts.iter().any(|attempt| {
             attempt.action.as_ref().is_some_and(json_action_uses_aegis)
-                && confirmed_attempt_has_task_evidence(attempt)
+                && confirmed_attempt_supports_verified_final(response, attempt)
         });
     }
     prior_attempts_support_failure_final(response, attempts)
@@ -3095,7 +3152,9 @@ fn prior_attempts_support_explicit_aegis_final(
 
 fn prior_attempts_support_verified_final(response: &str, attempts: &[PlanAttemptContext]) -> bool {
     final_response_claims_verified_result(response)
-        && (attempts.iter().any(confirmed_attempt_has_task_evidence)
+        && (attempts
+            .iter()
+            .any(|attempt| confirmed_attempt_supports_verified_final(response, attempt))
             || attempts.iter().any(visible_attempt_awaited_verification))
 }
 
@@ -3115,6 +3174,19 @@ fn confirmed_attempt_has_task_evidence(attempt: &PlanAttemptContext) -> bool {
             .evidence
             .as_ref()
             .is_some_and(|evidence| evidence_has_task_readback_for_action(action, evidence))
+}
+
+fn confirmed_attempt_supports_verified_final(response: &str, attempt: &PlanAttemptContext) -> bool {
+    if !confirmed_attempt_has_task_evidence(attempt) {
+        return false;
+    }
+    let Some(claimed_title) = final_response_claimed_title(response) else {
+        return true;
+    };
+    attempt
+        .evidence
+        .as_ref()
+        .is_some_and(|evidence| evidence_contains_claim(evidence, &claimed_title))
 }
 
 fn evidence_has_task_readback_for_action(
@@ -3138,6 +3210,46 @@ fn evidence_has_task_readback(evidence: &serde_json::Value) -> bool {
                 .and_then(|value| value.as_str())
                 .is_some_and(|value| !value.trim().is_empty())
         })
+}
+
+fn final_response_claimed_title(response: &str) -> Option<String> {
+    extract_last_exact_value_after_markers(
+        response,
+        &[
+            "verified page title is ",
+            "verified page title: ",
+            "page title is ",
+            "page title: ",
+            "verified title is ",
+            "verified title: ",
+            "title is ",
+            "title: ",
+        ],
+    )
+}
+
+fn evidence_contains_claim(evidence: &serde_json::Value, claim: &str) -> bool {
+    let normalized_claim = normalize_evidence_claim(claim);
+    !normalized_claim.is_empty()
+        && serde_json::to_string(evidence)
+            .ok()
+            .map(|text| normalize_evidence_claim(&text))
+            .is_some_and(|evidence| evidence.contains(&normalized_claim))
+}
+
+fn normalize_evidence_claim(text: &str) -> String {
+    let mut normalized = String::with_capacity(text.len());
+    let mut last_was_space = true;
+    for ch in text.chars().flat_map(char::to_lowercase) {
+        if ch.is_ascii_alphanumeric() {
+            normalized.push(ch);
+            last_was_space = false;
+        } else if !last_was_space {
+            normalized.push(' ');
+            last_was_space = true;
+        }
+    }
+    normalized.trim().to_string()
 }
 
 fn json_action_uses_clipboard_read(action: &serde_json::Value) -> bool {
@@ -3545,6 +3657,63 @@ fn consecutive_planning_infrastructure_errors(attempts: &[PlanAttemptContext]) -
         .count()
 }
 
+async fn fail_if_rejected_planner_plan_stalled(
+    trace: &VoiceTurnTrace,
+    attempt_index: usize,
+    attempts: &[PlanAttemptContext],
+    reason: &str,
+) -> anyhow::Result<()> {
+    let repeat_count = repeated_rejected_planner_plan_count(attempts, reason);
+    if repeat_count < MAX_REPEATED_REJECTED_PLANNER_PLANS {
+        return Ok(());
+    }
+    let latest = attempts
+        .last()
+        .expect("stalled rejected planner plan requires the latest attempt");
+    trace
+        .append(
+            "planning_stalled",
+            json!({
+                "attempt_index": attempt_index,
+                "reason": reason,
+                "repeat_count": repeat_count,
+                "max_repeated_rejected_plans": MAX_REPEATED_REJECTED_PLANNER_PLANS,
+                "response": latest.response,
+                "action": latest.action,
+            }),
+        )
+        .await;
+    anyhow::bail!(
+        "planning model repeated an unsupported plan {repeat_count} times without new action or evidence: {reason}"
+    );
+}
+
+fn repeated_rejected_planner_plan_count(attempts: &[PlanAttemptContext], reason: &str) -> usize {
+    let Some(latest) = attempts.last() else {
+        return 0;
+    };
+    attempts
+        .iter()
+        .rev()
+        .take_while(|attempt| rejected_planner_plan_matches(latest, attempt, reason))
+        .count()
+}
+
+fn rejected_planner_plan_matches(
+    expected: &PlanAttemptContext,
+    attempt: &PlanAttemptContext,
+    reason: &str,
+) -> bool {
+    attempt.effect.as_deref() == Some("suspected_noop")
+        && attempt.response.trim() == expected.response.trim()
+        && attempt.action == expected.action
+        && attempt
+            .evidence
+            .as_ref()
+            .and_then(|evidence| evidence["reason"].as_str())
+            == Some(reason)
+}
+
 fn inferred_final_effect(
     completed: &CompletedAssistantTurn,
     prior_attempts: &[PlanAttemptContext],
@@ -3913,7 +4082,7 @@ async fn preflight_local_client(profile: &str) -> anyhow::Result<LocalReady> {
         });
     }
     spawn_profile_daemon(profile).context("start bundled cua daemon")?;
-    wait_until_ready(Duration::from_secs(2), || {
+    wait_until_ready(embedded_daemon_startup_timeout(), || {
         let local = local.clone();
         async move {
             local
@@ -4762,6 +4931,64 @@ mod tests {
             30,
             AgentLoopBudget::Unbounded
         ));
+    }
+
+    #[test]
+    fn repeated_rejected_planner_plan_count_tracks_only_identical_stalls() {
+        let reason = "action_null_concrete_goal_without_evidence";
+        let rejected_attempt =
+            |attempt_index, response: &str, action: Option<serde_json::Value>| PlanAttemptContext {
+                attempt_index,
+                response: response.to_string(),
+                action,
+                effect: Some("suspected_noop".to_string()),
+                evidence: Some(json!({
+                    "effect": "suspected_noop",
+                    "reason": reason,
+                })),
+            };
+
+        let repeated = vec![
+            rejected_attempt(1, "Done.", None),
+            rejected_attempt(2, "Done.", None),
+            rejected_attempt(3, "Done. ", None),
+        ];
+        assert_eq!(
+            repeated_rejected_planner_plan_count(&repeated, reason),
+            MAX_REPEATED_REJECTED_PLANNER_PLANS
+        );
+
+        let changed_response = vec![
+            rejected_attempt(1, "Done.", None),
+            rejected_attempt(2, "Done.", None),
+            rejected_attempt(3, "I need to inspect the page next.", None),
+        ];
+        assert_eq!(
+            repeated_rejected_planner_plan_count(&changed_response, reason),
+            1
+        );
+
+        let changed_action = vec![
+            rejected_attempt(
+                1,
+                "Trying the same thing.",
+                Some(json!({"kind": "mouse_click"})),
+            ),
+            rejected_attempt(
+                2,
+                "Trying the same thing.",
+                Some(json!({"kind": "mouse_click"})),
+            ),
+            rejected_attempt(
+                3,
+                "Trying the same thing.",
+                Some(json!({"kind": "key_press"})),
+            ),
+        ];
+        assert_eq!(
+            repeated_rejected_planner_plan_count(&changed_action, reason),
+            1
+        );
     }
 
     #[test]
@@ -6851,6 +7078,10 @@ mod tests {
             &mixed_aegis_readback_attempts
         ));
         assert!(!prior_attempts_support_explicit_aegis_final(
+            "Verified page title: SQLite Foreign Key Support",
+            &mixed_aegis_readback_attempts
+        ));
+        assert!(!prior_attempts_support_explicit_aegis_final(
             "Verified page type: documentation",
             &failed_aegis_attempts
         ));
@@ -7280,6 +7511,44 @@ mod tests {
         assert!(!prior_attempts_support_verified_final(
             "The visible note now reads hello.",
             &unobserved_attempts
+        ));
+    }
+
+    #[test]
+    fn claimed_page_title_must_match_prior_readback_evidence() {
+        let attempts = vec![PlanAttemptContext {
+            attempt_index: 1,
+            response: "Reading page text.".to_string(),
+            action: Some(json!({
+                "kind": "aegis",
+                "args": ["--mode", "headless", "page", "text", "--scope", "main"],
+                "timeout_ms": 15000
+            })),
+            effect: Some("confirmed".to_string()),
+            evidence: Some(json!({
+                "effect": "confirmed",
+                "evidence": [{
+                    "kind": "value_readback",
+                    "message": "aegis exited 0; stdout=Example Domain; stderr="
+                }]
+            })),
+        }];
+
+        assert_eq!(
+            final_response_claimed_title("The verified page title is Example Domain.").as_deref(),
+            Some("Example Domain")
+        );
+        assert!(prior_attempts_support_verified_final(
+            "The verified page title is Example Domain.",
+            &attempts
+        ));
+        assert!(!prior_attempts_support_verified_final(
+            "The verified page title is SQLite Foreign Key Support.",
+            &attempts
+        ));
+        assert!(prior_attempts_support_verified_final(
+            "Verified page type: documentation",
+            &attempts
         ));
     }
 

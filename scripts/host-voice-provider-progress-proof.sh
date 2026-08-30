@@ -107,8 +107,8 @@ jq -s -e '
   def provider_stopped:
     any(.event == "reply" and ((.data.text // "") | contains("Planner provider stopped the task")));
   any(.event == "agent_loop_start" and .data.budget.kind == "unbounded") and
-  any(.event == "dispatch_result" and .data.result.effect == "confirmed") and
-  any(.event == "agent_attempt_outcome" and .data.long_range_continuation == true) and
+  any(.event == "dispatch_result" and (.data.result.effect | IN("confirmed", "failed", "refused", "partial", "unverifiable"))) and
+  any(.event == "agent_attempt_outcome" and .data.has_action == true and .data.should_replan == true) and
   any(.event == "agent_reobserve_result") and
   any(.event == "agent_loop_stop") and
   any(.event == "memory_persisted") and

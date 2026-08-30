@@ -11,7 +11,10 @@ use cua_voice::agent_events::{
     agent_ui_event_from_daemon_event_advancing_cursor, max_daemon_event_sequence,
 };
 use cua_voice::client::CuaClient;
-use cua_voice::daemon::{profile_daemon_is_alive, spawn_profile_daemon, wait_until_ready};
+use cua_voice::daemon::{
+    embedded_daemon_startup_timeout, profile_daemon_is_alive, spawn_profile_daemon,
+    wait_until_ready,
+};
 use cua_voice::hud::{
     island_scene_from_snapshot, HudDisplay, HudMetrics, COMPACT_FILLET, COMPACT_HEIGHT,
     COMPACT_WIDTH, EXPANDED_FILLET, EXPANDED_HEIGHT, EXPANDED_WIDTH, TOP_MARGIN, WINDOW_HEIGHT,
@@ -3339,7 +3342,7 @@ fn start_embedded_daemon_if_needed(
         return Ok(());
     }
     spawn_profile_daemon(profile)?;
-    runtime.block_on(wait_until_ready(Duration::from_secs(3), || {
+    runtime.block_on(wait_until_ready(embedded_daemon_startup_timeout(), || {
         let profile = profile.to_string();
         async move {
             if profile_daemon_is_alive(&profile) {

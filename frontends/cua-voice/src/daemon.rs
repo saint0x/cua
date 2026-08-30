@@ -1,9 +1,13 @@
 use anyhow::{bail, Context};
-use cua_core::profile_token_path;
+use cua_core::{profile_socket_path, profile_token_path};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
+
+const DEFAULT_EMBEDDED_DAEMON_STARTUP_TIMEOUT_MS: u64 = 30_000;
+const MIN_EMBEDDED_DAEMON_STARTUP_TIMEOUT_MS: u64 = 500;
+const MAX_EMBEDDED_DAEMON_STARTUP_TIMEOUT_MS: u64 = 120_000;
 
 pub fn bundled_cua_binary() -> anyhow::Result<PathBuf> {
     let current_exe = std::env::current_exe().context("resolve current executable")?;
@@ -83,19 +87,35 @@ fn http_token_override_allowed() -> bool {
 }
 
 pub fn profile_daemon_is_alive(profile: &str) -> bool {
-    let Ok(home) = std::env::var("HOME") else {
+    let Ok(socket) = profile_socket_path(profile) else {
         return false;
     };
-    profile_daemon_is_alive_under(Path::new(&home), profile)
+    UnixStream::connect(socket).is_ok()
 }
 
+#[cfg(test)]
 fn profile_daemon_is_alive_under(home: &Path, profile: &str) -> bool {
-    let socket = home
+    let legacy_socket = home
         .join(".cua")
         .join("profiles")
         .join(profile)
         .join("daemon.sock");
-    UnixStream::connect(socket).is_ok()
+    UnixStream::connect(legacy_socket).is_ok()
+}
+
+pub fn embedded_daemon_startup_timeout() -> Duration {
+    std::env::var("CUA_EMBEDDED_DAEMON_STARTUP_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|timeout| *timeout > 0)
+        .map(|timeout| {
+            timeout.clamp(
+                MIN_EMBEDDED_DAEMON_STARTUP_TIMEOUT_MS,
+                MAX_EMBEDDED_DAEMON_STARTUP_TIMEOUT_MS,
+            )
+        })
+        .map(Duration::from_millis)
+        .unwrap_or_else(|| Duration::from_millis(DEFAULT_EMBEDDED_DAEMON_STARTUP_TIMEOUT_MS))
 }
 
 pub async fn wait_until_ready<F, Fut>(timeout: Duration, mut check: F) -> anyhow::Result<()>
@@ -170,5 +190,57 @@ mod tests {
 
         drop(listener);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn profile_daemon_alive_honors_cua_home() {
+        let old_cua_home = std::env::var_os("CUA_HOME");
+        let dir = PathBuf::from(format!("/tmp/cua-home-{}", uuid::Uuid::new_v4().simple()));
+        let socket = dir.join("profiles").join("v").join("daemon.sock");
+        std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        std::env::set_var("CUA_HOME", &dir);
+
+        assert!(profile_daemon_is_alive("v"));
+
+        drop(listener);
+        if let Some(old_cua_home) = old_cua_home {
+            std::env::set_var("CUA_HOME", old_cua_home);
+        } else {
+            std::env::remove_var("CUA_HOME");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn embedded_daemon_startup_timeout_is_bounded_and_configurable() {
+        let old_timeout = std::env::var_os("CUA_EMBEDDED_DAEMON_STARTUP_TIMEOUT_MS");
+
+        std::env::remove_var("CUA_EMBEDDED_DAEMON_STARTUP_TIMEOUT_MS");
+        assert_eq!(embedded_daemon_startup_timeout(), Duration::from_secs(30));
+
+        std::env::set_var("CUA_EMBEDDED_DAEMON_STARTUP_TIMEOUT_MS", "750");
+        assert_eq!(
+            embedded_daemon_startup_timeout(),
+            Duration::from_millis(750)
+        );
+
+        std::env::set_var("CUA_EMBEDDED_DAEMON_STARTUP_TIMEOUT_MS", "1");
+        assert_eq!(
+            embedded_daemon_startup_timeout(),
+            Duration::from_millis(500)
+        );
+
+        std::env::set_var("CUA_EMBEDDED_DAEMON_STARTUP_TIMEOUT_MS", "300000");
+        assert_eq!(embedded_daemon_startup_timeout(), Duration::from_secs(120));
+
+        std::env::set_var("CUA_EMBEDDED_DAEMON_STARTUP_TIMEOUT_MS", "nope");
+        assert_eq!(embedded_daemon_startup_timeout(), Duration::from_secs(30));
+
+        if let Some(old_timeout) = old_timeout {
+            std::env::set_var("CUA_EMBEDDED_DAEMON_STARTUP_TIMEOUT_MS", old_timeout);
+        } else {
+            std::env::remove_var("CUA_EMBEDDED_DAEMON_STARTUP_TIMEOUT_MS");
+        }
     }
 }

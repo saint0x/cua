@@ -7,10 +7,10 @@
       "cmd": "bash",
       "args": [
         "-lc",
-        "CUA_VOICE_LOCAL_PLANNER_OUT_DIR=artifacts/cua/fozzy-lp-missing-proof CUA_VOICE_LOCAL_PLANNER_HOME=/tmp/clp-missing CUA_VOICE_LOCAL_PLANNER_PROFILE=flp-missing CUA_VOICE_LOCAL_PLANNER_ADDR=127.0.0.1:9914 CUA_VOICE_LOCAL_PLANNER_MODEL_ADDR=127.0.0.1:9915 CUA_VOICE_LOCAL_PLANNER_SCENARIO=missing-readback scripts/host-voice-local-planner-loop-proof.sh && CUA_VOICE_LOCAL_PLANNER_OUT_DIR=artifacts/cua/fozzy-lp-mismatch-proof CUA_VOICE_LOCAL_PLANNER_HOME=/tmp/clp-mismatch CUA_VOICE_LOCAL_PLANNER_PROFILE=flp-mismatch CUA_VOICE_LOCAL_PLANNER_ADDR=127.0.0.1:9916 CUA_VOICE_LOCAL_PLANNER_MODEL_ADDR=127.0.0.1:9917 CUA_VOICE_LOCAL_PLANNER_SCENARIO=mismatch-readback scripts/host-voice-local-planner-loop-proof.sh"
+        "CUA_VOICE_LOCAL_PLANNER_OUT_DIR=artifacts/cua/fozzy-lp-missing-proof CUA_VOICE_LOCAL_PLANNER_HOME=/tmp/clp-missing CUA_VOICE_LOCAL_PLANNER_PROFILE=flp-missing CUA_VOICE_LOCAL_PLANNER_ADDR=127.0.0.1:9914 CUA_VOICE_LOCAL_PLANNER_MODEL_ADDR=127.0.0.1:9915 CUA_VOICE_LOCAL_PLANNER_SCENARIO=missing-readback scripts/host-voice-local-planner-loop-proof.sh && CUA_VOICE_LOCAL_PLANNER_OUT_DIR=artifacts/cua/fozzy-lp-mismatch-proof CUA_VOICE_LOCAL_PLANNER_HOME=/tmp/clp-mismatch CUA_VOICE_LOCAL_PLANNER_PROFILE=flp-mismatch CUA_VOICE_LOCAL_PLANNER_ADDR=127.0.0.1:9916 CUA_VOICE_LOCAL_PLANNER_MODEL_ADDR=127.0.0.1:9917 CUA_VOICE_LOCAL_PLANNER_SCENARIO=mismatch-readback scripts/host-voice-local-planner-loop-proof.sh && CUA_VOICE_LOCAL_PLANNER_OUT_DIR=artifacts/cua/fozzy-lp-failed-proof CUA_VOICE_LOCAL_PLANNER_HOME=/tmp/clp-failed CUA_VOICE_LOCAL_PLANNER_PROFILE=flp-failed CUA_VOICE_LOCAL_PLANNER_ADDR=127.0.0.1:9918 CUA_VOICE_LOCAL_PLANNER_MODEL_ADDR=127.0.0.1:9919 CUA_VOICE_LOCAL_PLANNER_SCENARIO=failed-action-repair scripts/host-voice-local-planner-loop-proof.sh && CUA_VOICE_LOCAL_PLANNER_OUT_DIR=artifacts/cua/fozzy-lp-stall-proof CUA_VOICE_LOCAL_PLANNER_HOME=/tmp/clp-stall CUA_VOICE_LOCAL_PLANNER_PROFILE=flp-stall CUA_VOICE_LOCAL_PLANNER_ADDR=127.0.0.1:9920 CUA_VOICE_LOCAL_PLANNER_MODEL_ADDR=127.0.0.1:9921 CUA_VOICE_LOCAL_PLANNER_SCENARIO=repeated-rejected-plan scripts/host-voice-local-planner-loop-proof.sh"
       ],
       "exit_code": 0,
-      "stdout": "artifacts/cua/fozzy-lp-missing-proof\nartifacts/cua/fozzy-lp-mismatch-proof\n",
+      "stdout": "artifacts/cua/fozzy-lp-missing-proof\nartifacts/cua/fozzy-lp-mismatch-proof\nartifacts/cua/fozzy-lp-failed-proof\nartifacts/cua/fozzy-lp-stall-proof\n",
       "stderr": "",
       "times": 1
     },
@@ -19,10 +19,10 @@
       "cmd": "bash",
       "args": [
         "-lc",
-        "CUA_VOICE_LOCAL_PLANNER_OUT_DIR=artifacts/cua/fozzy-lp-missing-proof CUA_VOICE_LOCAL_PLANNER_HOME=/tmp/clp-missing CUA_VOICE_LOCAL_PLANNER_PROFILE=flp-missing CUA_VOICE_LOCAL_PLANNER_ADDR=127.0.0.1:9914 CUA_VOICE_LOCAL_PLANNER_MODEL_ADDR=127.0.0.1:9915 CUA_VOICE_LOCAL_PLANNER_SCENARIO=missing-readback scripts/host-voice-local-planner-loop-proof.sh && CUA_VOICE_LOCAL_PLANNER_OUT_DIR=artifacts/cua/fozzy-lp-mismatch-proof CUA_VOICE_LOCAL_PLANNER_HOME=/tmp/clp-mismatch CUA_VOICE_LOCAL_PLANNER_PROFILE=flp-mismatch CUA_VOICE_LOCAL_PLANNER_ADDR=127.0.0.1:9916 CUA_VOICE_LOCAL_PLANNER_MODEL_ADDR=127.0.0.1:9917 CUA_VOICE_LOCAL_PLANNER_SCENARIO=mismatch-readback scripts/host-voice-local-planner-loop-proof.sh"
+        "CUA_VOICE_LOCAL_PLANNER_OUT_DIR=artifacts/cua/fozzy-lp-missing-proof CUA_VOICE_LOCAL_PLANNER_HOME=/tmp/clp-missing CUA_VOICE_LOCAL_PLANNER_PROFILE=flp-missing CUA_VOICE_LOCAL_PLANNER_ADDR=127.0.0.1:9914 CUA_VOICE_LOCAL_PLANNER_MODEL_ADDR=127.0.0.1:9915 CUA_VOICE_LOCAL_PLANNER_SCENARIO=missing-readback scripts/host-voice-local-planner-loop-proof.sh && CUA_VOICE_LOCAL_PLANNER_OUT_DIR=artifacts/cua/fozzy-lp-mismatch-proof CUA_VOICE_LOCAL_PLANNER_HOME=/tmp/clp-mismatch CUA_VOICE_LOCAL_PLANNER_PROFILE=flp-mismatch CUA_VOICE_LOCAL_PLANNER_ADDR=127.0.0.1:9916 CUA_VOICE_LOCAL_PLANNER_MODEL_ADDR=127.0.0.1:9917 CUA_VOICE_LOCAL_PLANNER_SCENARIO=mismatch-readback scripts/host-voice-local-planner-loop-proof.sh && CUA_VOICE_LOCAL_PLANNER_OUT_DIR=artifacts/cua/fozzy-lp-failed-proof CUA_VOICE_LOCAL_PLANNER_HOME=/tmp/clp-failed CUA_VOICE_LOCAL_PLANNER_PROFILE=flp-failed CUA_VOICE_LOCAL_PLANNER_ADDR=127.0.0.1:9918 CUA_VOICE_LOCAL_PLANNER_MODEL_ADDR=127.0.0.1:9919 CUA_VOICE_LOCAL_PLANNER_SCENARIO=failed-action-repair scripts/host-voice-local-planner-loop-proof.sh && CUA_VOICE_LOCAL_PLANNER_OUT_DIR=artifacts/cua/fozzy-lp-stall-proof CUA_VOICE_LOCAL_PLANNER_HOME=/tmp/clp-stall CUA_VOICE_LOCAL_PLANNER_PROFILE=flp-stall CUA_VOICE_LOCAL_PLANNER_ADDR=127.0.0.1:9920 CUA_VOICE_LOCAL_PLANNER_MODEL_ADDR=127.0.0.1:9921 CUA_VOICE_LOCAL_PLANNER_SCENARIO=repeated-rejected-plan scripts/host-voice-local-planner-loop-proof.sh"
       ],
       "expect_exit": 0,
-      "expect_stdout": "artifacts/cua/fozzy-lp-missing-proof\nartifacts/cua/fozzy-lp-mismatch-proof\n"
+      "expect_stdout": "artifacts/cua/fozzy-lp-missing-proof\nartifacts/cua/fozzy-lp-mismatch-proof\nartifacts/cua/fozzy-lp-failed-proof\nartifacts/cua/fozzy-lp-stall-proof\n"
     }
   ]
 }

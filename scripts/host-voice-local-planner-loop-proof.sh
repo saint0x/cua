@@ -24,19 +24,25 @@ STATUS="$OUT_DIR/status.json"
 REQUESTS="$OUT_DIR/planner-requests.jsonl"
 PROOF="$OUT_DIR/proof.json"
 VOICE_TRACE="$OUT_DIR/voice.jsonl"
-TARGET_DIR="$OUT_DIR/work"
-TARGET_FILE="$TARGET_DIR/value.txt"
-EXPECTED="rlm loop verified stdout $RUN_ID"
-WRONG_VALUE="wrong loop stdout $RUN_ID"
-TRANSCRIPT="Using local shell only, create $TARGET_FILE containing exactly $EXPECTED, then read the file back to stdout, and report the exact final stdout."
-
+VOICE_STDERR="$OUT_DIR/voice.stderr"
 case "$SCENARIO" in
-  missing-readback | mismatch-readback) ;;
+  missing-readback | mismatch-readback | failed-action-repair | repeated-rejected-plan) ;;
   *)
     echo "unknown local planner proof scenario: $SCENARIO" >&2
     exit 1
     ;;
 esac
+
+TARGET_DIR="$OUT_DIR/work"
+TARGET_FILE="$TARGET_DIR/value.txt"
+EXPECTED="rlm loop verified stdout $RUN_ID"
+WRONG_VALUE="wrong loop stdout $RUN_ID"
+TRANSCRIPT="Using local shell only, create $TARGET_FILE containing exactly $EXPECTED, then read the file back to stdout, and report the exact final stdout."
+if [[ "$SCENARIO" == "repeated-rejected-plan" ]]; then
+  TRANSCRIPT="Using local shell only, create $TARGET_FILE containing exactly $EXPECTED, then read the file back to stdout, and report the exact final stdout."
+elif [[ "$SCENARIO" == "failed-action-repair" ]]; then
+  TRANSCRIPT="Using local shell only, first try to read $TARGET_FILE and observe the failure, then recover by creating it with exactly $EXPECTED, read the file back to stdout, and report the exact final stdout."
+fi
 
 cargo build -p cua -p cua-voice
 
@@ -88,6 +94,29 @@ scenario = sys.argv[6]
 counter = 0
 
 def planner_content(index):
+    if scenario == "repeated-rejected-plan":
+        return {
+            "response": f"The exact final stdout is {expected}.",
+            "action": None,
+        }
+    if scenario == "failed-action-repair":
+        if index == 1:
+            return {
+                "response": "Reading the missing file first.",
+                "action": {
+                    "kind": "shell_exec",
+                    "command": f"cat {json.dumps(target_file)}",
+                    "timeout_ms": 5000,
+                },
+            }
+        return {
+            "response": "Recovering and reading the file back.",
+            "action": {
+                "kind": "shell_exec",
+                "command": f"mkdir -p {json.dumps(target_file.rsplit('/', 1)[0])} && printf %s {json.dumps(expected)} > {json.dumps(target_file)} && cat {json.dumps(target_file)}",
+                "timeout_ms": 5000,
+            },
+        }
     if index == 1:
         if scenario == "mismatch-readback":
             return {
@@ -204,6 +233,7 @@ PY
   sleep 0.1
 done
 
+set +e
 CUA_HOME="$CUA_HOME_DIR" \
 CUA_HTTP_TOKEN="$TOKEN" \
 GEMINI_API_KEY="local-planner-test-key" \
@@ -214,7 +244,9 @@ CUA_AGENT_LOOP_MAX_ATTEMPTS="n" \
   --profile "$PROFILE" \
   --debug-trace \
   --planner-model "gemini-3.7-flash" \
-  --once-transcript "$TRANSCRIPT" > "$EVENTS"
+  --once-transcript "$TRANSCRIPT" > "$EVENTS" 2> "$VOICE_STDERR"
+VOICE_EXIT=$?
+set -e
 
 sleep 0.2
 
@@ -232,7 +264,143 @@ CUA_HTTP_TOKEN="$TOKEN" \
   --profile "$PROFILE" \
   status --json > "$STATUS"
 
-test "$(cat "$TARGET_FILE")" = "$EXPECTED"
+if [[ "$SCENARIO" != "repeated-rejected-plan" ]]; then
+  test "$VOICE_EXIT" -eq 0
+  test "$(cat "$TARGET_FILE")" = "$EXPECTED"
+fi
+
+if [[ "$SCENARIO" == "repeated-rejected-plan" ]]; then
+  STALL_REASON="action_null_concrete_goal_without_evidence"
+  test "$VOICE_EXIT" -ne 0
+  grep -F "planning model repeated an unsupported plan 3 times without new action or evidence" "$VOICE_STDERR" >/dev/null
+  jq -s -e '
+    any(.event == "transcript") and
+    any(.event == "planning") and
+    (any(.event == "dispatching") | not) and
+    (any(.event == "reply") | not)
+  ' "$EVENTS" >/dev/null
+
+  jq -s -e '
+    length == 3 and
+    all(.[]; .path == "/v1/chat/completions") and
+    (.[1].body.messages[-1].content[0].text | contains("Prior attempts in this turn")) and
+    (.[1].body.messages[-1].content[0].text | contains($stall_reason)) and
+    (.[2].body.messages[-1].content[0].text | contains($stall_reason))
+  ' --arg stall_reason "$STALL_REASON" "$REQUESTS" >/dev/null
+
+  jq -s -e '
+    any(.event == "agent_loop_start" and .data.budget.kind == "unbounded") and
+    ([.[] | select(.event == "planning_rejected" and .data.reason == $stall_reason)] | length == 3) and
+    any(.event == "planning_stalled" and .data.reason == $stall_reason and .data.repeat_count == 3)
+  ' --arg stall_reason "$STALL_REASON" "$VOICE_TRACE" >/dev/null
+
+  jq -n \
+    --arg scenario "$SCENARIO" \
+    --arg profile "$PROFILE" \
+    --arg transcript "$TRANSCRIPT" \
+    --arg expected "$EXPECTED" \
+    --arg target_file "$TARGET_FILE" \
+    --arg stall_reason "$STALL_REASON" \
+    --arg stderr "$(cat "$VOICE_STDERR")" \
+    --slurpfile events "$EVENTS" \
+    --slurpfile requests "$REQUESTS" \
+    --rawfile trace "$VOICE_TRACE" \
+    '{
+      schema_version: "cua.voice_local_planner_stall_proof.v1",
+      ok: true,
+      scenario: $scenario,
+      profile: $profile,
+      transcript: $transcript,
+      expected: $expected,
+      target_file: $target_file,
+      stderr: $stderr,
+      planner_requests: ($requests | length),
+      stall_reason: $stall_reason,
+      fake_success_suppressed: (($events | map(select(.event == "reply")) | length) == 0),
+      dispatch_suppressed: (($events | map(select(.event == "dispatching")) | length) == 0),
+      contextual_error_emitted: ($stderr | contains("planning model repeated an unsupported plan 3 times without new action or evidence")),
+      planning_stalled: ($trace | contains("planning_stalled"))
+    }' > "$PROOF"
+
+  jq -e '
+    .ok == true and
+    .planner_requests == 3 and
+    .fake_success_suppressed == true and
+    .dispatch_suppressed == true and
+    .contextual_error_emitted == true and
+    .planning_stalled == true
+  ' "$PROOF" >/dev/null
+
+  echo "$OUT_DIR"
+  exit 0
+fi
+
+if [[ "$SCENARIO" == "failed-action-repair" ]]; then
+  test "$VOICE_EXIT" -eq 0
+  test "$(cat "$TARGET_FILE")" = "$EXPECTED"
+
+  jq -s -e \
+    --arg expected "$EXPECTED" '
+    def idx($name): map(.event) | index($name);
+    any(.event == "transcript") and
+    any(.event == "planning") and
+    any(.event == "dispatching") and
+    any(.event == "reply" and .text == $expected) and
+    (idx("transcript") < idx("planning")) and
+    (idx("planning") < idx("dispatching")) and
+    (idx("dispatching") < idx("reply"))
+  ' "$EVENTS" >/dev/null
+
+  jq -s -e '
+    length == 2 and
+    (.[1].body.messages[-1].content[0].text | contains("Prior attempts in this turn")) and
+    (.[1].body.messages[-1].content[0].text | contains("\"effect\": \"failed\"")) and
+    (.[1].body.messages[-1].content[0].text | contains("No such file or directory"))
+  ' "$REQUESTS" >/dev/null
+
+  jq -s -e '
+    any(.event == "agent_loop_start" and .data.budget.kind == "unbounded") and
+    any(.event == "agent_attempt_outcome" and .data.effect == "failed" and .data.should_replan == true and .data.has_action == true) and
+    any(.event == "agent_reobserve_start" and .data.reason == "repair_after_effect") and
+    any(.event == "agent_loop_stop" and .data.attempts == 2 and .data.final_effect == "confirmed")
+  ' "$VOICE_TRACE" >/dev/null
+
+  jq -n \
+    --arg scenario "$SCENARIO" \
+    --arg profile "$PROFILE" \
+    --arg transcript "$TRANSCRIPT" \
+    --arg expected "$EXPECTED" \
+    --arg target_file "$TARGET_FILE" \
+    --slurpfile events "$EVENTS" \
+    --slurpfile requests "$REQUESTS" \
+    --rawfile trace "$VOICE_TRACE" \
+    '{
+      schema_version: "cua.voice_local_planner_failed_action_repair_proof.v1",
+      ok: true,
+      scenario: $scenario,
+      profile: $profile,
+      transcript: $transcript,
+      expected: $expected,
+      target_file: $target_file,
+      final_reply: (($events | map(select(.event == "reply")) | last).text),
+      planner_requests: ($requests | length),
+      failed_evidence_reached_model: ($requests[1].body.messages[-1].content[0].text | contains("\"effect\": \"failed\"")),
+      failed_error_reached_model: ($requests[1].body.messages[-1].content[0].text | contains("No such file or directory")),
+      repaired_after_failure: ($trace | contains("\"effect\":\"failed\"") and contains("\"final_effect\":\"confirmed\""))
+    }' > "$PROOF"
+
+  jq -e '
+    .ok == true and
+    .final_reply == .expected and
+    .planner_requests == 2 and
+    .failed_evidence_reached_model == true and
+    .failed_error_reached_model == true and
+    .repaired_after_failure == true
+  ' "$PROOF" >/dev/null
+
+  echo "$OUT_DIR"
+  exit 0
+fi
 
 case "$SCENARIO" in
   missing-readback)
