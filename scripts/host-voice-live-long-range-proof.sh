@@ -36,18 +36,26 @@ PROOF="$OUT_DIR/proof.json"
 AEGIS_PROFILE="cua-$PROFILE"
 
 SCENARIOS=(
-  architecture-summary
   cost-cutover
   incident-triage
   benchmark-analysis
   dependency-map
-  timeline-order
   contradiction-check
   config-audit
   failure-recovery
   timeout-recovery
   aegis-local-read
   aegis-link-follow
+  release-risk-rank
+  budget-sensitivity
+  provider-cutover-readiness
+  app-automation-route
+  security-boundary
+  telemetry-gap
+  qgui-runtime-plan
+  incident-remediation-plan
+  aegis-cross-page-synthesis
+  aegis-table-read
 )
 
 env_key_available() {
@@ -132,16 +140,93 @@ default = "local"
 cloud_provider = "oracle-vm"
 """, encoding="utf-8")
 
+(corpus / "release-risks.md").write_text("""# Release Risk Register
+R1 | severity=high | area=agent-loop | Evidence-backed final answers can regress if action results are not reinserted into context.
+R2 | severity=medium | area=hud | Background/headful label drift confuses the operator but does not break automation.
+R3 | severity=high | area=daemon | Stale singleton sockets can strand HUD startup and cause persistent daemon errors.
+R4 | severity=low | area=docs | Oracle VM naming needs consistent hyphenation.
+""", encoding="utf-8")
+
+(corpus / "budget-sensitivity.csv").write_text("""provider,cost_per_hour,usable_parallelism,self_host_threshold_hours
+oracle-vm,0.032,64,900
+aws,0.046,80,640
+quilt-vm,0.018,128,0
+local,0.000,1,0
+""", encoding="utf-8")
+
+(corpus / "cutover-readiness.json").write_text(json.dumps({
+    "oracle-vm": {"credits_remaining": 1200, "qgui_image": "ready", "ssh_bootstrap": "ready", "autoscaler": "prototype"},
+    "quilt-vm": {"kvm_runtime": "ready", "capacity": "limited", "billing": "missing", "autoscaler": "missing"},
+    "decision": "keep oracle-vm for production until Quilt VM autoscaler and billing are ready"
+}, indent=2), encoding="utf-8")
+
+(corpus / "app-automation.md").write_text("""# App Automation Route
+Headful app automation uses the local macOS backend and should label the target as macOS.
+Headless/background automation uses the same agent loop but labels the target as Background.
+Cloud app automation uses oracle-vm plus QGUI inside the guest image; the UI transport chip should show the app name when an app is being controlled.
+""", encoding="utf-8")
+
+(corpus / "security-boundary.md").write_text("""# Security Boundary
+Never copy private OCI PEM keys into chat or model-visible context.
+Cloud VM bootstrap may read credentials from the operator machine only through local filesystem/env handoff.
+Production must not fall back to synthetic computer control when a backend is unavailable.
+Action errors must propagate into the next planner turn with stderr, effect, and last attempted action.
+""", encoding="utf-8")
+
+(corpus / "telemetry.jsonl").write_text(
+    "\n".join([
+        json.dumps({"event": "planning_start", "present": True}),
+        json.dumps({"event": "dispatch_result", "present": True}),
+        json.dumps({"event": "agent_attempt_outcome", "present": True}),
+        json.dumps({"event": "agent_reobserve_result", "present": True}),
+        json.dumps({"event": "memory_persisted", "present": True}),
+        json.dumps({"event": "gpu_frame_checksum", "present": False}),
+    ]) + "\n",
+    encoding="utf-8",
+)
+
+(corpus / "qgui-runtime-plan.md").write_text("""# QGUI Runtime Plan
+The oracle-vm image must vendor QGUI locally.
+The runtime stack is Xvfb for display, x11vnc for inspection, a window manager for app focus, and the cua-qgui-tool bridge for input/readback.
+The same QGUI layer should later be reused by Quilt VM so cloud computer backends do not diverge.
+""", encoding="utf-8")
+
+(corpus / "remediation-runbook.md").write_text("""# Incident Remediation Runbook
+Symptom: agent says progress was made but no action happened.
+Step 1: inspect voice trace for dispatch_result and agent_attempt_outcome.
+Step 2: verify action result evidence was included in the next planner request.
+Step 3: reject final replies unless prior readback supports the answer token.
+Step 4: if repeated visible actions produce no observed change, stop with contextual partial progress instead of looping forever.
+""", encoding="utf-8")
+
 web.joinpath("index.html").write_text("""<!doctype html><title>CUA Live Long Range Test</title>
 <main>
 <h1>CUA Live Long Range Test</h1>
 <p>The local web fixture says the key answer is verification observation.</p>
 <a href="/details.html">Architecture Details</a>
+<a href="/ops.html">Operational Notes</a>
+<a href="/matrix.html">Backend Matrix</a>
 </main>""", encoding="utf-8")
 web.joinpath("details.html").write_text("""<!doctype html><title>Architecture Details</title>
 <main>
 <h1>Architecture Details</h1>
 <p>oracle-vm carries QGUI inside the VM image, while the upper layer remains a generic cloud computer backend.</p>
+</main>""", encoding="utf-8")
+web.joinpath("ops.html").write_text("""<!doctype html><title>Operational Notes</title>
+<main>
+<h1>Operational Notes</h1>
+<p>Robust long-range automation requires dispatch evidence, reobserve evidence, and memory persistence before a final answer.</p>
+<a href="/matrix.html">Backend Matrix</a>
+</main>""", encoding="utf-8")
+web.joinpath("matrix.html").write_text("""<!doctype html><title>Backend Matrix</title>
+<main>
+<h1>Backend Matrix</h1>
+<table>
+<tr><th>backend</th><th>surface</th><th>label</th></tr>
+<tr><td>local</td><td>macOS app automation</td><td>macOS</td></tr>
+<tr><td>oracle-vm</td><td>QGUI guest automation</td><td>Background</td></tr>
+<tr><td>quilt-vm</td><td>future QGUI guest automation</td><td>Background</td></tr>
+</table>
 </main>""", encoding="utf-8")
 PY
 
@@ -199,8 +284,14 @@ scenario_prompt() {
     aegis-link-follow)
       printf 'Use Aegis headless only. Navigate to http://%s/index.html, open the exact link "Architecture Details", read page text --scope main, verify QGUI/oracle-vm wording, then final reply must include exactly `%s`.' "$WEB_ADDR" "$expected"
       ;;
+    aegis-cross-page-synthesis)
+      printf 'Use Aegis headless only. Navigate to http://%s/index.html, read the main page, open "Operational Notes", read it, then open "Backend Matrix" and synthesize the required evidence. Final reply must include exactly `%s`.' "$WEB_ADDR" "$expected"
+      ;;
+    aegis-table-read)
+      printf 'Use Aegis headless only. Navigate to http://%s/matrix.html, read the table, verify the oracle-vm row surface and label, then final reply must include exactly `%s`.' "$WEB_ADDR" "$expected"
+      ;;
     *)
-      printf 'Use shell_exec only to inspect files under %s for scenario `%s`. Do not finish from the task text alone. Verify the relevant evidence from the files, make the shell command print the exact token `%s`, and only then final reply must include exactly `%s`.' "$CORPUS" "$scenario" "$expected" "$expected"
+      printf 'Use shell_exec only to inspect files under %s for scenario `%s`. Do not finish from the task text alone. Run at least two separate investigation actions before the final reply: first map or inspect the relevant source files without printing the final token, then compute and read back the exact token `%s`. Only after that evidence is in prior-attempt context, final reply must include exactly `%s`.' "$CORPUS" "$scenario" "$expected" "$expected"
       ;;
   esac
 }
@@ -219,7 +310,27 @@ expected_for() {
     timeout-recovery) printf 'ANSWER[timeout-recovery]=recovered after timeout with bounded command' ;;
     aegis-local-read) printf 'ANSWER[aegis-local-read]=verification observation' ;;
     aegis-link-follow) printf 'ANSWER[aegis-link-follow]=oracle-vm carries QGUI inside the VM image' ;;
+    release-risk-rank) printf 'ANSWER[release-risk-rank]=top risks are agent-loop evidence regression and stale singleton daemon startup' ;;
+    budget-sensitivity) printf 'ANSWER[budget-sensitivity]=oracle-vm stays rented until 900 self-host threshold hours; quilt-vm is lowest cost at 0.018' ;;
+    provider-cutover-readiness) printf 'ANSWER[provider-cutover-readiness]=keep oracle-vm until Quilt VM autoscaler and billing are ready' ;;
+    app-automation-route) printf 'ANSWER[app-automation-route]=headful local apps label macOS, headless automation labels Background, cloud apps use oracle-vm plus QGUI' ;;
+    security-boundary) printf 'ANSWER[security-boundary]=no PEM in chat, no synthetic fallback, propagate action errors into planner context' ;;
+    telemetry-gap) printf 'ANSWER[telemetry-gap]=required events are present; gpu_frame_checksum is the only missing optional signal' ;;
+    qgui-runtime-plan) printf 'ANSWER[qgui-runtime-plan]=vendor QGUI in oracle-vm with Xvfb, x11vnc, window manager, and cua-qgui-tool' ;;
+    incident-remediation-plan) printf 'ANSWER[incident-remediation-plan]=trace dispatch_result, feed action evidence forward, require readback, stop no-progress loops contextually' ;;
+    aegis-cross-page-synthesis) printf 'ANSWER[aegis-cross-page-synthesis]=dispatch evidence, reobserve evidence, and memory persistence before a final answer' ;;
+    aegis-table-read) printf 'ANSWER[aegis-table-read]=oracle-vm QGUI guest automation Background' ;;
     *) return 1 ;;
+  esac
+}
+
+min_dispatches_for() {
+  case "$1" in
+    failure-recovery|timeout-recovery) printf '2' ;;
+    aegis-local-read) printf '2' ;;
+    aegis-link-follow|aegis-cross-page-synthesis) printf '3' ;;
+    aegis-table-read) printf '2' ;;
+    *) printf '2' ;;
   esac
 }
 
@@ -242,10 +353,14 @@ for scenario in "${SCENARIOS[@]}"; do
     >"$EVENTS/$scenario.jsonl" 2>"$EVENTS/$scenario.stderr"
   status=$?
   set -e
-  printf '{"scenario":%s,"exit_code":%s,"expected":%s}\n' \
+  printf '{"scenario":%s,"exit_code":%s,"expected":%s,"min_dispatches":%s}\n' \
     "$(jq -Rn --arg value "$scenario" '$value')" \
     "$status" \
-    "$(jq -Rn --arg value "$expected" '$value')" >> "$OUT_DIR/exits.jsonl"
+    "$(jq -Rn --arg value "$expected" '$value')" \
+    "$(jq -Rn --argjson value "$(min_dispatches_for "$scenario")" '$value')" >> "$OUT_DIR/exits.jsonl"
+  if rg -q "402 Payment Required|insufficient provider credits|provider returned payment required" "$TRACES/$scenario.jsonl" "$EVENTS/$scenario.jsonl" "$EVENTS/$scenario.stderr" 2>/dev/null; then
+    break
+  fi
 done
 END_MS="$(perl -MTime::HiRes=time -e 'printf "%.0f\n", time() * 1000')"
 ELAPSED_MS="$((END_MS - START_MS))"
@@ -265,6 +380,23 @@ scenarios = sys.argv[7:]
 exits = {row["scenario"]: row for row in map(json.loads, (out_dir / "exits.jsonl").read_text().splitlines())}
 results = []
 for scenario in scenarios:
+    if scenario not in exits:
+        results.append({
+            "scenario": scenario,
+            "ok": False,
+            "exit_code": None,
+            "expected": None,
+            "min_dispatches": None,
+            "dispatch_count": 0,
+            "planner_requests": 0,
+            "mini_turn_requests": 0,
+            "final_effect": None,
+            "reply": "not run because an earlier live provider call failed",
+            "trace_path": str(out_dir / "traces" / f"{scenario}.jsonl"),
+            "events_path": str(out_dir / "events" / f"{scenario}.jsonl"),
+            "stderr_path": str(out_dir / "events" / f"{scenario}.stderr"),
+        })
+        continue
     trace_path = out_dir / "traces" / f"{scenario}.jsonl"
     events_path = out_dir / "events" / f"{scenario}.jsonl"
     stderr_path = out_dir / "events" / f"{scenario}.stderr"
@@ -283,18 +415,29 @@ for scenario in scenarios:
     attempt_outcomes = [event.get("data", {}) for event in trace if event.get("event") == "agent_attempt_outcome"]
     mini_turns = sum(1 for outcome in attempt_outcomes if outcome.get("has_action") and outcome.get("should_replan"))
     dispatch_results = [event.get("data", {}).get("result", {}) for event in trace if event.get("event") == "dispatch_result"]
+    dispatch_count = len(dispatch_results)
+    min_dispatches = int(exits[scenario].get("min_dispatches", 1))
     dispatch_evidence = json.dumps(dispatch_results, sort_keys=True)
-    has_dispatch = bool(dispatch_results)
     has_memory = any(event.get("event") == "memory_persisted" for event in trace)
     reply_looks_evidence_free = "path is not present" in reply.lower() or "directory not found" in reply.lower() or "task contract specifies" in reply.lower()
-    has_positive_evidence = expected in dispatch_evidence or scenario in {"failure-recovery", "timeout-recovery", "aegis-local-read", "aegis-link-follow"}
+    has_positive_evidence = expected in dispatch_evidence or scenario in {
+        "failure-recovery",
+        "timeout-recovery",
+        "aegis-local-read",
+        "aegis-link-follow",
+        "aegis-cross-page-synthesis",
+        "aegis-table-read",
+    }
+    is_recovery = scenario in {"failure-recovery", "timeout-recovery"}
+    required_planner_requests = min_dispatches if is_recovery else min_dispatches + 1
+    required_mini_turns = max(1, min_dispatches - 1) if is_recovery else min_dispatches
     ok = (
         exits[scenario]["exit_code"] == 0
         and expected in reply
         and stop.get("final_effect") == "confirmed"
-        and planner_requests >= 2
-        and mini_turns >= 1
-        and has_dispatch
+        and planner_requests >= required_planner_requests
+        and mini_turns >= required_mini_turns
+        and dispatch_count >= min_dispatches
         and has_positive_evidence
         and not reply_looks_evidence_free
         and has_memory
@@ -304,6 +447,8 @@ for scenario in scenarios:
         "ok": ok,
         "exit_code": exits[scenario]["exit_code"],
         "expected": expected,
+        "min_dispatches": min_dispatches,
+        "dispatch_count": dispatch_count,
         "planner_requests": planner_requests,
         "mini_turn_requests": mini_turns,
         "final_effect": stop.get("final_effect"),
@@ -316,6 +461,11 @@ for scenario in scenarios:
 proof = {
     "schema_version": "cua.voice_live_long_range_proof.v1",
     "ok": all(result["ok"] for result in results) and len(results) >= 10 and elapsed_ms <= budget_ms * len(results),
+    "provider_credit_failure": any(
+        "insufficient provider credits" in result.get("reply", "").lower()
+        or "payment required" in result.get("reply", "").lower()
+        for result in results
+    ),
     "profile": profile,
     "planner_model": planner_model,
     "elapsed_ms": elapsed_ms,
