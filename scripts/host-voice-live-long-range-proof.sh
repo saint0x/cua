@@ -65,10 +65,94 @@ env_key_available() {
   return 1
 }
 
+env_key_value() {
+  local name="$1"
+  if [[ -n "${!name:-}" ]]; then
+    printf '%s' "${!name}"
+    return 0
+  fi
+  perl -MText::ParseWords=shellwords -ne '
+    BEGIN { $name = shift @ARGV; }
+    next unless /^\s*(?:export\s+)?\Q$name\E\s*=\s*(.+?)\s*$/;
+    my @parts = shellwords($1);
+    print $parts[0] // "";
+    exit 0;
+  ' "$name" "$ENV_FILE"
+}
+
+write_provider_credit_failure_proof() {
+  local reason="$1"
+  local total_credits="${2:-null}"
+  local total_usage="${3:-null}"
+  local remaining="${4:-null}"
+  mkdir -p "$OUT_DIR"
+  jq -n \
+    --arg profile "$PROFILE" \
+    --arg planner_model "$PLANNER_MODEL" \
+    --arg reason "$reason" \
+    --argjson total_credits "$total_credits" \
+    --argjson total_usage "$total_usage" \
+    --argjson remaining "$remaining" \
+    --argjson scenario_count "${#SCENARIOS[@]}" \
+    '{
+      schema_version: "cua.voice_live_long_range_proof.v1",
+      ok: false,
+      provider_credit_failure: true,
+      provider_credit_preflight: {
+        ok: false,
+        reason: $reason,
+        total_credits: $total_credits,
+        total_usage: $total_usage,
+        remaining: $remaining
+      },
+      profile: $profile,
+      planner_model: $planner_model,
+      elapsed_ms: 0,
+      budget_ms_per_turn: 0,
+      scenario_count: $scenario_count,
+      ok_count: 0,
+      failed: [],
+      results: []
+    }' > "$PROOF"
+}
+
+require_openrouter_credit_preflight() {
+  local min_remaining="${CUA_VOICE_LIVE_LONG_RANGE_MIN_OPENROUTER_CREDITS:-1}"
+  local key response total usage remaining
+  key="$(env_key_value OPENROUTER_API_KEY)"
+  if [[ -z "$key" ]]; then
+    write_provider_credit_failure_proof "OPENROUTER_API_KEY is required in the environment or $ENV_FILE"
+    echo "OPENROUTER_API_KEY is required in the environment or $ENV_FILE" >&2
+    exit 1
+  fi
+  response="$(curl -fsS https://openrouter.ai/api/v1/credits -H "Authorization: Bearer $key")" || {
+    write_provider_credit_failure_proof "OpenRouter credits preflight request failed"
+    echo "OpenRouter credits preflight request failed" >&2
+    exit 1
+  }
+  total="$(jq -r '.data.total_credits // 0' <<<"$response")"
+  usage="$(jq -r '.data.total_usage // 0' <<<"$response")"
+  remaining="$(jq -r '.data.total_credits - .data.total_usage' <<<"$response")"
+  if ! jq -n -e --argjson remaining "$remaining" --argjson min_remaining "$min_remaining" \
+    '$remaining >= $min_remaining' >/dev/null
+  then
+    write_provider_credit_failure_proof \
+      "OpenRouter credits below required minimum for live long-range proof" \
+      "$total" \
+      "$usage" \
+      "$remaining"
+    printf 'OpenRouter credits below required minimum for live long-range proof: remaining=%s required=%s\n' \
+      "$remaining" \
+      "$min_remaining" >&2
+    exit 1
+  fi
+}
+
 if ! env_key_available OPENROUTER_API_KEY; then
   echo "OPENROUTER_API_KEY is required in the environment or $ENV_FILE" >&2
   exit 1
 fi
+require_openrouter_credit_preflight
 
 mkdir -p "$CORPUS" "$WEB_DIR" "$TRACES" "$EVENTS"
 if [[ -z "$CUA_HOME_DIR" ]]; then
