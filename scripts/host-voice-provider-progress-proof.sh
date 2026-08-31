@@ -55,8 +55,8 @@ env_key_available() {
   return 1
 }
 
-if [[ "$PLANNER_MODEL" != openrouter/* && "$PLANNER_MODEL" != google/* && "$PLANNER_MODEL" != anthropic/* ]]; then
-  echo "provider progress proof requires an OpenRouter-routed planner model, got $PLANNER_MODEL" >&2
+if [[ -z "${PLANNER_MODEL//[[:space:]]/}" ]]; then
+  echo "planner model is required for provider progress proof" >&2
   exit 1
 fi
 

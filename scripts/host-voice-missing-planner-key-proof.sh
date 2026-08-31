@@ -109,7 +109,7 @@ jq -s -e '
   any(.event == "context_result") and
   any(.event == "agent_context_result") and
   any(.event == "agent_loop_start" and .data.budget.kind == "unbounded") and
-  any(.event == "planning_pre_model_bootstrap") and
+  any(.event == "planning_deterministic_command" and .data.source == "browser_research_command") and
   any(.event == "dispatch_result" and (.data.result.effect | IN("confirmed", "failed", "refused", "partial", "unverifiable"))) and
   any(.event == "agent_attempt_outcome" and .data.has_action == true and .data.should_replan == true) and
   any(.event == "agent_reobserve_result") and

@@ -138,31 +138,26 @@ pub struct PlannerRequest<'a> {
 pub struct Planner {
     client: reqwest::Client,
     model: String,
-    provider: PlannerProvider,
 }
 
 impl Planner {
     pub fn new(model: impl Into<String>) -> Self {
-        let model = model.into();
-        let provider = PlannerProvider::from_model(&model);
         Self {
             client: reqwest::Client::new(),
-            model,
-            provider,
+            model: model.into(),
         }
     }
 
     pub fn api_key_from_env(&self) -> Option<String> {
-        self.provider.api_key_from_env()
+        std::env::var(OPENROUTER_API_KEY_ENV).ok()
     }
 
     pub fn required_api_key_name(&self) -> &'static str {
-        self.provider.required_api_key_name()
+        OPENROUTER_API_KEY_ENV
     }
 
     pub fn planning_tool_label(&self, attempt_index: usize, formatted_attempt: String) -> String {
-        self.provider
-            .planning_tool_label(attempt_index, formatted_attempt)
+        openrouter_planning_tool_label(attempt_index, formatted_attempt)
     }
 
     pub async fn plan(
@@ -296,8 +291,8 @@ impl Planner {
         for attempt in 1..=attempts {
             match self
                 .client
-                .post(self.provider.chat_completions_url())
-                .headers(self.provider.headers(api_key)?)
+                .post(openrouter_chat_completions_url())
+                .headers(openrouter_headers(api_key)?)
                 .json(body)
                 .timeout(planner_request_timeout())
                 .send()
@@ -326,7 +321,7 @@ impl Planner {
 
     fn request_body(&self, transcript: &str, content: Vec<serde_json::Value>) -> serde_json::Value {
         let mut body = serde_json::json!({
-            "model": self.provider.request_model(&self.model),
+            "model": self.model,
             "messages": [
                 {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
                 {"role": "user", "content": content}
@@ -334,82 +329,40 @@ impl Planner {
             "max_tokens": planner_max_tokens(transcript),
             "response_format": {"type": "json_object"},
         });
-        if self.provider.should_pin_temperature(&self.model) {
+        if should_pin_openrouter_temperature(&self.model) {
             body["temperature"] = serde_json::json!(0);
         }
         body
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PlannerProvider {
-    OpenRouter,
+const OPENROUTER_API_KEY_ENV: &str = "OPENROUTER_API_KEY";
+
+fn openrouter_chat_completions_url() -> String {
+    std::env::var(PLANNER_CHAT_COMPLETIONS_URL_ENV)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| OPENROUTER_CHAT_COMPLETIONS_URL.to_string())
 }
 
-impl PlannerProvider {
-    fn from_model(_model: &str) -> Self {
-        Self::OpenRouter
-    }
+fn openrouter_headers(api_key: &str) -> anyhow::Result<reqwest::header::HeaderMap> {
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(CONTENT_TYPE, "application/json".parse()?);
+    headers.insert(AUTHORIZATION, format!("Bearer {api_key}").parse()?);
+    headers.insert(REFERER, "http://localhost/cua".parse()?);
+    Ok(headers)
+}
 
-    fn normalized_openrouter_model(model: &str) -> String {
-        let model = model.strip_prefix("openrouter/").unwrap_or(model);
-        if let Some(gemini_model) = model.strip_prefix("gemini-") {
-            format!("google/gemini-{gemini_model}")
-        } else {
-            model.to_string()
-        }
-    }
+fn should_pin_openrouter_temperature(model: &str) -> bool {
+    !model.contains("google/gemini-3")
+}
 
-    fn request_model(self, model: &str) -> String {
-        match self {
-            Self::OpenRouter => Self::normalized_openrouter_model(model),
-        }
-    }
-
-    fn default_chat_completions_url(self) -> &'static str {
-        match self {
-            Self::OpenRouter => OPENROUTER_CHAT_COMPLETIONS_URL,
-        }
-    }
-
-    fn chat_completions_url(self) -> String {
-        std::env::var(PLANNER_CHAT_COMPLETIONS_URL_ENV)
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| self.default_chat_completions_url().to_string())
-    }
-
-    fn required_api_key_name(self) -> &'static str {
-        match self {
-            Self::OpenRouter => "OPENROUTER_API_KEY",
-        }
-    }
-
-    fn api_key_from_env(self) -> Option<String> {
-        match self {
-            Self::OpenRouter => std::env::var("OPENROUTER_API_KEY").ok(),
-        }
-    }
-
-    fn headers(self, api_key: &str) -> anyhow::Result<reqwest::header::HeaderMap> {
-        let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert(CONTENT_TYPE, "application/json".parse()?);
-        headers.insert(AUTHORIZATION, format!("Bearer {api_key}").parse()?);
-        headers.insert(REFERER, "http://localhost/cua".parse()?);
-        Ok(headers)
-    }
-
-    fn should_pin_temperature(self, model: &str) -> bool {
-        !Self::normalized_openrouter_model(model).contains("gemini-3")
-    }
-
-    fn planning_tool_label(self, attempt_index: usize, formatted_attempt: String) -> String {
-        if attempt_index == 1 {
-            "OpenRouter Vision".to_string()
-        } else {
-            format!("OpenRouter repair {formatted_attempt}")
-        }
+fn openrouter_planning_tool_label(attempt_index: usize, formatted_attempt: String) -> String {
+    if attempt_index == 1 {
+        "OpenRouter Vision".to_string()
+    } else {
+        format!("OpenRouter repair {formatted_attempt}")
     }
 }
 
@@ -787,11 +740,18 @@ pub fn parse_model_plan(raw: &str) -> anyhow::Result<PlannedTurn> {
                 .unwrap_or_else(|| serde_json::from_str(json))
         })
         .context("parse plan JSON")?;
-    let response = value["response"].as_str().unwrap_or("Ready.").to_string();
-    let action = if value.get("action").map(|v| v.is_null()).unwrap_or(true) {
+    let response = value
+        .get("response")
+        .and_then(|response| response.as_str())
+        .context("planner response must include string field `response`")?
+        .to_string();
+    let action_value = value
+        .get("action")
+        .context("planner response must include field `action`")?;
+    let action = if action_value.is_null() {
         None
     } else {
-        Some(parse_action_value(value["action"].clone())?)
+        Some(parse_action_value(action_value.clone())?)
     };
     Ok(PlannedTurn { response, action })
 }
@@ -1021,21 +981,6 @@ fn normalize_action_value(value: &mut serde_json::Value) {
     let Some(object) = value.as_object_mut() else {
         return;
     };
-    if !object.contains_key("kind") {
-        if object
-            .get("actions")
-            .and_then(|value| value.as_array())
-            .is_some()
-        {
-            object.insert("kind".to_string(), serde_json::json!("sequence"));
-        } else if object
-            .get("args")
-            .and_then(|value| value.as_array())
-            .is_some_and(|args| args_look_like_aegis(args.as_slice()))
-        {
-            object.insert("kind".to_string(), serde_json::json!("aegis"));
-        }
-    }
     let Some(kind) = object.get("kind").and_then(|kind| kind.as_str()) else {
         return;
     };
@@ -1099,14 +1044,6 @@ fn normalize_action_value(value: &mut serde_json::Value) {
             object.insert("button".to_string(), serde_json::json!(normalized));
         }
     }
-}
-
-fn args_look_like_aegis(args: &[serde_json::Value]) -> bool {
-    args.iter().any(|arg| arg.as_str() == Some("--mode"))
-        || args
-            .first()
-            .and_then(|arg| arg.as_str())
-            .is_some_and(|arg| matches!(arg, "search" | "navigate" | "page"))
 }
 
 pub fn parse_fast_command(transcript: &str) -> Option<PlannedTurn> {
@@ -1667,48 +1604,19 @@ mod tests {
     }
 
     #[test]
-    fn planner_provider_routes_bare_gemini_models_through_openrouter() {
-        let provider = PlannerProvider::from_model("gemini-3.7-flash");
-
-        assert_eq!(provider, PlannerProvider::OpenRouter);
+    fn planner_uses_openrouter_transport_without_model_aliases() {
         assert_eq!(
-            provider.request_model("gemini-3.7-flash"),
-            "google/gemini-3.7-flash"
-        );
-        assert_eq!(
-            provider.chat_completions_url(),
+            openrouter_chat_completions_url(),
             OPENROUTER_CHAT_COMPLETIONS_URL
         );
-        assert_eq!(provider.required_api_key_name(), "OPENROUTER_API_KEY");
-        assert!(!provider.should_pin_temperature("gemini-3.7-flash"));
-        let headers = provider.headers("test-router-key").unwrap();
         assert_eq!(
-            headers
-                .get(AUTHORIZATION)
-                .and_then(|value| value.to_str().ok()),
-            Some("Bearer test-router-key")
+            Planner::new("google/gemini-3.7-flash").required_api_key_name(),
+            OPENROUTER_API_KEY_ENV
         );
-        assert_eq!(
-            headers.get(REFERER).and_then(|value| value.to_str().ok()),
-            Some("http://localhost/cua")
-        );
-    }
-
-    #[test]
-    fn planner_provider_supports_explicit_openrouter_models() {
-        let provider = PlannerProvider::from_model("openrouter/google/gemini-3.7-flash");
-
-        assert_eq!(provider, PlannerProvider::OpenRouter);
-        assert_eq!(
-            provider.request_model("openrouter/google/gemini-3.7-flash"),
+        assert!(!should_pin_openrouter_temperature(
             "google/gemini-3.7-flash"
-        );
-        assert_eq!(
-            provider.chat_completions_url(),
-            OPENROUTER_CHAT_COMPLETIONS_URL
-        );
-        assert_eq!(provider.required_api_key_name(), "OPENROUTER_API_KEY");
-        let headers = provider.headers("test-router-key").unwrap();
+        ));
+        let headers = openrouter_headers("test-router-key").unwrap();
         assert_eq!(
             headers
                 .get(AUTHORIZATION)
@@ -1727,12 +1635,12 @@ mod tests {
 
         std::env::remove_var(PLANNER_CHAT_COMPLETIONS_URL_ENV);
         assert_eq!(
-            PlannerProvider::OpenRouter.chat_completions_url(),
+            openrouter_chat_completions_url(),
             OPENROUTER_CHAT_COMPLETIONS_URL
         );
         std::env::set_var(PLANNER_CHAT_COMPLETIONS_URL_ENV, "   ");
         assert_eq!(
-            PlannerProvider::OpenRouter.chat_completions_url(),
+            openrouter_chat_completions_url(),
             OPENROUTER_CHAT_COMPLETIONS_URL
         );
 
@@ -1741,7 +1649,7 @@ mod tests {
             "http://127.0.0.1:18080/v1/chat/completions",
         );
         assert_eq!(
-            PlannerProvider::OpenRouter.chat_completions_url(),
+            openrouter_chat_completions_url(),
             "http://127.0.0.1:18080/v1/chat/completions"
         );
 
@@ -1753,30 +1661,18 @@ mod tests {
     }
 
     #[test]
-    fn planner_provider_routes_provider_slugs_through_openrouter() {
-        let provider = PlannerProvider::from_model("openai/gpt-5.4-mini");
-
-        assert_eq!(provider, PlannerProvider::OpenRouter);
-        assert_eq!(
-            provider.request_model("openai/gpt-5.4-mini"),
-            "openai/gpt-5.4-mini"
-        );
-    }
-
-    #[test]
-    fn planner_request_body_uses_provider_model_and_temperature_contract() {
+    fn planner_request_body_uses_literal_model_and_temperature_contract() {
         let content = vec![serde_json::json!({"type": "text", "text": "Transcript: test"})];
-        let gemini =
-            Planner::new("gemini-3.7-flash").request_body("open calculator", content.clone());
-        let openrouter =
-            Planner::new("openrouter/openai/gpt-5.4-mini").request_body("open calculator", content);
+        let gemini = Planner::new("google/gemini-3.7-flash")
+            .request_body("open calculator", content.clone());
+        let openai = Planner::new("openai/gpt-5.4-mini").request_body("open calculator", content);
 
         assert_eq!(gemini["model"], "google/gemini-3.7-flash");
         assert!(gemini.get("temperature").is_none());
         assert_eq!(gemini["response_format"]["type"], "json_object");
-        assert_eq!(openrouter["model"], "openai/gpt-5.4-mini");
-        assert_eq!(openrouter["temperature"], 0);
-        assert_eq!(openrouter["response_format"]["type"], "json_object");
+        assert_eq!(openai["model"], "openai/gpt-5.4-mini");
+        assert_eq!(openai["temperature"], 0);
+        assert_eq!(openai["response_format"]["type"], "json_object");
     }
 
     #[test]
@@ -2144,56 +2040,23 @@ mod tests {
     }
 
     #[test]
-    fn parses_model_aegis_action_with_missing_kind_from_args() {
-        let plan = parse_model_plan(
+    fn rejects_model_aegis_action_missing_kind() {
+        let error = parse_model_plan(
             r#"{"response":"Navigating.","action":{"args":["--mode","headless","navigate","https://www.iana.org/help"]}}"#,
         )
-        .unwrap();
+        .unwrap_err();
 
-        assert!(matches!(
-            plan.action,
-            Some(InputAction::Aegis {
-                ref args,
-                timeout_ms: 15_000
-            }) if args == &[
-                "--mode".to_string(),
-                "headless".to_string(),
-                "navigate".to_string(),
-                "https://www.iana.org/help".to_string()
-            ]
-        ));
+        assert!(format!("{error:#}").contains("missing field `kind`"));
     }
 
     #[test]
-    fn parses_model_sequence_with_missing_kind_from_actions() {
-        let plan = parse_model_plan(
+    fn rejects_model_sequence_missing_kind() {
+        let error = parse_model_plan(
             r#"{"response":"Inspecting.","action":{"actions":[{"args":["--mode","headless","page","links"]},{"kind":"aegis","args":["--mode","headless","page","actions"]}]}}"#,
         )
-        .unwrap();
+        .unwrap_err();
 
-        assert!(matches!(
-            plan.action,
-            Some(InputAction::Sequence {
-                ref actions,
-                inter_action_delay_ms: 120
-            }) if matches!(
-                actions.as_slice(),
-                [
-                    InputAction::Aegis { args: first, timeout_ms: 15_000 },
-                    InputAction::Aegis { args: second, timeout_ms: 15_000 },
-                ] if first == &[
-                    "--mode".to_string(),
-                    "headless".to_string(),
-                    "page".to_string(),
-                    "links".to_string()
-                ] && second == &[
-                    "--mode".to_string(),
-                    "headless".to_string(),
-                    "page".to_string(),
-                    "actions".to_string()
-                ]
-            )
-        ));
+        assert!(format!("{error:#}").contains("missing field `kind`"));
     }
 
     #[test]
@@ -2284,6 +2147,15 @@ mod tests {
         let error = parse_model_plan("not json at all").unwrap_err();
 
         assert!(format!("{error:#}").contains("parse plan JSON"));
+    }
+
+    #[test]
+    fn parse_model_plan_requires_response_and_action_fields() {
+        let missing_response = parse_model_plan(r#"{"action":null}"#).unwrap_err();
+        let missing_action = parse_model_plan(r#"{"response":"Ready."}"#).unwrap_err();
+
+        assert!(format!("{missing_response:#}").contains("string field `response`"));
+        assert!(format!("{missing_action:#}").contains("field `action`"));
     }
 
     #[test]

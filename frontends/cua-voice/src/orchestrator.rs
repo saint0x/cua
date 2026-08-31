@@ -282,11 +282,11 @@ async fn transcribe_and_run_turn_after_local(
         .await;
     let stt_backend = config.stt_backend.clone();
     let stt_model = config.stt_model.clone();
-    let stt_api_key = api_key.clone().unwrap_or_default();
+    let stt_api_key = api_key.clone();
     let stt_started = Instant::now();
     let stt_task = tokio::spawn(async move {
         SttClient::new(stt_backend, stt_model)?
-            .transcribe_wav(&stt_api_key, &wav_bytes)
+            .transcribe_wav(stt_api_key.as_deref(), &wav_bytes)
             .await
     });
     let overlap_started = Instant::now();
@@ -388,9 +388,8 @@ fn api_key_for_stt_backend_from(
 ) -> anyhow::Result<Option<String>> {
     let key = lookup().filter(|key| !key.trim().is_empty());
     if backend == "openrouter" {
-        return key
-            .map(Some)
-            .context("OPENROUTER_API_KEY is required for OpenRouter speech-to-text");
+        key.as_ref()
+            .context("OPENROUTER_API_KEY is required for OpenRouter speech-to-text")?;
     }
     Ok(key)
 }
@@ -816,17 +815,13 @@ async fn plan_and_dispatch(
                 &agent_context_errors,
             );
             let attempt_started = Instant::now();
-            let pre_model_bootstrap_plan = if attempt_index == 1 && attempts.is_empty() {
-                browser_research_bootstrap_plan(&transcript).filter(|plan| {
-                    plan.action
-                        .as_ref()
-                        .is_some_and(input_action_uses_only_aegis_backend)
-                })
+            let deterministic_initial_plan = if attempt_index == 1 && attempts.is_empty() {
+                browser_research_bootstrap_plan(&transcript)
             } else {
                 None
             };
             tx.send(VoiceUiEvent::Planning {
-                tool: if pre_model_bootstrap_plan.is_some() {
+                tool: if deterministic_initial_plan.is_some() {
                     "Command parser".to_string()
                 } else {
                     planner.planning_tool_label(
@@ -849,13 +844,13 @@ async fn plan_and_dispatch(
                     }),
                 )
                 .await;
-            let mut plan = if let Some(plan) = pre_model_bootstrap_plan {
+            let mut plan = if let Some(plan) = deterministic_initial_plan {
                 trace
                     .append(
-                        "planning_pre_model_bootstrap",
+                        "planning_deterministic_command",
                         json!({
                             "attempt_index": attempt_index,
-                            "strategy": "browser_research_bootstrap",
+                            "source": "browser_research_command",
                         }),
                     )
                     .await;
@@ -924,25 +919,7 @@ async fn plan_and_dispatch(
                         let recoverable_planning_error =
                             empty_or_invalid_planner_output || retryable_planner_infrastructure;
                         if recoverable_planning_error {
-                            if let Some(plan) = planning_error_can_use_bootstrap_recovery(
-                                empty_or_invalid_planner_output,
-                                &attempts,
-                            )
-                            .then(|| browser_research_bootstrap_plan(&transcript))
-                            .flatten()
-                            {
-                                trace
-                                    .append(
-                                        "planning_error_recovered",
-                                        json!({
-                                            "attempt_index": attempt_index,
-                                            "strategy": "browser_research_bootstrap",
-                                            "error": format!("{error:#}"),
-                                        }),
-                                    )
-                                    .await;
-                                plan
-                            } else if loop_budget.can_continue_after(attempt_index) {
+                            if loop_budget.can_continue_after(attempt_index) {
                                 let consecutive_planner_infrastructure_errors =
                                     consecutive_planning_infrastructure_errors(&attempts);
                                 let error_message = format!("{error:#}");
@@ -1023,30 +1000,6 @@ async fn plan_and_dispatch(
                     }
                 }
             };
-            let should_bootstrap_browser_research =
-                transcript_requests_long_range_work(&transcript)
-                    && (plan
-                        .action
-                        .as_ref()
-                        .is_some_and(input_action_is_open_only_setup)
-                        || (plan.action.is_none()
-                            && planner_response_claims_pending_work(&plan.response)));
-            if should_bootstrap_browser_research {
-                if let Some(recovered_plan) = browser_research_bootstrap_plan(&transcript) {
-                    trace
-                        .append(
-                            "planning_browser_research_bootstrapped",
-                            json!({
-                                "attempt_index": attempt_index,
-                                "strategy": "browser_research_bootstrap",
-                                "model_response": plan.response,
-                                "model_action": plan.action.as_ref().map(serde_json::to_value).transpose()?,
-                            }),
-                        )
-                        .await;
-                    plan = recovered_plan;
-                }
-            }
             repair_new_note_text_entry_plan(&transcript, &mut plan.action);
             let dedupe_report = dedupe_redundant_sequence_actions(&mut plan.action);
             if dedupe_report.removed > 0 {
@@ -1746,7 +1699,9 @@ async fn prefetch_context(local: CuaClient, warm_session: Option<CuaSession>) ->
                 let desktop = match local.observe().await {
                     Ok(desktop) => Some(desktop),
                     Err(error) => {
-                        errors.push(format!("fallback desktop observe failed: {error}"));
+                        errors.push(format!(
+                            "desktop observe after context snapshot timeout failed: {error}"
+                        ));
                         None
                     }
                 };
@@ -2751,16 +2706,6 @@ fn action_is_open_only_setup(action: &serde_json::Value) -> bool {
     }
 }
 
-fn input_action_is_open_only_setup(action: &cua_core::InputAction) -> bool {
-    match action {
-        cua_core::InputAction::OpenApp { .. } => true,
-        cua_core::InputAction::Sequence { actions, .. } => {
-            !actions.is_empty() && actions.iter().all(input_action_is_open_only_setup)
-        }
-        _ => false,
-    }
-}
-
 fn open_only_incomplete_evidence(evidence: Option<serde_json::Value>) -> serde_json::Value {
     let mut evidence = evidence.unwrap_or_else(|| json!({}));
     if let Some(object) = evidence.as_object_mut() {
@@ -3306,13 +3251,6 @@ fn text_starts_with_phrase(text: &str, phrase: &str) -> bool {
             .chars()
             .next()
             .is_some_and(|next| !next.is_ascii_alphanumeric() && next != '_')
-}
-
-fn planning_error_can_use_bootstrap_recovery(
-    empty_or_invalid_planner_output: bool,
-    attempts: &[PlanAttemptContext],
-) -> bool {
-    empty_or_invalid_planner_output && attempts.is_empty()
 }
 
 fn action_null_plan_claims_pending_work(
@@ -5147,7 +5085,7 @@ mod tests {
     }
 
     #[test]
-    fn planner_parse_failures_are_recoverable_for_deterministic_browser_bootstrap() {
+    fn planner_parse_failures_are_recoverable_planner_errors() {
         let error = anyhow::anyhow!(
             "model output was not valid action JSON: parse action: invalid type: null"
         );
@@ -5158,21 +5096,14 @@ mod tests {
     }
 
     #[test]
-    fn planner_parse_recovery_does_not_reset_after_loop_progress() {
-        let attempts = vec![PlanAttemptContext {
-            attempt_index: 1,
-            response: "Found relevant page text.".to_string(),
-            action: Some(json!({
-                "kind": "aegis",
-                "args": ["--mode", "headless", "page", "find", "foreign key constraints"]
-            })),
-            effect: Some("confirmed".to_string()),
-            evidence: Some(json!({"effect": "confirmed"})),
-        }];
+    fn browser_research_command_compiles_to_initial_loop_action() {
+        let plan =
+            browser_research_bootstrap_plan("Search the web for Rust async cancellation").unwrap();
 
-        assert!(planning_error_can_use_bootstrap_recovery(true, &[]));
-        assert!(!planning_error_can_use_bootstrap_recovery(true, &attempts));
-        assert!(!planning_error_can_use_bootstrap_recovery(false, &[]));
+        assert!(matches!(
+            plan.action,
+            Some(cua_core::InputAction::Sequence { .. })
+        ));
     }
 
     #[test]
@@ -5345,7 +5276,7 @@ mod tests {
     #[test]
     fn user_visible_error_hides_local_stt_tracebacks() {
         let error = anyhow::anyhow!(
-            "local speech-to-text fallback after primary failure: No such file or directory: 'ffmpeg'"
+            "local speech-to-text returned low-signal transcript \"Thank you for joining us today.\""
         );
 
         assert_eq!(
@@ -5505,9 +5436,9 @@ mod tests {
         let local = CuaClient::new(format!("prefetch-join-test-{}", uuid::Uuid::new_v4()))
             .await
             .unwrap();
-        let task: tokio::task::JoinHandle<PrefetchedContext> = tokio::spawn(async {
-            panic!("synthetic context prefetch failure");
-        });
+        let task: tokio::task::JoinHandle<PrefetchedContext> =
+            tokio::spawn(async { std::future::pending().await });
+        task.abort();
 
         let context = resolve_context_for_planning(local, Some(task)).await;
 
@@ -6515,18 +6446,6 @@ mod tests {
                 "actions".to_string(),
             ]
         );
-    }
-
-    #[test]
-    fn long_range_browser_research_expands_typed_open_only_setup_before_dispatch() {
-        let action = cua_core::InputAction::OpenApp {
-            app_name: "Safari".to_string(),
-        };
-
-        assert!(input_action_is_open_only_setup(&action));
-        assert!(transcript_requests_long_range_work(
-            "Open Safari and search for the official Gemini documentation"
-        ));
     }
 
     #[test]

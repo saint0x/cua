@@ -10,7 +10,6 @@ use uuid::Uuid;
 
 pub const DEFAULT_STT_BACKEND: &str = "local";
 pub const DEFAULT_STT_MODEL: &str = "tiny.en";
-pub const DEFAULT_LOCAL_STT_FALLBACK_MODEL: &str = "base.en";
 pub const DEFAULT_OPENROUTER_STT_MODEL: &str = "openai/gpt-4o-mini-transcribe";
 const DEFAULT_STT_TIMEOUT_MS: u64 = 15_000;
 const DEFAULT_STT_ATTEMPTS: usize = 3;
@@ -58,12 +57,17 @@ impl SttClient {
 
     pub async fn transcribe_wav(
         &self,
-        api_key: &str,
+        api_key: Option<&str>,
         wav_bytes: &[u8],
     ) -> anyhow::Result<SttTranscript> {
         match self.backend {
             SttBackend::Local => self.transcribe_wav_local(wav_bytes).await,
-            SttBackend::OpenRouter => self.transcribe_wav_openrouter(api_key, wav_bytes).await,
+            SttBackend::OpenRouter => {
+                let api_key = api_key
+                    .filter(|key| !key.trim().is_empty())
+                    .context("OPENROUTER_API_KEY is required for OpenRouter speech-to-text")?;
+                self.transcribe_wav_openrouter(api_key, wav_bytes).await
+            }
         }
     }
 
@@ -78,11 +82,9 @@ impl SttClient {
     async fn transcribe_wav_local(&self, wav_bytes: &[u8]) -> anyhow::Result<SttTranscript> {
         let model = self.model.clone();
         let wav_bytes = wav_bytes.to_vec();
-        tokio::task::spawn_blocking(move || {
-            transcribe_wav_with_local_whisper_retry(&model, &wav_bytes)
-        })
-        .await
-        .context("join local speech-to-text")?
+        tokio::task::spawn_blocking(move || transcribe_wav_with_local_whisper(&model, &wav_bytes))
+            .await
+            .context("join local speech-to-text")?
     }
 
     async fn transcribe_wav_openrouter(
@@ -175,7 +177,14 @@ fn transcribe_wav_with_local_whisper(
     }
     let value = read_local_whisper_json(&temp_dir, &wav_path, &output)?;
     let _ = fs::remove_dir_all(&temp_dir);
-    parse_transcription_value(SttBackend::Local.as_str(), model, None, value)
+    let transcript = parse_transcription_value(SttBackend::Local.as_str(), model, None, value)?;
+    if local_transcript_is_low_signal(&transcript.text) {
+        bail!(
+            "local speech-to-text returned low-signal transcript {:?}",
+            transcript.text
+        );
+    }
+    Ok(transcript)
 }
 
 fn local_whisper_command(whisper: &str) -> Command {
@@ -206,58 +215,7 @@ fn local_stt_path() -> String {
     deduped.join(":")
 }
 
-fn transcribe_wav_with_local_whisper_retry(
-    model: &str,
-    wav_bytes: &[u8],
-) -> anyhow::Result<SttTranscript> {
-    let first = transcribe_wav_with_local_whisper(model, wav_bytes);
-    match first {
-        Ok(transcript) if !local_transcript_needs_retry(&transcript.text) => Ok(transcript),
-        Ok(transcript) => {
-            let Some(fallback_model) = local_whisper_fallback_model(model) else {
-                return Ok(transcript);
-            };
-            transcribe_wav_with_local_whisper(&fallback_model, wav_bytes)
-                .with_context(|| {
-                    format!(
-                        "local speech-to-text fallback after low-signal transcript {:?}",
-                        transcript.text
-                    )
-                })
-                .or(Ok(transcript))
-        }
-        Err(error) => {
-            let Some(fallback_model) = local_whisper_fallback_model(model) else {
-                return Err(error);
-            };
-            transcribe_wav_with_local_whisper(&fallback_model, wav_bytes).with_context(|| {
-                format!("local speech-to-text fallback after primary failure: {error:#}")
-            })
-        }
-    }
-}
-
-fn local_whisper_fallback_model(primary_model: &str) -> Option<String> {
-    let disabled = std::env::var("CUA_VOICE_LOCAL_WHISPER_DISABLE_FALLBACK")
-        .ok()
-        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-        .unwrap_or(false);
-    if disabled {
-        return None;
-    }
-    let fallback = std::env::var("CUA_VOICE_LOCAL_WHISPER_FALLBACK_MODEL")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| DEFAULT_LOCAL_STT_FALLBACK_MODEL.to_string());
-    if fallback == primary_model {
-        None
-    } else {
-        Some(fallback)
-    }
-}
-
-fn local_transcript_needs_retry(text: &str) -> bool {
+fn local_transcript_is_low_signal(text: &str) -> bool {
     let normalized = text
         .trim()
         .trim_matches(|ch: char| ch.is_ascii_punctuation())
@@ -614,43 +572,30 @@ mod tests {
     }
 
     #[test]
-    fn local_retry_only_targets_silence_hallucinations() {
-        assert!(local_transcript_needs_retry("You."));
-        assert!(local_transcript_needs_retry("thank you"));
-        assert!(local_transcript_needs_retry(
+    fn local_low_signal_filter_only_targets_silence_hallucinations() {
+        assert!(local_transcript_is_low_signal("You."));
+        assert!(local_transcript_is_low_signal("thank you"));
+        assert!(local_transcript_is_low_signal(
             "Thank you for joining us today."
         ));
-        assert!(local_transcript_needs_retry(
+        assert!(local_transcript_is_low_signal(
             "You're welcome! Let me know if you need anything."
         ));
-        assert!(!local_transcript_needs_retry("settings"));
-        assert!(!local_transcript_needs_retry("open safari"));
+        assert!(!local_transcript_is_low_signal("settings"));
+        assert!(!local_transcript_is_low_signal("open safari"));
     }
 
     #[test]
-    fn local_fallback_model_is_distinct_and_disableable() {
-        let disable = "__CUA_VOICE_DISABLE_SHADOW";
-        std::env::remove_var("CUA_VOICE_LOCAL_WHISPER_DISABLE_FALLBACK");
-        std::env::remove_var("CUA_VOICE_LOCAL_WHISPER_FALLBACK_MODEL");
-        assert_eq!(
-            local_whisper_fallback_model("tiny.en").as_deref(),
-            Some(DEFAULT_LOCAL_STT_FALLBACK_MODEL)
-        );
-        assert_eq!(
-            local_whisper_fallback_model(DEFAULT_LOCAL_STT_FALLBACK_MODEL),
-            None
-        );
-
-        std::env::set_var("CUA_VOICE_LOCAL_WHISPER_DISABLE_FALLBACK", "1");
-        assert_eq!(local_whisper_fallback_model("tiny.en"), None);
-        std::env::remove_var("CUA_VOICE_LOCAL_WHISPER_DISABLE_FALLBACK");
-        std::env::set_var("CUA_VOICE_LOCAL_WHISPER_FALLBACK_MODEL", disable);
-        assert_eq!(local_whisper_fallback_model(disable), None);
-        std::env::remove_var("CUA_VOICE_LOCAL_WHISPER_FALLBACK_MODEL");
+    fn local_low_signal_filter_rejects_known_silence_hallucinations() {
+        assert!(local_transcript_is_low_signal(""));
+        assert!(local_transcript_is_low_signal(
+            "Subtitles by the Amara.org community"
+        ));
+        assert!(!local_transcript_is_low_signal("open safari"));
     }
 
     #[test]
-    fn finds_fallback_whisper_json_output() {
+    fn finds_whisper_json_output() {
         let temp_dir = std::env::temp_dir().join(format!("cua-stt-json-test-{}", Uuid::new_v4()));
         fs::create_dir_all(&temp_dir).unwrap();
         let json_path = temp_dir.join("renamed.json");

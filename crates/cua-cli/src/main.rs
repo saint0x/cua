@@ -1323,17 +1323,65 @@ async fn doctor(json: bool) -> anyhow::Result<()> {
 }
 
 fn doctor_report() -> serde_json::Value {
+    let permissions = local_permission_report();
+    let ready_for_zero_touch_agent = ready_for_zero_touch_agent(&permissions);
     serde_json::json!({
         "schema_version": SCHEMA_VERSION,
-        "status": "degraded",
+        "status": if ready_for_zero_touch_agent { "ready" } else { "degraded" },
         "checks": {
             "rust_workspace": "ready",
-            "capture_backend": "synthetic_fallback",
-            "input_backend": "refusing_until_platform_backend_enabled",
+            "computer_backend": local_computer_backend_name(),
+            "capture_backend": local_capture_backend_name(),
+            "input_backend": local_input_backend_name(),
+            "permissions": permissions,
+            "ready_for_zero_touch_agent": ready_for_zero_touch_agent,
             "openrouter_configured": std::env::var("OPENROUTER_API_KEY").is_ok(),
             "public_surfaces": ["cli", "local_http", "local_unix_socket"]
         }
     })
+}
+
+fn ready_for_zero_touch_agent(permissions: &cua_core::PermissionReport) -> bool {
+    matches!(
+        permissions.screen_recording,
+        cua_core::PermissionState::Granted | cua_core::PermissionState::NotApplicable
+    ) && matches!(
+        permissions.accessibility_input,
+        cua_core::PermissionState::Granted | cua_core::PermissionState::NotApplicable
+    ) && matches!(
+        permissions.input_monitoring,
+        cua_core::PermissionState::Granted | cua_core::PermissionState::NotApplicable
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn local_computer_backend_name() -> &'static str {
+    "local"
+}
+
+#[cfg(not(target_os = "macos"))]
+fn local_computer_backend_name() -> &'static str {
+    "unavailable"
+}
+
+#[cfg(target_os = "macos")]
+fn local_capture_backend_name() -> &'static str {
+    "macos"
+}
+
+#[cfg(not(target_os = "macos"))]
+fn local_capture_backend_name() -> &'static str {
+    "unavailable"
+}
+
+#[cfg(target_os = "macos")]
+fn local_input_backend_name() -> &'static str {
+    "macos-cgevent"
+}
+
+#[cfg(not(target_os = "macos"))]
+fn local_input_backend_name() -> &'static str {
+    "refusing"
 }
 
 async fn stream(profile: &str, args: StreamArgs) -> anyhow::Result<()> {
@@ -1898,6 +1946,7 @@ async fn permissions(profile: &str, command: PermissionCommand) -> anyhow::Resul
 
 fn permission_report_json(preflight: bool) -> serde_json::Value {
     let permission_report = local_permission_report();
+    let ready_for_zero_touch_agent = ready_for_zero_touch_agent(&permission_report);
     serde_json::json!({
         "schema_version": SCHEMA_VERSION,
         "screen_recording": permission_report.screen_recording,
@@ -1906,7 +1955,7 @@ fn permission_report_json(preflight: bool) -> serde_json::Value {
         "automation": permission_report.automation,
         "clipboard": permission_report.clipboard,
         "portal": permission_report.portal,
-        "ready_for_zero_touch_agent": false,
+        "ready_for_zero_touch_agent": ready_for_zero_touch_agent,
         "preflight": preflight
     })
 }
@@ -5251,6 +5300,37 @@ fn action_turn_has_frame_snapshot(turn: &ActionTurnRecord) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zero_touch_readiness_requires_local_control_permissions() {
+        let ready = cua_core::PermissionReport {
+            screen_recording: cua_core::PermissionState::Granted,
+            accessibility_input: cua_core::PermissionState::Granted,
+            input_monitoring: cua_core::PermissionState::Granted,
+            automation: cua_core::PermissionState::Unknown,
+            clipboard: cua_core::PermissionState::Unknown,
+            portal: cua_core::PermissionState::NotApplicable,
+        };
+        let missing_input = cua_core::PermissionReport {
+            input_monitoring: cua_core::PermissionState::Missing,
+            ..ready.clone()
+        };
+
+        assert!(ready_for_zero_touch_agent(&ready));
+        assert!(!ready_for_zero_touch_agent(&missing_input));
+    }
+
+    #[test]
+    fn doctor_report_uses_local_runtime_names() {
+        let report = doctor_report();
+        assert_ne!(report["checks"]["capture_backend"], "synthetic_fallback");
+        assert_ne!(
+            report["checks"]["input_backend"],
+            "refusing_until_platform_backend_enabled"
+        );
+        assert!(report["checks"]["permissions"].is_object());
+        assert!(report["checks"]["ready_for_zero_touch_agent"].is_boolean());
+    }
 
     #[test]
     fn remaps_mouse_coordinates_between_frame_sizes() {
