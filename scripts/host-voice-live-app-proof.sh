@@ -23,7 +23,7 @@ case "$OUT_DIR" in
 esac
 CUA_HOME_DIR="${CUA_VOICE_LIVE_APP_HOME:-}"
 ENV_FILE="${CUA_ENV_FILE:-$HOME/.cua/config/env}"
-PLANNER_MODEL="${CUA_VOICE_LIVE_APP_MODEL:-anthropic/claude-sonnet-4.6}"
+PLANNER_MODEL="${CUA_VOICE_LIVE_APP_MODEL:-google/gemini-3.7-flash}"
 BUDGET_MS="${CUA_VOICE_LIVE_APP_BUDGET_MS:-120000}"
 TRACE="$OUT_DIR/voice.jsonl"
 EVENTS="$OUT_DIR/events.jsonl"

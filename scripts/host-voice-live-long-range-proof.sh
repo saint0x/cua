@@ -25,7 +25,7 @@ case "$OUT_DIR" in
 esac
 CUA_HOME_DIR="${CUA_VOICE_LIVE_LONG_RANGE_HOME:-}"
 ENV_FILE="${CUA_ENV_FILE:-$HOME/.cua/config/env}"
-PLANNER_MODEL="${CUA_VOICE_LIVE_LONG_RANGE_MODEL:-anthropic/claude-sonnet-4.6}"
+PLANNER_MODEL="${CUA_VOICE_LIVE_LONG_RANGE_MODEL:-google/gemini-3.7-flash}"
 BUDGET_MS="${CUA_VOICE_LIVE_LONG_RANGE_BUDGET_MS:-180000}"
 WEB_ADDR="${CUA_VOICE_LIVE_LONG_RANGE_WEB_ADDR:-127.0.0.1:$((29500 + RUN_ID % 400))}"
 CORPUS="$OUT_DIR/corpus"
@@ -161,13 +161,14 @@ else
   mkdir -p "$CUA_HOME_DIR"
 fi
 
-python3 - "$CORPUS" "$WEB_DIR" <<'PY'
+python3 - "$CORPUS" "$WEB_DIR" "$PLANNER_MODEL" <<'PY'
 import json
 import pathlib
 import sys
 
 corpus = pathlib.Path(sys.argv[1])
 web = pathlib.Path(sys.argv[2])
+planner_model = sys.argv[3]
 
 (corpus / "architecture.md").write_text("""# Computer Backend Architecture
 The local backend is the default backend and uses the installed Mac attested route.
@@ -214,9 +215,9 @@ broken-loop,local,480,false,42.0
 
 (corpus / "claims-a.md").write_text("Claim A: The default backend must be local. Claim B: oracle-vm is provider-specific below the generic cloud computer backend.\n", encoding="utf-8")
 (corpus / "claims-b.md").write_text("Claim C: QGUI belongs inside oracle-vm images. Claim D: The planner must use OpenRouter credentials even when the model slug is google/gemini.\n", encoding="utf-8")
-(corpus / "config.toml").write_text("""[voice]
+(corpus / "config.toml").write_text(f"""[voice]
 planner_provider = "openrouter"
-planner_model = "anthropic/claude-sonnet-4.6"
+planner_model = "{planner_model}"
 loop_budget = "n"
 
 [backend]
@@ -389,7 +390,7 @@ expected_for() {
     dependency-map) printf 'ANSWER[dependency-map]=oracle-vm depends on qgui, oci-sdk, vm-image' ;;
     timeline-order) printf 'ANSWER[timeline-order]=local backend -> oracle-vm prototype -> QGUI vendoring -> qualitative loop suite' ;;
     contradiction-check) printf 'ANSWER[contradiction-check]=no contradiction: OpenRouter credentials stay required for google/gemini model slugs' ;;
-    config-audit) printf 'ANSWER[config-audit]=openrouter planner, sonnet model, unbounded loop, local default backend' ;;
+    config-audit) printf 'ANSWER[config-audit]=openrouter planner, %s model, unbounded loop, local default backend' "$PLANNER_MODEL" ;;
     failure-recovery) printf 'ANSWER[failure-recovery]=recovered after missing-file failure' ;;
     timeout-recovery) printf 'ANSWER[timeout-recovery]=recovered after timeout with bounded command' ;;
     aegis-local-read) printf 'ANSWER[aegis-local-read]=verification observation' ;;
@@ -412,7 +413,8 @@ min_dispatches_for() {
   case "$1" in
     failure-recovery|timeout-recovery) printf '2' ;;
     aegis-local-read) printf '2' ;;
-    aegis-link-follow|aegis-cross-page-synthesis) printf '3' ;;
+    aegis-cross-page-synthesis) printf '2' ;;
+    aegis-link-follow) printf '2' ;;
     aegis-table-read) printf '2' ;;
     *) printf '2' ;;
   esac

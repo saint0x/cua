@@ -22,7 +22,7 @@ case "$OUT_DIR" in
 esac
 CUA_HOME_DIR="${CUA_VOICE_PROVIDER_PROGRESS_HOME:-}"
 ENV_FILE="${CUA_ENV_FILE:-$HOME/.cua/config/env}"
-PLANNER_MODEL="${CUA_VOICE_PROVIDER_PROGRESS_MODEL:-anthropic/claude-sonnet-4.6}"
+PLANNER_MODEL="${CUA_VOICE_PROVIDER_PROGRESS_MODEL:-google/gemini-3.7-flash}"
 BUDGET_MS="${CUA_VOICE_PROVIDER_PROGRESS_BUDGET_MS:-120000}"
 TRANSCRIPT="${CUA_VOICE_PROVIDER_PROGRESS_TRANSCRIPT:-Using Aegis headless only, search the web for the official SQLite foreign key documentation and report the verified page title.}"
 EVENTS="$OUT_DIR/events.jsonl"

@@ -205,7 +205,7 @@ jq -n \
     no_five_turn_limit_leaked: (all($requests[]; .contains_five_turn_limit == false) and (($trace | ascii_downcase | contains("five turn")) | not) and (($trace | ascii_downcase | contains("5-turn")) | not)),
     ok: (
       ($requests | length) == 3 and
-      $voice[0].start.config.planner_model == "anthropic/claude-sonnet-4.6" and
+      $voice[0].start.config.planner_model == "google/gemini-3.7-flash" and
       ($voice[0].outcomes | length) == 3 and
       ($voice[0].stalled.reason == "visible_action_without_observed_progress") and
       ($voice[0].stalled.consecutive_attempts == 3) and
@@ -221,7 +221,7 @@ jq -n \
 jq -e '
   .ok == true and
   .planner_requests == 3 and
-  .default_planner_model == "anthropic/claude-sonnet-4.6" and
+  .default_planner_model == "google/gemini-3.7-flash" and
   .outcome_count == 3 and
   .has_terminal_turn_complete == true and
   .second_request_has_mini_turn_context == true and

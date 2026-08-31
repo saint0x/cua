@@ -243,7 +243,7 @@ CUA_AGENT_LOOP_MAX_ATTEMPTS="n" \
 "$VOICE_BIN_PATH" \
   --profile "$PROFILE" \
   --debug-trace \
-  --planner-model "anthropic/claude-sonnet-4.6" \
+  --planner-model "google/gemini-3.7-flash" \
   --once-transcript "$TRANSCRIPT" > "$EVENTS" 2> "$VOICE_STDERR"
 VOICE_EXIT=$?
 set -e

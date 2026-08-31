@@ -145,7 +145,7 @@ OPENROUTER_API_KEY="mock-key" \
 "$VOICE_BIN_PATH" \
   --headless \
   --profile "$PROFILE" \
-  --planner-model anthropic/claude-sonnet-4.6 \
+  --planner-model google/gemini-3.7-flash \
   --once-transcript "Screen record what is visible, watch the video, and answer what happened." \
   >"$EVENTS" 2>"$OUT_DIR/voice.stderr"
 

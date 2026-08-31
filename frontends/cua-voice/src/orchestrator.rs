@@ -45,7 +45,7 @@ const DEFAULT_VISIBLE_NO_PROGRESS_STALL_LIMIT: usize = 3;
 const MIN_VISIBLE_NO_PROGRESS_STALL_LIMIT: usize = 2;
 const MAX_VISIBLE_NO_PROGRESS_STALL_LIMIT: usize = 10;
 const MIN_RECORDING_DURATION: Duration = Duration::from_millis(650);
-pub const DEFAULT_PLANNER_MODEL: &str = "anthropic/claude-sonnet-4.6";
+pub const DEFAULT_PLANNER_MODEL: &str = "google/gemini-3.7-flash";
 
 struct PrefetchedContext {
     session: Option<CuaSession>,
@@ -2959,7 +2959,8 @@ fn dispatch_evidence_has_nonempty_shell_stdout(evidence: &serde_json::Value) -> 
 }
 
 fn apply_verified_readback_reply(transcript: &str, turn: &mut CompletedAssistantTurn) {
-    if !transcript_requests_shell_readback(transcript)
+    if !(transcript_requests_shell_readback(transcript)
+        || transcript_requests_exact_token_readback(transcript))
         || !turn
             .action
             .as_ref()
@@ -5206,10 +5207,10 @@ mod tests {
         assert_eq!(
             planning_credentials_missing_message_with_attempts(
                 "OPENROUTER_API_KEY",
-                "anthropic/claude-sonnet-4.6",
+                "google/gemini-3.7-flash",
                 &[]
             ),
-            "OPENROUTER_API_KEY is required for planner model anthropic/claude-sonnet-4.6."
+            "OPENROUTER_API_KEY is required for planner model google/gemini-3.7-flash."
         );
         let attempts = vec![PlanAttemptContext {
             attempt_index: 1,
@@ -5238,10 +5239,10 @@ mod tests {
         assert_eq!(
             planning_credentials_missing_message_with_attempts(
                 "OPENROUTER_API_KEY",
-                "anthropic/claude-sonnet-4.6",
+                "google/gemini-3.7-flash",
                 &attempts
             ),
-            "OPENROUTER_API_KEY is required for planner model anthropic/claude-sonnet-4.6; stopped after 1 action attempt; last attempted using Aegis `search the official SQLite foreign key documentation`."
+            "OPENROUTER_API_KEY is required for planner model google/gemini-3.7-flash; stopped after 1 action attempt; last attempted using Aegis `search the official SQLite foreign key documentation`."
         );
         let sequence_attempts = vec![PlanAttemptContext {
             attempt_index: 1,
@@ -5602,8 +5603,8 @@ mod tests {
     }
 
     #[test]
-    fn default_planner_model_uses_openrouter_sonnet() {
-        assert_eq!(DEFAULT_PLANNER_MODEL, "anthropic/claude-sonnet-4.6");
+    fn default_planner_model_uses_openrouter_gemini_flash() {
+        assert_eq!(DEFAULT_PLANNER_MODEL, "google/gemini-3.7-flash");
     }
 
     #[test]
@@ -6275,6 +6276,33 @@ mod tests {
         assert!(!shell_expected_stdout_missing_for_goal(
             transcript, &present
         ));
+    }
+
+    #[test]
+    fn shell_exact_token_readback_promotes_stdout_to_reply() {
+        let transcript = "Use shell_exec only. First run `sleep 2` with timeout_ms 100. After that timeout is visible, recover by printing the exact token `ANSWER[timeout-recovery]=recovered after timeout with bounded command`. Your final reply must include exactly `ANSWER[timeout-recovery]=recovered after timeout with bounded command`.";
+        let mut turn = CompletedAssistantTurn {
+            response: "Recovering after timeout.".to_string(),
+            action: Some(json!({
+                "kind": "shell_exec",
+                "command": "echo 'ANSWER[timeout-recovery]=recovered after timeout with bounded command'",
+                "timeout_ms": 5000
+            })),
+            evidence: Some(json!({
+                "effect": "confirmed",
+                "evidence": [{
+                    "kind": "value_readback",
+                    "message": "shell exited 0; stdout=ANSWER[timeout-recovery]=recovered after timeout with bounded command\n; stderr="
+                }]
+            })),
+        };
+
+        apply_verified_readback_reply(transcript, &mut turn);
+
+        assert_eq!(
+            turn.response,
+            "ANSWER[timeout-recovery]=recovered after timeout with bounded command"
+        );
     }
 
     #[test]

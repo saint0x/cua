@@ -881,7 +881,7 @@ mod tests {
             &display,
             false,
             false,
-            "anthropic/claude-sonnet-4.6",
+            "google/gemini-3.7-flash",
             Duration::ZERO,
         )
         .unwrap();
@@ -925,7 +925,7 @@ mod tests {
             &display,
             false,
             true,
-            "anthropic/claude-sonnet-4.6",
+            "google/gemini-3.7-flash",
             Duration::ZERO,
         )
         .unwrap();
@@ -964,7 +964,7 @@ mod tests {
             &display,
             true,
             false,
-            "anthropic/claude-sonnet-4.6",
+            "google/gemini-3.7-flash",
             Duration::from_secs(67),
         )
         .unwrap();
@@ -1009,7 +1009,7 @@ mod tests {
             &display,
             false,
             false,
-            "anthropic/claude-sonnet-4.6",
+            "google/gemini-3.7-flash",
             Duration::from_secs(1),
         )
         .expect("compact scene should bound long status text");
@@ -1018,7 +1018,7 @@ mod tests {
             &display,
             true,
             false,
-            "anthropic/claude-sonnet-4.6",
+            "google/gemini-3.7-flash",
             Duration::from_secs(1),
         )
         .expect("expanded scene should bound long row text");
