@@ -2115,7 +2115,22 @@ fn accepted_action_stall_after_attempt(
     turn: &CompletedAssistantTurn,
     effect: Option<&str>,
 ) -> AcceptedActionStall {
-    let stall_limit = accepted_action_stall_limit();
+    accepted_action_stall_after_attempt_with_limit(
+        transcript,
+        prior_attempts,
+        turn,
+        effect,
+        accepted_action_stall_limit(),
+    )
+}
+
+fn accepted_action_stall_after_attempt_with_limit(
+    transcript: &str,
+    prior_attempts: &[PlanAttemptContext],
+    turn: &CompletedAssistantTurn,
+    effect: Option<&str>,
+    stall_limit: usize,
+) -> AcceptedActionStall {
     let mut consecutive_attempts = usize::from(attempt_is_unverified_long_range_dispatch(
         transcript,
         turn.action.as_ref(),
@@ -2244,7 +2259,7 @@ fn attempt_is_unverified_visible_no_change(attempt: &PlanAttemptContext) -> bool
         .is_some_and(action_requires_reobserve_before_finish)
         && matches!(
             attempt.effect.as_deref(),
-            Some("confirmed" | "partial" | "unverifiable")
+            Some("confirmed" | "partial" | "unverifiable" | "refused" | "failed")
         )
         && !attempt
             .evidence
@@ -2789,8 +2804,14 @@ fn shell_expected_stdout_missing_for_goal(transcript: &str, turn: &CompletedAssi
         .as_ref()
         .is_some_and(json_action_uses_shell_exec)
         && turn_effect(turn).as_deref() == Some("confirmed")
-        && dispatch_evidence_last_nonempty_stdout(turn.evidence.as_ref())
-            .is_some_and(|stdout| stdout.trim() != expected)
+        && dispatch_evidence_last_nonempty_stdout(turn.evidence.as_ref()).is_some_and(|stdout| {
+            let observed = stdout.trim();
+            if transcript_requests_exact_token_readback(transcript) {
+                !observed.contains(&expected)
+            } else {
+                observed != expected
+            }
+        })
 }
 
 fn aegis_readback_missing_for_goal(transcript: &str, turn: &CompletedAssistantTurn) -> bool {
@@ -2833,6 +2854,17 @@ fn words_request_shell_readback(words: &[String]) -> bool {
 
 fn expected_final_shell_stdout_value(transcript: &str) -> Option<String> {
     let lower = transcript.to_ascii_lowercase();
+    if let Some(value) = extract_last_exact_value_after_markers(
+        transcript,
+        &[
+            "exact token ",
+            "exact answer token ",
+            "exact final token ",
+            "exact marker ",
+        ],
+    ) {
+        return Some(value);
+    }
     if !(lower.contains("final stdout") || lower.contains("exact final stdout")) {
         return None;
     }
@@ -2863,6 +2895,14 @@ fn expected_final_shell_stdout_value(transcript: &str) -> Option<String> {
     )
 }
 
+fn transcript_requests_exact_token_readback(transcript: &str) -> bool {
+    let lower = transcript.to_ascii_lowercase();
+    lower.contains("exact token")
+        || lower.contains("exact answer token")
+        || lower.contains("exact final token")
+        || lower.contains("exact marker")
+}
+
 fn extract_last_exact_value_after_markers(text: &str, markers: &[&str]) -> Option<String> {
     let lower = text.to_ascii_lowercase();
     markers
@@ -2885,7 +2925,10 @@ fn extract_exact_value_after_marker(text: &str, marker: &str) -> Option<String> 
         .filter_map(|delimiter| lower_rest.find(delimiter))
         .min()
         .unwrap_or(rest.len());
-    let value = rest[..end].trim();
+    let value = rest[..end]
+        .trim()
+        .trim_matches(|ch: char| ch == '"' || ch == '\'' || ch == '`')
+        .trim();
     (!value.is_empty()).then(|| value.to_string())
 }
 
@@ -3631,6 +3674,9 @@ fn prior_attempts_support_explicit_aegis_final(
 }
 
 fn prior_attempts_support_verified_final(response: &str, attempts: &[PlanAttemptContext]) -> bool {
+    if final_response_answer_token(response).is_some() {
+        return final_response_answer_token_supported_by_prior_evidence(response, attempts);
+    }
     final_response_claims_verified_result(response)
         && (attempts
             .iter()
@@ -3715,6 +3761,44 @@ fn evidence_contains_claim(evidence: &serde_json::Value, claim: &str) -> bool {
             .ok()
             .map(|text| normalize_evidence_claim(&text))
             .is_some_and(|evidence| evidence.contains(&normalized_claim))
+}
+
+fn final_response_answer_token_supported_by_prior_evidence(
+    response: &str,
+    attempts: &[PlanAttemptContext],
+) -> bool {
+    let Some(answer) = final_response_answer_token(response) else {
+        return false;
+    };
+    let payload = answer
+        .split_once('=')
+        .map(|(_, payload)| payload.trim())
+        .filter(|payload| !payload.is_empty());
+    attempts.iter().any(|attempt| {
+        matches!(attempt.effect.as_deref(), Some("confirmed" | "partial"))
+            && attempt
+                .action
+                .as_ref()
+                .zip(attempt.evidence.as_ref())
+                .is_some_and(|(action, evidence)| {
+                    evidence_has_task_readback_for_action(action, evidence)
+                        && (evidence_contains_claim(evidence, &answer)
+                            || payload
+                                .is_some_and(|payload| evidence_contains_claim(evidence, payload)))
+                })
+    })
+}
+
+fn final_response_answer_token(response: &str) -> Option<String> {
+    let start = response.find("ANSWER[")?;
+    let token = response[start..]
+        .lines()
+        .next()
+        .unwrap_or("")
+        .trim()
+        .trim_matches(|ch: char| ch == '"' || ch == '\'' || ch == '`')
+        .trim_end_matches(|ch: char| matches!(ch, '.' | ',' | ';'));
+    (!token.is_empty()).then(|| token.to_string())
 }
 
 fn normalize_evidence_claim(text: &str) -> String {
@@ -6016,6 +6100,53 @@ mod tests {
     }
 
     #[test]
+    fn action_null_answer_token_finishes_when_prior_readback_supports_it() {
+        let transcript = "Use shell_exec only to inspect files under /tmp/corpus. Do not finish from the task text alone. Verify the relevant evidence from the files, make the shell command print the exact token `ANSWER[architecture-summary]=local default, oracle-vm provider, QGUI in VM image`, and only then final reply must include exactly `ANSWER[architecture-summary]=local default, oracle-vm provider, QGUI in VM image`.";
+        let response = "Evidence verified. ANSWER[architecture-summary]=local default, oracle-vm provider, QGUI in VM image";
+        let attempts = vec![PlanAttemptContext {
+            attempt_index: 1,
+            response: "Reading architecture.md.".to_string(),
+            action: Some(json!({
+                "kind": "shell_exec",
+                "command": "cat /tmp/corpus/architecture.md && printf '%s\n' 'ANSWER[architecture-summary]=local default, oracle-vm provider, QGUI in VM image'",
+                "timeout_ms": 5000
+            })),
+            effect: Some("confirmed".to_string()),
+            evidence: Some(json!({
+                "effect": "confirmed",
+                "evidence": [{
+                    "kind": "value_readback",
+                    "message": "shell exited 0; stdout=The local backend is the default backend.\nANSWER[architecture-summary]=local default, oracle-vm provider, QGUI in VM image\n; stderr="
+                }]
+            })),
+        }];
+
+        assert!(action_null_finishes_after_prior_attempts(
+            response, &None, &attempts
+        ));
+        assert!(!action_null_stops_concrete_goal_without_evidence(
+            transcript, response, &None, &attempts
+        ));
+
+        let unsupported_attempts = vec![PlanAttemptContext {
+            evidence: Some(json!({
+                "effect": "confirmed",
+                "evidence": [{
+                    "kind": "value_readback",
+                    "message": "shell exited 0; stdout=The local backend is the default backend.; stderr="
+                }]
+            })),
+            ..attempts[0].clone()
+        }];
+        assert!(action_null_stops_concrete_goal_without_evidence(
+            transcript,
+            response,
+            &None,
+            &unsupported_attempts
+        ));
+    }
+
+    #[test]
     fn shell_expected_final_stdout_replans_when_wrong_value_was_read() {
         let transcript = "Use local shell only. First deliberately write WRONG-VALUE to result.txt and read it back to observe that it does not match the desired value. Then repair it by writing exactly FINAL-VALUE-441 to result.txt, read result.txt back to stdout, and report the exact final stdout.";
         let turn = CompletedAssistantTurn {
@@ -6101,6 +6232,74 @@ mod tests {
             Some("confirmed"),
             1,
             AgentLoopBudget::Unbounded
+        ));
+    }
+
+    #[test]
+    fn shell_exact_token_readback_requires_token_in_stdout() {
+        let transcript = "Use shell_exec only. Verify files, make the shell command print the exact token `ANSWER[cost-cutover]=cut over when Quilt VM self-hosting is cheaper than rented oracle-vm capacity`, and only then final reply must include exactly `ANSWER[cost-cutover]=cut over when Quilt VM self-hosting is cheaper than rented oracle-vm capacity`.";
+        let missing = CompletedAssistantTurn {
+            response: "Reading cost model.".to_string(),
+            action: Some(json!({
+                "kind": "shell_exec",
+                "command": "cat /tmp/cost-model.md",
+                "timeout_ms": 5000
+            })),
+            evidence: Some(json!({
+                "effect": "confirmed",
+                "evidence": [{
+                    "kind": "value_readback",
+                    "message": "shell exited 0; stdout=Cut over to Quilt VM fleet when rented oracle-vm capacity costs more than self-hosted Quilt VM capacity.; stderr="
+                }]
+            })),
+        };
+        let present = CompletedAssistantTurn {
+            response: "Reading cost model and printing answer token.".to_string(),
+            action: missing.action.clone(),
+            evidence: Some(json!({
+                "effect": "confirmed",
+                "evidence": [{
+                    "kind": "value_readback",
+                    "message": "shell exited 0; stdout=Cut over to Quilt VM fleet when rented oracle-vm capacity costs more than self-hosted Quilt VM capacity.\nANSWER[cost-cutover]=cut over when Quilt VM self-hosting is cheaper than rented oracle-vm capacity\n; stderr="
+                }]
+            })),
+        };
+
+        assert_eq!(
+            expected_final_shell_stdout_value(transcript).as_deref(),
+            Some(
+                "ANSWER[cost-cutover]=cut over when Quilt VM self-hosting is cheaper than rented oracle-vm capacity"
+            )
+        );
+        assert!(shell_expected_stdout_missing_for_goal(transcript, &missing));
+        assert!(!shell_expected_stdout_missing_for_goal(
+            transcript, &present
+        ));
+    }
+
+    #[test]
+    fn answer_token_payload_can_be_grounded_by_browser_readback() {
+        let response = "ANSWER[aegis-local-read]=verification observation";
+        let attempts = vec![PlanAttemptContext {
+            attempt_index: 1,
+            response: "Reading page text.".to_string(),
+            action: Some(json!({
+                "kind": "aegis",
+                "args": ["--mode", "headless", "page", "text", "--scope", "main"],
+                "timeout_ms": 15000
+            })),
+            effect: Some("confirmed".to_string()),
+            evidence: Some(json!({
+                "effect": "confirmed",
+                "evidence": [{
+                    "kind": "value_readback",
+                    "message": "aegis exited 0; stdout=The page says the key answer is verification observation.; stderr="
+                }]
+            })),
+        }];
+
+        assert!(action_null_finishes_after_prior_attempts(
+            response, &None, &attempts
         ));
     }
 
@@ -8051,6 +8250,49 @@ mod tests {
     }
 
     #[test]
+    fn repeated_refused_visible_actions_without_observed_change_stall() {
+        let action = json!({
+            "kind": "mouse_move",
+            "x": 1,
+            "y": 1,
+            "duration_ms": 0
+        });
+        let attempts = (1..=DEFAULT_VISIBLE_NO_PROGRESS_STALL_LIMIT)
+            .map(|attempt_index| PlanAttemptContext {
+                attempt_index,
+                response: "Moving the pointer again.".to_string(),
+                action: Some(action.clone()),
+                effect: Some("refused".to_string()),
+                evidence: Some(json!({
+                    "effect": "refused",
+                    "evidence": [{
+                        "kind": "refusal",
+                        "message": "real desktop input is not enabled for this backend; refusing instead of faking support"
+                    }],
+                    "verification_observation": {
+                        "has_frame": true,
+                        "has_desktop": true,
+                        "frame_changed": false,
+                        "focused_window_changed": false
+                    }
+                })),
+            })
+            .collect::<Vec<_>>();
+
+        let stall = visible_no_progress_stall_after_reobserve(
+            "Do a long-range task that uses the visible desktop.",
+            &attempts,
+        )
+        .expect("visible no-progress stall");
+
+        assert_eq!(stall.reason, "visible_action_without_observed_progress");
+        assert_eq!(
+            stall.consecutive_attempts,
+            DEFAULT_VISIBLE_NO_PROGRESS_STALL_LIMIT
+        );
+    }
+
+    #[test]
     fn visible_no_progress_stall_ignores_intervening_planner_errors() {
         let action = json!({
             "kind": "mouse_click",
@@ -8571,8 +8813,6 @@ mod tests {
 
     #[test]
     fn accepted_action_stall_stops_unbounded_visible_browsing_without_progress() {
-        let old_limit = std::env::var_os("CUA_AGENT_ACCEPTED_ACTION_STALL_LIMIT");
-        std::env::set_var("CUA_AGENT_ACCEPTED_ACTION_STALL_LIMIT", "3");
         let transcript = "Open Safari and do extended research across different websites.";
         let prior_attempts = vec![
             PlanAttemptContext {
@@ -8604,11 +8844,12 @@ mod tests {
             evidence: Some(json!({"effect": "unverifiable"})),
         };
 
-        let stall = accepted_action_stall_after_attempt(
+        let stall = accepted_action_stall_after_attempt_with_limit(
             transcript,
             &prior_attempts,
             &turn,
             Some("unverifiable"),
+            3,
         );
         assert!(stall.stalled);
         assert_eq!(stall.consecutive_attempts, 3);
@@ -8627,18 +8868,10 @@ mod tests {
         );
         assert_eq!(evidence["final_evidence"]["consecutive_attempts"], 3);
         assert_eq!(evidence["attempt_count"], 3);
-
-        if let Some(old_limit) = old_limit {
-            std::env::set_var("CUA_AGENT_ACCEPTED_ACTION_STALL_LIMIT", old_limit);
-        } else {
-            std::env::remove_var("CUA_AGENT_ACCEPTED_ACTION_STALL_LIMIT");
-        }
     }
 
     #[test]
     fn accepted_action_stall_resets_when_task_readback_arrives() {
-        let old_limit = std::env::var_os("CUA_AGENT_ACCEPTED_ACTION_STALL_LIMIT");
-        std::env::set_var("CUA_AGENT_ACCEPTED_ACTION_STALL_LIMIT", "2");
         let transcript = "Use Aegis headless to research SQLite foreign key enforcement.";
         let prior_attempts = vec![PlanAttemptContext {
             attempt_index: 1,
@@ -8662,21 +8895,16 @@ mod tests {
             evidence: Some(json!({"effect": "unverifiable"})),
         };
 
-        let stall = accepted_action_stall_after_attempt(
+        let stall = accepted_action_stall_after_attempt_with_limit(
             transcript,
             &prior_attempts,
             &turn,
             Some("unverifiable"),
+            2,
         );
 
         assert!(!stall.stalled);
         assert_eq!(stall.consecutive_attempts, 1);
-
-        if let Some(old_limit) = old_limit {
-            std::env::set_var("CUA_AGENT_ACCEPTED_ACTION_STALL_LIMIT", old_limit);
-        } else {
-            std::env::remove_var("CUA_AGENT_ACCEPTED_ACTION_STALL_LIMIT");
-        }
     }
 
     #[test]

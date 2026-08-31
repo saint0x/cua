@@ -117,6 +117,9 @@ impl HudDisplay {
 }
 
 fn live_transport_label(snapshot: &HudSnapshot) -> String {
+    if let Some(app_name) = dispatching_app_label(&snapshot.step.label) {
+        return app_name;
+    }
     match snapshot.phase {
         HudPhase::Listening | HudPhase::RecordingStopped | HudPhase::Accepted => "Mic".to_string(),
         HudPhase::Transcribing => short_tool(&snapshot.tool),
@@ -128,6 +131,14 @@ fn live_transport_label(snapshot: &HudSnapshot) -> String {
 }
 
 fn live_target_label(snapshot: &HudSnapshot) -> String {
+    if snapshot.mode == cua_core::UiMode::Headless
+        && matches!(
+            snapshot.phase,
+            HudPhase::Planning | HudPhase::Dispatching | HudPhase::Reply | HudPhase::Idle
+        )
+    {
+        return "Background".to_string();
+    }
     if snapshot.tool.contains("Screen") || snapshot.tool.contains("Capture") {
         return "Screen".to_string();
     }
@@ -191,7 +202,11 @@ fn action_rows(snapshot: &HudSnapshot) -> [HudRow; 2] {
         HudRow {
             label: action,
             tool: short_tool(&snapshot.tool),
-            app: if snapshot.tool.contains("Unix") || snapshot.tool.contains("socket") {
+            app: if snapshot.mode == cua_core::UiMode::Headless {
+                "Background".to_string()
+            } else if let Some(app_name) = dispatching_app_label(&snapshot.step.label) {
+                app_name
+            } else if snapshot.tool.contains("Unix") || snapshot.tool.contains("socket") {
                 "macOS".to_string()
             } else {
                 live_target_label(snapshot)
@@ -203,6 +218,18 @@ fn action_rows(snapshot: &HudSnapshot) -> [HudRow; 2] {
             },
         },
     ]
+}
+
+fn dispatching_app_label(label: &str) -> Option<String> {
+    let app_name = label
+        .strip_prefix("Dispatching open app ")
+        .or_else(|| label.strip_prefix("open app "))?;
+    let app_name = app_name
+        .split_once(" sequence ")
+        .map(|(name, _)| name)
+        .unwrap_or(app_name)
+        .trim();
+    (!app_name.is_empty()).then(|| compact_label(app_name, 22))
 }
 
 fn compact_scene(snapshot: &HudSnapshot, display: &HudDisplay, reply_visible: bool) -> IslandScene {
@@ -653,6 +680,56 @@ mod tests {
         assert_eq!(display.rows[1].app, "macOS");
         assert_eq!(display.tool, "Socket");
         assert_eq!(display.target, "macOS");
+    }
+
+    #[test]
+    fn headless_hud_target_reads_background() {
+        let mut snapshot = HudSnapshot::default();
+        snapshot.apply(VoiceUiEvent::UiMode {
+            mode: cua_core::UiMode::Headless,
+            source: Some("cli".to_string()),
+        });
+        snapshot.apply(VoiceUiEvent::Dispatching(
+            "mouse click at 10,10".to_string(),
+        ));
+
+        let display = HudDisplay::from_snapshot(&snapshot);
+
+        assert_eq!(display.tool, "Socket");
+        assert_eq!(display.target, "Background");
+        assert_eq!(display.rows[1].app, "Background");
+    }
+
+    #[test]
+    fn headful_app_dispatch_surfaces_app_name_in_transport_chip() {
+        let mut snapshot = HudSnapshot::default();
+        snapshot.apply(VoiceUiEvent::Dispatching("open app TextEdit".to_string()));
+
+        let display = HudDisplay::from_snapshot(&snapshot);
+
+        assert_eq!(display.tool, "TextEdit");
+        assert_eq!(display.target, "macOS");
+        assert_eq!(display.rows[1].app, "TextEdit");
+    }
+
+    #[test]
+    fn daemon_app_dispatch_step_surfaces_app_name_in_transport_chip() {
+        let mut snapshot = HudSnapshot::default();
+        snapshot.apply(VoiceUiEvent::AgentStep {
+            label: "Dispatching open app TextEdit sequence 5 actions".to_string(),
+            source: Some("cua-runtime".to_string()),
+            task: Some("Computer control".to_string()),
+            tool: Some("Unix socket".to_string()),
+            step_index: None,
+            step_total: None,
+            ttl_ms: None,
+        });
+
+        let display = HudDisplay::from_snapshot(&snapshot);
+
+        assert_eq!(display.tool, "TextEdit");
+        assert_eq!(display.target, "macOS");
+        assert_eq!(display.rows[1].app, "TextEdit");
     }
 
     #[test]

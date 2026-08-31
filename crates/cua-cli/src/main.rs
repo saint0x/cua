@@ -1443,16 +1443,36 @@ async fn record_report(profile: &str, args: RecordArgs) -> anyhow::Result<serde_
     let mut frames = Vec::with_capacity(requested_frames);
     let mut frame_paths = Vec::with_capacity(requested_frames);
     let frame_timeout = Duration::from_millis(frame_timeout_ms(requested_frames, fps));
+    let frame_deadline = Instant::now() + frame_timeout;
+    let mut last_diagnostic: Option<String> = None;
     while frames.len() < requested_frames {
-        let message = tokio::time::timeout(frame_timeout, session.next_message())
-            .await
-            .with_context(|| {
-                format!(
-                    "timed out waiting for recording frame {} of {}",
-                    frames.len() + 1,
-                    requested_frames
-                )
-            })??;
+        let now = Instant::now();
+        if now >= frame_deadline {
+            let diagnostic = last_diagnostic
+                .as_deref()
+                .map(|message| format!("; last diagnostic: {message}"))
+                .unwrap_or_default();
+            anyhow::bail!(
+                "timed out waiting for recording frame {} of {} after {}ms{}",
+                frames.len() + 1,
+                requested_frames,
+                frame_timeout.as_millis(),
+                diagnostic
+            );
+        }
+        let message = tokio::time::timeout(
+            frame_deadline.saturating_duration_since(now),
+            session.next_message(),
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "timed out waiting for recording frame {} of {} after {}ms",
+                frames.len() + 1,
+                requested_frames,
+                frame_timeout.as_millis()
+            )
+        })??;
         match message {
             Some(VisualSessionMessage::Frame { frame, .. }) => {
                 let frame: FramePayload =
@@ -1463,6 +1483,7 @@ async fn record_report(profile: &str, args: RecordArgs) -> anyhow::Result<serde_
                 frame_paths.push(frame_path);
             }
             Some(VisualSessionMessage::Diagnostic { message, .. }) => {
+                last_diagnostic = Some(message.clone());
                 log.push(
                     serde_json::json!({"step": "visual_session_diagnostic", "message": message}),
                 );

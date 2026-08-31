@@ -147,7 +147,7 @@ jq -s -e '
 
 jq -e '
   any(.kind == "ui_step" and .data.source == "voice" and (.data.label | contains("transcript:"))) and
-  any(.kind == "ui_step" and .data.source == "voice" and (.data.label | contains("planning from screen context"))) and
+  any(.kind == "ui_step" and .data.source == "voice" and (.data.label | contains("planning: attempt"))) and
   any(.kind == "ui_step" and .data.source == "voice" and (.data.label | contains("reply:"))) and
   (map(select(.kind == "ui_step" and .data.source == "voice" and (.data.label | contains("dispatch:")))) | length == 0)
 ' "$DAEMON_EVENTS" >/dev/null

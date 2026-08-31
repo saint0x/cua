@@ -7,17 +7,30 @@ cd "$ROOT"
 command -v jq >/dev/null
 command -v perl >/dev/null
 command -v sqlite3 >/dev/null
+command -v xcrun >/dev/null
+
+export SDKROOT="${SDKROOT:-$(xcrun --sdk macosx --show-sdk-path)}"
+export BINDGEN_EXTRA_CLANG_ARGS="${BINDGEN_EXTRA_CLANG_ARGS:--isysroot $SDKROOT}"
 
 RUN_ID="$(date +%s)"
 SUFFIX="${RUN_ID: -5}"
 PROFILE="${CUA_VOICE_MISSING_KEY_PROFILE:-qmk$SUFFIX}"
 OUT_DIR="${CUA_VOICE_MISSING_KEY_OUT_DIR:-artifacts/cua/voice-missing-key-$RUN_ID}"
+case "$OUT_DIR" in
+  /*) ;;
+  *) OUT_DIR="$ROOT/$OUT_DIR" ;;
+esac
 CUA_HOME_DIR="${CUA_VOICE_MISSING_KEY_HOME:-}"
 PLANNER_MODEL="${CUA_VOICE_MISSING_KEY_MODEL:-anthropic/claude-sonnet-4.6}"
 BUDGET_MS="${CUA_VOICE_MISSING_KEY_BUDGET_MS:-60000}"
 TRANSCRIPT="${CUA_VOICE_MISSING_KEY_TRANSCRIPT:-Using Aegis headless only, search the web for the official SQLite foreign key documentation and report the verified page title.}"
 EVENTS="$OUT_DIR/events.jsonl"
 PROOF="$OUT_DIR/proof.json"
+
+cleanup() {
+  pkill -f "aegis_cli --mode headless --profile cua-$PROFILE " 2>/dev/null || true
+}
+trap cleanup EXIT
 
 cargo build -p cua-voice
 

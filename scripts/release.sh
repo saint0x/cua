@@ -12,7 +12,6 @@ SCENARIO="${CUA_RELEASE_SCENARIO:-fozzy/scenarios/cua-smoke.json}"
 RLM_SCENARIO="${CUA_RELEASE_RLM_SCENARIO:-fozzy/scenarios/cua-rlm-loop.fozzy.json}"
 RLM_DEPTH_SCENARIO="${CUA_RELEASE_RLM_DEPTH_SCENARIO:-fozzy/scenarios/cua-rlm-loop-depth.fozzy.json}"
 RLM_HOST_SCENARIO="${CUA_RELEASE_RLM_HOST_SCENARIO:-fozzy/scenarios/cua-rlm-loop-missing-planner-key-host.fozzy.json}"
-RLM_LOCAL_PLANNER_HOST_SCENARIO="${CUA_RELEASE_RLM_LOCAL_PLANNER_HOST_SCENARIO:-fozzy/scenarios/cua-rlm-loop-local-planner-host.fozzy.json}"
 RLM_PROVIDER_HOST_SCENARIO="${CUA_RELEASE_RLM_PROVIDER_HOST_SCENARIO:-fozzy/scenarios/cua-rlm-loop-provider-progress-host.fozzy.json}"
 RUNEBOOK_SCENARIO="${CUA_RELEASE_RUNEBOOK_SCENARIO:-fozzy/scenarios/cua-runebook.json}"
 SDK_SCENARIO="${CUA_RELEASE_SDK_SCENARIO:-fozzy/scenarios/cua-sdk-action.json}"
@@ -215,7 +214,6 @@ if [[ "$SKIP_FOZZY" -eq 0 ]]; then
   fozzy_trace_gate "$RLM_SCENARIO" "cua-rlm-loop"
   fozzy_trace_gate "$RLM_DEPTH_SCENARIO" "cua-rlm-loop-depth"
   fozzy_host_trace_gate "$RLM_HOST_SCENARIO" "cua-rlm-loop-missing-planner-key-host"
-  fozzy_host_trace_gate "$RLM_LOCAL_PLANNER_HOST_SCENARIO" "cua-rlm-loop-local-planner-host"
   if env_key_available OPENROUTER_API_KEY; then
     fozzy_host_trace_gate "$RLM_PROVIDER_HOST_SCENARIO" "cua-rlm-loop-provider-progress-host"
   else
@@ -235,10 +233,7 @@ run scripts/host-config-migration-proof.sh | tee "$ARTIFACT_DIR/host-config-migr
 run scripts/host-sdk-session-proof.sh | tee "$ARTIFACT_DIR/host-sdk-session-proof.json"
 run scripts/host-inbox-webhook-proof.sh | tee "$ARTIFACT_DIR/host-inbox-webhook-proof.json"
 run scripts/host-scratchpad-proof.sh | tee "$ARTIFACT_DIR/host-scratchpad-proof.json"
-run scripts/host-voice-local-planner-loop-proof.sh | tee "$ARTIFACT_DIR/host-voice-local-planner-missing-readback-path.txt"
-run env CUA_VOICE_LOCAL_PLANNER_SCENARIO=mismatch-readback scripts/host-voice-local-planner-loop-proof.sh | tee "$ARTIFACT_DIR/host-voice-local-planner-mismatch-readback-path.txt"
-run env CUA_VOICE_LOCAL_PLANNER_SCENARIO=failed-action-repair scripts/host-voice-local-planner-loop-proof.sh | tee "$ARTIFACT_DIR/host-voice-local-planner-failed-action-repair-path.txt"
-run env CUA_VOICE_LOCAL_PLANNER_SCENARIO=repeated-rejected-plan scripts/host-voice-local-planner-loop-proof.sh | tee "$ARTIFACT_DIR/host-voice-local-planner-repeated-rejected-plan-path.txt"
+run scripts/host-voice-proof-suite.sh | tee "$ARTIFACT_DIR/host-voice-proof-suite-path.txt"
 
 log "Package app"
 APP_PATH="$(scripts/package-macos-app.sh | tail -n 1)"

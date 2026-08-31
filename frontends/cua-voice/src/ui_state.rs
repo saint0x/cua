@@ -139,7 +139,11 @@ impl HudSnapshot {
             }
             VoiceUiEvent::Dispatching(action) => {
                 self.phase = HudPhase::Dispatching;
-                self.mark_voice_control();
+                if self.mode == UiMode::Headless {
+                    self.mark_automation_control();
+                } else {
+                    self.mark_voice_control();
+                }
                 self.step = HudStep::plain(action);
                 self.tool = "Unix socket".to_string();
                 self.programmed_step_expires_at = None;

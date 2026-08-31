@@ -2589,7 +2589,7 @@ impl SingleInstance {
         match UnixListener::bind(&path) {
             Ok(listener) => Ok(Some(Self::from_listener(path, listener)?)),
             Err(error) if error.kind() == ErrorKind::AddrInUse => {
-                if single_instance_socket_is_responsive(&path) {
+                if single_instance_socket_becomes_responsive(&path) {
                     return Ok(None);
                 }
                 std::fs::remove_file(&path).ok();
@@ -2613,6 +2613,19 @@ impl Drop for SingleInstance {
     fn drop(&mut self) {
         self.running.store(false, Ordering::Relaxed);
         std::fs::remove_file(&self.path).ok();
+    }
+}
+
+fn single_instance_socket_becomes_responsive(path: &Path) -> bool {
+    let deadline = Instant::now() + Duration::from_millis(600);
+    loop {
+        if single_instance_socket_is_responsive(path) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(25));
     }
 }
 

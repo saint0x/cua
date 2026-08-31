@@ -445,6 +445,7 @@ impl HudSupervisor {
             }
             let profile = profile.to_string();
             let token = token.to_string();
+            let cua_home = std::env::var("CUA_HOME").ok();
             let pid = self.pid.clone();
             std::thread::spawn(move || {
                 let Some(binary) = hud_binary_path() else {
@@ -461,6 +462,9 @@ impl HudSupervisor {
                     .stdin(Stdio::null())
                     .stdout(Stdio::null())
                     .stderr(Stdio::null());
+                if let Some(cua_home) = cua_home {
+                    command.env("CUA_HOME", cua_home);
+                }
                 if let Ok(child) = command.spawn() {
                     pid.store(child.id(), Ordering::Relaxed);
                 }
@@ -4904,7 +4908,9 @@ fn input_action_label(action: &InputAction) -> String {
         InputAction::KeyPress { combo } => format!("key press {combo}"),
         InputAction::KeyType { text } => format!("typing {} chars", text.chars().count()),
         InputAction::KeyPaste { text } => format!("pasting {} chars", text.chars().count()),
-        InputAction::Sequence { actions, .. } => format!("sequence {} actions", actions.len()),
+        InputAction::Sequence { actions, .. } => first_open_app_name(actions)
+            .map(|app_name| format!("open app {app_name} sequence {} actions", actions.len()))
+            .unwrap_or_else(|| format!("sequence {} actions", actions.len())),
         InputAction::OpenApp { app_name } => format!("open app {app_name}"),
         InputAction::ShellExec { command, .. } => {
             format!("shell {}", compact_action_text(command, 48))
@@ -4923,6 +4929,16 @@ fn input_action_label(action: &InputAction) -> String {
         InputAction::Resume => "resume control".to_string(),
         InputAction::KillSwitch => "kill switch".to_string(),
     }
+}
+
+fn first_open_app_name(actions: &[InputAction]) -> Option<&str> {
+    actions.iter().find_map(|action| match action {
+        InputAction::OpenApp { app_name } => {
+            Some(app_name.trim()).filter(|value| !value.is_empty())
+        }
+        InputAction::Sequence { actions, .. } => first_open_app_name(actions),
+        _ => None,
+    })
 }
 
 fn compact_action_text(value: &str, limit: usize) -> String {
@@ -8949,6 +8965,20 @@ mod tests {
                 timeout_ms: 15_000,
             }),
             "aegis --mode headful page actions"
+        );
+        assert_eq!(
+            input_action_label(&InputAction::Sequence {
+                actions: vec![
+                    InputAction::OpenApp {
+                        app_name: "TextEdit".to_string()
+                    },
+                    InputAction::KeyPaste {
+                        text: "hello".to_string()
+                    },
+                ],
+                inter_action_delay_ms: 120,
+            }),
+            "open app TextEdit sequence 2 actions"
         );
     }
 
